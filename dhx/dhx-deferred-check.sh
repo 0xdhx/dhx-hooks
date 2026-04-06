@@ -105,7 +105,9 @@ MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s).
 
 ${ITEM_LIST}
 
-For each: numbered list with recommendation, then AskUserQuestion (capture/existing/assessed/discuss). 'discuss' = full assessment then re-ask. [assessed] requires explicit user selection — never self-mark. Complete all before session end."
+For each: numbered list with recommendation, then AskUserQuestion (capture/existing/assessed/discuss). 'discuss' = full assessment then re-ask. [assessed] requires explicit user selection — never self-mark. Complete all before session end.
+
+After disposition, mark each item in ${LATEST} with its tag ([captured], [existing], [assessed]) to silence this hook."
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
