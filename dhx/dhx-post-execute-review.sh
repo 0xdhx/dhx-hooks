@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# dhx-post-execute-review.sh — SubagentStop hook (gsd-verifier matcher)
-# Triggers /dhx:execute post-execution review when the verifier completes
-# during an active phase execution.
+# dhx-post-execute-review.sh — PostToolUse hook (Agent matcher)
+# Triggers /dhx:execute post-execution review when a gsd-verifier agent
+# completes during an active phase execution.
 #
 # Detection: looks for a VERIFICATION.md created in the last 5 minutes
-# alongside SUMMARY.md files (execution evidence). This avoids the race
-# condition where the orchestrator runs `phase complete` (changing STATE.md
-# status) before this hook fires.
+# alongside SUMMARY.md files (execution evidence). This avoids false
+# positives from standalone /gsd-verify-work invocations.
 
 INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
+
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // empty')
+
+# Gate: Only gsd-verifier completions
+[ "$AGENT_TYPE" != "gsd-verifier" ] && exit 0
 
 # Find .planning/ — walk up from cwd
 PLANNING_DIR=""
@@ -41,7 +45,7 @@ PHASE=$(basename "$RECENT_VERIF" | grep -oP '^\d+(\.\d+)?' | head -1)
 cat << ENDJSON
 {
   "hookSpecificOutput": {
-    "hookEventName": "SubagentStop",
+    "hookEventName": "PostToolUse",
     "additionalContext": "POST-EXECUTION REVIEW — Phase ${PHASE} verifier completed. Run /dhx:execute (no args) to apply post-execution critique:\n1. Plan-to-execution fidelity — did implementation match plan tasks or silently descope?\n2. Context-to-code fidelity — do committed changes align with CONTEXT.md decisions?\n3. Deferred item capture — any TODOs or noted limitations that need /dhx:capture?\n4. Backlog sync — uncaptured items from execution?"
   }
 }
