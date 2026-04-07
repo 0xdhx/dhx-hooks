@@ -125,6 +125,11 @@ if [[ "$TEST_CMD" == *"pytest"* ]] && [ -d ".pytest_cache" ]; then
       rm -f "$COUNTER_FILE"
       exit 0
     fi
+  elif [ "$LF_EXIT" -eq 5 ]; then
+    # No tests collected — repo has no tests. Not a failure.
+    log "No tests collected (pytest exit 5) → allowing stop"
+    rm -f "$COUNTER_FILE"
+    exit 0
   else
     log "Last-failed tests still failing (exit $LF_EXIT) → blocking stop"
     TRUNCATED=$(echo "$LF_OUTPUT" | tail -n 60)
