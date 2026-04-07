@@ -145,6 +145,11 @@ if [ "$TEST_EXIT" -eq 0 ]; then
   log "Tests passed → allowing stop"
   rm -f "$COUNTER_FILE"
   exit 0
+elif [ "$TEST_EXIT" -eq 5 ] && [[ "$TEST_CMD" == *"pytest"* ]]; then
+  # pytest exit 5 = no tests collected. Not a failure — repo has no tests.
+  log "No tests collected (pytest exit 5) → allowing stop"
+  rm -f "$COUNTER_FILE"
+  exit 0
 else
   TRUNCATED=$(echo "$TEST_OUTPUT" | tail -n 60)
   log "Tests FAILED (exit $TEST_EXIT) → blocking stop"
