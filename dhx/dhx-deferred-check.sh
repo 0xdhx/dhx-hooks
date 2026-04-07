@@ -101,13 +101,9 @@ ITEM_LIST=$(echo "$UNCAPTURED" | sed 's/^/  - /')
 REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"
 touch "$REVIEW_MARKER"
 
-MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s).
+MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s) in ${LATEST}.
 
-${ITEM_LIST}
-
-For each: numbered list with recommendation, then AskUserQuestion (capture/existing/assessed/discuss). 'discuss' = full assessment then re-ask. [assessed] requires explicit user selection — never self-mark. Complete all before session end.
-
-After disposition, mark each item in ${LATEST} with its tag ([captured], [existing], [assessed]) to silence this hook."
+Invoke /dhx:defer-review ${LATEST} to resolve before session end."
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
