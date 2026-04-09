@@ -46,8 +46,11 @@ case "$USER_PROMPT" in
   /gsd:audit-milestone*|/gsd-audit-milestone*|/gsd:verify-work*|/gsd-verify-work*)
     MSG="CALIBRATION: Invoke /dhx:audit to load audit calibration before proceeding. Counteracts optimistic completion bias."
     ;;
-  /gsd:ui-phase*|/gsd-ui-phase*|/gsd:ui-review*|/gsd-ui-review*)
-    MSG="CALIBRATION: Invoke /dhx:ui to load UI design calibration before proceeding with this GSD workflow."
+  /gsd:ui-phase*|/gsd-ui-phase*)
+    MSG="CALIBRATION: Invoke /dhx:ui to load UI design calibration before proceeding with this GSD workflow. This loads session checkpoints (anti-slop, metaphor alignment, spec compliance), verifies z-gsdui project skill exists for subagent authority, and ensures DESIGN-VISION.md locked values are respected by the ui-researcher and ui-checker."
+    ;;
+  /gsd:ui-review*|/gsd-ui-review*)
+    MSG="CALIBRATION: Invoke /dhx:ui to load UI design calibration before proceeding with this GSD UI review workflow."
     ;;
 esac
 
