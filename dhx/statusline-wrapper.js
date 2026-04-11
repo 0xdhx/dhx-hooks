@@ -23,14 +23,19 @@ process.stdin.on('end', () => {
     cwd = process.cwd();
   }
 
-  // Run GSD statusline and git info in parallel
+  // Run GSD statusline, git info, and ccburn in parallel
+  // ccburn collect silently feeds its database; compact output goes in the statusline
   Promise.all([
     runGsd(input),
     getGitInfo(cwd),
-  ]).then(([gsdOutput, gitInfo]) => {
+    runCcburn(input),
+  ]).then(([gsdOutput, gitInfo, burnOutput]) => {
     let line = gsdOutput.trimEnd();
     if (gitInfo) {
       line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
+    }
+    if (burnOutput) {
+      line += ` \x1b[2m│\x1b[0m ${burnOutput}`;
     }
     process.stdout.write(line);
   }).catch(() => {
@@ -50,6 +55,28 @@ function runGsd(stdinData) {
     child.on('error', () => resolve(''));
     child.stdin.write(stdinData);
     child.stdin.end();
+  });
+}
+
+// ccburn: collect data + return compact status
+function runCcburn(stdinData) {
+  return new Promise((resolve) => {
+    // Feed stdin to ccburn collect (populates its database)
+    const collect = spawn('ccburn', ['collect'], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    collect.stdin.write(stdinData);
+    collect.stdin.end();
+    collect.on('error', () => {}); // ccburn not installed — no-op
+
+    // Get compact one-line status
+    const compact = spawn('ccburn', ['--compact', '--once'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let out = '';
+    compact.stdout.on('data', chunk => out += chunk);
+    compact.on('close', () => resolve(out.trim()));
+    compact.on('error', () => resolve(''));
   });
 }
 
