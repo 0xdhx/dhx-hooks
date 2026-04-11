@@ -39,9 +39,12 @@ if [ -n "$STAGED" ]; then
       continue
     fi
 
-    PATTERNS_LINE=$(printf '%s\n' "$STAGED_CONTENT" | grep -m1 '^# Patterns:' || true)
+    # Parse ALL '# Patterns:' lines in the file, not just the first. This
+    # ensures appended/duplicate header lines (legitimate or malicious) are
+    # validated too — the gate is a contract on the entire file.
+    PATTERNS_LINES=$(printf '%s\n' "$STAGED_CONTENT" | grep '^# Patterns:' || true)
 
-    if [ -z "$PATTERNS_LINE" ]; then
+    if [ -z "$PATTERNS_LINES" ]; then
       cat >&2 <<EOF
 ERROR: $f is missing a '# Patterns:' header line.
 
@@ -57,7 +60,7 @@ EOF
       continue
     fi
 
-    IDS=$(printf '%s\n' "$PATTERNS_LINE" | grep -oE 'HP-[0-9]+' || true)
+    IDS=$(printf '%s\n' "$PATTERNS_LINES" | grep -oE 'HP-[0-9]+' | sort -u || true)
     if [ -z "$IDS" ]; then
       cat >&2 <<EOF
 ERROR: $f has a '# Patterns:' header but no HP-NNN IDs were parsed.
