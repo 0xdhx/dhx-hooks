@@ -1,5 +1,6 @@
 #!/bin/bash
 # poll-guard: PreToolUse hook for Claude Code Read tool
+# Patterns: HP-007
 # Rate-limits reads of background task output files to prevent busy-polling.
 # Complements read-once (content dedup) with frequency rate-limiting.
 #

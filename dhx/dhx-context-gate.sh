@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-context-gate.sh — PostToolUse hook (Write matcher)
+# Patterns: HP-007, HP-009
 # Validates CONTEXT.md structural completeness on Write.
 # Blocks (exit 2) when required DHX sections are missing.
 # Accepts documented placeholder text as valid.

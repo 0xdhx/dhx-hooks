@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-main-branch-warning.sh — UserPromptSubmit hook
+# Patterns: HP-008
 # Warns once per boot when user is working directly on main/master.
 # Debounced via /tmp marker keyed to repo path. Non-blocking (exit 0).
 

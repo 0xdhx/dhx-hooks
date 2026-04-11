@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
+# Patterns: HP-001, HP-002, HP-009
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Guard 1: stop_hook_active boolean (official API — true on second+ firing)

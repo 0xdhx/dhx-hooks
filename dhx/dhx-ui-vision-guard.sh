@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-ui-vision-guard.sh — PreToolUse hook (Agent matcher)
+# Patterns: HP-003
 # Ensures z-gsdui project skill exists when GSD UI subagents spawn.
 # Creates design-vision-authority rules as a side effect so subagents
 # discover them during project skill scan.

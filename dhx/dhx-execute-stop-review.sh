@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-execute-stop-review.sh — Stop hook
+# Patterns: HP-001, HP-002, HP-003, HP-004, HP-005, HP-006, HP-009
 # Safety net for execution pipelines. If a phase execution completed
 # (VERIFICATION.md + SUMMARY.md evidence) but the /dhx:execute review
 # wasn't performed, blocks with review prompt.

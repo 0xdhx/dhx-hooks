@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-routing.sh — UserPromptSubmit hook
+# Patterns: HP-008
 # Detects GSD commands and routes to DHX equivalents.
 # Two modes: redirect (full replacement) and augment (calibration overlay).
 # Matches both /gsd:command and /gsd-command formats (skills use hyphens).

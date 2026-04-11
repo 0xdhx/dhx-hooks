@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-merge-reminder.sh — PostToolUse hook (matcher: Skill)
+# Patterns: HP-010
 # After /gsd-complete-milestone or /gsd-audit-milestone, reminds user
 # to merge working branch into main to reset worktree divergence.
 # Non-blocking (exit 0). Silent when already on main.

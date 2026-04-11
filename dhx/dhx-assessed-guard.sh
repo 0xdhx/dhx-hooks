@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-assessed-guard.sh — PreToolUse hook (Write|Edit matcher)
+# Patterns: HP-007, HP-009
 # Prevents agents from marking deferred items [assessed] without user approval.
 #
 # [captured], [existing], [tracked] are fine — they have verifiable backing.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-source-write-flag.sh — PostToolUse hook (Write|Edit matcher)
+# Patterns: HP-003, HP-007
 # Sets per-turn flag when a source file is written. The Stop hook
 # (dhx-test-gate.sh) consumes this flag to decide whether to run tests.
 # No flag = no source changes this turn = skip tests.

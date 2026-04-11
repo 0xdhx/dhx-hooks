@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # dhx-deferred-check.sh — Stop hook
+# Patterns: HP-001, HP-002, HP-004, HP-005, HP-006, HP-009
 # Surfaces UNASSESSED deferred items from CONTEXT.md before context clears.
 # Batch presents all items with brief recommendations, then walks through
 # each via AskUserQuestion. 'discuss' option gives deeper reasoning.
