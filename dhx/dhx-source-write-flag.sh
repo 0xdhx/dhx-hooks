@@ -5,8 +5,11 @@
 # (dhx-test-gate.sh) consumes this flag to decide whether to run tests.
 # No flag = no source changes this turn = skip tests.
 #
-# Supported extensions: .py .js .ts .tsx .jsx .rs .go .java .kt .rb .sh
-# Add more to SOURCE_EXTS as needed.
+# Supported extensions: .py .js .ts .tsx .jsx .rs .go
+# Only extensions with a matching runner in dhx-test-gate.sh's cascade
+# are flagged. Do NOT add extensions without verifying the gate can
+# actually verify them — see reports/2026-04-11-source-write-flag-sh-classification.md
+# for the false-safety issue that motivated trimming this list.
 
 set -uo pipefail
 
@@ -21,7 +24,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 
 _TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
 
-SOURCE_EXTS="py js ts tsx jsx rs go java kt rb sh"
+SOURCE_EXTS="py js ts tsx jsx rs go"
 
 EXT="${FILE_PATH##*.}"
 for src_ext in $SOURCE_EXTS; do
