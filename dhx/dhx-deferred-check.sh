@@ -33,8 +33,57 @@ if [ -z "$CWD" ]; then exit 0; fi
 # Gate: GSD project check
 if [ ! -d "$CWD/.planning/phases" ]; then exit 0; fi
 
-# Find most recent CONTEXT.md
-LATEST=$(ls -t "$CWD"/.planning/phases/*/*-CONTEXT.md 2>/dev/null | head -1)
+# Build STATE.md phase allowlist — same logic as dhx-execute-stop-review.sh.
+# Restricts CONTEXT.md discovery to phases STATE.md says Claude is actively
+# working on. Kills bulk-restore false positives where historical CONTEXT.md
+# files get fresh mtimes via `git checkout <sha> -- .planning/` and `ls -t`
+# then picks an ancient phase's deferred items.
+#
+# See dhx-execute-stop-review.sh:49-93 for the rationale behind N-1 fallback
+# and the field list below.
+STATE_FILE="$CWD/.planning/STATE.md"
+PHASE_ALLOWLIST=""
+if [ -f "$STATE_FILE" ]; then
+  SIGNAL_LINES=$(grep -E '^stopped_at:|^\*\*Phase:\*\*|^\*\*Current Phase:\*\*|^\*\*Current focus:\*\*|^\*\*Last Activity Description:\*\*|^\*\*Last activity description:\*\*' "$STATE_FILE" 2>/dev/null)
+  STATE_NUMS=$({
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '[Pp]hase[[:space:]]+[0-9]+(\.[0-9]+)?' | sed 's/^[Pp]hase[[:space:]]*//'
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '^\*\*(Current )?Phase:\*\*[[:space:]]+[0-9]+(\.[0-9]+)?' | sed -E 's/^\*\*[^*]+\*\*[[:space:]]*//'
+  } | sort -u | grep -v '^$')
+
+  if [ -n "$STATE_NUMS" ]; then
+    for n in $STATE_NUMS; do
+      n_int=$(echo "$n" | grep -oE '^[0-9]+' | sed 's/^0*//')
+      [ -z "$n_int" ] && n_int="0"
+      PHASE_ALLOWLIST="${PHASE_ALLOWLIST} ${n_int}"
+      if [ "$n_int" -gt 0 ]; then
+        PHASE_ALLOWLIST="${PHASE_ALLOWLIST} $((n_int - 1))"
+      fi
+    done
+    PHASE_ALLOWLIST=$(echo "$PHASE_ALLOWLIST" | tr ' ' '\n' | sort -u | grep -v '^$')
+  fi
+fi
+
+# Find most recent CONTEXT.md — filtered to allowlisted phases if available,
+# otherwise fall back to unfiltered (preserves old behavior when STATE.md
+# is missing or unparseable).
+LATEST=""
+if [ -n "$PHASE_ALLOWLIST" ]; then
+  while IFS= read -r candidate; do
+    [ -z "$candidate" ] && continue
+    dir_name=$(basename "$(dirname "$candidate")")
+    phase_from_dir=$(echo "$dir_name" | grep -oE '^[0-9]+' | sed 's/^0*//')
+    [ -z "$phase_from_dir" ] && phase_from_dir="0"
+    if echo "$PHASE_ALLOWLIST" | grep -qFx "$phase_from_dir"; then
+      LATEST="$candidate"
+      break
+    fi
+  done <<< "$(ls -t "$CWD"/.planning/phases/*/*-CONTEXT.md 2>/dev/null)"
+  # If allowlist exists but nothing matched, there's nothing relevant to
+  # review — skip the hook rather than falling back to an unrelated phase.
+  [ -z "$LATEST" ] && exit 0
+else
+  LATEST=$(ls -t "$CWD"/.planning/phases/*/*-CONTEXT.md 2>/dev/null | head -1)
+fi
 if [ -z "$LATEST" ]; then exit 0; fi
 
 # Extract deferred section
@@ -59,13 +108,28 @@ UNCAPTURED=""
 while IFS= read -r item; do
   HAS_HOME=false
 
-  # Check 1: requirement IDs (DATA-F01, QUAL-01, etc.)
-  REQ_IDS=$(echo "$item" | grep -oE '[A-Z]+-[A-Z]?[0-9]+' | head -3)
+  # Check 1: requirement IDs (DATA-F01, QUAL-01, REQ-V2-004, etc.)
+  # Regex captures multi-segment IDs — the old [A-Z]+-[A-Z]?[0-9]+ pattern
+  # truncated `REQ-V2-004` to `REQ-V2` and dropped the numeric suffix.
+  REQ_IDS=$(echo "$item" | grep -oE '[A-Z]+(-[A-Z0-9]+)+' | head -3)
   for rid in $REQ_IDS; do
+    # Current-milestone requirements
     if grep -q "$rid" "$CWD/.planning/REQUIREMENTS.md" 2>/dev/null; then
       HAS_HOME=true
       break
     fi
+    # Active roadmap — catches requirements parked for future milestones
+    # (e.g., REQ-V2-004 pre-scoped in v1.1 under a v2.0 section)
+    if grep -q "$rid" "$CWD/.planning/ROADMAP.md" 2>/dev/null; then
+      HAS_HOME=true
+      break
+    fi
+    # Milestone-scoped requirements files (v1.1-REQUIREMENTS.md etc.)
+    if grep -rq "$rid" "$CWD/.planning/milestones/" --include='*REQUIREMENTS*.md' 2>/dev/null; then
+      HAS_HOME=true
+      break
+    fi
+    # Backlog
     if grep -rl "$rid" "$CWD/.planning/backlog/" 2>/dev/null | head -1 | grep -q .; then
       HAS_HOME=true
       break

@@ -46,6 +46,52 @@ fi
 PHASE=$(basename "$RECENT_VERIF" | grep -oP '^\d+(\.\d+)?' | head -1)
 [ -z "$PHASE" ] && exit 0
 
+# Gate: STATE.md cross-reference — the detected phase must correspond to
+# phases STATE.md says Claude is actively working on (or just finished).
+# Kills bulk-restore false positives where `git checkout <sha> -- .planning/`
+# gives historical phase files fresh mtimes that trip -mmin gates.
+#
+# Allowlist is built from:
+#   1. Frontmatter `stopped_at:` (session-end marker, free-form text)
+#   2. Body fields **Phase:**, **Current Phase:**, **Current focus:**,
+#      **Last Activity Description:** (handles format variation across
+#      projects and gsd-tools versions)
+#   3. For each Phase N found: also include N-1 to cover the case where
+#      `gsd-tools phase complete X` has already advanced Current Phase to
+#      X+1 by the time this Stop hook fires (see phase.cjs:842).
+#
+# Fail closed (preserve old behavior) if STATE.md missing or yields no
+# phase numbers — missing STATE.md is rare and we don't want to regress
+# the review prompt for projects in unexpected state.
+STATE_FILE="$CWD/.planning/STATE.md"
+if [ -f "$STATE_FILE" ]; then
+  SIGNAL_LINES=$(grep -E '^stopped_at:|^\*\*Phase:\*\*|^\*\*Current Phase:\*\*|^\*\*Current focus:\*\*|^\*\*Last Activity Description:\*\*|^\*\*Last activity description:\*\*' "$STATE_FILE" 2>/dev/null)
+  STATE_NUMS=$({
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '[Pp]hase[[:space:]]+[0-9]+(\.[0-9]+)?' | sed 's/^[Pp]hase[[:space:]]*//'
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '^\*\*(Current )?Phase:\*\*[[:space:]]+[0-9]+(\.[0-9]+)?' | sed -E 's/^\*\*[^*]+\*\*[[:space:]]*//'
+  } | sort -u | grep -v '^$')
+
+  if [ -n "$STATE_NUMS" ]; then
+    PHASE_ALLOWLIST=""
+    for n in $STATE_NUMS; do
+      n_int=$(echo "$n" | grep -oE '^[0-9]+' | sed 's/^0*//')
+      [ -z "$n_int" ] && n_int="0"
+      PHASE_ALLOWLIST="${PHASE_ALLOWLIST} ${n_int}"
+      if [ "$n_int" -gt 0 ]; then
+        PHASE_ALLOWLIST="${PHASE_ALLOWLIST} $((n_int - 1))"
+      fi
+    done
+    PHASE_ALLOWLIST=$(echo "$PHASE_ALLOWLIST" | tr ' ' '\n' | sort -u | grep -v '^$')
+
+    PHASE_INT=$(echo "$PHASE" | grep -oE '^[0-9]+' | sed 's/^0*//')
+    [ -z "$PHASE_INT" ] && PHASE_INT="0"
+
+    if ! echo "$PHASE_ALLOWLIST" | grep -qFx "$PHASE_INT"; then
+      exit 0  # Detected phase unrelated to STATE.md — likely bulk restore
+    fi
+  fi
+fi
+
 MSG="EXECUTION REVIEW NOT COMPLETED — Phase ${PHASE} execution finished but the /dhx:execute review was not performed.
 
 Apply before session ends:
