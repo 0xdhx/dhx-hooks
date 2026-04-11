@@ -26,8 +26,10 @@ fi
 
 CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // empty')
 
-# Gate 3: Only DHX-format CONTEXT.md (has tagged sections)
-if ! echo "$CONTENT" | grep -q '<decisions>'; then
+# Gate 3: Only DHX-format CONTEXT.md (has tagged sections).
+# Line-anchored — a backticked mention of `<decisions>` in body prose should
+# not qualify a non-DHX file as DHX-format.
+if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<decisions>[[:space:]]*$'; then
   exit 0
 fi
 
@@ -38,27 +40,34 @@ if ! echo "$CONTENT" | grep -qE 'D-[0-9]+:'; then
   FAILURES="${FAILURES}- Decisions are not numbered (use D-01, D-02, etc.)\n"
 fi
 
-# Check 2: Canonical refs populated or placeholder
-REFS=$(echo "$CONTENT" | sed -n '/<canonical_refs>/,/<\/canonical_refs>/p')
+# Check 2: Canonical refs populated or placeholder.
+# Line-anchored pattern prevents body-prose mentions like
+# "`<canonical_refs>` will hold the file list" (inside a decision) from
+# shifting the sed range start into the middle of the document. Without
+# anchoring, an empty canonical_refs block would be silently rescued by
+# backticked bullets from earlier sections. See
+# reports/2026-04-11-deferred-check-sed-tag-collision.md.
+REFS=$(echo "$CONTENT" | sed -n '/^[[:space:]]*<canonical_refs>[[:space:]]*$/,/^[[:space:]]*<\/canonical_refs>[[:space:]]*$/p')
 if [ -z "$REFS" ]; then
   FAILURES="${FAILURES}- <canonical_refs> section is missing\n"
 elif ! echo "$REFS" | grep -qE '(^\s*-\s*`|No external specs)'; then
   FAILURES="${FAILURES}- <canonical_refs> section is empty (add file paths or 'No external specs')\n"
 fi
 
-# Check 3: Deferred section exists
-DEFERRED=$(echo "$CONTENT" | sed -n '/<deferred>/,/<\/deferred>/p')
+# Check 3: Deferred section exists. Same line-anchoring rationale as Check 2.
+DEFERRED=$(echo "$CONTENT" | sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p')
 if [ -z "$DEFERRED" ]; then
   FAILURES="${FAILURES}- <deferred> section is missing\n"
 fi
 
-# Check 4: Code context exists
-if ! echo "$CONTENT" | grep -q '<code_context>'; then
+# Check 4: Code context exists. Line-anchored so a body-prose mention of
+# `<code_context>` cannot mask a missing section.
+if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<code_context>[[:space:]]*$'; then
   FAILURES="${FAILURES}- <code_context> section is missing\n"
 fi
 
-# Check 5: Specifics exists
-if ! echo "$CONTENT" | grep -q '<specifics>'; then
+# Check 5: Specifics exists. Same line-anchoring rationale as Check 4.
+if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<specifics>[[:space:]]*$'; then
   FAILURES="${FAILURES}- <specifics> section is missing\n"
 fi
 

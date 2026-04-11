@@ -87,8 +87,14 @@ else
 fi
 if [ -z "$LATEST" ]; then exit 0; fi
 
-# Extract deferred section
-DEFERRED=$(sed -n '/<deferred>/,/<\/deferred>/p' "$LATEST" 2>/dev/null)
+# Extract deferred section.
+# Line-anchored patterns prevent body-prose mentions of `<deferred>` (e.g.
+# "(See `<deferred>` below)" inside a decision) from shifting the sed range
+# start into the middle of the document. The discuss template always places
+# <deferred>/</deferred> tags alone on their own line — see
+# ~/.claude/dhx/references/discuss-templates.md. Reported 2026-04-11,
+# reports/2026-04-11-deferred-check-sed-tag-collision.md.
+DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
 if [ -z "$DEFERRED" ]; then exit 0; fi
 
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
