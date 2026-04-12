@@ -16,12 +16,20 @@
 
 INPUT=$(cat)
 
+# Fast path: if no offset/limit in the JSON, exit before any jq work.
+# Full reads are the common case (~95%+); this avoids 4 jq forks per Read.
+case "$INPUT" in
+  *'"offset"'*|*'"limit"'*) ;;
+  *) exit 0 ;;
+esac
+
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 OFFSET=$(echo "$INPUT" | jq -r '.tool_input.offset // empty' 2>/dev/null)
 LIMIT=$(echo "$INPUT" | jq -r '.tool_input.limit // empty' 2>/dev/null)
 
-# Only care about partial reads
+# Belt-and-suspenders: case match above catches the common path,
+# but jq may return empty if the fields are null rather than absent
 if [ -z "$OFFSET" ] && [ -z "$LIMIT" ]; then exit 0; fi
 if [ -z "$FILE_PATH" ] || [ -z "$SESSION_ID" ]; then exit 0; fi
 
