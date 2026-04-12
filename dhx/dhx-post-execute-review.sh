@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-post-execute-review.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011  (vestigial, pending anthropics/claude-code#6305)
+# Patterns: HP-011
 # Triggers /dhx:execute post-execution review when a gsd-verifier agent
 # completes during an active phase execution.
 #

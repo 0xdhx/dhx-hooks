@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-execute-checkpoint.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011  (vestigial, pending anthropics/claude-code#6305)
+# Patterns: HP-011
 # Injects drift detection calibration when a gsd-executor agent completes.
 # Fires per-plan for early drift catching.
 # Advisory only — no blocking.

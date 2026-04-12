@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-audit-checkpoint.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011  (vestigial, pending anthropics/claude-code#6305)
+# Patterns: HP-011
 # Injects audit calibration when a gsd-verifier agent completes.
 # Counteracts optimistic completion bias at the moment verification
 # results are returned. Advisory only — no blocking.

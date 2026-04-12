@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-execute-review.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011  (vestigial, pending anthropics/claude-code#6305)
+# Patterns: HP-011
 # Injects execution fidelity review when a gsd-verifier agent completes
 # during an active phase execution. Catches plan-to-execution drift at
 # the moment verification completes, before the session ends.
