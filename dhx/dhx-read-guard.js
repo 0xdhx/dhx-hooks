@@ -113,9 +113,11 @@ process.stdin.on('end', () => {
         hookEventName: 'PreToolUse',
         additionalContext:
           `READ-BEFORE-EDIT REMINDER: You are about to modify "${fileName}" which already exists. ` +
-          'If you have not already used the Read tool to read this file in the current session, ' +
-          'you MUST Read it first before editing. The runtime will reject edits to files that ' +
-          'have not been read. Use the Read tool on this file path, then retry your edit.',
+          'No full Read of this file was found in the session cache. ' +
+          'If you used Read with offset/limit, that does not satisfy this check — ' +
+          'you may proceed if you have sufficient context, but consider a full Read ' +
+          'for files you have not seen at all. ' +
+          'If you have not Read this file at all this session, you MUST Read it first.',
       },
     };
 
