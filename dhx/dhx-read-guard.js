@@ -18,9 +18,14 @@
 //   bash: echo -n "$SESSION_ID" | sha256sum | cut -c1-16
 //   node: crypto.createHash('sha256').update(sessionId).digest('hex').slice(0,16)
 //
+// Three-state detection (requires dhx-read-partial-cache.sh companion):
+//   - Full read in cache → suppress advisory entirely
+//   - Partial read in cache ({"partial":true}) → light "PARTIAL-READ NOTE"
+//   - No read in cache → strong "READ-BEFORE-EDIT" advisory
+//
 // Caveats (accepted residuals):
-//   - read-once/hook.sh:55-57 skips partial reads (offset/limit). A
-//     partial-read-then-Edit will still trip the advisory. Accepted.
+//   - If dhx-read-partial-cache.sh is not installed, partial reads
+//     produce the strong "no read" advisory (safe degradation).
 //   - If the user sets READ_ONCE_DISABLED=1, the cache is stale and the
 //     advisory fires on every Edit (regression to gsd behavior). Accepted opt-out.
 //   - No TTL check on cache entries: we only care "was it ever Read this
@@ -72,9 +77,13 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Session-aware gate: suppress advisory if the file was Read in this session.
+    // Session-aware gate: check read-once session cache for full and partial reads.
     // Piggybacks on ~/.claude/read-once/session-<hash>.jsonl cache.
-    // Any error here falls through to emit the advisory (safe default).
+    // Full reads are written by read-once/hook.sh (no "partial" field).
+    // Partial reads are written by dhx-read-partial-cache.sh ({"partial":true}).
+    // Any error falls through to emit the "no read" advisory (safe default).
+    let hasFullRead = false;
+    let hasPartialRead = false;
     try {
       const sessionId = data.session_id;
       if (sessionId) {
@@ -93,7 +102,11 @@ process.stdin.on('end', () => {
               const entry = JSON.parse(line);
               if (entry && typeof entry.path === 'string' &&
                   path.resolve(entry.path) === resolvedTarget) {
-                process.exit(0); // cache hit — suppress advisory
+                if (entry.partial) {
+                  hasPartialRead = true;
+                } else {
+                  hasFullRead = true;
+                }
               }
             } catch {
               // skip malformed line, continue scanning
@@ -105,23 +118,37 @@ process.stdin.on('end', () => {
       // fall through to advisory on any I/O error
     }
 
+    // Full read → suppress entirely
+    if (hasFullRead) {
+      process.exit(0);
+    }
+
     const fileName = path.basename(filePath);
 
-    // Advisory guidance — does not block the operation
-    const output = {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        additionalContext:
-          `READ-BEFORE-EDIT REMINDER: You are about to modify "${fileName}" which already exists. ` +
-          'No full Read of this file was found in the session cache. ' +
-          'If you used Read with offset/limit, that does not satisfy this check — ' +
-          'you may proceed if you have sufficient context, but consider a full Read ' +
-          'for files you have not seen at all. ' +
-          'If you have not Read this file at all this session, you MUST Read it first.',
-      },
-    };
-
-    process.stdout.write(JSON.stringify(output));
+    if (hasPartialRead) {
+      // Partial read found — targeted advisory
+      const output = {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext:
+            `PARTIAL-READ NOTE: "${fileName}" was Read with offset/limit this session ` +
+            'but not in full. You may proceed if you have sufficient context for this edit. ' +
+            'If unsure, do a full Read first.',
+        },
+      };
+      process.stdout.write(JSON.stringify(output));
+    } else {
+      // No read at all — strong advisory
+      const output = {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext:
+            `READ-BEFORE-EDIT: "${fileName}" exists but has not been Read this session. ` +
+            'You MUST Read it before editing — the runtime will reject edits to unread files.',
+        },
+      };
+      process.stdout.write(JSON.stringify(output));
+    }
   } catch {
     // Silent fail — never block tool execution
     process.exit(0);
