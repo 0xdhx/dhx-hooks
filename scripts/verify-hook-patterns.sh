@@ -132,6 +132,13 @@ EOF
   fi
 fi
 
+# 5. Run sed extraction tests when relevant files are staged
+STAGED_HOOKS=$(git diff --cached --name-only -- 'dhx/*.sh' 'tests/' || true)
+if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-sed-extraction.sh" ]; then
+  echo "Running sed extraction tests..."
+  bash tests/test-sed-extraction.sh || { echo "FAILED: sed extraction tests"; exit 1; }
+fi
+
 if [ "$FAIL" -ne 0 ]; then
   echo "" >&2
   echo "verify-hook-patterns: commit blocked. Fix the issues above or rerun with --no-verify (be deliberate)." >&2
