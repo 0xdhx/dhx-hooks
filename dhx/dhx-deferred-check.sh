@@ -108,7 +108,12 @@ if [ -z "$LATEST" ]; then exit 0; fi
 check_header_fallback() {
   local file="$1"
   MD_DEFERRED=$(sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | grep -E '^\s*- ')
+    | grep -E '^\s*- ' \
+    | grep -v '\[captured' \
+    | grep -v '\[existing' \
+    | grep -v '\[assessed' \
+    | grep -v '\[tracked' \
+    | grep -v '^\s*-\s*~~')
   if [ -n "$MD_DEFERRED" ]; then
     COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
     jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
