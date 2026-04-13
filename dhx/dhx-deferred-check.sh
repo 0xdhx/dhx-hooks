@@ -94,8 +94,26 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # <deferred>/</deferred> tags alone on their own line — see
 # ~/.claude/dhx/references/discuss-templates.md. Reported 2026-04-11,
 # reports/2026-04-11-deferred-check-sed-tag-collision.md.
+#
+# When tag extraction returns empty, a secondary fallback checks for deferred
+# items under markdown headers (## Deferred / ## Deferred Ideas). This catches
+# content placed outside the tagged section — see Gap 1 in
+# reports/2026-04-12-context-tag-corpus-analysis.md.
 DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
-if [ -z "$DEFERRED" ]; then exit 0; fi
+if [ -z "$DEFERRED" ]; then
+  # Secondary check: deferred content under markdown headers but outside tags.
+  # Catches Edge Cases 1 (empty tag + header content) and 2 (missing tag + header content)
+  # from reports/2026-04-12-context-tag-corpus-analysis.md.
+  MD_DEFERRED=$(sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$LATEST" 2>/dev/null \
+    | grep -E '^\s*- ')
+  if [ -n "$MD_DEFERRED" ]; then
+    COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
+    jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${LATEST} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
+      '{"decision": "block", "reason": $msg}'
+    exit 0
+  fi
+  exit 0
+fi
 
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
 if echo "$DEFERRED" | grep -qE '^\s*-?\s*[Nn]one(\s*$|\s+—)'; then exit 0; fi
