@@ -398,6 +398,97 @@ test_13_comment_tag() {
 }
 
 # ---------------------------------------------------------------------------
+# Header-fallback marker filter chain (mirrors check_header_fallback patch)
+# ---------------------------------------------------------------------------
+
+header_fallback_filtered() {
+  local file="$1"
+  sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
+    | grep -E '^\s*- ' \
+    | grep -v '\[captured' \
+    | grep -v '\[existing' \
+    | grep -v '\[assessed' \
+    | grep -v '\[tracked' \
+    | grep -v '^\s*-\s*~~' \
+    || true
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: All-resolved items inside <deferred> tag with ## Deferred Ideas header
+#          Header-fallback with filters should find 0 unfiltered items
+# ---------------------------------------------------------------------------
+
+test_14_header_fallback_all_resolved() {
+  echo "Test 14: Header-fallback with filters — all-resolved items produce 0 results"
+  local f="$FIXTURES_DIR/header-deferred-resolved.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_empty "14a: all-resolved items produce empty after filter chain" "$filtered"
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Mixed resolved/unresolved under header with empty tag
+#          Header-fallback with filters should find exactly 2 unresolved items
+# ---------------------------------------------------------------------------
+
+test_15_header_fallback_mixed() {
+  echo "Test 15: Header-fallback with filters — mixed items produce exactly 2 unresolved"
+  local f="$FIXTURES_DIR/header-deferred-mixed.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_line_count "15a: mixed fixture has exactly 2 unresolved items after filters" "$filtered" 2
+  assert_contains "15b: unresolved item B present" "$filtered" "Unresolved item B"
+  assert_contains "15c: unresolved item D present" "$filtered" "Unresolved item D"
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: No <deferred> tag, all items resolved under ## Deferred header
+#          Header-fallback with filters should find 0 items
+# ---------------------------------------------------------------------------
+
+test_16_no_tag_all_resolved() {
+  echo "Test 16: Header-fallback with filters — no tag, all resolved items produce 0 results"
+  local f="$FIXTURES_DIR/no-deferred-tag-resolved.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_empty "16a: no-tag all-resolved fixture produces empty after filter chain" "$filtered"
+}
+
+# ---------------------------------------------------------------------------
+# Test 17: Regression — existing header-deferred.md (all unresolved) still produces 3 items
+# ---------------------------------------------------------------------------
+
+test_17_regression_header_deferred_unresolved() {
+  echo "Test 17: Regression — header-deferred.md (all unresolved) still produces 3 items after filters"
+  local f="$FIXTURES_DIR/header-deferred.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_line_count "17a: unresolved header-deferred.md still produces 3 items after filters" "$filtered" 3
+}
+
+# ---------------------------------------------------------------------------
+# Test 18: Regression — existing no-deferred-tag.md (all unresolved) still produces 2 items
+# ---------------------------------------------------------------------------
+
+test_18_regression_no_deferred_tag_unresolved() {
+  echo "Test 18: Regression — no-deferred-tag.md (all unresolved) still produces 2 items after filters"
+  local f="$FIXTURES_DIR/no-deferred-tag.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_line_count "18a: unresolved no-deferred-tag.md still produces 2 items after filters" "$filtered" 2
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -429,6 +520,16 @@ echo ""
 test_12_html_in_code
 echo ""
 test_13_comment_tag
+echo ""
+test_14_header_fallback_all_resolved
+echo ""
+test_15_header_fallback_mixed
+echo ""
+test_16_no_tag_all_resolved
+echo ""
+test_17_regression_header_deferred_unresolved
+echo ""
+test_18_regression_no_deferred_tag_unresolved
 echo ""
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
