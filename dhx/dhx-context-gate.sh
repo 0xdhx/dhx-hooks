@@ -46,7 +46,7 @@ fi
 # shifting the sed range start into the middle of the document. Without
 # anchoring, an empty canonical_refs block would be silently rescued by
 # backticked bullets from earlier sections. See
-# reports/2026-04-11-deferred-check-sed-tag-collision.md.
+# reports/done/2026-04-11-deferred-check-sed-tag-collision.md.
 REFS=$(echo "$CONTENT" | sed -n '/^[[:space:]]*<canonical_refs>[[:space:]]*$/,/^[[:space:]]*<\/canonical_refs>[[:space:]]*$/p')
 if [ -z "$REFS" ]; then
   FAILURES="${FAILURES}- <canonical_refs> section is missing\n"

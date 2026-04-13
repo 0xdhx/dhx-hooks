@@ -5,7 +5,7 @@
 // The upstream gsd version fires this advisory every time Edit/Write targets
 // an existing file, which is a 100% false-positive rate on Claude sessions
 // (Claude already follows read-before-edit natively). See
-//   reports/2026-04-10-read-guard-false-positives.md
+//   reports/done/2026-04-10-read-guard-false-positives.md
 // for incident evidence and rationale.
 //
 // Gate: piggybacks on ~/.claude/read-once/ per-session JSONL cache. If a

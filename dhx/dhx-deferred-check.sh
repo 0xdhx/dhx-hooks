@@ -93,12 +93,12 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # start into the middle of the document. The discuss template always places
 # <deferred>/</deferred> tags alone on their own line — see
 # ~/.claude/dhx/references/discuss-templates.md. Reported 2026-04-11,
-# reports/2026-04-11-deferred-check-sed-tag-collision.md.
+# reports/done/2026-04-11-deferred-check-sed-tag-collision.md.
 #
 # When tag extraction returns empty, a secondary fallback checks for deferred
 # items under markdown headers (## Deferred / ## Deferred Ideas). This catches
 # content placed outside the tagged section — see Gap 1 in
-# reports/2026-04-12-context-tag-corpus-analysis.md.
+# reports/done/2026-04-12-context-tag-corpus-analysis.md.
 #
 # Header-fallback: when the <deferred> tag section is missing OR present but
 # empty (no bullets), check for deferred items under markdown headers

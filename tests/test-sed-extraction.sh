@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-sed-extraction.sh — Regression tests for line-anchored sed extraction
-# Covers patterns from reports/2026-04-12-context-tag-corpus-analysis.md
+# Covers patterns from reports/done/2026-04-12-context-tag-corpus-analysis.md
 # Run: bash tests/test-sed-extraction.sh
 # Exit: 0 = all pass, 1 = any failure
 
