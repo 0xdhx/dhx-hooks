@@ -99,20 +99,28 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # items under markdown headers (## Deferred / ## Deferred Ideas). This catches
 # content placed outside the tagged section — see Gap 1 in
 # reports/2026-04-12-context-tag-corpus-analysis.md.
-DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
-if [ -z "$DEFERRED" ]; then
-  # Secondary check: deferred content under markdown headers but outside tags.
-  # Catches Edge Cases 1 (empty tag + header content) and 2 (missing tag + header content)
-  # from reports/2026-04-12-context-tag-corpus-analysis.md.
-  MD_DEFERRED=$(sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$LATEST" 2>/dev/null \
+#
+# Header-fallback: when the <deferred> tag section is missing OR present but
+# empty (no bullets), check for deferred items under markdown headers
+# (## Deferred / ## Deferred Ideas). This catches Edge Cases 1 and 2 from
+# the corpus analysis. The fallback fires from two branches: (a) empty sed
+# extraction and (b) non-empty extraction but zero bullet items after filtering.
+check_header_fallback() {
+  local file="$1"
+  MD_DEFERRED=$(sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
     | grep -E '^\s*- ')
   if [ -n "$MD_DEFERRED" ]; then
     COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
-    jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${LATEST} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
+    jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
       '{"decision": "block", "reason": $msg}'
     exit 0
   fi
   exit 0
+}
+
+DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
+if [ -z "$DEFERRED" ]; then
+  check_header_fallback "$LATEST"
 fi
 
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
@@ -126,7 +134,7 @@ RAW_ITEMS=$(echo "$DEFERRED" | grep -E '^\s*- ' \
   | grep -v '\[tracked' \
   | grep -v '^\s*-\s*~~' \
   | sed 's/^\s*- //')
-if [ -z "$RAW_ITEMS" ]; then exit 0; fi
+if [ -z "$RAW_ITEMS" ]; then check_header_fallback "$LATEST"; fi
 
 # Auto-silence: skip items that already have durable homes
 UNCAPTURED=""
