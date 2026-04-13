@@ -139,6 +139,12 @@ if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-sed-extraction.sh" ]; then
   bash tests/test-sed-extraction.sh || { echo "FAILED: sed extraction tests"; exit 1; }
 fi
 
+# 6. Run citation-check tests when relevant files are staged
+if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-citation-check.sh" ]; then
+  echo "Running citation-check tests..."
+  bash tests/test-citation-check.sh || { echo "FAILED: citation-check tests"; exit 1; }
+fi
+
 if [ "$FAIL" -ne 0 ]; then
   echo "" >&2
   echo "verify-hook-patterns: commit blocked. Fix the issues above or rerun with --no-verify (be deliberate)." >&2
