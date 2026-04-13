@@ -6,75 +6,10 @@
 
 set -euo pipefail
 
+# shellcheck source=tests/lib.sh
+source "$(dirname "$0")/lib.sh"
+
 FIXTURES_DIR="$(cd "$(dirname "$0")/fixtures" && pwd)"
-
-PASS=0
-FAIL=0
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-extract_tag() {
-  local file="$1" tag="$2"
-  sed -n "/^[[:space:]]*<${tag}>[[:space:]]*$/,/^[[:space:]]*<\/${tag}>[[:space:]]*$/p" "$file" 2>/dev/null
-}
-
-assert_contains() {
-  local test_name="$1" actual="$2" expected="$3"
-  if echo "$actual" | grep -qF "$expected"; then
-    PASS=$((PASS + 1))
-    echo "  PASS: $test_name"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: $test_name"
-    echo "        Expected to contain: $expected"
-    echo "        Actual output:"
-    echo "$actual" | head -5 | sed 's/^/          /'
-  fi
-}
-
-assert_empty() {
-  local test_name="$1" actual="$2"
-  if [ -z "$actual" ]; then
-    PASS=$((PASS + 1))
-    echo "  PASS: $test_name"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: $test_name"
-    echo "        Expected empty, got:"
-    echo "$actual" | head -5 | sed 's/^/          /'
-  fi
-}
-
-assert_not_contains() {
-  local test_name="$1" actual="$2" forbidden="$3"
-  if echo "$actual" | grep -qF "$forbidden"; then
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: $test_name"
-    echo "        Expected NOT to contain: $forbidden"
-    echo "        Actual output:"
-    echo "$actual" | head -5 | sed 's/^/          /'
-  else
-    PASS=$((PASS + 1))
-    echo "  PASS: $test_name"
-  fi
-}
-
-assert_line_count() {
-  local test_name="$1" actual="$2" expected_count="$3"
-  local actual_count
-  actual_count=$(echo "$actual" | grep -c . || true)
-  if [ "$actual_count" -eq "$expected_count" ]; then
-    PASS=$((PASS + 1))
-    echo "  PASS: $test_name"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  FAIL: $test_name"
-    echo "        Expected $expected_count non-empty lines, got $actual_count"
-    echo "$actual" | head -5 | sed 's/^/          /'
-  fi
-}
 
 # ---------------------------------------------------------------------------
 # Test 1 (P0): Extract each of 6 standard tags from well-formed file
@@ -398,22 +333,6 @@ test_13_comment_tag() {
 }
 
 # ---------------------------------------------------------------------------
-# Header-fallback marker filter chain (mirrors check_header_fallback patch)
-# ---------------------------------------------------------------------------
-
-header_fallback_filtered() {
-  local file="$1"
-  sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | grep -E '^\s*- ' \
-    | grep -v '\[captured' \
-    | grep -v '\[existing' \
-    | grep -v '\[assessed' \
-    | grep -v '\[tracked' \
-    | grep -v '^\s*-\s*~~' \
-    || true
-}
-
-# ---------------------------------------------------------------------------
 # Test 14: All-resolved items inside <deferred> tag with ## Deferred Ideas header
 #          Header-fallback with filters should find 0 unfiltered items
 # ---------------------------------------------------------------------------
@@ -532,6 +451,4 @@ echo ""
 test_18_regression_no_deferred_tag_unresolved
 echo ""
 
-echo "=== Results: $PASS passed, $FAIL failed ==="
-
-[ "$FAIL" -eq 0 ]
+print_results
