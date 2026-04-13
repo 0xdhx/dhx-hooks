@@ -12,11 +12,11 @@ source "$(dirname "$0")/lib.sh"
 
 # ---------------------------------------------------------------------------
 # stderr capture (review item 10 — Codex suggestion)
-# Run from repo root so dhx/dhx-citation-check.sh is resolvable
+# Run from repo root so .inactive/dhx-citation-check.sh is resolvable
 # ---------------------------------------------------------------------------
 
-if [ ! -f "dhx/dhx-citation-check.sh" ]; then
-  echo "ERROR: Run from repo root (dhx/dhx-citation-check.sh not found)" >&2
+if [ ! -f ".inactive/dhx-citation-check.sh" ]; then
+  echo "ERROR: Run from repo root (.inactive/dhx-citation-check.sh not found)" >&2
   exit 1
 fi
 
@@ -47,7 +47,7 @@ make_stop_json() {
 # run_hook <json_payload> — captures stdout; stderr goes to $STDERR_FILE
 run_hook() {
   local output
-  output=$(echo "$1" | bash dhx/dhx-citation-check.sh 2>"$STDERR_FILE")
+  output=$(echo "$1" | bash .inactive/dhx-citation-check.sh 2>"$STDERR_FILE")
   echo "$output"
 }
 
@@ -386,7 +386,7 @@ test_23_malformed_json_invalid() {
   local output
   # Pipe invalid JSON directly (not via make_stop_json)
   > "$STDERR_FILE"
-  output=$(echo '{broken json' | bash dhx/dhx-citation-check.sh 2>"$STDERR_FILE")
+  output=$(echo '{broken json' | bash .inactive/dhx-citation-check.sh 2>"$STDERR_FILE")
   assert_empty "23a: malformed JSON -> stdout empty" "$output"
   assert_stderr_nonempty "23a: malformed JSON -> stderr has jq error"
 }
