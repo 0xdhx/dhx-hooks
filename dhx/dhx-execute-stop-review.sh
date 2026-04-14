@@ -28,6 +28,18 @@ if [ -z "$CWD" ]; then exit 0; fi
 # Gate: GSD project
 if [ ! -d "$CWD/.planning/phases" ]; then exit 0; fi
 
+# Gate: Session must contain execution evidence — positive signal that this
+# session actually ran a GSD execution, not just happened to be in a project
+# with recent phase artifacts. Without this, research/quick-fix/ad-hoc sessions
+# false-positive whenever -mmin gates pass (especially on WSL2 where mtime is
+# unreliable). Transcript includes user prompts, hook outputs, and Agent tool
+# calls from the parent level (HP-003: hooks don't propagate INTO agents, but
+# Agent spawn calls are visible in the parent transcript).
+TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript // ""' 2>/dev/null)
+if ! echo "$TRANSCRIPT" | grep -qiE 'gsd-execute-phase|gsd:execute-phase|dhx:execute|gsd-executor|gsd-verifier'; then
+  exit 0  # Not an execution session — no review needed
+fi
+
 # Gate: Recent execution evidence — VERIFICATION.md in last 15 min
 RECENT_VERIF=$(find "$CWD/.planning/phases" -name "*-VERIFICATION.md" -mmin -15 2>/dev/null | head -1)
 [ -z "$RECENT_VERIF" ] && exit 0
@@ -37,8 +49,7 @@ PHASE_DIR=$(dirname "$RECENT_VERIF")
 RECENT_SUMMARY=$(find "$PHASE_DIR" -name "*-SUMMARY.md" -mmin -30 2>/dev/null | head -1)
 [ -z "$RECENT_SUMMARY" ] && exit 0
 
-# Gate: Check if review was already performed (scan transcript)
-TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript // ""' 2>/dev/null)
+# Gate: Check if review was already performed (reuses TRANSCRIPT from above)
 if echo "$TRANSCRIPT" | grep -qi 'plan-to-execution fidelity\|execution-to-plan fidelity\|context-to-code fidelity\|silent descoping.*check\|EXECUTION REVIEW'; then
   exit 0  # Review already done
 fi
