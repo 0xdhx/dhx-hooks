@@ -39,4 +39,8 @@ CACHE_FILE="${HOME}/.claude/read-once/session-${HASH}.jsonl"
 RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 echo "{\"path\":\"$RESOLVED\",\"ts\":$(date +%s),\"partial\":true}" >> "$CACHE_FILE"
 
+# Also append to global cache for cross-session/CCS lookup by dhx-read-guard.js
+GLOBAL_CACHE="${HOME}/.claude/read-once/reads.jsonl"
+echo "{\"path\":\"$RESOLVED\",\"ts\":$(date +%s),\"partial\":true}" >> "$GLOBAL_CACHE"
+
 exit 0
