@@ -104,6 +104,8 @@ function readHealthCache() {
           warnings.push(`read-guard:${h.read_guard}`);
         if (h.missing_symlinks > 0)
           warnings.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+        if (h.settings_chain && h.settings_chain !== 'ok')
+          warnings.push(`settings:${h.settings_chain}`);
         if (warnings.length === 0) return resolve('');
         resolve(`\x1b[31m⚠ ${warnings.join(' ')}\x1b[0m`);
       } catch { resolve(''); }

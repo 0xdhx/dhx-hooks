@@ -36,16 +36,42 @@ if [[ -x "$DHX_SYM" ]]; then
 fi
 
 # --- Symlink health (active profile only) ---
+# In a CCS profile, items must be symlinks to ~/.claude. In ~/.claude itself,
+# they're the real thing. A real dir where a symlink belongs means invisible
+# drift — e.g., a botched GSD install writing into the profile instead of
+# following the symlink to ~/.claude.
 missing=0
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 for item in get-shit-done hooks gsd-file-manifest.json gsd-local-patches package.json; do
-  [[ -e "$config_dir/$item" ]] || missing=$((missing + 1))
+  p="$config_dir/$item"
+  if [[ ! -e "$p" ]]; then
+    missing=$((missing + 1))
+  elif [[ "$config_dir" != "$HOME/.claude" && ! -L "$p" ]]; then
+    missing=$((missing + 1))
+  fi
 done
+
+# --- Settings chain integrity ---
+# Canonical: ~/.claude/settings.json -> ~/.ccs/shared/settings.json (real file).
+# The .bashrc claude() wrapper enforces this on session exit, but can be
+# bypassed (subshells, repair scripts using `mv tmp target` on the symlink).
+# When the chain breaks, ~/.claude/settings.json silently stops tracking CCS
+# changes — no user-visible error, just drift.
+settings_chain="ok"
+claude_settings="$HOME/.claude/settings.json"
+shared_settings="$HOME/.ccs/shared/settings.json"
+if [[ ! -f "$shared_settings" ]] || [[ -L "$shared_settings" ]]; then
+  settings_chain="SHARED_MISSING"
+elif [[ ! -L "$claude_settings" ]]; then
+  settings_chain="REAL_FILE"
+elif [[ "$(readlink -f "$claude_settings")" != "$(readlink -f "$shared_settings")" ]]; then
+  settings_chain="WRONG_TARGET"
+fi
 
 # --- Write cache (atomic via temp + mv) ---
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
