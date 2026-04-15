@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.26.0
+// gsd-hook-version: 1.36.0
 // Statusline wrapper — pipes stdin through GSD's gsd-statusline.js, appends git info.
 // GSD script is called by path so GSD updates are picked up automatically.
 
