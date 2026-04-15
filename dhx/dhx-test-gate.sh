@@ -10,8 +10,8 @@
 # Companion: dhx-source-write-flag.sh (PostToolUse) sets a dirty flag when
 # source files are written. No flag = no source changes = skip tests.
 #
-# Test runner detection: 9-step cascade (pytest → unittest → cargo → go →
-# npm → make). Fails open if no runner found.
+# Test runner detection: 9-step cascade. Config files → project type
+# indicators → ambient tools → generic fallbacks. Fails open if no runner found.
 
 set -uo pipefail
 
@@ -91,16 +91,17 @@ elif [ -f "pyproject.toml" ] && grep -qE '^\[tool\.pytest' pyproject.toml 2>/dev
   TEST_CMD="$PYTHON -m pytest --tb=short -q"
 elif [ -f "setup.cfg" ] && grep -q '^\[tool:pytest\]' setup.cfg 2>/dev/null; then
   TEST_CMD="$PYTHON -m pytest --tb=short -q"
-elif $PYTHON -m pytest --version &>/dev/null 2>&1; then
-  TEST_CMD="$PYTHON -m pytest --tb=short -q"
-elif ls tests/test_*.py &>/dev/null 2>&1 || ls test_*.py &>/dev/null 2>&1; then
-  TEST_CMD="$PYTHON -m unittest discover -v"
 elif [ -f "Cargo.toml" ]; then
   TEST_CMD="cargo test"
 elif [ -f "go.mod" ]; then
   TEST_CMD="go test ./..."
-elif [ -f "package.json" ] && grep -q '"test"' package.json 2>/dev/null; then
+elif [ -f "package.json" ] && grep -q '"test"' package.json 2>/dev/null && \
+     ! grep -q 'no test specified' package.json 2>/dev/null; then
   TEST_CMD="npm test"
+elif $PYTHON -m pytest --version &>/dev/null 2>&1; then
+  TEST_CMD="$PYTHON -m pytest --tb=short -q"
+elif ls tests/test_*.py &>/dev/null 2>&1 || ls test_*.py &>/dev/null 2>&1; then
+  TEST_CMD="$PYTHON -m unittest discover -v"
 elif [ -f "Makefile" ] && grep -q '^test:' Makefile 2>/dev/null; then
   TEST_CMD="make test"
 else
