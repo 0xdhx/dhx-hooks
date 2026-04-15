@@ -39,13 +39,16 @@ case "$USER_PROMPT" in
     MSG="CALIBRATION: Before proceeding with this GSD workflow, invoke /dhx:plan ${ARGS} to load decision calibration. Then continue with the GSD plan-phase workflow with calibration active."
     ;;
   /gsd:execute-phase*|/gsd-execute-phase*)
-    MSG="CALIBRATION: Load /dhx:execute ${ARGS} calibration. Apply anti-drift checkpoints while following the GSD execute-phase workflow. Run the full /dhx:execute review before the session ends. After verification, chain to /dhx:nyquist for coverage validation."
+    MSG="CALIBRATION: Load /dhx:execute ${ARGS} calibration. Apply anti-drift checkpoints while following the GSD execute-phase workflow. Run the full /dhx:execute review before the session ends. After verification, chain to /dhx:test for coverage and verification."
     ;;
   /gsd:new-milestone*|/gsd-new-milestone*|/gsd:new-project*|/gsd-new-project*)
     MSG="CALIBRATION: Invoke /dhx:new ${ARGS} to load scope calibration before proceeding with this GSD workflow. Ensures scope ambition and requirement completeness."
     ;;
-  /gsd:audit-milestone*|/gsd-audit-milestone*|/gsd:verify-work*|/gsd-verify-work*)
+  /gsd:audit-milestone*|/gsd-audit-milestone*)
     MSG="CALIBRATION: Invoke /dhx:audit to load audit calibration before proceeding. Counteracts optimistic completion bias."
+    ;;
+  /gsd:verify-work*|/gsd-verify-work*)
+    MSG="ROUTING: Invoke /dhx:test ${ARGS} instead — it runs coverage check, automated tests, and manual UAT in a single pipeline. Only items that genuinely require human verification will be presented."
     ;;
   /gsd:ui-phase*|/gsd-ui-phase*)
     MSG="CALIBRATION: Invoke /dhx:ui to load UI design calibration before proceeding with this GSD workflow. This loads session checkpoints (anti-slop, metaphor alignment, spec compliance), verifies z-gsdui project skill exists for subagent authority, and ensures DESIGN-VISION.md locked values are respected by the ui-researcher and ui-checker."
