@@ -4,6 +4,7 @@
 // GSD script is called by path so GSD updates are picked up automatically.
 
 const { execFile, spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -29,13 +30,20 @@ process.stdin.on('end', () => {
     runGsd(input),
     getGitInfo(cwd),
     runCcburn(input),
-  ]).then(([gsdOutput, gitInfo, burnOutput]) => {
-    let line = gsdOutput.trimEnd();
+    readHealthCache(),
+  ]).then(([gsdOutput, gitInfo, burnOutput, healthWarning]) => {
+    // Strip false-positive stale hooks warning (upstream bug: bash hooks lack
+    // JS-style version headers, fixed in GSD Unreleased but not v1.36.0).
+    // Remove this filter once upstream ships the fix (#2136).
+    let line = gsdOutput.replace(/\x1b\[3[13]m⚠ (?:stale hooks|dev install)[^\x1b]*\x1b\[0m *│ */g, '').trimEnd();
     if (gitInfo) {
       line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
     }
     if (burnOutput) {
       line += ` \x1b[2m│\x1b[0m ${burnOutput}`;
+    }
+    if (healthWarning) {
+      line += ` \x1b[2m│\x1b[0m ${healthWarning}`;
     }
     process.stdout.write(line);
   }).catch(() => {
@@ -77,6 +85,29 @@ function runCcburn(stdinData) {
     compact.stdout.on('data', chunk => out += chunk);
     compact.on('close', () => resolve(out.trim()));
     compact.on('error', () => resolve(''));
+  });
+}
+
+// Read health cache written by dhx-health-check.sh (SessionStart).
+// Returns a warning string if issues found, empty string if healthy.
+function readHealthCache() {
+  return new Promise((resolve) => {
+    const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
+    fs.readFile(cacheFile, 'utf8', (err, data) => {
+      if (err) return resolve('');
+      try {
+        const h = JSON.parse(data);
+        const warnings = [];
+        if (h.worktree_patches && h.worktree_patches !== 'patched')
+          warnings.push(`patches:${h.worktree_patches}`);
+        if (h.read_guard && h.read_guard !== 'patched')
+          warnings.push(`read-guard:${h.read_guard}`);
+        if (h.missing_symlinks > 0)
+          warnings.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+        if (warnings.length === 0) return resolve('');
+        resolve(`\x1b[31m⚠ ${warnings.join(' ')}\x1b[0m`);
+      } catch { resolve(''); }
+    });
   });
 }
 
