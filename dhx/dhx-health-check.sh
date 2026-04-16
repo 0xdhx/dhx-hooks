@@ -2,7 +2,7 @@
 # Patterns: HP-009
 # DHX Health Check — SessionStart hook
 # Runs fork verification and symlink checks, writes results to cache.
-# Prunes stale drift cache files (drift-snapshot, session-start, session-version).
+# Clears this session's drift snapshot so wrapper writes a fresh baseline on resume.
 # Zero stdout on all paths — purely a cache writer.
 # Cost: ~50ms (4 file reads + 2 greps + ls check). No network, no git, no node.
 
@@ -12,8 +12,9 @@ DHX_SYM="$HOME/.claude/scripts/dhx-sym.sh"
 
 mkdir -p "$CACHE_DIR"
 
-# Read stdin (not currently used, but available for future extensions)
+# Read stdin — session_id available since CC added it to SessionStart events
 INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 # --- Worktree patches ---
 wt_state="patched"
@@ -79,7 +80,15 @@ cat > "$tmp" <<EOF
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
-# --- Prune stale drift cache files (all formats) ---
+# --- Clear THIS session's drift snapshot (scoped, not global) ---
+# /exit + resume reuses session_id but reloads hooks/settings/binary, making
+# the existing snapshot baseline stale. Only delete the current session's
+# snapshot — other concurrent sessions keep their baselines intact.
+if [[ -n "$SESSION_ID" ]]; then
+  rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json"
+fi
+
+# --- Prune stale drift cache files (all formats, >30 days) ---
 find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
 find "$CACHE_DIR" -name 'session-start-*.json' -mtime +30 -delete 2>/dev/null
 find "$CACHE_DIR" -name 'session-version-*.txt' -mtime +30 -delete 2>/dev/null
