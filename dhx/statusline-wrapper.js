@@ -142,11 +142,24 @@ function checkDrift(data) {
     } catch { /* cache miss — write it now */ }
 
     if (!sessionStartMs) {
-      // First invocation for this session — write session-start cache.
-      // Always use Date.now(). Transcript birthtime is NOT usable: on /resume
-      // the transcript file predates the current process, producing a stale
-      // reference that causes permanent false-positive drift.
-      const startEpochSec = Math.floor(Date.now() / 1000);
+      // Cache miss. Determine whether this is a genuinely new session or an
+      // existing session that lost its cache (manual deletion, etc.).
+      // Signal: the version sidecar is written on the wrapper's first-ever
+      // invocation for a session_id. If it exists, we've run before.
+      const versionFile = path.join(cacheDir, `session-version-${sessionId}.txt`);
+      let startEpochSec;
+      try {
+        const vfStat = fs.statSync(versionFile);
+        // Existing session — sidecar exists. Use its birthtime as the
+        // best approximation of session start. This preserves drift
+        // detection if the session-start cache gets deleted mid-session.
+        startEpochSec = Math.floor(vfStat.birthtimeMs / 1000);
+      } catch {
+        // Genuinely new session — no sidecar yet. Date.now() is correct.
+        // Transcript birthtime is NOT usable: on /resume the transcript
+        // predates the current process, producing a permanently stale ref.
+        startEpochSec = Math.floor(Date.now() / 1000);
+      }
       sessionStartMs = startEpochSec * 1000;
       try {
         const tmp = sessionStartFile + '.tmp.' + process.pid;
