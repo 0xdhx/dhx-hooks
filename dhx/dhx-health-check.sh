@@ -2,7 +2,7 @@
 # Patterns: HP-009
 # DHX Health Check — SessionStart hook
 # Runs fork verification and symlink checks, writes results to cache.
-# Writes session-start timestamp for drift detection (statusline-wrapper.js).
+# Prunes stale drift cache files (drift-snapshot, session-start, session-version).
 # Zero stdout on all paths — purely a cache writer.
 # Cost: ~50ms (4 file reads + 2 greps + ls check). No network, no git, no node.
 
@@ -12,13 +12,8 @@ DHX_SYM="$HOME/.claude/scripts/dhx-sym.sh"
 
 mkdir -p "$CACHE_DIR"
 
-# Read stdin — SessionStart JSON may or may not contain session_id.
-# Empirically, SessionStart stdin does NOT provide session_id (as of CC 2.1.109).
-# The session-start cache is primarily written by statusline-wrapper.js on first
-# refresh (which reliably has session_id). This block is a belt-and-suspenders
-# fallback in case a future CC version adds session_id to SessionStart stdin.
+# Read stdin (not currently used, but available for future extensions)
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 # --- Worktree patches ---
 wt_state="patched"
@@ -84,14 +79,9 @@ cat > "$tmp" <<EOF
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
-# --- Write session-start timestamp for drift detection ---
-if [[ -n "$SESSION_ID" ]]; then
-  SESSION_START_FILE="$CACHE_DIR/session-start-${SESSION_ID}.json"
-  tmp_s="$SESSION_START_FILE.tmp.$$"
-  printf '{"started":%s,"session_id":"%s"}' "$(date +%s)" "$SESSION_ID" > "$tmp_s"
-  mv -f "$tmp_s" "$SESSION_START_FILE"
-  # Prune session-start files older than 30 days (after write so new file is never pruned)
-  find "$CACHE_DIR" -name 'session-start-*.json' -mtime +30 -delete 2>/dev/null
-fi
+# --- Prune stale drift cache files (all formats) ---
+find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
+find "$CACHE_DIR" -name 'session-start-*.json' -mtime +30 -delete 2>/dev/null
+find "$CACHE_DIR" -name 'session-version-*.txt' -mtime +30 -delete 2>/dev/null
 
 exit 0

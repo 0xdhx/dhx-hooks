@@ -119,131 +119,98 @@ function readHealthCache() {
   });
 }
 
-// Drift detection (D-02, D-03, D-04, D-05): scans 5 watched paths and compares
-// mtime against session-start time. Returns an orange warning or empty string.
+// Helper: recursively get max mtime across all entries in a directory
+function getMaxMtimeRecursive(dir) {
+  let max = 0;
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      try {
+        const fullPath = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const st = fs.statSync(fullPath);
+        if (st.mtimeMs > max) max = st.mtimeMs;
+      } catch { /* skip unreadable entries */ }
+    }
+  } catch { /* directory doesn't exist or unreadable */ }
+  return max;
+}
+
+// Collect current mtime snapshot for all 5 watched paths + version
+function collectSnapshot(data) {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const snapshot = {
+    agents_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'agents')),
+    settings_mtime: 0,
+    gsd_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'get-shit-done')),
+    plugins_mtime: 0,
+    version: data.version || '',
+  };
+
+  // Active settings.json — follow symlinks
+  try {
+    const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
+    snapshot.settings_mtime = fs.statSync(settingsReal).mtimeMs;
+  } catch { /* missing or unresolvable */ }
+
+  // CCS plugins cache — shallow scan of top-level dirs
+  try {
+    const pluginsCache = path.join(configDir, 'plugins', 'cache');
+    const entries = fs.readdirSync(pluginsCache, { withFileTypes: true });
+    for (const entry of entries) {
+      try {
+        const st = fs.statSync(path.join(pluginsCache, entry.name));
+        if (st.mtimeMs > snapshot.plugins_mtime) snapshot.plugins_mtime = st.mtimeMs;
+      } catch { /* skip */ }
+    }
+  } catch { /* plugins cache missing — no-op */ }
+
+  return snapshot;
+}
+
+// Drift detection (D-02 through D-05): snapshot comparison.
+// First invocation: snapshots all 5 path mtimes + version into a single cache file.
+// Subsequent invocations: compares current state against snapshot, warns on change.
+// Age timer uses the snapshot file's own mtime (written ≈ session start).
 function checkDrift(data) {
   return new Promise((resolve) => {
     if (!data.session_id) return resolve('');
 
     const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
-    const sessionId = data.session_id;
-    const sessionStartFile = path.join(cacheDir, `session-start-${sessionId}.json`);
+    const snapshotFile = path.join(cacheDir, `drift-snapshot-${data.session_id}.json`);
 
-    // Get session start time: primary from cache, fallback creates it.
-    // SessionStart hooks don't receive session_id in stdin, so the health-check
-    // can't write this cache. The wrapper writes it on first invocation instead.
-    let sessionStartMs;
+    // Collect current state
+    const current = collectSnapshot(data);
+
+    // Try to read existing snapshot
+    let snapshot;
     try {
-      const raw = fs.readFileSync(sessionStartFile, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed.started && typeof parsed.started === 'number') {
-        sessionStartMs = parsed.started * 1000; // epoch seconds -> ms
-      }
-    } catch { /* cache miss — write it now */ }
-
-    if (!sessionStartMs) {
-      // Cache miss. Determine whether this is a genuinely new session or an
-      // existing session that lost its cache (manual deletion, etc.).
-      // Signal: the version sidecar is written on the wrapper's first-ever
-      // invocation for a session_id. If it exists, we've run before.
-      const versionFile = path.join(cacheDir, `session-version-${sessionId}.txt`);
-      let startEpochSec;
+      snapshot = JSON.parse(fs.readFileSync(snapshotFile, 'utf8'));
+    } catch {
+      // First invocation for this session — write snapshot, return clean
       try {
-        const vfStat = fs.statSync(versionFile);
-        // Existing session — sidecar exists. Use its birthtime as the
-        // best approximation of session start. This preserves drift
-        // detection if the session-start cache gets deleted mid-session.
-        startEpochSec = Math.floor(vfStat.birthtimeMs / 1000);
-      } catch {
-        // Genuinely new session — no sidecar yet. Date.now() is correct.
-        // Transcript birthtime is NOT usable: on /resume the transcript
-        // predates the current process, producing a permanently stale ref.
-        startEpochSec = Math.floor(Date.now() / 1000);
-      }
-      sessionStartMs = startEpochSec * 1000;
-      try {
-        const tmp = sessionStartFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify({ started: startEpochSec, session_id: sessionId }));
-        fs.renameSync(tmp, sessionStartFile);
-      } catch { /* write failed — still use the derived time for this invocation */ }
+        const tmp = snapshotFile + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(current));
+        fs.renameSync(tmp, snapshotFile);
+      } catch { /* write failed — skip drift this invocation */ }
+      return resolve('');
     }
 
-    // --- Version drift check (Path 3) ---
-    // On first invocation for this session, cache the version. On subsequent
-    // invocations, compare against the cached value.
-    let versionDrifted = false;
-    if (data.version) {
-      const versionFile = path.join(cacheDir, `session-version-${sessionId}.txt`);
-      try {
-        if (!fs.existsSync(versionFile)) {
-          fs.writeFileSync(versionFile, data.version, 'utf8');
-        } else {
-          const cachedVersion = fs.readFileSync(versionFile, 'utf8').trim();
-          if (cachedVersion !== data.version) {
-            versionDrifted = true;
-          }
-        }
-      } catch { /* ignore version tracking errors */ }
-    }
+    // Compare: any mtime increased or version changed?
+    const drifted =
+      current.agents_mtime > snapshot.agents_mtime ||
+      current.settings_mtime > snapshot.settings_mtime ||
+      current.gsd_mtime > snapshot.gsd_mtime ||
+      current.plugins_mtime > snapshot.plugins_mtime ||
+      current.version !== snapshot.version;
 
-    // --- mtime scan of 5 watched paths (D-04) ---
-    let maxMtime = 0;
+    if (!drifted) return resolve('');
 
-    // Helper: recursively get max mtime across all entries in a directory
-    function getMaxMtimeRecursive(dir) {
-      let max = 0;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
-        for (const entry of entries) {
-          try {
-            const fullPath = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
-            const st = fs.statSync(fullPath);
-            if (st.mtimeMs > max) max = st.mtimeMs;
-          } catch { /* skip unreadable entries */ }
-        }
-      } catch { /* directory doesn't exist or unreadable */ }
-      return max;
-    }
-
-    // Path 1: ~/.claude/agents/ — recursive
-    const agentsDir = path.join(os.homedir(), '.claude', 'agents');
-    const agentsMtime = getMaxMtimeRecursive(agentsDir);
-    if (agentsMtime > maxMtime) maxMtime = agentsMtime;
-
-    // Path 2: Active settings.json — follow symlinks
+    // Drift detected — age from snapshot file's own mtime (≈ session start)
+    let ageMs = 0;
     try {
-      const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-      const settingsRaw = path.join(configDir, 'settings.json');
-      const settingsReal = fs.realpathSync(settingsRaw);
-      const st = fs.statSync(settingsReal);
-      if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
-    } catch { /* missing or unresolvable */ }
+      ageMs = Date.now() - fs.statSync(snapshotFile).mtimeMs;
+    } catch { /* fallback to 0 */ }
 
-    // Path 3: Version — handled above via versionDrifted flag
-
-    // Path 4: ~/.claude/get-shit-done/ — recursive
-    const gsdDir = path.join(os.homedir(), '.claude', 'get-shit-done');
-    const gsdMtime = getMaxMtimeRecursive(gsdDir);
-    if (gsdMtime > maxMtime) maxMtime = gsdMtime;
-
-    // Path 5: CCS plugins cache — shallow scan of top-level dirs only (~16 entries)
-    try {
-      const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-      const pluginsCache = path.join(configDir, 'plugins', 'cache');
-      const entries = fs.readdirSync(pluginsCache, { withFileTypes: true });
-      for (const entry of entries) {
-        try {
-          const st = fs.statSync(path.join(pluginsCache, entry.name));
-          if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
-        } catch { /* skip */ }
-      }
-    } catch { /* plugins cache missing — no-op */ }
-
-    // --- Compare and format ---
-    if (maxMtime <= sessionStartMs && !versionDrifted) return resolve('');
-
-    // Drift detected — format age warning
-    const ageMs = Date.now() - sessionStartMs;
     let ageStr;
     if (ageMs < 60 * 1000) {
       ageStr = '<1m';
