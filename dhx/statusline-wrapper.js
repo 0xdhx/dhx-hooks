@@ -129,7 +129,9 @@ function checkDrift(data) {
     const sessionId = data.session_id;
     const sessionStartFile = path.join(cacheDir, `session-start-${sessionId}.json`);
 
-    // Get session start time: primary from cache, fallback from transcript birthtime
+    // Get session start time: primary from cache, fallback creates it.
+    // SessionStart hooks don't receive session_id in stdin, so the health-check
+    // can't write this cache. The wrapper writes it on first invocation instead.
     let sessionStartMs;
     try {
       const raw = fs.readFileSync(sessionStartFile, 'utf8');
@@ -137,15 +139,25 @@ function checkDrift(data) {
       if (parsed.started && typeof parsed.started === 'number') {
         sessionStartMs = parsed.started * 1000; // epoch seconds -> ms
       }
-    } catch { /* cache miss — try fallback */ }
+    } catch { /* cache miss — write it now */ }
 
-    if (!sessionStartMs && data.transcript_path) {
+    if (!sessionStartMs) {
+      // First invocation for this session — write session-start cache.
+      // Use transcript birthtime if available (more accurate than Date.now()
+      // for sessions that started before this code was deployed), else now.
+      let startEpochSec = Math.floor(Date.now() / 1000);
+      if (data.transcript_path) {
+        try {
+          startEpochSec = Math.floor(fs.statSync(data.transcript_path).birthtimeMs / 1000);
+        } catch { /* use Date.now() fallback */ }
+      }
+      sessionStartMs = startEpochSec * 1000;
       try {
-        sessionStartMs = fs.statSync(data.transcript_path).birthtimeMs;
-      } catch { /* both sources failed */ }
+        const tmp = sessionStartFile + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify({ started: startEpochSec, session_id: sessionId }));
+        fs.renameSync(tmp, sessionStartFile);
+      } catch { /* write failed — still use the derived time for this invocation */ }
     }
-
-    if (!sessionStartMs) return resolve(''); // can't determine session start — skip
 
     // --- Version drift check (Path 3) ---
     // On first invocation for this session, cache the version. On subsequent

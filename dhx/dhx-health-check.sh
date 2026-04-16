@@ -12,7 +12,11 @@ DHX_SYM="$HOME/.claude/scripts/dhx-sym.sh"
 
 mkdir -p "$CACHE_DIR"
 
-# Read stdin (SessionStart provides JSON with session_id)
+# Read stdin — SessionStart JSON may or may not contain session_id.
+# Empirically, SessionStart stdin does NOT provide session_id (as of CC 2.1.109).
+# The session-start cache is primarily written by statusline-wrapper.js on first
+# refresh (which reliably has session_id). This block is a belt-and-suspenders
+# fallback in case a future CC version adds session_id to SessionStart stdin.
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
