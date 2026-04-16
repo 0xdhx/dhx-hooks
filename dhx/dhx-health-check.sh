@@ -80,12 +80,15 @@ cat > "$tmp" <<EOF
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
-# --- Clear THIS session's drift snapshot (scoped, not global) ---
-# /exit + resume reuses session_id but reloads hooks/settings/binary, making
-# the existing snapshot baseline stale. Only delete the current session's
-# snapshot — other concurrent sessions keep their baselines intact.
+# --- Clear THIS session's drift snapshots (scoped, not global) ---
+# Wrapper now keys snapshots by (session_id, process_start_ticks), so /resume
+# into a new process gets a fresh file without needing this hook to run. Hook
+# still earns its keep for /clear and /compact events where process identity is
+# unchanged but the user wants a fresh drift baseline. Glob matches both the
+# process-stamped format (`-p<ticks>.json`) and the legacy session-id-only
+# format (for macOS fallback + migration). Other sessions' snapshots intact.
 if [[ -n "$SESSION_ID" ]]; then
-  rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json"
+  rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json" "$CACHE_DIR"/drift-snapshot-${SESSION_ID}-*.json
 fi
 
 # --- Prune stale drift cache files (all formats, >30 days) ---

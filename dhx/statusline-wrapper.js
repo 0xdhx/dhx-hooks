@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.36.0
+// Patterns: HP-013, HP-014, HP-016
 // Statusline wrapper — pipes stdin through GSD's gsd-statusline.js, appends git info.
 // GSD script is called by path so GSD updates are picked up automatically.
 
@@ -119,6 +120,20 @@ function readHealthCache() {
   });
 }
 
+// Process start-time in clock ticks since boot, read from /proc/<pid>/stat field 22.
+// Stable per-process within a boot (immune to PID reuse), used to key drift snapshots
+// so that a /resume (new CC process) doesn't compare against a stale snapshot from
+// the previous process. Two live processes resuming the same session get different
+// files, so no interference or ping-pong. Returns null on non-Linux / unreadable.
+function getProcessStartTicks(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // "comm" field can contain spaces/parens; canonical parse is split after last ')'
+    const after = stat.substring(stat.lastIndexOf(')') + 2);
+    return after.split(' ')[19] || null; // starttime = field 22 (1-indexed) = index 19 after comm
+  } catch { return null; }
+}
+
 // Helper: recursively get max mtime across all entries in a directory
 function getMaxMtimeRecursive(dir) {
   let max = 0;
@@ -176,7 +191,13 @@ function checkDrift(data) {
     if (!data.session_id) return resolve('');
 
     const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
-    const snapshotFile = path.join(cacheDir, `drift-snapshot-${data.session_id}.json`);
+    // Key by (session_id, process_start_ticks) so /resume into a new CC process
+    // gets a fresh snapshot — eliminates the "stale snapshot from previous process
+    // life" failure mode without depending on SessionStart hook firing. Non-Linux
+    // fallback (null ticks) collapses to legacy session-id-only keying.
+    const startTicks = getProcessStartTicks(process.ppid);
+    const suffix = startTicks ? `-p${startTicks}` : '';
+    const snapshotFile = path.join(cacheDir, `drift-snapshot-${data.session_id}${suffix}.json`);
 
     // Collect current state
     const current = collectSnapshot(data);
