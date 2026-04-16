@@ -195,15 +195,17 @@ function checkDrift(data) {
       return resolve('');
     }
 
-    // Compare: any mtime increased or version changed?
-    const drifted =
-      current.agents_mtime > snapshot.agents_mtime ||
-      current.settings_mtime > snapshot.settings_mtime ||
-      current.gsd_mtime > snapshot.gsd_mtime ||
-      current.plugins_mtime > snapshot.plugins_mtime ||
-      current.version !== snapshot.version;
+    // Compare: collect which paths drifted (short labels match snapshot keys).
+    // Exposing triggers enables tuning — without this, every false positive
+    // looks identical and there's no way to diagnose which signal is noisy.
+    const triggers = [];
+    if (current.agents_mtime > snapshot.agents_mtime) triggers.push('agents');
+    if (current.settings_mtime > snapshot.settings_mtime) triggers.push('settings');
+    if (current.gsd_mtime > snapshot.gsd_mtime) triggers.push('gsd');
+    if (current.plugins_mtime > snapshot.plugins_mtime) triggers.push('plugins');
+    if (current.version !== snapshot.version) triggers.push('version');
 
-    if (!drifted) return resolve('');
+    if (triggers.length === 0) return resolve('');
 
     // Drift detected — age from snapshot file's own mtime (≈ session start)
     let ageMs = 0;
@@ -222,7 +224,7 @@ function checkDrift(data) {
       ageStr = `${h}h ${m}m`;
     }
 
-    resolve(`\x1b[38;5;208m⚠ restart (${ageStr})\x1b[0m`);
+    resolve(`\x1b[38;5;208m⚠ restart ${triggers.join('+')} (${ageStr})\x1b[0m`);
   });
 }
 
