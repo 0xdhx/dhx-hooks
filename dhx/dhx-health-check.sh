@@ -2,6 +2,7 @@
 # Patterns: HP-009
 # DHX Health Check — SessionStart hook
 # Runs fork verification and symlink checks, writes results to cache.
+# Writes session-start timestamp for drift detection (statusline-wrapper.js).
 # Zero stdout on all paths — purely a cache writer.
 # Cost: ~50ms (4 file reads + 2 greps + ls check). No network, no git, no node.
 
@@ -10,6 +11,10 @@ CACHE_FILE="$CACHE_DIR/health.json"
 DHX_SYM="$HOME/.claude/scripts/dhx-sym.sh"
 
 mkdir -p "$CACHE_DIR"
+
+# Read stdin (SessionStart provides JSON with session_id)
+INPUT=$(cat)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 # --- Worktree patches ---
 wt_state="patched"
@@ -68,11 +73,21 @@ elif [[ "$(readlink -f "$claude_settings")" != "$(readlink -f "$shared_settings"
   settings_chain="WRONG_TARGET"
 fi
 
-# --- Write cache (atomic via temp + mv) ---
+# --- Write health cache (atomic via temp + mv) ---
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
 {"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
+
+# --- Write session-start timestamp for drift detection ---
+if [[ -n "$SESSION_ID" ]]; then
+  SESSION_START_FILE="$CACHE_DIR/session-start-${SESSION_ID}.json"
+  tmp_s="$SESSION_START_FILE.tmp.$$"
+  printf '{"started":%s,"session_id":"%s"}' "$(date +%s)" "$SESSION_ID" > "$tmp_s"
+  mv -f "$tmp_s" "$SESSION_START_FILE"
+  # Prune session-start files older than 30 days (after write so new file is never pruned)
+  find "$CACHE_DIR" -name 'session-start-*.json' -mtime +30 -delete 2>/dev/null
+fi
 
 exit 0
