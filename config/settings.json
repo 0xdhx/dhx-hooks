@@ -1,0 +1,443 @@
+{
+  "cleanupPeriodDays": 9999,
+  "permissions": {
+    "allow": [
+      "Read",
+      "WebFetch",
+      "WebSearch",
+      "Bash(git:*)",
+      "Bash(git stash:*)",
+      "Bash(node:*)",
+      "Bash(python3:*)",
+      "Bash(date:*)",
+      "Bash(echo:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(sort:*)",
+      "Bash(grep:*)",
+      "Bash(tr:*)",
+      "Bash(find:*)",
+      "Bash(test:*)",
+      "Bash(cp:*)",
+      "Bash(pwd:*)",
+      "Bash(touch:*)",
+      "Bash(stat:*)",
+      "Bash(cut:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(realpath:*)",
+      "Bash(diff:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(unzip:*)",
+      "Bash(xxd:*)",
+      "Bash(du:*)",
+      "Bash(cd:*)",
+      "Bash(pip3:*)",
+      "Bash(conda:*)",
+      "Bash(while:*)",
+      "Bash(uv:*)",
+      "Bash(pnpm:*)",
+      "Bash(npx:*)",
+      "Bash(bash:*)",
+      "Bash(sleep:*)",
+      "Bash(INIT:*)",
+      "Bash(ARCHIVE:*)",
+      "Bash(ROADMAP:*)",
+      "Bash(PLAN_INDEX:*)",
+      "Bash(RESULT:*)",
+      "Bash(for:*)",
+      "Bash(python:*)",
+      "Bash(ruff:*)",
+      "Bash(pytest:*)",
+      "Bash(pip:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(wsl:*)",
+      "Bash(do:*)",
+      "Bash(AUTO_CHAIN:*)",
+      "Bash(AUTO_CFG:*)",
+      "Bash(COMPLETION:*)",
+      "Bash(PARENT:*)",
+      "Bash(BRANCH:*)",
+      "Bash(PHASE:*)",
+      "Bash(PREFERRED_RUNTIME:*)",
+      "Bash(RUNTIME_DIRS:*)",
+      "Bash(ORDERED_RUNTIME_DIRS:*)",
+      "Bash(LOCAL_VERSION_FILE:*)",
+      "Bash(GLOBAL_VERSION_FILE:*)",
+      "Bash(IS_LOCAL:*)",
+      "Bash(INSTALLED_VERSION:*)",
+      "Bash(INSTALL_SCOPE:*)",
+      "Bash(TARGET_RUNTIME:*)",
+      "Bash(HEALTHY:*)",
+      "Bash(GSD_ITEMS:*)",
+      "Bash(PROFILE_DIR:*)",
+      "Bash(CLAUDE_CONFIG_DIR=:*)",
+      "Bash(ccs:*)",
+      "Bash(npm:*)",
+      "Bash(mv:*)",
+      "Bash(chmod:*)",
+      "Skill(commit-commands:*)",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Write(.planning/**)",
+      "Write(docs/**)",
+      "Write(tests/**)",
+      "Write(scripts/**)",
+      "Write(pyproject.toml)",
+      "Agent",
+      "Skill(gsd-*)",
+      "Skill(dhx:*)",
+      "Skill(superpowers:*)",
+      "Skill(document-skills:*)",
+      "Skill(playground:*)",
+      "mcp__claude_ai_Context7__*",
+      "mcp__claude_ai_deepwiki__*",
+      "mcp__plugin_playwright_playwright__*",
+      "Bash(playwright-cli:*)",
+      "Bash(claude:*)",
+      "Skill(keybindings-help)",
+      "Bash(gh:*)",
+      "Write(~/.ccs/**)",
+      "Skill(check-account)",
+      "Skill(audit-session)",
+      "Skill(simplify)",
+      "Skill(update-config)",
+      "Skill(loop)",
+      "mcp__claude_ai_supermemory__memory",
+      "mcp__claude_ai_supermemory__recall",
+      "mcp__claude_ai_supermemory__whoAmI",
+      "Bash(UI_PHASE_CFG:*)",
+      "Bash(UI_GATE_CFG:*)",
+      "Bash(UI_SPEC_FILE:*)",
+      "Bash(DISCUSS_MODE:*)",
+      "Bash(PHASE_DESC:*)",
+      "Bash(PHASE_SECTION:*)",
+      "Bash(PHASE_INFO:*)",
+      "Bash(PLAN_REQS:*)",
+      "Bash(VALIDATION_EXISTS:*)",
+      "Bash(CLI_AVAILABLE:*)",
+      "Bash(DEV_URL:*)",
+      "Bash(STATUS:*)",
+      "Bash(TIMESTAMP:*)",
+      "mcp__claude_ai_Notion__*",
+      "Skill(ccs:*)",
+      "Skill(ccs-delegation)",
+      "Skill(schedule)",
+      "Skill(file-organizer)",
+      "Bash(POST_PLAN_INDEX:*)",
+      "Bash(SUMMARY_EXISTS:*)",
+      "Bash(COMMITS_FOUND:*)",
+      "Bash(PRIOR_VERIFICATIONS:*)",
+      "Bash(REGRESSION_FILES:*)",
+      "Bash(mypy:*)",
+      "Bash(gemini:*)",
+      "Bash(codex:*)",
+      "Bash(rm -f /tmp/*)",
+      "Bash(rm /tmp/*)",
+      "Skill(deep-research)",
+      "Skill(claude-api)"
+    ],
+    "deny": [
+      "Read(./.env*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Bash(*|*taskkill*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(mkfs *)",
+      "Bash(dd if=*)",
+      "Bash(chmod -R 777 *)"
+    ],
+    "defaultMode": "bypassPermissions"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-routing.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-main-branch-warning.sh\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/repos/hooks/.inactive/probe-userpromptsubmit-fields.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','hooks','gsd-check-update.js'))\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/gsd-session-state.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/dhx-health-check.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','hooks','gsd-context-monitor.js'))\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','scripts','fix-gsd-ccs-paths.js'))\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-source-write-flag.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-context-gate.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-execute-checkpoint.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-post-execute-review.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-execute-review.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-audit-checkpoint.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/repos/hooks/.inactive/probe-posttooluse-agent.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-merge-reminder.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/gsd-phase-boundary.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-deferred-check.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-execute-stop-review.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-test-gate.sh\"",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/gsd-prompt-guard.js\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-assessed-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/dhx-read-guard.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "READ_ONCE_TTL=172800 ~/.claude/read-once/hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/dhx-poll-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-ui-vision-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/repos/hooks/.inactive/test-pretooluse-agent.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/home/dhx/.claude/hooks/gsd-workflow-guard.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/repos/hooks/.inactive/probe-pretooluse-write-fields.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/gsd-validate-commit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/read-once/compact.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"$HOME/.claude/hooks/statusline-wrapper.js\""
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "playground@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true
+  },
+  "effortLevel": "medium",
+  "skipDangerousModePermissionPrompt": true
+}
