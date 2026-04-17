@@ -5,6 +5,7 @@
 // GSD script is called by path so GSD updates are picked up automatically.
 
 const { execFile, spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -157,6 +158,45 @@ function findCCTicks(startPpid) {
   return null;
 }
 
+// Top-level settings.json keys whose mutations invalidate the CC session.
+// Everything else (effortLevel, model, outputStyle, theme, permissions,
+// statusLine, cleanupPeriodDays, skipDangerousModePermissionPrompt) is
+// session-safe and must stay out of the drift hash — otherwise /effort,
+// /model, permission-grant writes all trip the warning every 60s and train
+// users to ignore the signal. `agents/` drift is a separate `agents_mtime`
+// path; `env` may be absent from live settings (handled by projection).
+const SETTINGS_WARN_KEYS = ['hooks', 'enabledPlugins', 'extraKnownMarketplaces', 'env'];
+
+// Recursively sort object keys so JSON.stringify produces byte-stable output
+// regardless of which CC writer last serialized the file. Arrays preserve
+// order — `.hooks[event][*]` sequence is semantic.
+function canonicalize(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(canonicalize);
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    out[key] = canonicalize(value[key]);
+  }
+  return out;
+}
+
+// SHA-256 over the canonicalized WARN-set projection of settings.json. Used
+// as the drift snapshot's settings signal. Missing keys are simply omitted
+// from the projection (not null-substituted) so a file with no `env` key
+// produces the same hash whether or not the writer ever touched `env`.
+// Unreadable/unparseable settings collapse to '' — consistent-bad state is
+// stable, so no false drift on a persistently missing file.
+function hashWarnSettings(settingsReal) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(settingsReal, 'utf8'));
+    const projection = {};
+    for (const key of SETTINGS_WARN_KEYS) {
+      if (key in parsed) projection[key] = parsed[key];
+    }
+    return crypto.createHash('sha256').update(JSON.stringify(canonicalize(projection))).digest('hex');
+  } catch { return ''; }
+}
+
 // Helper: recursively get max mtime across all entries in a directory
 function getMaxMtimeRecursive(dir) {
   let max = 0;
@@ -173,22 +213,25 @@ function getMaxMtimeRecursive(dir) {
   return max;
 }
 
-// Collect current mtime snapshot for all 5 watched paths + version
+// Collect current snapshot for all 5 watched paths + version. `settings` is
+// hashed over the WARN-set projection rather than mtime'd — see HP-014's
+// hot-reload note in the wrapper doc for why /effort, /model, /output-style,
+// permission-grant mutations MUST NOT trip drift.
 function collectSnapshot(data) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const snapshot = {
     agents_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'agents')),
-    settings_mtime: 0,
+    settings_hash: '',
     gsd_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'get-shit-done')),
     plugins_mtime: 0,
     version: data.version || '',
   };
 
-  // Active settings.json — follow symlinks
+  // Active settings.json — follow symlinks, hash WARN-set keys only
   try {
     const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
-    snapshot.settings_mtime = fs.statSync(settingsReal).mtimeMs;
-  } catch { /* missing or unresolvable */ }
+    snapshot.settings_hash = hashWarnSettings(settingsReal);
+  } catch { /* missing or unresolvable — hash stays '' */ }
 
   // CCS plugins cache — shallow scan of top-level dirs
   try {
@@ -228,18 +271,30 @@ function checkDrift(data) {
     // Collect current state
     const current = collectSnapshot(data);
 
-    // Try to read existing snapshot
-    let snapshot;
-    try {
-      snapshot = JSON.parse(fs.readFileSync(snapshotFile, 'utf8'));
-    } catch {
-      // First invocation for this session — write snapshot, return clean
+    const writeBaselineAndReturnClean = () => {
       try {
         const tmp = snapshotFile + '.tmp.' + process.pid;
         fs.writeFileSync(tmp, JSON.stringify(current));
         fs.renameSync(tmp, snapshotFile);
       } catch { /* write failed — skip drift this invocation */ }
       return resolve('');
+    };
+
+    // Try to read existing snapshot
+    let snapshot;
+    try {
+      snapshot = JSON.parse(fs.readFileSync(snapshotFile, 'utf8'));
+    } catch {
+      // First invocation for this session — write snapshot, return clean
+      return writeBaselineAndReturnClean();
+    }
+
+    // Schema migration: pre-hash snapshots lack `settings_hash`. Treat as
+    // first-invocation — re-baseline with the current hash-bearing snapshot
+    // and skip drift this round. Avoids comparing mixed-format fields and
+    // guarantees one-round grace on upgrade.
+    if (!('settings_hash' in snapshot)) {
+      return writeBaselineAndReturnClean();
     }
 
     // Compare: collect which paths drifted (short labels match snapshot keys).
@@ -247,7 +302,7 @@ function checkDrift(data) {
     // looks identical and there's no way to diagnose which signal is noisy.
     const triggers = [];
     if (current.agents_mtime > snapshot.agents_mtime) triggers.push('agents');
-    if (current.settings_mtime > snapshot.settings_mtime) triggers.push('settings');
+    if (current.settings_hash !== snapshot.settings_hash) triggers.push('settings');
     if (current.gsd_mtime > snapshot.gsd_mtime) triggers.push('gsd');
     if (current.plugins_mtime > snapshot.plugins_mtime) triggers.push('plugins');
     if (current.version !== snapshot.version) triggers.push('version');
