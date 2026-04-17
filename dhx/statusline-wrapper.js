@@ -101,6 +101,14 @@ function runCcburn(stdinData) {
 // All non-ok classes share one recovery command (`/dhx:sym repair`); appending
 // a single trailing suffix to the joined span keeps the signal scannable and
 // gives users immediate direction instead of an opaque state token.
+//
+// Publisher override: sym-health.json is written by the skills-repo `/dhx:sym`
+// status/audit/repair commands — the authoritative source for plugin_keys
+// (same process that runs `claude plugin enable` publishes the result). When
+// fresh (<1h via checked_at), its plugin_keys replaces health.json's. This
+// lets mid-session `/dhx:sym repair` clear the warning within 60s instead of
+// waiting for the next SessionStart. Stale/missing/malformed → defer to
+// health.json, which already carries the SessionStart-time direct jq check.
 function readHealthCache() {
   return new Promise((resolve) => {
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
@@ -108,6 +116,16 @@ function readHealthCache() {
       if (err) return resolve('');
       try {
         const h = JSON.parse(data);
+
+        try {
+          const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
+          const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
+          const ageMs = Date.now() - Date.parse(sym.checked_at || '');
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys) {
+            h.plugin_keys = sym.plugin_keys;
+          }
+        } catch { /* absent/malformed — defer to health.json's value */ }
+
         const warnings = [];
         if (h.worktree_patches && h.worktree_patches !== 'patched')
           warnings.push(`patches:${h.worktree_patches}`);

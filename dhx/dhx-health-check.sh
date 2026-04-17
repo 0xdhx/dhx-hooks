@@ -77,13 +77,35 @@ fi
 # enabledPlugins["dhx@dhx-local"] + extraKnownMarketplaces["dhx-local"] live in
 # settings.json and are clobber-vulnerable per the 2026-04-16 rewriter
 # investigation. Missing either → plugin hooks stop firing and /dhx:sym repair
-# is the recovery path. Resolve via CLAUDE_CONFIG_DIR + realpath to match the
-# canonical resolution in statusline-wrapper.js::hashWarnSettings().
-plugin_keys="ok"
-settings_real=$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)
-if [[ ! -f "$settings_real" ]] || \
-   ! jq -e '.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""' "$settings_real" >/dev/null 2>&1; then
-  plugin_keys="MISSING"
+# is the recovery path.
+#
+# Two-source resolution: the skills-repo `/dhx:sym` publisher writes
+# ~/.cache/dhx/sym-health.json on every status/audit/repair invocation. That
+# file is the authoritative signal (single source of truth — same process that
+# runs `claude plugin enable` publishes the result). If fresh (<1h via
+# checked_at), prefer its plugin_keys field. Otherwise fall back to the direct
+# jq check below — defense-in-depth when the cache goes stale, the skills repo
+# moves, or the publisher breaks. Resolution of settings.json via
+# CLAUDE_CONFIG_DIR + realpath matches statusline-wrapper.js::hashWarnSettings().
+plugin_keys=""
+sym_health="$CACHE_DIR/sym-health.json"
+if [[ -f "$sym_health" ]]; then
+  checked_at=$(jq -r '.checked_at // empty' "$sym_health" 2>/dev/null)
+  if [[ -n "$checked_at" ]]; then
+    checked_epoch=$(date -u -d "$checked_at" +%s 2>/dev/null || echo 0)
+    age_sec=$(( $(date +%s) - checked_epoch ))
+    if (( checked_epoch > 0 && age_sec >= 0 && age_sec < 3600 )); then
+      plugin_keys=$(jq -r '.plugin_keys // empty' "$sym_health" 2>/dev/null)
+    fi
+  fi
+fi
+if [[ -z "$plugin_keys" ]]; then
+  plugin_keys="ok"
+  settings_real=$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)
+  if [[ ! -f "$settings_real" ]] || \
+     ! jq -e '.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""' "$settings_real" >/dev/null 2>&1; then
+    plugin_keys="MISSING"
+  fi
 fi
 
 # --- Write health cache (atomic via temp + mv) ---
