@@ -121,10 +121,8 @@ function readHealthCache() {
 }
 
 // Process start-time in clock ticks since boot, read from /proc/<pid>/stat field 22.
-// Stable per-process within a boot (immune to PID reuse), used to key drift snapshots
-// so that a /resume (new CC process) doesn't compare against a stale snapshot from
-// the previous process. Two live processes resuming the same session get different
-// files, so no interference or ping-pong. Returns null on non-Linux / unreadable.
+// Stable per-process within a boot (immune to PID reuse). Returns null on
+// non-Linux / unreadable.
 function getProcessStartTicks(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -132,6 +130,31 @@ function getProcessStartTicks(pid) {
     const after = stat.substring(stat.lastIndexOf(')') + 2);
     return after.split(' ')[19] || null; // starttime = field 22 (1-indexed) = index 19 after comm
   } catch { return null; }
+}
+
+// CC wraps statusLine.command in a shell because the command string contains $HOME,
+// so process.ppid is an ephemeral shell whose start-ticks rotate per refresh. Walk
+// past shells to the first non-shell ancestor — that's the CC process — and key
+// drift snapshots on its start-ticks. Stable for the CC process's life, distinct
+// across /resume (which spawns a new CC process). Returns null on non-Linux,
+// unreadable /proc, or if every ancestor within MAX_HOPS is a shell (caller falls
+// back to session_id-only keying, accepting the stale-snapshot risk).
+const SHELL_COMMS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'tcsh', 'ksh']);
+function findCCTicks(startPpid) {
+  const MAX_HOPS = 5;
+  let pid = startPpid;
+  for (let i = 0; i < MAX_HOPS && pid > 1; i++) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const comm = stat.substring(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const after = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+      if (!SHELL_COMMS.has(comm)) {
+        return after[19] || null; // starttime = field 22
+      }
+      pid = parseInt(after[1]); // ppid
+    } catch { return null; }
+  }
+  return null;
 }
 
 // Helper: recursively get max mtime across all entries in a directory
@@ -191,12 +214,15 @@ function checkDrift(data) {
     if (!data.session_id) return resolve('');
 
     const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
-    // Key by (session_id, process_start_ticks) so /resume into a new CC process
-    // gets a fresh snapshot — eliminates the "stale snapshot from previous process
-    // life" failure mode without depending on SessionStart hook firing. Non-Linux
-    // fallback (null ticks) collapses to legacy session-id-only keying.
-    const startTicks = getProcessStartTicks(process.ppid);
-    const suffix = startTicks ? `-p${startTicks}` : '';
+    // Key by (session_id, CC's process start-ticks) so /resume into a new CC
+    // process gets a fresh snapshot — eliminates the "stale snapshot from previous
+    // process life" failure mode without depending on SessionStart hook firing.
+    // Walks past the ephemeral shell CC inserts around statusLine.command (because
+    // $HOME forces shell expansion); plain process.ppid would rotate per refresh
+    // and reproduce the ~1k-file thrash that motivated this fix. Non-Linux fallback
+    // (null ticks) collapses to legacy session-id-only keying.
+    const ccTicks = findCCTicks(process.ppid);
+    const suffix = ccTicks ? `-p${ccTicks}` : '';
     const snapshotFile = path.join(cacheDir, `drift-snapshot-${data.session_id}${suffix}.json`);
 
     // Collect current state
