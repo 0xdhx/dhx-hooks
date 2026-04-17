@@ -27,21 +27,25 @@ process.stdin.on('end', () => {
     cwd = process.cwd();
   }
 
-  // Run GSD statusline, git info, ccburn, health cache, and drift check in parallel
+  // Run GSD statusline, git info, cache-age, ccburn, health cache, and drift check in parallel
   // ccburn collect silently feeds its database; compact output goes in the statusline
   Promise.all([
     runGsd(input),
     getGitInfo(cwd),
+    getCacheAge(data),
     runCcburn(input),
     readHealthCache(),
     checkDrift(data),
-  ]).then(([gsdOutput, gitInfo, burnOutput, health, driftWarning]) => {
+  ]).then(([gsdOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
     // Strip false-positive stale hooks warning (upstream bug: bash hooks lack
     // JS-style version headers, fixed in GSD Unreleased but not v1.36.0).
     // Remove this filter once upstream ships the fix (#2136).
     let line = gsdOutput.replace(/\x1b\[3[13]m⚠ (?:stale hooks|dev install)[^\x1b]*\x1b\[0m *│ */g, '').trimEnd();
     if (gitInfo) {
       line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
+    }
+    if (cacheAge) {
+      line += ` \x1b[2m│\x1b[0m ${cacheAge}`;
     }
     if (burnOutput) {
       line += ` \x1b[2m│\x1b[0m ${burnOutput}`;
@@ -382,6 +386,38 @@ function checkDrift(data) {
     }
 
     resolve(`\x1b[38;5;208m⚠ restart ${triggers.join('+')} (${ageStr})\x1b[0m`);
+  });
+}
+
+// Cache-TTL countdown. Active transcript jsonl's mtime ≈ last-turn write time;
+// the prompt cache goes cold TTL seconds after that write. Always-on segment:
+// green ≥30m, yellow <30m, orange 208 <15m, red EXPIRED. Format "55m" / "<1m"
+// / "EXPIRED", no label. Default TTL 3600s matches Max plan (verified
+// 2026-04-17, docs/research/session-cost-mechanics.md); DHX_CACHE_TTL env
+// overrides for Pro/API (300). mtime bumps during streaming, so an actively
+// responding session always reads near full TTL — expected, countdown is
+// meant to tick down on *idle* time, not wallclock age.
+function getCacheAge(data) {
+  return new Promise((resolve) => {
+    const transcriptPath = data.transcript_path;
+    if (!transcriptPath) return resolve('');
+    const ttl = parseInt(process.env.DHX_CACHE_TTL, 10) || 3600;
+    try {
+      const mtimeMs = fs.statSync(transcriptPath).mtimeMs;
+      const elapsed = (Date.now() - mtimeMs) / 1000;
+      // Clamp upward to absorb clock skew / pre-write stat.
+      const remaining = Math.min(ttl, Math.floor(ttl - elapsed));
+      if (remaining <= 0) return resolve('\x1b[31mEXPIRED\x1b[0m');
+      const mins = Math.floor(remaining / 60);
+      const label = mins < 1 ? '<1m' : `${mins}m`;
+      let color;
+      if (remaining < 15 * 60) color = '\x1b[38;5;208m'; // orange 208
+      else if (remaining < 30 * 60) color = '\x1b[33m';  // yellow
+      else color = '\x1b[32m';                            // green
+      resolve(`${color}${label}\x1b[0m`);
+    } catch {
+      resolve('');
+    }
   });
 }
 
