@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.36.0
-// Patterns: HP-013, HP-014, HP-016
+// Patterns: HP-013, HP-014, HP-016, HP-019
 // Statusline wrapper — pipes stdin through GSD's gsd-statusline.js, appends git info.
 // GSD script is called by path so GSD updates are picked up automatically.
 
@@ -389,36 +389,92 @@ function checkDrift(data) {
   });
 }
 
-// Cache-TTL countdown. Active transcript jsonl's mtime ≈ last-turn write time;
-// the prompt cache goes cold TTL seconds after that write. Always-on segment:
-// green ≥30m, yellow <30m, orange 208 <15m, red EXPIRED. Format "55m" / "<1m"
-// / "EXPIRED", no label. Default TTL 3600s matches Max plan (verified
-// 2026-04-17, docs/research/session-cost-mechanics.md); DHX_CACHE_TTL env
-// overrides for Pro/API (300). mtime bumps during streaming, so an actively
-// responding session always reads near full TTL — expected, countdown is
-// meant to tick down on *idle* time, not wallclock age.
+// Cache-TTL countdown. Anchors on the most recent assistant entry whose
+// usage block reports cache_read_input_tokens > 0 — that timestamp is when
+// the warm prefix was last touched on the server, which is what actually
+// keeps the cache TTL alive. Always-on segment: green ≥30m, yellow <30m,
+// orange 208 <15m, red EXPIRED. Default TTL 3600s matches Max plan
+// (verified 2026-04-17, docs/research/session-cost-mechanics.md);
+// DHX_CACHE_TTL env overrides for Pro/API (300).
+//
+// Why not mtime: away_summary writes (HP-019 / docs/research/away-summary-billing.md)
+// bump JSONL mtime without producing a type=assistant entry — and they're
+// billed inference calls. Anchoring on mtime would make the countdown
+// "reset" every ~3-15 min during idle while the user silently pays for
+// each recap, training the signal to lie. cache_read timestamps come from
+// the same `usage` block billing is computed from, so the countdown can't
+// drift from cost reality. Active streaming still reads near full TTL —
+// each chunk lands as a cache_read entry.
+//
+// Resume re-anchors automatically: post-/resume sessions see one re-cache
+// turn (~70k cache_creation, GH #42338) and then the next turn lands as a
+// fresh cache_read entry — the new anchor.
+//
+// 64KB tail-read sized for typical assistant entries (~1-5KB each); a
+// degenerate 64KB+ tool_use_result blocking every entry resolves to ''
+// (segment hides for one render, returns on next turn).
 function getCacheAge(data) {
   return new Promise((resolve) => {
     const transcriptPath = data.transcript_path;
     if (!transcriptPath) return resolve('');
     const ttl = parseInt(process.env.DHX_CACHE_TTL, 10) || 3600;
-    try {
-      const mtimeMs = fs.statSync(transcriptPath).mtimeMs;
-      const elapsed = (Date.now() - mtimeMs) / 1000;
-      // Clamp upward to absorb clock skew / pre-write stat.
-      const remaining = Math.min(ttl, Math.floor(ttl - elapsed));
-      if (remaining <= 0) return resolve('\x1b[31mEXPIRED\x1b[0m');
-      const mins = Math.floor(remaining / 60);
-      const label = mins < 1 ? '<1m' : `${mins}m`;
-      let color;
-      if (remaining < 15 * 60) color = '\x1b[38;5;208m'; // orange 208
-      else if (remaining < 30 * 60) color = '\x1b[33m';  // yellow
-      else color = '\x1b[32m';                            // green
-      resolve(`${color}${label}\x1b[0m`);
-    } catch {
-      resolve('');
-    }
+    const anchorMs = readCacheAnchor(transcriptPath);
+    if (anchorMs == null) return resolve('');
+    const elapsed = (Date.now() - anchorMs) / 1000;
+    // Clamp upward to absorb clock skew / pre-write stat.
+    const remaining = Math.min(ttl, Math.floor(ttl - elapsed));
+    if (remaining <= 0) return resolve('\x1b[31mEXPIRED\x1b[0m');
+    const mins = Math.floor(remaining / 60);
+    const label = mins < 1 ? '<1m' : `${mins}m`;
+    let color;
+    if (remaining < 15 * 60) color = '\x1b[38;5;208m'; // orange 208
+    else if (remaining < 30 * 60) color = '\x1b[33m';  // yellow
+    else color = '\x1b[32m';                            // green
+    resolve(`${color}${label}\x1b[0m`);
   });
+}
+
+// Tail-read last 64KB of the JSONL transcript and return ms-epoch of the
+// most recent type=assistant entry whose usage.cache_read_input_tokens > 0.
+// Returns null on missing file, unreadable file, no match in window, or
+// unparseable timestamps. Tail-read (not readFileSync) because transcripts
+// grow without bound — a 50MB session pulled into memory every refresh is
+// not acceptable for a 1Hz statusline.
+//
+// INVARIANT: depends on JSONL transcript schema (HP-019). type=assistant
+// entries carry .timestamp (ISO 8601) and .message.usage.cache_read_input_tokens.
+// Probe: tests/probes/probe-cache-age-anchor.js.
+function readCacheAnchor(transcriptPath) {
+  const WINDOW = 65536;
+  let fd;
+  try {
+    fd = fs.openSync(transcriptPath, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return null;
+    const len = Math.min(WINDOW, size);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    // Skip the first split when the window starts mid-record — it's a partial
+    // line. When the window covers the whole file, byte 0 is a real line head.
+    const startIdx = size > WINDOW ? 1 : 0;
+    for (let i = lines.length - 1; i >= startIdx; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.type !== 'assistant') continue;
+      const reads = entry.message && entry.message.usage && entry.message.usage.cache_read_input_tokens;
+      if (!reads || reads <= 0) continue;
+      const t = Date.parse(entry.timestamp || '');
+      if (Number.isFinite(t)) return t;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
+  }
 }
 
 // Fast git info: branch, dirty count, ahead/behind
