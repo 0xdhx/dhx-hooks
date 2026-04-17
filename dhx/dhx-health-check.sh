@@ -91,9 +91,14 @@ if [[ -n "$SESSION_ID" ]]; then
   rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json" "$CACHE_DIR"/drift-snapshot-${SESSION_ID}-*.json
 fi
 
-# --- Prune stale drift cache files (all formats, >30 days) ---
+# --- Prune stale drift cache files (>30 days) ---
+# Orphans accumulate when CC processes exit without running this hook (the
+# wrapper writes per (session_id, CC_ticks) on first invocation; dead CC
+# processes leave their snapshot behind). 30d is defensive — this session's
+# own snapshot is cleared above, so prune below only touches other sessions.
+# session-start-*.json and session-version-*.txt were prior drift designs
+# obsoleted by the snapshot-comparison scheme; nothing writes them anymore.
+# One-time purge happened 2026-04-16 under the drift-fix orchestration.
 find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
-find "$CACHE_DIR" -name 'session-start-*.json' -mtime +30 -delete 2>/dev/null
-find "$CACHE_DIR" -name 'session-version-*.txt' -mtime +30 -delete 2>/dev/null
 
 exit 0
