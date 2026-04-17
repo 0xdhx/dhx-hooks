@@ -35,7 +35,7 @@ process.stdin.on('end', () => {
     runCcburn(input),
     readHealthCache(),
     checkDrift(data),
-  ]).then(([gsdOutput, gitInfo, burnOutput, healthWarning, driftWarning]) => {
+  ]).then(([gsdOutput, gitInfo, burnOutput, health, driftWarning]) => {
     // Strip false-positive stale hooks warning (upstream bug: bash hooks lack
     // JS-style version headers, fixed in GSD Unreleased but not v1.36.0).
     // Remove this filter once upstream ships the fix (#2136).
@@ -46,12 +46,19 @@ process.stdin.on('end', () => {
     if (burnOutput) {
       line += ` \x1b[2m│\x1b[0m ${burnOutput}`;
     }
-    if (healthWarning) {
-      line += ` \x1b[2m│\x1b[0m ${healthWarning}`;
+    // Advisory health (fork/symlink state) — red tail, session still works
+    if (health.tail) {
+      line += ` \x1b[2m│\x1b[0m ${health.tail}`;
     }
-    // Drift warning goes FIRST (D-05: front-of-stack)
-    if (driftWarning) {
-      line = driftWarning + ' \x1b[2m|\x1b[0m ' + line;
+    // Front-of-stack (orange 208, left of Claude/cwd): drift + critical health
+    // (session-wiring degraded: plugin_keys, settings_chain). Separate segments
+    // keep concerns distinct — drift says "restart", health says "/dhx:sym repair".
+    // Order: drift first (session identity), then health (session wiring).
+    const front = [];
+    if (driftWarning) front.push(driftWarning);
+    if (health.front) front.push(health.front);
+    if (front.length > 0) {
+      line = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line;
     }
     process.stdout.write(line);
   }).catch(() => {
@@ -97,10 +104,22 @@ function runCcburn(stdinData) {
 }
 
 // Read health cache written by dhx-health-check.sh (SessionStart).
-// Returns a warning string if issues found, empty string if healthy.
-// All non-ok classes share one recovery command (`/dhx:sym repair`); appending
-// a single trailing suffix to the joined span keeps the signal scannable and
-// gives users immediate direction instead of an opaque state token.
+// Returns { front, tail } — each is a rendered warning segment or empty string.
+//
+// Two tiers by operational consequence:
+//   CRITICAL (orange 208, front-of-stack): session-wiring degraded. plugin_keys
+//     MISSING ⇒ plugin hooks silently not firing; settings_chain non-ok ⇒
+//     ~/.claude/settings.json stopped tracking CCS. Either of these means the
+//     session's mutation pipeline is partially broken — deserves the same
+//     visual weight as the drift "restart" warning, next to CC's always-visible
+//     permission-bypass banner.
+//   ADVISORY (red, appended): fork/symlink state — patches REGRESSED,
+//     read-guard REGRESSED, missing_symlinks > 0. The session still works;
+//     these are long-term maintenance signals. Appended red matches their
+//     lower priority.
+// Both tiers share `/dhx:sym repair` as the recovery command, so each gets its
+// own trailing suffix — the segments are visually distinct and users may only
+// glance at one, so duplicating the direction outweighs the 15-char savings.
 //
 // Publisher override: sym-health.json is written by the skills-repo `/dhx:sym`
 // status/audit/repair commands — the authoritative source for plugin_keys
@@ -111,9 +130,10 @@ function runCcburn(stdinData) {
 // health.json, which already carries the SessionStart-time direct jq check.
 function readHealthCache() {
   return new Promise((resolve) => {
+    const empty = { front: '', tail: '' };
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
     fs.readFile(cacheFile, 'utf8', (err, data) => {
-      if (err) return resolve('');
+      if (err) return resolve(empty);
       try {
         const h = JSON.parse(data);
 
@@ -126,20 +146,28 @@ function readHealthCache() {
           }
         } catch { /* absent/malformed — defer to health.json's value */ }
 
-        const warnings = [];
-        if (h.worktree_patches && h.worktree_patches !== 'patched')
-          warnings.push(`patches:${h.worktree_patches}`);
-        if (h.read_guard && h.read_guard !== 'patched')
-          warnings.push(`read-guard:${h.read_guard}`);
-        if (h.missing_symlinks > 0)
-          warnings.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+        const critical = [];
         if (h.settings_chain && h.settings_chain !== 'ok')
-          warnings.push(`settings:${h.settings_chain}`);
+          critical.push(`settings:${h.settings_chain}`);
         if (h.plugin_keys && h.plugin_keys !== 'ok')
-          warnings.push(`plugin-keys:${h.plugin_keys}`);
-        if (warnings.length === 0) return resolve('');
-        resolve(`\x1b[31m⚠ ${warnings.join(' ')} — /dhx:sym repair\x1b[0m`);
-      } catch { resolve(''); }
+          critical.push(`plugin-keys:${h.plugin_keys}`);
+
+        const advisory = [];
+        if (h.worktree_patches && h.worktree_patches !== 'patched')
+          advisory.push(`patches:${h.worktree_patches}`);
+        if (h.read_guard && h.read_guard !== 'patched')
+          advisory.push(`read-guard:${h.read_guard}`);
+        if (h.missing_symlinks > 0)
+          advisory.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+
+        const front = critical.length
+          ? `\x1b[38;5;208m⚠ ${critical.join(' ')} — /dhx:sym repair\x1b[0m`
+          : '';
+        const tail = advisory.length
+          ? `\x1b[31m⚠ ${advisory.join(' ')} — /dhx:sym repair\x1b[0m`
+          : '';
+        resolve({ front, tail });
+      } catch { resolve(empty); }
     });
   });
 }
