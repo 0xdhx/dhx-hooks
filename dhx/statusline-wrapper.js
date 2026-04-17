@@ -98,6 +98,9 @@ function runCcburn(stdinData) {
 
 // Read health cache written by dhx-health-check.sh (SessionStart).
 // Returns a warning string if issues found, empty string if healthy.
+// All non-ok classes share one recovery command (`/dhx:sym repair`); appending
+// a single trailing suffix to the joined span keeps the signal scannable and
+// gives users immediate direction instead of an opaque state token.
 function readHealthCache() {
   return new Promise((resolve) => {
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
@@ -114,8 +117,10 @@ function readHealthCache() {
           warnings.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
         if (h.settings_chain && h.settings_chain !== 'ok')
           warnings.push(`settings:${h.settings_chain}`);
+        if (h.plugin_keys && h.plugin_keys !== 'ok')
+          warnings.push(`plugin-keys:${h.plugin_keys}`);
         if (warnings.length === 0) return resolve('');
-        resolve(`\x1b[31m⚠ ${warnings.join(' ')}\x1b[0m`);
+        resolve(`\x1b[31m⚠ ${warnings.join(' ')} — /dhx:sym repair\x1b[0m`);
       } catch { resolve(''); }
     });
   });

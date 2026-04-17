@@ -73,10 +73,23 @@ elif [[ "$(readlink -f "$claude_settings")" != "$(readlink -f "$shared_settings"
   settings_chain="WRONG_TARGET"
 fi
 
+# --- Plugin keys (HP-017 residual risk) ---
+# enabledPlugins["dhx@dhx-local"] + extraKnownMarketplaces["dhx-local"] live in
+# settings.json and are clobber-vulnerable per the 2026-04-16 rewriter
+# investigation. Missing either → plugin hooks stop firing and /dhx:sym repair
+# is the recovery path. Resolve via CLAUDE_CONFIG_DIR + realpath to match the
+# canonical resolution in statusline-wrapper.js::hashWarnSettings().
+plugin_keys="ok"
+settings_real=$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)
+if [[ ! -f "$settings_real" ]] || \
+   ! jq -e '.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""' "$settings_real" >/dev/null 2>&1; then
+  plugin_keys="MISSING"
+fi
+
 # --- Write health cache (atomic via temp + mv) ---
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
