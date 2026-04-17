@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/dhx-health-check.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

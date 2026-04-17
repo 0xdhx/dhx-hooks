@@ -201,22 +201,6 @@
             "command": "bash /home/dhx/.claude/hooks/gsd-session-state.sh"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/dhx/.claude/hooks/dhx-health-check.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh"
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -436,7 +420,16 @@
     "typescript-lsp@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "playground@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": true
+    "document-skills@anthropic-agent-skills": true,
+    "dhx@dhx-local": true
+  },
+  "extraKnownMarketplaces": {
+    "dhx-local": {
+      "source": {
+        "source": "directory",
+        "path": "/home/dhx/repos/hooks/dhx-plugin"
+      }
+    }
   },
   "effortLevel": "medium",
   "skipDangerousModePermissionPrompt": true

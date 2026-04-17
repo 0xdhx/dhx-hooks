@@ -1,0 +1,22 @@
+{
+  "name": "dhx-local",
+  "metadata": {
+    "description": "Local marketplace for dhx-owned Claude Code plugins. Hosts plugin manifests that register hooks outside settings.json to survive CC's atomic settings-rename clobber (see reports/2026-04-16-shared-settings-rewriter.md)."
+  },
+  "owner": {
+    "name": "dhx",
+    "email": "darkhawkx@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "dhx",
+      "description": "dhx SessionStart hooks: health-check cache writer and dirty-tree reporter. Registered here instead of settings.json because plugin-sourced hooks are immune to CC's in-memory settings clobber.",
+      "author": {
+        "name": "dhx",
+        "email": "darkhawkx@gmail.com"
+      },
+      "source": "./plugins/dhx",
+      "category": "development"
+    }
+  ]
+}

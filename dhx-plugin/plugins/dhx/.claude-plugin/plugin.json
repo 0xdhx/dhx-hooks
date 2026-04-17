@@ -1,0 +1,16 @@
+{
+  "name": "dhx",
+  "description": "dhx SessionStart hooks — health-check (writes ~/.cache/dhx/health.json drift signals) and dirty-tree (reports uncommitted changes at session start). Hooks live in /home/dhx/repos/hooks/dhx/ and are referenced by absolute path; this plugin carries only the registration, keeping single source of truth on disk.",
+  "version": "0.1.0",
+  "author": {
+    "name": "dhx",
+    "email": "darkhawkx@gmail.com"
+  },
+  "homepage": "https://github.com/0xdhx/hooks",
+  "keywords": [
+    "hooks",
+    "session-start",
+    "drift-detection",
+    "dhx"
+  ]
+}
