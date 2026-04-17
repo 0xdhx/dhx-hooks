@@ -128,6 +128,10 @@ function runCcburn(stdinData) {
 // lets mid-session `/dhx:sym repair` clear the warning within 60s instead of
 // waiting for the next SessionStart. Stale/missing/malformed → defer to
 // health.json, which already carries the SessionStart-time direct jq check.
+//
+// INVARIANT: sole runtime reader of ~/.cache/dhx/health.json. Atomic schema
+// extension (new field in same commit as new reader branch) is safe only
+// while this holds — grep hooks+skills repos for readers before extending.
 function readHealthCache() {
   return new Promise((resolve) => {
     const empty = { front: '', tail: '' };
