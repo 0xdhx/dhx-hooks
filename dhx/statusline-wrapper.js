@@ -391,10 +391,10 @@ function checkDrift(data) {
 // the warm prefix was last touched on the server, which is what actually
 // keeps the cache TTL alive. Always-on segment: green ≥30m, yellow <30m,
 // orange 208 <15m, red EXPIRED. Default TTL 3600s matches Max plan
-// (verified 2026-04-17, docs/research/session-cost-mechanics.md);
+// (verified 2026-04-17, docs/research/economics/session-cost-mechanics.md);
 // DHX_CACHE_TTL env overrides for Pro/API (300).
 //
-// Why not mtime: away_summary writes (HP-019 / docs/research/away-summary-billing.md)
+// Why not mtime: away_summary writes (HP-019 / docs/research/economics/away-summary-billing.md)
 // bump JSONL mtime without producing a type=assistant entry — and they're
 // billed inference calls. Anchoring on mtime would make the countdown
 // "reset" every ~3-15 min during idle while the user silently pays for
