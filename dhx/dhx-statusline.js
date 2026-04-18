@@ -14,6 +14,31 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// --- Model + CCS identity ----------------------------------------------------
+
+// Compact display_name to "<letter>-<version>[ (1M)]".
+//   "Opus 4.7 (1M context)" → "O-4.7 (1M)"
+//   "Sonnet 4.6"            → "S-4.6"
+//   "Haiku 4.5"             → "H-4.5"
+// Unrecognized shapes pass through verbatim so we never hide the identity.
+function compactModel(displayName) {
+  if (!displayName) return 'Claude';
+  const m = displayName.match(/^(Opus|Sonnet|Haiku)\s+([\d.]+)/);
+  if (!m) return displayName;
+  const has1M = /\(1M context\)/.test(displayName);
+  return `${m[1][0]}-${m[2]}${has1M ? ' (1M)' : ''}`;
+}
+
+// Return the CCS profile letter when CLAUDE_CONFIG_DIR resolves to a CCS
+// instance path (`~/.ccs/instances/<letter>`). Empty string otherwise —
+// e.g., on a non-CCS install where CLAUDE_CONFIG_DIR is absent or points
+// at the default `~/.claude`.
+function getCcsProfile() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || '';
+  const m = configDir.match(/\.ccs\/instances\/([^/]+)\/?$/);
+  return m ? m[1] : '';
+}
+
 // --- GSD state reader -------------------------------------------------------
 
 /**
@@ -125,7 +150,8 @@ function runStatusline() {
   clearTimeout(stdinTimeout);
   try {
     const data = JSON.parse(input);
-    const model = data.model?.display_name || 'Claude';
+    const model = compactModel(data.model?.display_name);
+    const ccsProfile = getCcsProfile();
     const dir = data.workspace?.current_dir || process.cwd();
     const session = data.session_id || '';
     const remaining = data.context_window?.remaining_percentage;
@@ -166,9 +192,12 @@ function runStatusline() {
         }
       }
 
-      // Build progress bar (10 segments)
-      const filled = Math.floor(used / 10);
-      const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+      // Build progress bar (5 segments — each step = 20%).
+      // Round rather than floor so 18% shows 1 bar instead of 0 — a 5-seg
+      // floor would hide sub-20% usage entirely, which misleads more than
+      // the 2-percentage-point overshoot rounding introduces.
+      const filled = Math.min(5, Math.round(used / 20));
+      const bar = '█'.repeat(filled) + '░'.repeat(5 - filled);
 
       // Color based on usable context thresholds
       if (used < 50) {
@@ -250,10 +279,14 @@ function runStatusline() {
         ? `\x1b[2m${gsdStateStr}\x1b[0m`
         : null;
 
+    // CCS profile letter — dim yellow, slight accent so active profile is
+    // visible without overpowering the dim model name it sits next to.
+    const profileSegment = ccsProfile ? ` \x1b[2;33m${ccsProfile}\x1b[0m` : '';
+
     if (middle) {
-      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m │ ${middle} │ \x1b[2m${dirname}\x1b[0m${ctx}`);
+      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │ ${middle} │ \x1b[2m${dirname}\x1b[0m${ctx}`);
     } else {
-      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m │ \x1b[2m${dirname}\x1b[0m${ctx}`);
+      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │ \x1b[2m${dirname}\x1b[0m${ctx}`);
     }
   } catch (e) {
     // Silent fail - don't break statusline on parse errors
@@ -262,6 +295,6 @@ function runStatusline() {
 }
 
 // Export helpers for unit tests. Harmless when run as a script.
-module.exports = { readGsdState, parseStateMd, formatGsdState };
+module.exports = { readGsdState, parseStateMd, formatGsdState, compactModel, getCcsProfile };
 
 if (require.main === module) runStatusline();

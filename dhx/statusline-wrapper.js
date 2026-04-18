@@ -101,9 +101,18 @@ function runCcburn(stdinData) {
     });
     let out = '';
     compact.stdout.on('data', chunk => out += chunk);
-    compact.on('close', () => resolve(out.trim()));
+    compact.on('close', () => resolve(compactCcburn(out.trim())));
     compact.on('error', () => resolve(''));
   });
+}
+
+// Shorten ccburn's labels so the status bar stays readable.
+//   "Session: 🧊 1% (4h 6m) · Weekly: 🧊 0%"  →  "S: 🧊 1% (4h 6m) · W: 🧊 0%"
+// Word-boundary regex so the substitution can't chew through an embedded
+// label (e.g. a projection name that happens to contain "Weekly").
+function compactCcburn(text) {
+  if (!text) return text;
+  return text.replace(/\bSession:/g, 'S:').replace(/\bWeekly:/g, 'W:');
 }
 
 // Read health cache written by dhx-health-check.sh (SessionStart).
