@@ -39,6 +39,57 @@ function getCcsProfile() {
   return m ? m[1] : '';
 }
 
+// --- Shared helpers ----------------------------------------------------------
+
+const NAME_MAX = 20; // char cap for milestone + phase names on line 2
+
+// Truncate with ellipsis when needed; … counts as 1 char so output width
+// stays at `max`. Strings at or below the cap pass through unchanged.
+function truncate(str, max) {
+  if (!str) return '';
+  return str.length <= max ? str : str.slice(0, max - 1) + '…';
+}
+
+// Walk up from dir looking for .git/ — the repo root anchor. Returns null
+// outside any repo (statusline then skips repo-signal reading).
+function findRepoRoot(dir) {
+  const home = os.homedir();
+  let current = dir;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current || current === home) break;
+    current = parent;
+  }
+  return null;
+}
+
+// Count open repo signals: reports/*.md (non-done), .planning/todos/*.md,
+// .planning/backlog/*.md. Each class contributes an integer; 0 for absent
+// dirs. Zero-count classes render nothing on line 2, so empty repos pay
+// nothing for this read.
+function getRepoSignals(dir) {
+  const counts = { reports: 0, todos: 0, backlog: 0 };
+  const root = findRepoRoot(dir);
+  if (!root) return counts;
+  try {
+    const reportsDir = path.join(root, 'reports');
+    if (fs.existsSync(reportsDir)) {
+      const entries = fs.readdirSync(reportsDir, { withFileTypes: true });
+      counts.reports = entries.filter(e => e.isFile() && e.name.endsWith('.md')).length;
+    }
+  } catch { /* unreadable — leave 0 */ }
+  for (const [name, subdir] of [['todos', '.planning/todos'], ['backlog', '.planning/backlog']]) {
+    try {
+      const full = path.join(root, subdir);
+      if (fs.existsSync(full)) {
+        counts[name] = fs.readdirSync(full).filter(f => f.endsWith('.md')).length;
+      }
+    } catch { /* unreadable — leave 0 */ }
+  }
+  return counts;
+}
+
 // --- GSD state reader -------------------------------------------------------
 
 /**
@@ -66,7 +117,8 @@ function readGsdState(dir) {
 
 /**
  * Parse STATE.md frontmatter + Phase line from body.
- * Returns { status, milestone, milestoneName, phaseNum, phaseTotal, phaseName }
+ * Returns { status, milestone, milestoneName, phaseNum, phaseTotal, phaseName,
+ *           completedPhases, totalPhases }
  */
 function parseStateMd(content) {
   const state = {};
@@ -74,7 +126,8 @@ function parseStateMd(content) {
   // YAML frontmatter between --- markers
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (fmMatch) {
-    for (const line of fmMatch[1].split('\n')) {
+    const fmBody = fmMatch[1];
+    for (const line of fmBody.split('\n')) {
       const m = line.match(/^(\w+):\s*(.+)/);
       if (!m) continue;
       const [, key, val] = m;
@@ -83,13 +136,26 @@ function parseStateMd(content) {
       if (key === 'milestone') state.milestone = v === 'null' ? null : v;
       if (key === 'milestone_name') state.milestoneName = v === 'null' ? null : v;
     }
+    // progress: block — nested YAML. Read completed_phases/total_phases from
+    // indented lines beneath it. Ignore total_plans/completed_plans: phase
+    // completion is the milestone denominator the user picked (7/10), not the
+    // plan-level breakdown.
+    const cp = fmBody.match(/^\s+completed_phases:\s*(\d+)/m);
+    const tp = fmBody.match(/^\s+total_phases:\s*(\d+)/m);
+    if (cp) state.completedPhases = parseInt(cp[1], 10);
+    if (tp) state.totalPhases = parseInt(tp[1], 10);
   }
 
-  // Phase: N of M (name)  or  Phase: none active (...)
-  const phaseMatch = content.match(/^Phase:\s*(\d+)\s+of\s+(\d+)(?:\s+\(([^)]+)\))?/m);
-  if (phaseMatch) {
+  // Phase line — three shapes observed in the wild:
+  //   "Phase: 1 of 5 (name)"          — legacy GSD
+  //   "Phase: 24.1 (name) — STATUS"   — current GSD (decimal phase, inline status)
+  //   "Phase: none active (...)"      — placeholder when no phase is set
+  // Single regex covers all three. The "of M" is optional; completion
+  // count comes from the progress: block on line 2 regardless.
+  const phaseMatch = content.match(/^Phase:\s*(\S+)(?:\s+of\s+(\d+))?(?:\s+\(([^)]+)\))?/m);
+  if (phaseMatch && phaseMatch[1] !== 'none') {
     state.phaseNum = phaseMatch[1];
-    state.phaseTotal = phaseMatch[2];
+    state.phaseTotal = phaseMatch[2] || null;
     state.phaseName = phaseMatch[3] || null;
   }
 
@@ -105,6 +171,76 @@ function parseStateMd(content) {
   }
 
   return state;
+}
+
+// --- Line 2 assembly ---------------------------------------------------------
+
+// Status short-form map + color accent. Fallback keeps unknown states
+// visible (dim gray) rather than swallowing them.
+const STATUS_RENDER = {
+  executing: { short: 'exec', color: '\x1b[33m' },       // yellow — active
+  planning:  { short: 'plan', color: '\x1b[36m' },       // cyan — shaping
+  complete:  { short: 'done', color: '\x1b[32m' },       // green — settled
+  archived:  { short: 'done', color: '\x1b[32m' },
+};
+
+// Build the GSD-state portion of line 2:
+//   "v1.4 Research Orchestration… (7/10) · exec · 24.1 Hub Eviction…"
+// Pieces join with ` · `. Returns '' when state has nothing worth showing.
+function formatLine2Gsd(s) {
+  if (!s) return '';
+  const hasContent = s.milestone || s.milestoneName || s.phaseNum || s.status;
+  if (!hasContent) return '';
+
+  const parts = [];
+
+  // Milestone group: version + truncated name + completion.
+  const msPieces = [];
+  if (s.milestone) msPieces.push(`\x1b[2m${s.milestone}\x1b[0m`);
+  if (s.milestoneName && s.milestoneName !== 'milestone') {
+    msPieces.push(`\x1b[2m${truncate(s.milestoneName, NAME_MAX)}\x1b[0m`);
+  }
+  if (s.completedPhases != null && s.totalPhases != null) {
+    // Color scales with completion: red at 0/N, dim 1–74%, dim-green 75–99%,
+    // bright green at 100%. Signals trajectory at a glance.
+    const pct = s.totalPhases > 0 ? s.completedPhases / s.totalPhases : 0;
+    let color;
+    if (s.completedPhases === 0) color = '\x1b[2;31m';
+    else if (pct >= 1) color = '\x1b[32m';
+    else if (pct >= 0.75) color = '\x1b[2;32m';
+    else color = '\x1b[2m';
+    msPieces.push(`${color}(${s.completedPhases}/${s.totalPhases})\x1b[0m`);
+  }
+  if (msPieces.length) parts.push(msPieces.join(' '));
+
+  // Status — color-accented short form.
+  if (s.status) {
+    const render = STATUS_RENDER[s.status] || { short: s.status, color: '\x1b[2m' };
+    parts.push(`${render.color}${render.short}\x1b[0m`);
+  }
+
+  // Phase group: bold phase number + truncated phase name.
+  if (s.phaseNum) {
+    const phasePieces = [`\x1b[1m${s.phaseNum}\x1b[0m`];
+    if (s.phaseName) {
+      phasePieces.push(`\x1b[2m${truncate(s.phaseName, NAME_MAX)}\x1b[0m`);
+    }
+    parts.push(phasePieces.join(' '));
+  }
+
+  return parts.join(' · ');
+}
+
+// Build the repo-signals portion of line 2: "R4·T2·B7".
+// Classes with 0 count are omitted. Returns '' when all three are 0.
+// Letter prefix chosen over color-only distinction so a colorblind user or
+// a terminal without 256-color support can still read the classes.
+function formatLine2Signals(signals) {
+  const pieces = [];
+  if (signals.reports > 0) pieces.push(`\x1b[31mR${signals.reports}\x1b[0m`);
+  if (signals.todos > 0) pieces.push(`\x1b[33mT${signals.todos}\x1b[0m`);
+  if (signals.backlog > 0) pieces.push(`\x1b[2;35mB${signals.backlog}\x1b[0m`);
+  return pieces.join('·');
 }
 
 /**
@@ -236,8 +372,12 @@ function runStatusline() {
       }
     }
 
-    // GSD state (milestone · status · phase) — shown when no todo task
-    const gsdStateStr = task ? '' : formatGsdState(readGsdState(dir) || {});
+    // GSD state + repo signals are assembled for line 2 (below). The legacy
+    // single-line formatGsdState() is retained for the module export and
+    // unit tests, but is no longer rendered inline — its information now
+    // lives on line 2 next to repo signals.
+    const gsdState = readGsdState(dir) || {};
+    const repoSignals = getRepoSignals(dir);
 
     // GSD update available?
     // Check shared cache first (#1421), fall back to runtime-specific cache for
@@ -271,23 +411,26 @@ function runStatusline() {
       } catch (e) {}
     }
 
-    // Output
+    // --- Line 1: model + CCS + [task |] dir + ctx ---
     const dirname = path.basename(dir);
-    const middle = task
-      ? `\x1b[1m${task}\x1b[0m`
-      : gsdStateStr
-        ? `\x1b[2m${gsdStateStr}\x1b[0m`
-        : null;
-
     // CCS profile letter — dim yellow, slight accent so active profile is
     // visible without overpowering the dim model name it sits next to.
     const profileSegment = ccsProfile ? ` \x1b[2;33m${ccsProfile}\x1b[0m` : '';
+    // Active todo task bubbles to line 1 (bold) so the "what am I doing?"
+    // signal stays where the eye lands first. Line 2 carries GSD+signals.
+    const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
+    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
-    if (middle) {
-      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │ ${middle} │ \x1b[2m${dirname}\x1b[0m${ctx}`);
-    } else {
-      process.stdout.write(`${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │ \x1b[2m${dirname}\x1b[0m${ctx}`);
-    }
+    // --- Line 2: GSD state │ repo signals (conditional) ---
+    // Gate: any of milestone/phase/status present OR any repo signal > 0.
+    // Separator between the two groups is a pipe, matching the existing
+    // line-1 convention (pipes between groups, dots within a group).
+    const gsdLine2 = formatLine2Gsd(gsdState);
+    const signalsLine2 = formatLine2Signals(repoSignals);
+    const line2Pieces = [gsdLine2, signalsLine2].filter(Boolean);
+    const line2 = line2Pieces.length ? line2Pieces.join(' \x1b[2m│\x1b[0m ') : '';
+
+    process.stdout.write(line2 ? `${line1}\n${line2}` : line1);
   } catch (e) {
     // Silent fail - don't break statusline on parse errors
   }
@@ -295,6 +438,11 @@ function runStatusline() {
 }
 
 // Export helpers for unit tests. Harmless when run as a script.
-module.exports = { readGsdState, parseStateMd, formatGsdState, compactModel, getCcsProfile };
+module.exports = {
+  readGsdState, parseStateMd, formatGsdState,
+  compactModel, getCcsProfile,
+  truncate, findRepoRoot, getRepoSignals,
+  formatLine2Gsd, formatLine2Signals,
+};
 
 if (require.main === module) runStatusline();

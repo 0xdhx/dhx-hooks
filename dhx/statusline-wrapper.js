@@ -39,20 +39,18 @@ process.stdin.on('end', () => {
     readHealthCache(),
     checkDrift(data),
   ]).then(([rendererOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
-    let line = rendererOutput.trimEnd();
-    if (gitInfo) {
-      line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
-    }
-    if (cacheAge) {
-      line += ` \x1b[2m│\x1b[0m ${cacheAge}`;
-    }
-    if (burnOutput) {
-      line += ` \x1b[2m│\x1b[0m ${burnOutput}`;
-    }
-    // Advisory health (fork/symlink state) — red tail, session still works
-    if (health.tail) {
-      line += ` \x1b[2m│\x1b[0m ${health.tail}`;
-    }
+    // The renderer may emit one or two lines. Line 1 carries identity +
+    // runtime telemetry (model, ctx bar, dir); line 2, when present,
+    // carries GSD state + repo signals. Git/cache/ccburn append to line 1;
+    // advisory health lands on whichever line is last so it never scrolls
+    // out of the user's eye line — line 2 when we have one, line 1 otherwise.
+    const [rendererLine1, rendererLine2 = ''] = rendererOutput.trimEnd().split('\n');
+
+    let line1 = rendererLine1;
+    if (gitInfo)   line1 += ` \x1b[2m│\x1b[0m ${gitInfo}`;
+    if (cacheAge)  line1 += ` \x1b[2m│\x1b[0m ${cacheAge}`;
+    if (burnOutput) line1 += ` \x1b[2m│\x1b[0m ${burnOutput}`;
+
     // Front-of-stack (orange 208, left of Claude/cwd): drift + critical health
     // (session-wiring degraded: plugin_keys, settings_chain). Separate segments
     // keep concerns distinct — drift says "restart", health says "/dhx:sym repair".
@@ -61,9 +59,18 @@ process.stdin.on('end', () => {
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
     if (front.length > 0) {
-      line = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line;
+      line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
-    process.stdout.write(line);
+
+    // Advisory health (fork/symlink state) — red tail, session still works.
+    // Prefer line 2 so it sits next to GSD/signals rather than crowding line 1.
+    let line2 = rendererLine2;
+    if (health.tail) {
+      if (line2) line2 += ` \x1b[2m│\x1b[0m ${health.tail}`;
+      else       line1 += ` \x1b[2m│\x1b[0m ${health.tail}`;
+    }
+
+    process.stdout.write(line2 ? `${line1}\n${line2}` : line1);
   }).catch(() => {
     // If everything fails, output nothing — don't break the statusline
   });
