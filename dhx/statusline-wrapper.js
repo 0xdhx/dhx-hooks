@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.36.0
+// gsd-hook-version: 1.37.1
 // Patterns: HP-013, HP-014, HP-016, HP-019
 // Statusline wrapper — pipes stdin through GSD's gsd-statusline.js, appends git info.
 // GSD script is called by path so GSD updates are picked up automatically.
@@ -37,10 +37,7 @@ process.stdin.on('end', () => {
     readHealthCache(),
     checkDrift(data),
   ]).then(([gsdOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
-    // Strip false-positive stale hooks warning (upstream bug: bash hooks lack
-    // JS-style version headers, fixed in GSD Unreleased but not v1.36.0).
-    // Remove this filter once upstream ships the fix (#2136).
-    let line = gsdOutput.replace(/\x1b\[3[13]m⚠ (?:stale hooks|dev install)[^\x1b]*\x1b\[0m *│ */g, '').trimEnd();
+    let line = gsdOutput.trimEnd();
     if (gitInfo) {
       line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
     }
