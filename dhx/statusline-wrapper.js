@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.37.1
 // Patterns: HP-013, HP-014, HP-016, HP-019
-// Statusline wrapper — pipes stdin through GSD's gsd-statusline.js, appends git info.
-// GSD script is called by path so GSD updates are picked up automatically.
+// Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
+// Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
+// so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
+// can evolve without coupling to /gsd-update's install path.
 
 const { execFile, spawn } = require('child_process');
 const crypto = require('crypto');
@@ -10,8 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Resolve GSD script via ~/.claude/hooks/ (not __dirname, which follows symlinks)
-const GSD_SCRIPT = path.join(os.homedir(), '.claude', 'hooks', 'gsd-statusline.js');
+// Resolve renderer via ~/.claude/hooks/ (not __dirname, which follows symlinks)
+const STATUSLINE_SCRIPT = path.join(os.homedir(), '.claude', 'hooks', 'dhx-statusline.js');
 
 // Collect stdin
 let input = '';
@@ -27,17 +29,17 @@ process.stdin.on('end', () => {
     cwd = process.cwd();
   }
 
-  // Run GSD statusline, git info, cache-age, ccburn, health cache, and drift check in parallel
-  // ccburn collect silently feeds its database; compact output goes in the statusline
+  // Run the dhx renderer, git info, cache-age, ccburn, health cache, and drift check in parallel.
+  // ccburn collect silently feeds its database; compact output goes in the statusline.
   Promise.all([
-    runGsd(input),
+    runRenderer(input),
     getGitInfo(cwd),
     getCacheAge(data),
     runCcburn(input),
     readHealthCache(),
     checkDrift(data),
-  ]).then(([gsdOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
-    let line = gsdOutput.trimEnd();
+  ]).then(([rendererOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
+    let line = rendererOutput.trimEnd();
     if (gitInfo) {
       line += ` \x1b[2m│\x1b[0m ${gitInfo}`;
     }
@@ -67,10 +69,10 @@ process.stdin.on('end', () => {
   });
 });
 
-// Pipe the raw stdin JSON into GSD's statusline script and capture stdout
-function runGsd(stdinData) {
+// Pipe the raw stdin JSON into the dhx renderer and capture stdout
+function runRenderer(stdinData) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [GSD_SCRIPT], {
+    const child = spawn(process.execPath, [STATUSLINE_SCRIPT], {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     let out = '';
