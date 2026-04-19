@@ -24,7 +24,8 @@ const { execFileSync } = require('child_process');
 const SCRIPT = path.join(__dirname, '..', '..', 'dhx', 'dhx-statusline.js');
 const {
   compactModel, getCcsProfile,
-  renderEffort, getEffortLevel, EFFORT_RENDER,
+  renderEffort, getEffortFromPane, parsePaneEffort,
+  EFFORT_RENDER, KNOWN_EFFORT_LEVELS,
   truncate, findRepoRoot, getRepoSignals,
   parseStateMd, formatLine2Gsd, formatLine2Signals,
 } = require(SCRIPT);
@@ -83,61 +84,164 @@ okObj('EFFORT_RENDER glyph progression',
   ['low','medium','high','xhigh','max'].map(k => EFFORT_RENDER[k].glyph),
   ['⡀', '⣀', '⣤', '⣶', '⣿']);
 
-// getEffortLevel: read from CLAUDE_CONFIG_DIR-resolved settings.json, null
-// on any failure. Use a temp dir + symlink chain matching the CCS layout
-// so the realpathSync resolution path is exercised.
-const tmpCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-cfg-'));
+// parsePaneEffort: regex-scan pane scrollback for CC's own effort markers.
+// Both the session banner ("Opus 4.7 ... with xhigh effort · Claude Max")
+// and every thinking spinner line ("thinking with xhigh effort") embed the
+// level verbatim — parser returns the most-recent match (bottom-up scan),
+// validates against KNOWN_EFFORT_LEVELS to reject random word matches from
+// user chat, null if nothing hits.
+ok('parsePaneEffort: banner variant',
+  parsePaneEffort('▝▜█████▛▘  Opus 4.7 (1M context) with xhigh effort · Claude Max'),
+  'xhigh');
+ok('parsePaneEffort: banner without 1M context',
+  parsePaneEffort('▝▜█████▛▘  Opus 4.7 with high effort · Claude Max'),
+  'high');
+ok('parsePaneEffort: banner without splash prefix rejected',
+  parsePaneEffort('Opus 4.7 (1M context) with high effort · Claude Max'),
+  null);
+ok('parsePaneEffort: thinking spinner — ✻',
+  parsePaneEffort('✻ Simmering… (13m 12s · ↓ 3.7k tokens · thinking with max effort)'),
+  'max');
+ok('parsePaneEffort: thinking spinner — · middle-dot',
+  parsePaneEffort('· Whirring… (thinking with medium effort)'),
+  'medium');
+ok('parsePaneEffort: thinking spinner — * asterisk',
+  parsePaneEffort('* Pondering… (thinking with low effort)'),
+  'low');
+ok('parsePaneEffort: thinking spinner — ✢',
+  parsePaneEffort('✢ Swooping… (31s · ↑ 241 tokens · thinking with medium effort)'),
+  'medium');
+ok('parsePaneEffort: thinking spinner — ✶',
+  parsePaneEffort('✶ Running… (41s · ↓ 378 tokens · thinking with high effort)'),
+  'high');
+ok('parsePaneEffort: thinking line without spinner prefix rejected',
+  parsePaneEffort('X Simmering… (thinking with max effort)'),
+  null);
+
+// Bottom-up scan: most-recent match wins. Simulates a pane where the banner
+// was at top (older session start) and a newer thinking line is below.
+const MIXED = [
+  '▝▜█████▛▘  Opus 4.7 (1M context) with medium effort · Claude Max',
+  'some intermediate output line',
+  '✻ Simmering… (13m · ↓ 3.7k tokens · thinking with xhigh effort)',
+  'more output after thinking finished',
+].join('\n');
+ok('parsePaneEffort: mixed — picks most recent (thinking beats banner)',
+  parsePaneEffort(MIXED),
+  'xhigh');
+
+// Reverse order: thinking was earlier, banner reprinted on /resume.
+const RESUMED = [
+  '✻ Simmering… (13m · ↓ 3.7k tokens · thinking with low effort)',
+  '▝▜█████▛▘  Opus 4.7 (1M context) with max effort · Claude Max',
+].join('\n');
+ok('parsePaneEffort: reprinted banner wins when it is newest',
+  parsePaneEffort(RESUMED),
+  'max');
+
+// Validation gate — random chat text should not match.
+ok('parsePaneEffort: chat "with low effort" phrase rejected (no Claude/thinking anchor)',
+  parsePaneEffort('the user achieved this with low effort overall'),
+  null);
+
+// End-of-line anchor guards against false positives from code/doc quoting.
+// Real CC lines END with the marker; anything echoing these strings in a
+// diff, string literal, or chat reply has trailing characters (`,`, `'`, `"`).
+// These came from actual live pane capture during debugging — the regex
+// without anchors would incorrectly match them.
+ok('parsePaneEffort: code fixture rejected — trailing quote+paren after effort)',
+  parsePaneEffort(`          +7k tokens · thinking with max effort)'),`),
+  null);
+ok('parsePaneEffort: JS string literal with banner text rejected',
+  parsePaneEffort(`          +high effort · Claude Max\\n',`),
+  null);
+ok('parsePaneEffort: doc prose with full banner substring rejected',
+  parsePaneEffort('banner (`Opus 4.7 (1M context) with xhigh effort · Claude Max`, prints on startup)'),
+  null);
+ok('parsePaneEffort: git diff prefix + banner text still matches if line actually ends at Max',
+  parsePaneEffort('+  ▝▜█████▛▘  Opus 4.7 (1M context) with xhigh effort · Claude Max'),
+  'xhigh');
+ok('parsePaneEffort: trailing whitespace after Max allowed',
+  parsePaneEffort('▝▜█████▛▘  Opus 4.7 with high effort · Claude Max   '),
+  'high');
+ok('parsePaneEffort: trailing whitespace after thinking ) allowed',
+  parsePaneEffort('· Simmering… (1m · ↓ 500 tokens · thinking with max effort)   '),
+  'max');
+ok('parsePaneEffort: wrapped source comment with spinner-like text rejected',
+  parsePaneEffort('     78 +//   - Spinner:  `...thinking with xhigh effort)'),
+  null);
+ok('parsePaneEffort: indented JS string literal form rejected',
+  parsePaneEffort("    parsePaneEffort('· Simmering… (thinking with max effort)'),"),
+  null);
+
+// Unknown level — a future CC level we haven't mapped yet. Parser returns
+// null until KNOWN_EFFORT_LEVELS is extended; honest "I don't know" beats
+// rendering an unmapped glyph.
+ok('parsePaneEffort: unknown level (not in KNOWN_EFFORT_LEVELS)',
+  parsePaneEffort('thinking with ultraplus effort'),
+  null);
+
+// Empty / null input — failure modes.
+ok('parsePaneEffort: empty string → null',     parsePaneEffort(''),        null);
+ok('parsePaneEffort: null → null',             parsePaneEffort(null),      null);
+ok('parsePaneEffort: undefined → null',        parsePaneEffort(undefined), null);
+ok('parsePaneEffort: no effort line → null',   parsePaneEffort('just some\nrandom\noutput'), null);
+
+// KNOWN_EFFORT_LEVELS must stay aligned with EFFORT_RENDER keys, else the
+// parser could return a level renderEffort can't render. Pin both sides.
+okObj('KNOWN_EFFORT_LEVELS matches EFFORT_RENDER keys',
+  [...KNOWN_EFFORT_LEVELS].sort(),
+  Object.keys(EFFORT_RENDER).sort());
+
+// getEffortFromPane: integration. TMUX_PANE absent → null (no subprocess).
+const prevPane = process.env.TMUX_PANE;
+delete process.env.TMUX_PANE;
+ok('getEffortFromPane: no TMUX_PANE → null', getEffortFromPane(), null);
+
+// Stub tmux via a temp shim on PATH that emits whatever DHX_TMUX_STUB_OUT
+// env holds. Lets us flip fixture output across assertions without
+// rewriting the binary each time.
+const tmuxStubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-tmux-stub-'));
 try {
-  const sharedDir = path.join(tmpCfg, 'shared');
-  const profileDir = path.join(tmpCfg, 'profile');
-  fs.mkdirSync(sharedDir);
-  fs.mkdirSync(profileDir);
   fs.writeFileSync(
-    path.join(sharedDir, 'settings.json'),
-    JSON.stringify({ effortLevel: 'xhigh', enabledPlugins: {} })
+    path.join(tmuxStubDir, 'tmux'),
+    '#!/bin/sh\nprintf "%s" "$DHX_TMUX_STUB_OUT"\n',
   );
-  // Profile's settings.json is a symlink to shared's — realpathSync must
-  // resolve through it before parsing (matches the live CCS chain).
-  fs.symlinkSync(path.join(sharedDir, 'settings.json'), path.join(profileDir, 'settings.json'));
+  fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
 
-  const prevEffortDir = process.env.CLAUDE_CONFIG_DIR;
-  process.env.CLAUDE_CONFIG_DIR = profileDir;
-  ok('getEffortLevel: reads through symlink', getEffortLevel(), 'xhigh');
+  const prevPath = process.env.PATH;
+  process.env.PATH = `${tmuxStubDir}:${prevPath}`;
+  process.env.TMUX_PANE = '%99';
 
-  // Mutate shared → next read reflects it immediately (no cache).
-  fs.writeFileSync(
-    path.join(sharedDir, 'settings.json'),
-    JSON.stringify({ effortLevel: 'medium' })
-  );
-  ok('getEffortLevel: picks up mutation', getEffortLevel(), 'medium');
+  process.env.DHX_TMUX_STUB_OUT =
+    '▝▜█████▛▘  Opus 4.7 (1M context) with xhigh effort · Claude Max\n';
+  ok('getEffortFromPane: stub banner → xhigh', getEffortFromPane(), 'xhigh');
 
-  // effortLevel absent → null (not 'undefined', not a crash).
-  fs.writeFileSync(
-    path.join(sharedDir, 'settings.json'),
-    JSON.stringify({ enabledPlugins: {} })
-  );
-  ok('getEffortLevel: missing key → null', getEffortLevel(), null);
+  process.env.DHX_TMUX_STUB_OUT =
+    '✻ Simmering… (1m · ↓ 500 tokens · thinking with max effort)\n';
+  ok('getEffortFromPane: stub thinking → max', getEffortFromPane(), 'max');
 
-  // Malformed JSON → null.
-  fs.writeFileSync(path.join(sharedDir, 'settings.json'), '{not valid json');
-  ok('getEffortLevel: malformed → null', getEffortLevel(), null);
+  process.env.DHX_TMUX_STUB_OUT = 'no effort markers here at all\n';
+  ok('getEffortFromPane: stub with no markers → null', getEffortFromPane(), null);
 
-  // Missing file → null.
-  fs.unlinkSync(path.join(sharedDir, 'settings.json'));
-  ok('getEffortLevel: unreadable symlink target → null', getEffortLevel(), null);
+  process.env.DHX_TMUX_STUB_OUT = '';
+  ok('getEffortFromPane: stub empty output → null', getEffortFromPane(), null);
 
-  // Missing CLAUDE_CONFIG_DIR → falls back to ~/.claude, still null unless
-  // the test host happens to have a parseable file there — assert it's a
-  // string-or-null shape rather than a specific value.
-  delete process.env.CLAUDE_CONFIG_DIR;
-  const fallback = getEffortLevel();
-  ok('getEffortLevel: env unset → string or null',
-    fallback === null || typeof fallback === 'string', true);
+  // Failing binary — shim that exits non-zero should surface as null, not crash.
+  fs.writeFileSync(path.join(tmuxStubDir, 'tmux'), '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
+  ok('getEffortFromPane: tmux exits non-zero → null', getEffortFromPane(), null);
 
-  if (prevEffortDir !== undefined) process.env.CLAUDE_CONFIG_DIR = prevEffortDir;
-  else delete process.env.CLAUDE_CONFIG_DIR;
+  // Missing binary — PATH with no tmux at all.
+  process.env.PATH = '/nonexistent-path-dir';
+  ok('getEffortFromPane: tmux not on PATH → null', getEffortFromPane(), null);
+
+  process.env.PATH = prevPath;
+  delete process.env.DHX_TMUX_STUB_OUT;
 } finally {
-  fs.rmSync(tmpCfg, { recursive: true, force: true });
+  fs.rmSync(tmuxStubDir, { recursive: true, force: true });
+  if (prevPane !== undefined) process.env.TMUX_PANE = prevPane;
+  else delete process.env.TMUX_PANE;
 }
 
 // --- § 2 getCcsProfile ------------------------------------------------------
@@ -310,16 +414,27 @@ function renderStatusline(stdin) {
   });
 }
 
-// Render with a known-good effortLevel fixture so the effort glyph renders
-// deterministically regardless of the host's live settings.json.
-const e2eCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-e2e-cfg-'));
-fs.writeFileSync(path.join(e2eCfg, 'settings.json'), JSON.stringify({ effortLevel: 'high' }));
+// Render with a stubbed tmux so the effort glyph renders deterministically
+// regardless of the host's live tmux scrollback. The stub prints whatever
+// we put in DHX_TMUX_STUB_OUT.
+const e2eStubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-e2e-stub-'));
+fs.writeFileSync(
+  path.join(e2eStubDir, 'tmux'),
+  '#!/bin/sh\nprintf "%s" "$DHX_TMUX_STUB_OUT"\n',
+);
+fs.chmodSync(path.join(e2eStubDir, 'tmux'), 0o755);
 
 function renderWithFixtures(stdin) {
   return execFileSync(process.execPath, [SCRIPT], {
     input: JSON.stringify(stdin),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: e2eCfg },
+    env: {
+      ...process.env,
+      PATH: `${e2eStubDir}:${process.env.PATH}`,
+      TMUX_PANE: '%99',
+      DHX_TMUX_STUB_OUT:
+        '▝▜█████▛▘  Opus 4.7 (1M context) with high effort · Claude Max\n',
+    },
   });
 }
 
@@ -348,8 +463,8 @@ const [hLine1, hLine2] = outHooks.split('\n');
 ok('e2e: hooks repo produces two lines', outHooks.includes('\n'), true);
 ok('e2e: hooks repo line 2 has R prefix', strip(hLine2 || '').match(/R\d+/) !== null, true);
 
-// Clean up e2e config fixture after all renderWithFixtures calls complete.
-fs.rmSync(e2eCfg, { recursive: true, force: true });
+// Clean up e2e tmux stub after all renderWithFixtures calls complete.
+fs.rmSync(e2eStubDir, { recursive: true, force: true });
 
 // --- Summary ----------------------------------------------------------------
 
