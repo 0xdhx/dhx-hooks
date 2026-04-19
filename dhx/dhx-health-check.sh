@@ -1,5 +1,5 @@
 #!/bin/bash
-# Patterns: HP-009
+# Patterns: HP-009, HP-016
 # DHX Health Check — SessionStart hook
 # Runs fork verification and symlink checks, writes results to cache.
 # Clears this session's drift snapshot so wrapper writes a fresh baseline on resume.
@@ -126,14 +126,42 @@ if [[ -n "$SESSION_ID" ]]; then
   rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json" "$CACHE_DIR"/drift-snapshot-${SESSION_ID}-*.json
 fi
 
+# --- Prune orphan drift snapshots (Linux: live-tick cross-check) ---
+# Fast path: a snapshot filename carries `-p<ticks>` (HP-016 field 22) and any
+# ticks value not present in a live CC process is an orphan. 1h mtime grace
+# handles newly-started CC processes whose hook just fired (this session or a
+# sibling coming up in the same minute). Non-Linux (no /proc) skips this block
+# and relies on the 30d sweep below.
+#
+# Keeps the cache scannable during debugging — `ls ~/.cache/dhx/` stays a
+# handful of files instead of hundreds. Not a correctness fix; hygiene only.
+# Each live session still keys on its own (session_id, ticks), so no probe
+# cares which dead sessions' snapshots survived.
+if [[ -d /proc ]]; then
+  live_ticks=$(for pid in $(pgrep -f 'bin/claude' 2>/dev/null); do
+    awk '{print $22}' /proc/"$pid"/stat 2>/dev/null
+  done | sort -u)
+  now=$(date +%s)
+  for f in "$CACHE_DIR"/drift-snapshot-*-p*.json; do
+    [[ -f "$f" ]] || continue
+    ticks=$(basename "$f" | sed -nE 's/^drift-snapshot-.*-p([0-9]+)\.json$/\1/p')
+    [[ -z "$ticks" ]] && continue
+    mtime=$(stat -c '%Y' "$f" 2>/dev/null || echo 0)
+    (( now - mtime < 3600 )) && continue
+    if ! grep -Fxq "$ticks" <<<"$live_ticks"; then
+      rm -f "$f"
+    fi
+  done
+fi
+
 # --- Prune stale drift cache files (>30 days) ---
-# Orphans accumulate when CC processes exit without running this hook (the
-# wrapper writes per (session_id, CC_ticks) on first invocation; dead CC
-# processes leave their snapshot behind). 30d is defensive — this session's
-# own snapshot is cleared above, so prune below only touches other sessions.
-# session-start-*.json and session-version-*.txt were prior drift designs
-# obsoleted by the snapshot-comparison scheme; nothing writes them anymore.
-# One-time purge happened 2026-04-16 under the drift-fix orchestration.
+# Catchall for non-Linux (no /proc orphan sweep above) and for legacy files
+# without `-p<ticks>` suffix (macOS fallback path from HP-016, pre-2026-04-16
+# snapshots). Defense-in-depth: any file the orphan sweep missed, the 30d TTL
+# eventually collects. session-start-*.json and session-version-*.txt were
+# prior drift designs obsoleted by the snapshot-comparison scheme; nothing
+# writes them anymore — one-time purge happened 2026-04-16 under the drift-fix
+# orchestration.
 find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
 
 exit 0
