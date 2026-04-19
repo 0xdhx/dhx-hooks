@@ -339,33 +339,58 @@ function hashWarnSettings(settingsReal) {
   } catch { return ''; }
 }
 
-// Helper: recursively get max mtime across all entries in a directory
-function getMaxMtimeRecursive(dir) {
-  let max = 0;
+// Helper: recursively scan a directory, returning both max mtime AND entry count.
+// Count is zero extra I/O — readdirSync({recursive:true}) enumerates everything
+// anyway, so counting the returned array is free. Both signals feed checkDrift()'s
+// compare — mtime catches new/modified files; count catches deletions that would
+// otherwise shrink the recursive max below the snapshot and silently slip past the
+// strict `>` comparison. See docs/decisions.md 2026-04-18 drift-bundle row.
+//
+// INVARIANT: POSIX directory mtime does NOT bump on descendant writes — only on
+// direct-child add/remove. A plugin version update writing into
+// marketplace/plugin/1.0/hook.json leaves marketplace's own mtime frozen, so any
+// shallow scan of plugins/cache misses the drift. This is why the scan must
+// recurse even for plugins (where the prior shallow scan was specifically
+// broken).
+function scanRecursive(dir) {
+  let maxMtime = 0;
+  let count = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
+    count = entries.length;
     for (const entry of entries) {
       try {
-        const fullPath = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
-        const st = fs.statSync(fullPath);
-        if (st.mtimeMs > max) max = st.mtimeMs;
-      } catch { /* skip unreadable entries */ }
+        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const st = fs.statSync(full);
+        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+      } catch { /* skip */ }
     }
-  } catch { /* directory doesn't exist or unreadable */ }
-  return max;
+  } catch { /* missing dir */ }
+  return { maxMtime, count };
 }
 
 // Collect current snapshot for all 5 watched paths + version. `settings` is
 // hashed over the WARN-set projection rather than mtime'd — see HP-014's
 // hot-reload note in the wrapper doc for why /effort, /model, /output-style,
-// permission-grant mutations MUST NOT trip drift.
+// permission-grant mutations MUST NOT trip drift. All three filesystem trees
+// (agents, gsd, plugins) scan recursively via scanRecursive() — plugins was
+// shallow pre-2026-04-18, missed nested writes. See docs/decisions.md drift-
+// bundle row.
 function collectSnapshot(data) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+
+  const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
+  const gsd = scanRecursive(path.join(os.homedir(), '.claude', 'get-shit-done'));
+  const plugins = scanRecursive(path.join(configDir, 'plugins', 'cache'));
+
   const snapshot = {
-    agents_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'agents')),
+    agents_mtime: agents.maxMtime,
+    agents_count: agents.count,
     settings_hash: '',
-    gsd_mtime: getMaxMtimeRecursive(path.join(os.homedir(), '.claude', 'get-shit-done')),
-    plugins_mtime: 0,
+    gsd_mtime: gsd.maxMtime,
+    gsd_count: gsd.count,
+    plugins_mtime: plugins.maxMtime,
+    plugins_count: plugins.count,
     version: data.version || '',
   };
 
@@ -374,18 +399,6 @@ function collectSnapshot(data) {
     const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
     snapshot.settings_hash = hashWarnSettings(settingsReal);
   } catch { /* missing or unresolvable — hash stays '' */ }
-
-  // CCS plugins cache — shallow scan of top-level dirs
-  try {
-    const pluginsCache = path.join(configDir, 'plugins', 'cache');
-    const entries = fs.readdirSync(pluginsCache, { withFileTypes: true });
-    for (const entry of entries) {
-      try {
-        const st = fs.statSync(path.join(pluginsCache, entry.name));
-        if (st.mtimeMs > snapshot.plugins_mtime) snapshot.plugins_mtime = st.mtimeMs;
-      } catch { /* skip */ }
-    }
-  } catch { /* plugins cache missing — no-op */ }
 
   return snapshot;
 }
@@ -431,22 +444,28 @@ function checkDrift(data) {
       return writeBaselineAndReturnClean();
     }
 
-    // Schema migration: pre-hash snapshots lack `settings_hash`. Treat as
-    // first-invocation — re-baseline with the current hash-bearing snapshot
-    // and skip drift this round. Avoids comparing mixed-format fields and
-    // guarantees one-round grace on upgrade.
-    if (!('settings_hash' in snapshot)) {
+    // Schema migration: pre-hash snapshots lack `settings_hash`; pre-count
+    // snapshots (2026-04-18 drift bundle) lack `agents_count`. Either absence
+    // re-baselines as a first-invocation so mixed-format fields never compare.
+    // Unified guard = one round of grace per upgrade, not two.
+    if (!('settings_hash' in snapshot) || !('agents_count' in snapshot)) {
       return writeBaselineAndReturnClean();
     }
 
     // Compare: collect which paths drifted (short labels match snapshot keys).
     // Exposing triggers enables tuning — without this, every false positive
     // looks identical and there's no way to diagnose which signal is noisy.
+    // Each tree fires on mtime INCREASE or count DECREASE — the count branch
+    // catches deletion-only updates that leave a smaller max mtime than the
+    // snapshot (strict `>` alone would miss them).
     const triggers = [];
-    if (current.agents_mtime > snapshot.agents_mtime) triggers.push('agents');
+    if (current.agents_mtime > snapshot.agents_mtime ||
+        current.agents_count < snapshot.agents_count) triggers.push('agents');
     if (current.settings_hash !== snapshot.settings_hash) triggers.push('settings');
-    if (current.gsd_mtime > snapshot.gsd_mtime) triggers.push('gsd');
-    if (current.plugins_mtime > snapshot.plugins_mtime) triggers.push('plugins');
+    if (current.gsd_mtime > snapshot.gsd_mtime ||
+        current.gsd_count < snapshot.gsd_count) triggers.push('gsd');
+    if (current.plugins_mtime > snapshot.plugins_mtime ||
+        current.plugins_count < snapshot.plugins_count) triggers.push('plugins');
     if (current.version !== snapshot.version) triggers.push('version');
 
     if (triggers.length === 0) return resolve('');
