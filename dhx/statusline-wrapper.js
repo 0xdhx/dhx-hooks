@@ -15,7 +15,11 @@ const os = require('os');
 // Resolve renderer via ~/.claude/hooks/ (not __dirname, which follows symlinks)
 const STATUSLINE_SCRIPT = path.join(os.homedir(), '.claude', 'hooks', 'dhx-statusline.js');
 
-// Collect stdin
+// Gate top-level stdin wiring on direct invocation so probe-harness
+// require()s don't hang waiting for stdin to close.
+if (require.main === module) runMain();
+
+function runMain() {
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
@@ -75,6 +79,7 @@ process.stdin.on('end', () => {
     // If everything fails, output nothing — don't break the statusline
   });
 });
+} // runMain
 
 // Pipe the raw stdin JSON into the dhx renderer and capture stdout
 function runRenderer(stdinData) {
@@ -91,10 +96,16 @@ function runRenderer(stdinData) {
   });
 }
 
-// ccburn: collect data + return compact status
+// ccburn: collect data + build compact segment from --json --once.
+// Two calls: (1) `collect` populates ccburn's database from the statusline
+// stdin payload (no-op if ccburn missing); (2) `--json --once` returns the
+// structured limits we format ourselves. Prior design piped `--compact`
+// through a regex munger, which coupled our output to ccburn's text format
+// and didn't expose the weekly reset timer. JSON gives us `resets_in_minutes`
+// / `resets_in_hours` directly and lets `formatBurnDuration` own a single
+// duration convention shared between session and weekly.
 function runCcburn(stdinData) {
   return new Promise((resolve) => {
-    // Feed stdin to ccburn collect (populates its database)
     const collect = spawn('ccburn', ['collect'], {
       stdio: ['pipe', 'ignore', 'ignore'],
     });
@@ -102,24 +113,81 @@ function runCcburn(stdinData) {
     collect.stdin.end();
     collect.on('error', () => {}); // ccburn not installed — no-op
 
-    // Get compact one-line status
-    const compact = spawn('ccburn', ['--compact', '--once'], {
+    const json = spawn('ccburn', ['--json', '--once'], {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     let out = '';
-    compact.stdout.on('data', chunk => out += chunk);
-    compact.on('close', () => resolve(compactCcburn(out.trim())));
-    compact.on('error', () => resolve(''));
+    json.stdout.on('data', chunk => out += chunk);
+    json.on('close', () => resolve(buildCcburnSegment(out)));
+    json.on('error', () => resolve(''));
   });
 }
 
-// Shorten ccburn's labels so the status bar stays readable.
-//   "Session: 🧊 1% (4h 6m) · Weekly: 🧊 0%"  →  "S: 🧊 1% (4h 6m) · W: 🧊 0%"
-// Word-boundary regex so the substitution can't chew through an embedded
-// label (e.g. a projection name that happens to contain "Weekly").
-function compactCcburn(text) {
-  if (!text) return text;
-  return text.replace(/\bSession:/g, 'S:').replace(/\bWeekly:/g, 'W:');
+// Map ccburn's pace status → emoji. `status` reflects utilization-vs-budget-
+// pace (behind = conserving, ahead = burning hot), which is what the user
+// actually reads at a glance — not raw % alone. Unknown statuses collapse to
+// empty so the segment still renders a pct without a misleading icon.
+function statusEmoji(status) {
+  switch (status) {
+    case 'behind_pace':   return '🧊';
+    case 'at_pace':       return '🟢';
+    case 'ahead_of_pace': return '🚨';
+    case 'exhausted':     return '💀';
+    default:              return '';
+  }
+}
+
+// Minutes → compact duration. Rules:
+//   <1m   → "<1m"
+//   <1h   → "XXm"        (e.g. "47m")
+//   <6h   → "XhXXm"      (e.g. "1h58m") — minute zero-padded for alignment
+//   <24h  → "Xh"         (drop minutes, long-tail reads don't need them)
+//   ≥24h  → "Nd"         (days, no hours — weekly reset is often multi-day)
+// null/undefined/negative → '' so the segment hides the duration entirely.
+function formatBurnDuration(minutes) {
+  if (minutes == null || !Number.isFinite(minutes) || minutes < 0) return '';
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${Math.floor(minutes)}m`;
+  if (minutes < 360) {
+    const h = Math.floor(minutes / 60);
+    const m = Math.floor(minutes % 60);
+    return `${h}h${String(m).padStart(2, '0')}m`;
+  }
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
+  return `${Math.floor(minutes / 1440)}d`;
+}
+
+// Build the ccburn status segment from parsed JSON. ccburn exposes one
+// reset field populated per limit (minutes for short horizons, hours for
+// long ones); we normalize to minutes before formatting. Partial limits
+// (session present, weekly absent, or vice versa) render whichever side
+// has data — resilient to ccburn shape drift.
+//
+// Example: `{limits:{session:{utilization:0.09,status:"behind_pace",resets_in_minutes:118},
+// weekly:{utilization:0.47,status:"ahead_of_pace",resets_in_hours:72}}}`
+// →       `S:🧊 9% (1h58m) · W:🚨 47% (3d)`
+function buildCcburnSegment(jsonText) {
+  if (!jsonText) return '';
+  let data;
+  try { data = JSON.parse(jsonText); } catch { return ''; }
+  const limits = data && data.limits;
+  if (!limits) return '';
+  const parts = [];
+  for (const [key, prefix] of [['session', 'S'], ['weekly', 'W']]) {
+    const limit = limits[key];
+    if (!limit) continue;
+    const pct = Math.round((limit.utilization || 0) * 100);
+    const emoji = statusEmoji(limit.status);
+    const mins = limit.resets_in_minutes != null
+      ? limit.resets_in_minutes
+      : limit.resets_in_hours != null
+        ? limit.resets_in_hours * 60
+        : null;
+    const dur = formatBurnDuration(mins);
+    const pctLabel = emoji ? `${emoji} ${pct}%` : `${pct}%`;
+    parts.push(`${prefix}:${pctLabel}${dur ? ` (${dur})` : ''}`);
+  }
+  return parts.join(' · ');
 }
 
 // Read health cache written by dhx-health-check.sh (SessionStart).
@@ -529,3 +597,11 @@ function getGitInfo(cwd) {
     return parts.join(' ');
   }).catch(() => '');
 }
+
+module.exports = {
+  buildCcburnSegment,
+  formatBurnDuration,
+  statusEmoji,
+  hashWarnSettings,
+  canonicalize,
+};

@@ -16,17 +16,54 @@ const os = require('os');
 
 // --- Model + CCS identity ----------------------------------------------------
 
-// Compact display_name to "<letter>-<version>[ (1M)]".
-//   "Opus 4.7 (1M context)" → "O-4.7 (1M)"
-//   "Sonnet 4.6"            → "S-4.6"
-//   "Haiku 4.5"             → "H-4.5"
-// Unrecognized shapes pass through verbatim so we never hide the identity.
+// Compact display_name to "<lowercase-letter><version>[+]".
+//   "Opus 4.7 (1M context)" → "o4.7+"
+//   "Opus 4.7"              → "o4.7"
+//   "Sonnet 4.6"            → "s4.6"
+//   "Haiku 4.5"             → "h4.5"
+// Lowercase reads quieter next to the dim model color; `+` replaces "(1M)"
+// so the segment stays 5 chars vs the old 10-13. Unrecognized shapes pass
+// through verbatim so we never hide the identity on a new model ship.
 function compactModel(displayName) {
   if (!displayName) return 'Claude';
   const m = displayName.match(/^(Opus|Sonnet|Haiku)\s+([\d.]+)/);
   if (!m) return displayName;
   const has1M = /\(1M context\)/.test(displayName);
-  return `${m[1][0]}-${m[2]}${has1M ? ' (1M)' : ''}`;
+  return `${m[1][0].toLowerCase()}${m[2]}${has1M ? '+' : ''}`;
+}
+
+// Effort level → colored braille-density glyph (set B from menu: both-column
+// bottom-up fill). Read from settings.json's effortLevel key; CC updates
+// this atomically on /effort so the next refresh reflects the change.
+// effortLevel is session-safe (NOT in WARN set) so changes don't trip drift.
+//
+// States + colors track the context-bar ramp so both meters read with the
+// same "hotter = more burn" polarity. Unknown / missing → '' (hide segment).
+const EFFORT_RENDER = {
+  low:    { glyph: '⡀', color: '\x1b[2m' },           // dim gray — spark
+  medium: { glyph: '⣀', color: '\x1b[36m' },          // cyan — warming up
+  high:   { glyph: '⣤', color: '\x1b[33m' },          // yellow — active
+  xhigh:  { glyph: '⣶', color: '\x1b[38;5;208m' },    // orange 208 — hot
+  max:    { glyph: '⣿', color: '\x1b[31m' },          // red — all-in
+};
+
+function renderEffort(level) {
+  const r = EFFORT_RENDER[level];
+  return r ? `${r.color}${r.glyph}\x1b[0m` : '';
+}
+
+// Read effortLevel from the CCS-resolved settings.json. Returns null on any
+// failure so callers can drop the segment silently. One realpathSync +
+// readFileSync per refresh (~1ms on a ~4KB file).
+function getEffortLevel() {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    const real = fs.realpathSync(path.join(configDir, 'settings.json'));
+    const settings = JSON.parse(fs.readFileSync(real, 'utf8'));
+    return settings.effortLevel || null;
+  } catch {
+    return null;
+  }
 }
 
 // Return the CCS profile letter when CLAUDE_CONFIG_DIR resolves to a CCS
@@ -287,6 +324,7 @@ function runStatusline() {
   try {
     const data = JSON.parse(input);
     const model = compactModel(data.model?.display_name);
+    const effort = renderEffort(getEffortLevel());
     const ccsProfile = getCcsProfile();
     const dir = data.workspace?.current_dir || process.cwd();
     const session = data.session_id || '';
@@ -419,7 +457,10 @@ function runStatusline() {
     // Active todo task bubbles to line 1 (bold) so the "what am I doing?"
     // signal stays where the eye lands first. Line 2 carries GSD+signals.
     const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
-    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
+    // Effort glyph sits inline after the model with no separator — the glyph's
+    // own color provides the visual break. Hidden when settings.json has no
+    // effortLevel (e.g. CCS instance swap before first /effort).
+    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effort}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
     // --- Line 2: GSD state │ repo signals (conditional) ---
     // Gate: any of milestone/phase/status present OR any repo signal > 0.
@@ -441,6 +482,7 @@ function runStatusline() {
 module.exports = {
   readGsdState, parseStateMd, formatGsdState,
   compactModel, getCcsProfile,
+  renderEffort, getEffortLevel, EFFORT_RENDER,
   truncate, findRepoRoot, getRepoSignals,
   formatLine2Gsd, formatLine2Signals,
 };

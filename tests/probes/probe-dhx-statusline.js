@@ -24,6 +24,7 @@ const { execFileSync } = require('child_process');
 const SCRIPT = path.join(__dirname, '..', '..', 'dhx', 'dhx-statusline.js');
 const {
   compactModel, getCcsProfile,
+  renderEffort, getEffortLevel, EFFORT_RENDER,
   truncate, findRepoRoot, getRepoSignals,
   parseStateMd, formatLine2Gsd, formatLine2Signals,
 } = require(SCRIPT);
@@ -43,15 +44,101 @@ function okObj(label, got, want) {
   else { console.log(`FAIL ${label}\n  got:  ${gs}\n  want: ${ws}`); fail++; }
 }
 
+// ANSI-stripped projection for readable asserts across sections
+const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
 // --- § 1 compactModel -------------------------------------------------------
 
-ok('compactModel: Opus 4.7 (1M context)', compactModel('Opus 4.7 (1M context)'), 'O-4.7 (1M)');
-ok('compactModel: Sonnet 4.6', compactModel('Sonnet 4.6'), 'S-4.6');
-ok('compactModel: Haiku 4.5', compactModel('Haiku 4.5'), 'H-4.5');
-ok('compactModel: Sonnet 4.6 (1M context)', compactModel('Sonnet 4.6 (1M context)'), 'S-4.6 (1M)');
+ok('compactModel: Opus 4.7 (1M context)', compactModel('Opus 4.7 (1M context)'), 'o4.7+');
+ok('compactModel: Opus 4.7 (no 1M)', compactModel('Opus 4.7'), 'o4.7');
+ok('compactModel: Sonnet 4.6', compactModel('Sonnet 4.6'), 's4.6');
+ok('compactModel: Haiku 4.5', compactModel('Haiku 4.5'), 'h4.5');
+ok('compactModel: Sonnet 4.6 (1M context)', compactModel('Sonnet 4.6 (1M context)'), 's4.6+');
 ok('compactModel: unknown shape passes through', compactModel('SomeNewModel 5.0'), 'SomeNewModel 5.0');
 ok('compactModel: empty → Claude', compactModel(''), 'Claude');
 ok('compactModel: null → Claude', compactModel(null), 'Claude');
+
+// --- § 1b renderEffort + getEffortLevel ------------------------------------
+
+// Each level maps to a distinct glyph + color. Probe pins the glyph bytes
+// so a future refactor can't silently swap the set without updating docs.
+ok('renderEffort: low',    strip(renderEffort('low')),    '⡀');
+ok('renderEffort: medium', strip(renderEffort('medium')), '⣀');
+ok('renderEffort: high',   strip(renderEffort('high')),   '⣤');
+ok('renderEffort: xhigh',  strip(renderEffort('xhigh')),  '⣶');
+ok('renderEffort: max',    strip(renderEffort('max')),    '⣿');
+ok('renderEffort: unknown → empty',  renderEffort('weird'), '');
+ok('renderEffort: null → empty',     renderEffort(null),    '');
+ok('renderEffort: undefined → empty', renderEffort(undefined), '');
+
+// Color carries the meter ramp — confirm each level wears its band.
+ok('renderEffort: low is dim',       renderEffort('low').includes('\x1b[2m'),     true);
+ok('renderEffort: medium is cyan',   renderEffort('medium').includes('\x1b[36m'), true);
+ok('renderEffort: high is yellow',   renderEffort('high').includes('\x1b[33m'),   true);
+ok('renderEffort: xhigh is orange',  renderEffort('xhigh').includes('\x1b[38;5;208m'), true);
+ok('renderEffort: max is red',       renderEffort('max').includes('\x1b[31m'),    true);
+
+// Ordered set check — prevents accidental reordering of the fill progression.
+okObj('EFFORT_RENDER glyph progression',
+  ['low','medium','high','xhigh','max'].map(k => EFFORT_RENDER[k].glyph),
+  ['⡀', '⣀', '⣤', '⣶', '⣿']);
+
+// getEffortLevel: read from CLAUDE_CONFIG_DIR-resolved settings.json, null
+// on any failure. Use a temp dir + symlink chain matching the CCS layout
+// so the realpathSync resolution path is exercised.
+const tmpCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-cfg-'));
+try {
+  const sharedDir = path.join(tmpCfg, 'shared');
+  const profileDir = path.join(tmpCfg, 'profile');
+  fs.mkdirSync(sharedDir);
+  fs.mkdirSync(profileDir);
+  fs.writeFileSync(
+    path.join(sharedDir, 'settings.json'),
+    JSON.stringify({ effortLevel: 'xhigh', enabledPlugins: {} })
+  );
+  // Profile's settings.json is a symlink to shared's — realpathSync must
+  // resolve through it before parsing (matches the live CCS chain).
+  fs.symlinkSync(path.join(sharedDir, 'settings.json'), path.join(profileDir, 'settings.json'));
+
+  const prevEffortDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = profileDir;
+  ok('getEffortLevel: reads through symlink', getEffortLevel(), 'xhigh');
+
+  // Mutate shared → next read reflects it immediately (no cache).
+  fs.writeFileSync(
+    path.join(sharedDir, 'settings.json'),
+    JSON.stringify({ effortLevel: 'medium' })
+  );
+  ok('getEffortLevel: picks up mutation', getEffortLevel(), 'medium');
+
+  // effortLevel absent → null (not 'undefined', not a crash).
+  fs.writeFileSync(
+    path.join(sharedDir, 'settings.json'),
+    JSON.stringify({ enabledPlugins: {} })
+  );
+  ok('getEffortLevel: missing key → null', getEffortLevel(), null);
+
+  // Malformed JSON → null.
+  fs.writeFileSync(path.join(sharedDir, 'settings.json'), '{not valid json');
+  ok('getEffortLevel: malformed → null', getEffortLevel(), null);
+
+  // Missing file → null.
+  fs.unlinkSync(path.join(sharedDir, 'settings.json'));
+  ok('getEffortLevel: unreadable symlink target → null', getEffortLevel(), null);
+
+  // Missing CLAUDE_CONFIG_DIR → falls back to ~/.claude, still null unless
+  // the test host happens to have a parseable file there — assert it's a
+  // string-or-null shape rather than a specific value.
+  delete process.env.CLAUDE_CONFIG_DIR;
+  const fallback = getEffortLevel();
+  ok('getEffortLevel: env unset → string or null',
+    fallback === null || typeof fallback === 'string', true);
+
+  if (prevEffortDir !== undefined) process.env.CLAUDE_CONFIG_DIR = prevEffortDir;
+  else delete process.env.CLAUDE_CONFIG_DIR;
+} finally {
+  fs.rmSync(tmpCfg, { recursive: true, force: true });
+}
 
 // --- § 2 getCcsProfile ------------------------------------------------------
 
@@ -170,9 +257,6 @@ try {
 
 // --- § 6 formatLine2Gsd + formatLine2Signals --------------------------------
 
-// ANSI-stripped projection for readable asserts
-const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
-
 const fullState = {
   milestone: 'v1.4',
   milestoneName: 'Research Orchestration',
@@ -226,8 +310,21 @@ function renderStatusline(stdin) {
   });
 }
 
+// Render with a known-good effortLevel fixture so the effort glyph renders
+// deterministically regardless of the host's live settings.json.
+const e2eCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-e2e-cfg-'));
+fs.writeFileSync(path.join(e2eCfg, 'settings.json'), JSON.stringify({ effortLevel: 'high' }));
+
+function renderWithFixtures(stdin) {
+  return execFileSync(process.execPath, [SCRIPT], {
+    input: JSON.stringify(stdin),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CONFIG_DIR: e2eCfg },
+  });
+}
+
 // Non-GSD dir with no repo signals → single line (no \n)
-const outSingle = renderStatusline({
+const outSingle = renderWithFixtures({
   session_id: 'probe',
   model: { display_name: 'Opus 4.7 (1M context)' },
   workspace: { current_dir: os.tmpdir() },
@@ -236,10 +333,12 @@ const outSingle = renderStatusline({
 ok('e2e: single line when no GSD + no signals (no newline)',
   outSingle.includes('\n'), false);
 ok('e2e: single line has compact model',
-  outSingle.includes('O-4.7 (1M)'), true);
+  outSingle.includes('o4.7+'), true);
+ok('e2e: effort glyph renders inline',
+  strip(outSingle).includes('o4.7+⣤'), true);
 
 // hooks repo (signals only, no GSD frontmatter) → two lines
-const outHooks = renderStatusline({
+const outHooks = renderWithFixtures({
   session_id: 'probe',
   model: { display_name: 'Opus 4.7 (1M context)' },
   workspace: { current_dir: '/home/dhx/repos/hooks' },
@@ -248,6 +347,9 @@ const outHooks = renderStatusline({
 const [hLine1, hLine2] = outHooks.split('\n');
 ok('e2e: hooks repo produces two lines', outHooks.includes('\n'), true);
 ok('e2e: hooks repo line 2 has R prefix', strip(hLine2 || '').match(/R\d+/) !== null, true);
+
+// Clean up e2e config fixture after all renderWithFixtures calls complete.
+fs.rmSync(e2eCfg, { recursive: true, force: true });
 
 // --- Summary ----------------------------------------------------------------
 
