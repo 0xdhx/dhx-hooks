@@ -524,10 +524,11 @@ function runStatusline() {
     // Active todo task bubbles to line 1 (bold) so the "what am I doing?"
     // signal stays where the eye lands first. Line 2 carries GSD+signals.
     const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
-    // Effort glyph sits inline after the model with no separator — the glyph's
-    // own color provides the visual break. Hidden when settings.json has no
+    // Effort glyph sits after the model, separated by a space so the two
+    // segments don't visually merge. Hidden when settings.json has no
     // effortLevel (e.g. CCS instance swap before first /effort).
-    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effort}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
+    const effortSeg = effort ? ` ${effort}` : '';
+    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
     // --- Line 2: GSD state │ repo signals (conditional) ---
     // Gate: any of milestone/phase/status present OR any repo signal > 0.

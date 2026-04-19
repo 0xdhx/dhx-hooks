@@ -449,8 +449,8 @@ ok('e2e: single line when no GSD + no signals (no newline)',
   outSingle.includes('\n'), false);
 ok('e2e: single line has compact model',
   outSingle.includes('o4.7+'), true);
-ok('e2e: effort glyph renders inline',
-  strip(outSingle).includes('o4.7+⣤'), true);
+ok('e2e: effort glyph renders with space after model',
+  strip(outSingle).includes('o4.7+ ⣤'), true);
 
 // hooks repo (signals only, no GSD frontmatter) → two lines
 const outHooks = renderWithFixtures({
