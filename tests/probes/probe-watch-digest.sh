@@ -4,16 +4,27 @@
 
 set -uo pipefail
 
-SURFACER="$HOME/repos/hooks/dhx/dhx-watch-digest.sh"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+SURFACER="$REPO/dhx/dhx-watch-digest.sh"
 PASS=0
 FAIL=0
 
 ok() { echo "OK   $1: $2"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL $1: $2"; FAIL=$((FAIL + 1)); }
 
+# Temp-dir registry for trap-based cleanup
+TEMP_DIRS=()
+cleanup() {
+  for d in "${TEMP_DIRS[@]}"; do
+    [ -d "$d" ] && rm -rf "$d"
+  done
+}
+trap cleanup EXIT
+
 mktemp_state() {
   local d
   d=$(mktemp -d -t watch-digest-probe-XXXXXX)
+  TEMP_DIRS+=("$d")
   echo "$d"
 }
 

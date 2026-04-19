@@ -4,18 +4,29 @@
 
 set -uo pipefail
 
-CHECKER="$HOME/repos/cross-repo/watch/bin/dhx-watch-check.sh"
-FIXTURES="$HOME/repos/hooks/tests/fixtures/watch"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+CHECKER="$HOME/repos/cross-repo/watch/bin/dhx-watch-check.sh"  # external to this repo
+FIXTURES="$REPO/tests/fixtures/watch"
 PASS=0
 FAIL=0
 
 ok() { echo "OK   $1: $2"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL $1: $2"; FAIL=$((FAIL + 1)); }
 
+# Temp-dir registry for trap-based cleanup
+TEMP_DIRS=()
+cleanup() {
+  for d in "${TEMP_DIRS[@]}"; do
+    [ -d "$d" ] && rm -rf "$d"
+  done
+}
+trap cleanup EXIT
+
 # Create an isolated state dir per test case to avoid pollution
 mktemp_state() {
   local d
   d=$(mktemp -d -t watch-check-probe-XXXXXX)
+  TEMP_DIRS+=("$d")
   echo '{"schema_version":1,"items":[]}' > "$d/watchlist.json"
   echo "$d"
 }
