@@ -102,22 +102,25 @@ if [ -n "$REG_STAGED" ]; then
   if [ -n "$REG_BLOB" ]; then
     # Walk each ## HP-NNN section and confirm a non-empty Evidence bullet exists
     # before the next ## or end of file.
-    SECTION_IDS=$(printf '%s\n' "$REG_BLOB" | grep -oE '^## HP-[0-9]+' | awk '{print $2}' | sort -u)
+    # Here-strings (<<<) avoid the `printf | awk {exit}` SIGPIPE false-positive that
+    # pipefail surfaces once REG_BLOB exceeds the pipe buffer (~64KB). awk reads from
+    # a temp file bash creates for the here-string — no pipe, no SIGPIPE.
+    SECTION_IDS=$(grep -oE '^## HP-[0-9]+' <<< "$REG_BLOB" | awk '{print $2}' | sort -u)
     for id in $SECTION_IDS; do
       # Extract the section body: from this header up to the next ## header
-      SECTION_BODY=$(printf '%s\n' "$REG_BLOB" | awk -v id="$id" '
+      SECTION_BODY=$(awk -v id="$id" '
         $0 ~ "^## "id" " {grab=1; next}
         grab && /^## / {exit}
         grab {print}
-      ')
+      ' <<< "$REG_BLOB")
       # Pull the lines following the **Evidence:** marker until a blank-line break
       # or another bold marker, then check at least one bullet exists.
-      EVIDENCE_BULLETS=$(printf '%s\n' "$SECTION_BODY" | awk '
+      EVIDENCE_BULLETS=$(awk '
         /^\*\*Evidence:\*\*/ {grab=1; next}
         grab && /^\*\*[A-Za-z]/ {exit}
         grab && /^## / {exit}
         grab && /^- / {print}
-      ')
+      ' <<< "$SECTION_BODY")
       if [ -z "$EVIDENCE_BULLETS" ]; then
         cat >&2 <<EOF
 ERROR: docs/hook-patterns.md § $id has no evidence.
