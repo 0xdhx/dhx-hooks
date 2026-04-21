@@ -149,7 +149,11 @@ while IFS= read -r item; do
   # Check 1: requirement IDs (DATA-F01, QUAL-01, REQ-V2-004, etc.)
   # Regex captures multi-segment IDs — the old [A-Z]+-[A-Z]?[0-9]+ pattern
   # truncated `REQ-V2-004` to `REQ-V2` and dropped the numeric suffix.
-  REQ_IDS=$(echo "$item" | grep -oE '[A-Z]+(-[A-Z0-9]+)+' | head -3)
+  # INVARIANT: leading {2,} rejects GSD decision/question/fork labels
+  # (D-NN, Q-NN, F-NN) which appear by design in ROADMAP/REQUIREMENTS/
+  # backlog for traceability and were silently silencing genuine deferrals.
+  # Backed by tests/probes/probe-deferred-check-req-id-regex.sh.
+  REQ_IDS=$(echo "$item" | grep -oE '[A-Z]{2,}(-[A-Z0-9]+)+' | head -3)
   for rid in $REQ_IDS; do
     # Current-milestone requirements
     if grep -q "$rid" "$CWD/.planning/REQUIREMENTS.md" 2>/dev/null; then
