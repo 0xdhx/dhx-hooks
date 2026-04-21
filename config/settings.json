@@ -6,7 +6,6 @@
       "WebFetch",
       "WebSearch",
       "Bash(git:*)",
-      "Bash(git stash:*)",
       "Bash(node:*)",
       "Bash(python3:*)",
       "Bash(date:*)",
@@ -201,6 +200,18 @@
             "command": "bash /home/dhx/.claude/hooks/gsd-session-state.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-health-check.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-dirty-tree.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -278,6 +289,26 @@
             "type": "command",
             "command": "bash /home/dhx/.claude/hooks/gsd-phase-boundary.sh",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/gsd-read-injection-scanner.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
+            "timeout": 10
           }
         ]
       }
@@ -387,6 +418,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-worktree-write-guard.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-snapshot.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostCompact": [
@@ -403,7 +454,8 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "node \"$HOME/.claude/hooks/statusline-wrapper.js\""
+    "command": "node \"$HOME/.claude/hooks/statusline-wrapper.js\"",
+    "refreshInterval": 60
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
@@ -422,6 +474,7 @@
       }
     }
   },
-  "effortLevel": "medium",
+  "effortLevel": "xhigh",
+  "awaySummaryEnabled": true,
   "skipDangerousModePermissionPrompt": true
 }
