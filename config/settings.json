@@ -200,18 +200,6 @@
             "command": "bash /home/dhx/.claude/hooks/gsd-session-state.sh"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-health-check.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-dirty-tree.sh\""
-          }
-        ]
       }
     ],
     "PostToolUse": [
