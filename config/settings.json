@@ -162,7 +162,6 @@
     "defaultMode": "bypassPermissions"
   },
   "hooks": {
-    "UserPromptSubmit": [],
     "SessionStart": [
       {
         "hooks": [
@@ -222,7 +221,6 @@
         ]
       }
     ],
-    "Stop": [],
     "PreToolUse": [
       {
         "matcher": "Write|Edit",
@@ -283,8 +281,7 @@
           }
         ]
       }
-    ],
-    "SubagentStop": []
+    ]
   },
   "statusLine": {
     "type": "command",
