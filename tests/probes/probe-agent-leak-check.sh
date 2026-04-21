@@ -17,7 +17,12 @@
 #   - silent when .git missing
 #   - paired cleanup: post-hook removes baseline file
 #
-# Backs: docs/decisions.md 2026-04-19 agent-leak-check row.
+# POST-hook missing-baseline behavior (2026-04-20 invariant flip):
+#   - nested-worktree CWD + missing PRE → silent (snapshot intentionally skipped)
+#   - non-nested CWD + missing PRE → DETECTION GAP diagnostic on stdout
+#
+# Backs: docs/decisions.md 2026-04-19 agent-leak-check row + 2026-04-20
+#        detection-gap invariant row.
 # Companion: probe-worktree-write-guard.sh covers the top-level/Skill detector.
 #
 # Run: bash tests/probes/probe-agent-leak-check.sh
@@ -112,10 +117,25 @@ BASELINES+=("$CACHE/agent-leak-${SID}.pre")
 pre_input "$SID" "$TMP" "none" | "$PRE" >/dev/null 2>&1
 [[ ! -f "$CACHE/agent-leak-${SID}.pre" ]] && check "[4] pre-hook skips isolation=none" pass || check "[4] pre-hook fired on isolation=none" fail
 
-# === [5] Post-hook with no baseline → silent (paired hook didn't fire) ===
+# === [5a] Post-hook emits DETECTION GAP diagnostic when baseline missing ===
+# (Invariant flipped 2026-04-20: silent→loud on isolation=worktree + non-nested
+# CWD + missing PRE. The snapshot hook should have fired and didn't, so the
+# leak-detection path is blind. Surfacing to stdout lets Claude's next turn see
+# the gap instead of proceeding as if the hook stack approved the dispatch.)
 SID="${SESSION_TAG}-ghost"
 OUT=$(pre_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
-[[ -z "$OUT" ]] && check "[5] post-hook silent without baseline" pass || check "[5] post-hook emitted without baseline: $OUT" fail
+echo "$OUT" | grep -q "DETECTION GAP" && check "[5a] post-hook emits DETECTION GAP when baseline missing" pass || check "[5a] post-hook missing detection-gap diagnostic" fail
+echo "$OUT" | grep -qi "session" && check "[5b] diagnostic names session-restart cause" pass || check "[5b] diagnostic missing session-restart hint" fail
+
+# === [5c] Nested-worktree CWD + missing baseline → silent (legitimate skip) ===
+# Snapshot hook skips at snapshot:38 when dispatching FROM inside a worktree;
+# the post-hook must mirror that skip to avoid false detection-gap diagnostics.
+SID="${SESSION_TAG}-ghost-nested"
+NESTED_5C="$TMP/.claude/worktrees/agent-5c"
+mkdir -p "$NESTED_5C"
+cp -r "$TMP/.git" "$NESTED_5C/" 2>/dev/null || true
+OUT=$(pre_input "$SID" "$NESTED_5C" | "$POST" 2>/dev/null || true)
+[[ -z "$OUT" ]] && check "[5c] post-hook silent on nested-worktree CWD w/o baseline" pass || check "[5c] post-hook emitted on nested CWD w/o baseline: $OUT" fail
 
 # === [6] Malformed JSON → both hooks silent ===
 OUT=$(echo 'not json' | "$PRE" 2>/dev/null || true)

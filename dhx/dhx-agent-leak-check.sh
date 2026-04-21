@@ -12,8 +12,14 @@
 # state. Output goes to stdout (Claude sees) so the next assistant turn can
 # propose the recovery sequence automatically.
 #
-# Silent on happy path. No baseline → silent (paired snapshot hook didn't fire
-# for this agent, e.g. isolation != worktree, git missing, or race).
+# Silent on happy path. Two distinct no-baseline cases:
+#   1. Legitimate skip — isolation != worktree (gated at line 28), git missing,
+#      nested-worktree CWD (snapshot:38 intentionally skips). Stays silent.
+#   2. Detection gap — isolation=worktree + git + non-nested + no PRE. Snapshot
+#      hook SHOULD have fired but didn't (install mid-session, jq missing,
+#      cache unwritable). Fires a loud stdout diagnostic so Claude's next turn
+#      knows the leak-detection path is BLIND.
+# INVARIANT: detection-gap branch never silent. Probe: probe-agent-leak-check.sh.
 #
 # Cost: one `git status` (~20ms) + one diff + one jq. Tens of tokens on
 # violation; zero on clean. Fires at most once per Agent dispatch.
@@ -38,7 +44,34 @@ fi
 
 CACHE="$HOME/.cache/dhx"
 PRE="$CACHE/agent-leak-${SESSION}.pre"
-[[ -f "$PRE" ]] || exit 0
+
+# Nested-worktree CWD: snapshot hook intentionally skipped (mirrors snapshot:38).
+# Missing baseline here is a legitimate skip, not a detection gap.
+if [[ "$CWD" == *".claude/worktrees/"* && ! -f "$PRE" ]]; then
+  exit 0
+fi
+
+# Detection gap: isolation=worktree Agent dispatched against a non-nested git
+# repo, but no baseline exists. The snapshot hook should have fired and didn't.
+# Surface to stdout so Claude sees the blind-spot on the next turn.
+if [[ ! -f "$PRE" ]]; then
+  cat <<DETECTGAP
+⚠ AGENT-LEAK DETECTION GAP — Agent with isolation=worktree dispatched, but no baseline snapshot exists at ${PRE}.
+
+The dhx-agent-leak-snapshot.sh hook did not fire. Leak detection via
+PostToolUse:Agent is BLIND for this dispatch — upstream CC #36182 silent writes
+will not be caught until the hook stack is restored.
+
+Common causes:
+  - Hook installed mid-session. Claude Code loads settings.json only at session
+    start; new hook registrations require a session restart.
+  - Snapshot hook failed silently (jq missing, .git unreadable, cache mkdir).
+
+Verify after restart by dispatching a worktree-isolated agent and checking:
+  ls ~/.cache/dhx/agent-leak-*.pre
+DETECTGAP
+  exit 0
+fi
 
 POST_STATUS=$(git -C "$CWD" status --porcelain 2>/dev/null || echo "")
 PRE_STATUS=$(cat "$PRE")
