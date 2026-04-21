@@ -167,18 +167,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-routing.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-main-branch-warning.sh\""
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "bash /home/dhx/repos/hooks/.inactive/probe-userpromptsubmit-fields.sh"
           }
         ]
@@ -223,45 +211,6 @@
         ]
       },
       {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-source-write-flag.sh\""
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-context-gate.sh\""
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-execute-checkpoint.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-post-execute-review.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-execute-review.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-audit-checkpoint.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Agent",
         "hooks": [
           {
@@ -287,16 +236,6 @@
             "type": "command",
             "command": "node \"$HOME/.claude/hooks/gsd-read-injection-scanner.js\"",
             "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
-            "timeout": 10
           }
         ]
       }
@@ -328,21 +267,6 @@
             "type": "command",
             "command": "node \"$HOME/.claude/hooks/gsd-prompt-guard.js\"",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-assessed-guard.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$HOME/.claude/hooks/dhx-read-guard.js\"",
-            "timeout": 5
           }
         ]
       },
@@ -352,20 +276,6 @@
           {
             "type": "command",
             "command": "READ_ONCE_TTL=172800 ~/.claude/read-once/hook.sh"
-          },
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/dhx-poll-guard.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-ui-vision-guard.sh\"",
-            "timeout": 5
           }
         ]
       },
@@ -403,26 +313,6 @@
           {
             "type": "command",
             "command": "bash /home/dhx/.claude/hooks/gsd-validate-commit.sh",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-worktree-write-guard.sh\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-snapshot.sh\"",
             "timeout": 5
           }
         ]
