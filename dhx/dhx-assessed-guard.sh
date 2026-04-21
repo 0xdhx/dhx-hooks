@@ -66,6 +66,6 @@ if [ -n "$CWD" ]; then
 fi
 
 # Block: no active review session, agent is self-marking
-jq -n '{"decision": "block", "reason": "[assessed] markers require explicit user approval. Present the deferred item to the user with your assessment, wait for their response, then mark it. If you are wrapping up a session, the deferred review protocol will guide you through this."}'
+jq -n '{"decision": "block", "reason": "[assessed] markers require user approval. Run /dhx:defer-review to review each deferred item with the user. If mid-review already, the 30-min approval marker expired — re-run /dhx:defer-review."}'
 
 exit 0
