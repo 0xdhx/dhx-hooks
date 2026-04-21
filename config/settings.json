@@ -162,16 +162,7 @@
     "defaultMode": "bypassPermissions"
   },
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/dhx/repos/hooks/.inactive/probe-userpromptsubmit-fields.sh"
-          }
-        ]
-      }
-    ],
+    "UserPromptSubmit": [],
     "SessionStart": [
       {
         "hooks": [
@@ -207,15 +198,6 @@
           {
             "type": "command",
             "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','scripts','fix-gsd-ccs-paths.js'))\""
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/dhx/repos/hooks/.inactive/probe-posttooluse-agent.sh"
           }
         ]
       },
@@ -281,15 +263,6 @@
         ]
       },
       {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /home/dhx/repos/hooks/.inactive/probe-pretooluse-write-fields.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -310,7 +283,8 @@
           }
         ]
       }
-    ]
+    ],
+    "SubagentStop": []
   },
   "statusLine": {
     "type": "command",
