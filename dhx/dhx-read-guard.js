@@ -36,6 +36,17 @@
 //
 // Triggers on: Write and Edit tool calls
 // Action: Advisory (does not block) — injects read-first guidance on cache miss
+//
+// Scope (HP-003 reframe, audit 2026-04-21): fires for parent AND subagent
+// Write/Edit calls. The global reads.jsonl cache is TTL-scoped, not session-
+// scoped, so parent and subagent reads both feed the same cache (assuming
+// read-once/hook.sh fires in both contexts — currently assumed, not verified
+// under the new HP-003 matcher-specific framing). Uniform enforcement
+// intended: if a subagent is about to Edit a file that has not been Read in
+// the last 2h (by anyone), CC's runtime will reject the Edit and this
+// advisory warns in advance. The hook does NOT branch on agent_id. The
+// advisory is non-blocking, so a false positive in subagent context costs
+// only one advisory line — cheap enough to accept over per-matcher branching.
 
 const fs = require('fs');
 const path = require('path');
@@ -110,6 +121,9 @@ process.stdin.on('end', () => {
       // fall through to advisory on any I/O error
     }
 
+    // INVARIANT: fires for parent AND subagent Write|Edit calls (HP-003
+    // verified 2026-04-21). Advisory is uniform across contexts — no
+    // agent_id short-circuit.
     // Full read → suppress entirely
     if (hasFullRead) {
       process.exit(0);

@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # dhx-context-gate.sh — PostToolUse hook (Write matcher)
-# Patterns: HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009
 # Validates CONTEXT.md structural completeness on Write.
 # Blocks (exit 2) when required DHX sections are missing.
 # Accepts documented placeholder text as valid.
 # Exits silently for non-CONTEXT.md files and non-GSD projects.
+#
+# Scope (audit 2026-04-21): intent is parent+subagent uniform — the same
+# structural invariants apply to CONTEXT.md regardless of who writes it.
+# HP-003 PostToolUse propagation is UNVERIFIED (HP-003 table); if it does
+# not propagate, subagent CONTEXT.md writes bypass this gate — a silent
+# structural bypass tracked by backlog row hp-003-other-matcher-
+# propagation-probes. Do NOT branch on agent_id.
+# Note: matcher is Write only (not Write|Edit) — Edit cannot rewrite
+# tagged sections wholesale, so structural checks trigger on full Writes.
 
 INPUT=$(cat)
 
@@ -71,6 +80,8 @@ if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<specifics>[[:space:]]*$'; then
   FAILURES="${FAILURES}- <specifics> section is missing\n"
 fi
 
+# INVARIANT: block applies to parent AND any subagent PostToolUse:Write that
+# propagates (HP-003 unverified for PostToolUse). No agent_id branch.
 if [ -n "$FAILURES" ]; then
   # Use jq for safe JSON construction
   jq -n --arg reason "$(printf "CONTEXT.md quality gate failures:\n${FAILURES}Fix these sections and rewrite the file.")" \

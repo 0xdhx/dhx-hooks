@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-assessed-guard.sh — PreToolUse hook (Write|Edit matcher)
-# Patterns: HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009
 # Prevents agents from marking deferred items [assessed] without user approval.
 #
 # [captured], [existing], [tracked] are fine — they have verifiable backing.
@@ -9,6 +9,15 @@
 # Exception: if a deferred review session is active (marker from Stop hook),
 # the agent is presumably following the one-at-a-time protocol with the user.
 # The guard allows [assessed] writes during active review.
+#
+# Scope (HP-003 reframe, audit 2026-04-21): fires for parent AND subagent
+# Write/Edit calls. Uniform enforcement intended — a subagent self-marking
+# [assessed] bypasses the same user-approval invariant as a top-level call,
+# and subagents cannot run /dhx:defer-review themselves. The hook does NOT
+# branch on agent_id. Review-marker cwd key is md5(cwd): for subagent calls
+# this resolves to the subagent's worktree, so the marker-based exception
+# will not accidentally unlock in subagent context (the marker lives under
+# parent cwd's hash). Desired outcome: subagent [assessed] always blocks.
 
 INPUT=$(cat)
 
@@ -65,6 +74,8 @@ if [ -n "$CWD" ]; then
   fi
 fi
 
+# INVARIANT: fires for parent AND subagent Write|Edit calls (HP-003 verified
+# 2026-04-21). Uniform enforcement intended — no agent_id short-circuit.
 # Block: no active review session, agent is self-marking
 jq -n '{"decision": "block", "reason": "[assessed] markers require user approval. Run /dhx:defer-review to review each deferred item with the user. If mid-review already, the 30-min approval marker expired — re-run /dhx:defer-review."}'
 
