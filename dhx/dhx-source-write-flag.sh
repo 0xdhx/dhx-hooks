@@ -11,15 +11,12 @@
 # actually verify them — see reports/done/2026-04-11-source-write-flag-sh-classification.md
 # for the false-safety issue that motivated trimming this list.
 #
-# Scope (audit 2026-04-21): intent is parent+subagent uniform — test-gate
-# should run after subagent source writes that land in the repo. HP-003
-# reframe verified PreToolUse:Write|Edit propagation; PostToolUse:Write|Edit
-# propagation is UNVERIFIED (HP-003 table). If PostToolUse propagates,
-# subagent writes set the flag keyed to the parent's session_id (per HP-003
-# evidence that session_id is the parent's), so parent's Stop-time test-gate
-# correctly runs. If propagation does NOT happen, subagent source writes
-# silently skip the test-gate — a false-negative tracked by backlog row
-# hp-003-other-matcher-propagation-probes. Do NOT branch on agent_id.
+# Scope (audit 2026-04-21, campaign 2026-04-21): intent is parent+subagent
+# uniform — test-gate should run after subagent source writes that land in
+# the repo. HP-003 campaign verified PostToolUse:Write|Edit propagation:
+# subagent writes DO fire this hook with `session_id` = parent's session,
+# so the flag is correctly addressed to the parent's Stop-time consumer.
+# Intent matches actual; no agent_id branch.
 
 set -uo pipefail
 
@@ -36,10 +33,9 @@ _TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
 
 SOURCE_EXTS="py js ts tsx jsx rs go"
 
-# INVARIANT: flag file is keyed by SESSION_ID from stdin. For propagated
-# subagent calls (if PostToolUse propagates — unverified), SESSION_ID is
-# the PARENT's session per HP-003 evidence — so parent's Stop consumer
-# sees the flag and runs tests. Uniform intent; no agent_id branch.
+# INVARIANT: flag file is keyed by SESSION_ID from stdin. Subagent
+# propagated fires carry the PARENT's session_id (HP-003 verified), so
+# the parent's Stop consumer always sees the flag. No agent_id branch.
 EXT="${FILE_PATH##*.}"
 for src_ext in $SOURCE_EXTS; do
   if [ "$EXT" = "$src_ext" ]; then

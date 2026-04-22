@@ -19,15 +19,14 @@
 # matching the schema in dhx-read-guard.js:14 and read-once/hook.sh:169.
 # Probe: tests/probes/probe-write-cache.sh asserts schema parity.
 #
-# Scope (audit 2026-04-21): intent is parent+subagent uniform — the global
-# reads.jsonl cache should reflect ALL CC-runtime-accepted Write/Edit
-# operations regardless of context, so dhx-read-guard.js's advisory stays
-# accurate across parent and subagent. HP-003 PostToolUse propagation is
-# UNVERIFIED (HP-003 table); if it does not propagate, subagent writes do
-# not seed the cache and parent may get spurious advisories on files the
-# subagent created. Tracked by backlog row hp-003-other-matcher-propagation-
-# probes. Do NOT branch on agent_id. The emitted path is absolute via
-# realpath — correct across both parent and subagent worktree cwds.
+# Scope (audit 2026-04-21, campaign 2026-04-21): intent is parent+subagent
+# uniform — the global reads.jsonl cache should reflect ALL CC-runtime-
+# accepted Write/Edit operations regardless of context. HP-003 campaign
+# verified PostToolUse:Write|Edit propagation — subagent writes DO fire
+# this hook and seed the cache, so dhx-read-guard.js's advisory stays
+# accurate across parent and subagent. Do NOT branch on agent_id. The
+# emitted path is absolute via realpath — correct across both parent and
+# subagent worktree cwds.
 #
 # Fires: PostToolUse on Write or Edit
 # Action: cache-write only, no stdout, no blocking

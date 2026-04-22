@@ -15,8 +15,10 @@
 # in stdin and the subagent's worktree as `cwd`. The subagent leak vector
 # reported in #36182 (Edit calls inside an isolation="worktree" agent writing
 # to main-repo absolute paths) is therefore CAUGHT by this hook for Write and
-# Edit. MultiEdit propagation is still unverified (HP-003 table) — the
-# matcher includes it, and if propagation extends the hook covers it too.
+# Edit. MultiEdit coverage is moot under current CC 2.1.112 — the tool is
+# absent from both parent and general-purpose subagent tool surfaces per
+# HP-003 campaign 2026-04-21, so the matcher is dormant until CC restores
+# the tool. Matcher retained; no live invocations to observe.
 #
 # Audit decision 2026-04-21: parent+subagent uniform enforcement — a subagent
 # write that escapes its worktree is the same violation as a top-level one.
@@ -33,7 +35,8 @@
 #   - user's own top-level Edit/Write/MultiEdit with cwd inside a worktree
 #   - inline Skill (e.g. gsd-fast) writes that escape the worktree
 #   - subagent Edit/Write inside isolation="worktree" dispatches (#36182)
-#   - subagent MultiEdit (if HP-003 propagation extends to that matcher)
+#   - subagent MultiEdit (matcher dormant per HP-003 campaign 2026-04-21
+#     — MultiEdit tool absent from current CC 2.1.112 invocable set)
 #
 # Prior art: @yurukusa's 2026-03-30 comment on #36182 proposed a git rev-parse
 # --git-dir / --git-common-dir based detection. This implementation uses cwd
