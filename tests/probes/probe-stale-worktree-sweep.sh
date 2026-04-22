@@ -4,14 +4,17 @@
 # Regression probe for dhx/dhx-stale-worktree-sweep.sh (SessionStart hook).
 #
 # Invariants exercised:
-#   Gate 1 (PID liveness): a locked worktree whose lock PID is alive is SILENTLY SKIPPED.
-#   Gate 2 (clean tree):   a locked worktree with uncommitted changes is SKIPPED WITH REASON.
-#   Gate 3 (merged base):  a locked worktree with commits not on dev/main/master is SKIPPED WITH REASON.
-#   All pass:              a locked worktree with no uncommitted changes and a merged base is REMOVED.
-#   Non-locked:            an unlocked worktree is IGNORED (not swept, not reported).
-#   No-op:                 a repo with no worktrees produces silent exit 0.
+#   Gate 1 (PID liveness):       a locked worktree whose lock PID is alive is SILENTLY SKIPPED.
+#   Gate 2 (clean tree):         a locked worktree with uncommitted changes is SKIPPED WITH REASON.
+#   Gate 2 allowlist:            untracked .claude/** entries DO NOT block Gate 2.
+#   Gate 2 allowlist boundary:   non-allowlisted untracked (e.g. tmp.txt) still blocks even if mixed with .claude/.
+#   Gate 2 modifications:        tracked-file modifications always block (allowlist applies only to untracked).
+#   Gate 3 (merged base):        a locked worktree with commits not on dev/main/master is SKIPPED WITH REASON.
+#   All pass:                    a locked worktree with no uncommitted changes and a merged base is REMOVED.
+#   Non-locked:                  an unlocked worktree is IGNORED (not swept, not reported).
+#   No-op:                       a repo with no worktrees produces silent exit 0.
 #
-# Backs: docs/decisions.md 2026-04-19 stale-worktree-sweep row.
+# Backs: docs/decisions.md 2026-04-19 stale-worktree-sweep row + 2026-04-21 .claude/ allowlist row.
 #
 # Run: bash tests/probes/probe-stale-worktree-sweep.sh
 
@@ -211,6 +214,92 @@ echo "claude agent wt-sup (pid $DEAD_PID)" > "$REPO_G/.git/worktrees/wt-sup/lock
 
 OUT=$(DHX_SKIP_STALE_WORKTREE_SWEEP=1 bash -c "echo '{\"cwd\":\"$REPO_G\"}' | bash '$HOOK' 2>&1")
 _assert "G1: suppression env var produces no output" "" "$OUT"
+
+# ------------------------------------------------------------------
+# Scenario H: locked, dead PID, ONLY .claude/ untracked, merged base → SWEEP
+# (allowlist: CC-managed .claude/ untracked does NOT block Gate 2)
+# ------------------------------------------------------------------
+REPO_H="$TMP/h"
+mkdir -p "$REPO_H" && cd "$REPO_H"
+git init -q -b main
+git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "initial"
+
+WT_H="$REPO_H/.claude/worktrees/wt-claude-only"
+mkdir -p "$(dirname "$WT_H")"
+git branch -q wt-claude-only-branch main
+git worktree add -q "$WT_H" wt-claude-only-branch
+# Simulate CC-managed .claude/ untracked artifacts (e.g., settings.local.json)
+mkdir -p "$WT_H/.claude"
+echo "{}" > "$WT_H/.claude/settings.local.json"
+echo "session-cache" > "$WT_H/.claude/cache.json"
+echo "claude agent wt-claude-only (pid $DEAD_PID)" > "$REPO_H/.git/worktrees/wt-claude-only/locked"
+
+OUT=$(echo "{\"cwd\":\"$REPO_H\"}" | bash "$HOOK" 2>&1)
+_assert "H1: .claude-only untracked auto-sweeps" "swept 1" "$OUT"
+_assert_not "H2: .claude-only NOT reported as needing review" "manual review" "$OUT"
+if [[ ! -d "$WT_H" ]]; then
+  echo "OK   H3: .claude-only worktree removed from disk"; PASSED=$((PASSED + 1))
+else
+  echo "FAIL H3: .claude-only worktree still on disk"; FAILED=$((FAILED + 1))
+fi
+
+# ------------------------------------------------------------------
+# Scenario I: locked, dead PID, .claude/ + tmp.txt untracked → STILL FLAGS
+# (allowlist residual: non-allowlisted untracked blocks; count cites only residuals)
+# ------------------------------------------------------------------
+REPO_I="$TMP/i"
+mkdir -p "$REPO_I" && cd "$REPO_I"
+git init -q -b main
+git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "initial"
+
+WT_I="$REPO_I/.claude/worktrees/wt-mixed"
+mkdir -p "$(dirname "$WT_I")"
+git branch -q wt-mixed-branch main
+git worktree add -q "$WT_I" wt-mixed-branch
+mkdir -p "$WT_I/.claude"
+echo "{}" > "$WT_I/.claude/settings.local.json"
+echo "scratch" > "$WT_I/tmp.txt"
+echo "claude agent wt-mixed (pid $DEAD_PID)" > "$REPO_I/.git/worktrees/wt-mixed/locked"
+
+OUT=$(echo "{\"cwd\":\"$REPO_I\"}" | bash "$HOOK" 2>&1)
+_assert "I1: mixed .claude/ + tmp.txt flags with reason" "need manual review" "$OUT"
+_assert "I2: residual count is 1 (tmp.txt only, .claude/ excluded)" "1 uncommitted/untracked" "$OUT"
+_assert_not "I3: mixed case NOT reported as swept" "swept" "$OUT"
+if [[ -d "$WT_I" ]]; then
+  echo "OK   I4: mixed worktree preserved"; PASSED=$((PASSED + 1))
+else
+  echo "FAIL I4: mixed worktree was removed"; FAILED=$((FAILED + 1))
+fi
+
+# ------------------------------------------------------------------
+# Scenario J: locked, dead PID, tracked-file MODIFICATION → STILL FLAGS
+# (allowlist applies only to untracked; modifications always block)
+# ------------------------------------------------------------------
+REPO_J="$TMP/j"
+mkdir -p "$REPO_J" && cd "$REPO_J"
+git init -q -b main
+( cd "$REPO_J" && \
+  echo "tracked-content" > tracked.md && \
+  git add tracked.md && \
+  git -c user.email=t@t -c user.name=t commit -q -m "add tracked.md" )
+
+WT_J="$REPO_J/.claude/worktrees/wt-mod"
+mkdir -p "$(dirname "$WT_J")"
+git branch -q wt-mod-branch main
+git worktree add -q "$WT_J" wt-mod-branch
+# Modify the tracked file inside the worktree WITHOUT committing
+echo "local edit" >> "$WT_J/tracked.md"
+echo "claude agent wt-mod (pid $DEAD_PID)" > "$REPO_J/.git/worktrees/wt-mod/locked"
+
+OUT=$(echo "{\"cwd\":\"$REPO_J\"}" | bash "$HOOK" 2>&1)
+_assert "J1: tracked-mod flags with reason" "need manual review" "$OUT"
+_assert "J2: tracked-mod residual count is 1" "1 uncommitted/untracked" "$OUT"
+_assert_not "J3: tracked-mod NOT reported as swept" "swept" "$OUT"
+if [[ -d "$WT_J" ]]; then
+  echo "OK   J4: tracked-mod worktree preserved"; PASSED=$((PASSED + 1))
+else
+  echo "FAIL J4: tracked-mod worktree was removed"; FAILED=$((FAILED + 1))
+fi
 
 # ------------------------------------------------------------------
 # Summary

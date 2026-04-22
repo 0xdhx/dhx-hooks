@@ -93,13 +93,33 @@ for WT_META in "${WT_METAS[@]}"; do
     continue
   fi
 
-  # --- Gate 2: working tree clean ---
+  # --- Gate 2: working tree clean (with .claude/ untracked allowlist) ---
+  # INVARIANT: Gate 2 only whitelists CC-managed .claude/ UNTRACKED entries
+  # (CC issues #26725, #42596, #28041 — worktree-local .claude/ state is
+  # session-generated and non-recoverable). Tracked-file modifications and
+  # any untracked path outside .claude/ still block — no silent data loss.
+  # Widening the allowlist requires a new decisions.md row.
   WT_STATUS=$(git -C "$WT_PATH" status --porcelain 2>/dev/null)
   if [ -n "$WT_STATUS" ]; then
-    CHANGES=$(echo "$WT_STATUS" | wc -l | tr -d ' ')
-    SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: $CHANGES uncommitted/untracked file(s) — manual review")
-    continue
+    BLOCKING=0
+    while IFS= read -r STATUS_LINE; do
+      [ -z "$STATUS_LINE" ] && continue
+      CODE="${STATUS_LINE:0:2}"
+      SPATH="${STATUS_LINE:3}"
+      if [ "$CODE" = "??" ]; then
+        case "$SPATH" in
+          .claude/*|\".claude/*) continue ;;
+          *) BLOCKING=$((BLOCKING + 1)) ;;
+        esac
+      else
+        BLOCKING=$((BLOCKING + 1))
+      fi
+    done <<< "$WT_STATUS"
+    if [ "$BLOCKING" -gt 0 ]; then
+      SKIPPED=$((SKIPPED + 1))
+      SKIP_REASONS+=("$WT_NAME: $BLOCKING uncommitted/untracked file(s) — manual review")
+      continue
+    fi
   fi
 
   # --- Gate 3: worktree HEAD is ancestor of dev, main, or master ---
