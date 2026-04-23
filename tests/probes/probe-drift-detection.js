@@ -47,13 +47,15 @@ const { hashWarnSettings } = require('../../dhx/statusline-wrapper.js');
 // this scanner and the wrapper's shows up as a red assertion on the shared
 // fixtures.
 
-function scanRecursive(dir) {
+function scanRecursive(dir, ignoreBasenames) {
   let maxMtime = 0;
   let count = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
-    count = entries.length;
     for (const entry of entries) {
+      if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
+      count++;
+      if (entry.isDirectory && entry.isDirectory()) continue;
       try {
         const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
         const st = fs.statSync(full);
@@ -63,6 +65,8 @@ function scanRecursive(dir) {
   } catch { /* missing dir */ }
   return { maxMtime, count };
 }
+
+const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
 
 function scanShallow(dir) {
   // Legacy shallow scan — retained for scenario [5] regression-sentinel only.
@@ -464,6 +468,87 @@ const baseSnap = snap();
   const triggers = checkDriftLogic(cur, snapForSkew);
   assert('[12] future mtime (count unchanged) still trips agents trigger',
     triggers.length === 1 && triggers[0] === 'agents');
+}
+
+// --- 13. Plugin cache: .orphaned_at filter suppresses CC orphan-sweep noise ---
+//
+// CC writes `.orphaned_at` markers into plugins/cache during session-start orphan
+// sweeps and periodic GC. Because `~/.ccs/shared/plugins/cache` is shared across
+// all CCS instances via symlink, any sibling session's sweep bumps mtime and count
+// seen by every running session → spurious ⚠ restart plugins warnings across all
+// sessions. Filter ensures these files neither count nor contribute to max mtime.
+//
+// Invariants under test:
+//  a) Baseline (no .orphaned_at) = baseline (real plugin files only). Adding
+//     .orphaned_at markers leaves mtime AND count unchanged.
+//  b) Real plugin file writes are still caught even when an .orphaned_at write
+//     happens in the same sweep (the filter doesn't mask adjacent real writes).
+//  c) Deletion of .orphaned_at only (CC GC reap) does NOT drop count — protects
+//     the count-branch deletion detector from firing on pure bookkeeping GC.
+{
+  const filterTree = path.join(TMP, 'orphaned-tree');
+  fs.mkdirSync(filterTree);
+  const real = path.join(filterTree, 'marketplace/plugin/1.0/hooks.json');
+  fs.mkdirSync(path.dirname(real), { recursive: true });
+  fs.writeFileSync(real, 'x');
+  const t0 = BASE_MS;
+  restampTree(filterTree, t0);
+
+  const baseline = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
+
+  // [13a] Add 3 .orphaned_at markers at future mtimes — filter should swallow them.
+  const ts = [t0 + 30_000, t0 + 60_000, t0 + 90_000];
+  const orphanedPaths = [
+    path.join(filterTree, 'marketplace/plugin/1.0/.orphaned_at'),
+    path.join(filterTree, 'marketplace/plugin/.orphaned_at'),
+    path.join(filterTree, 'marketplace/.orphaned_at'),
+  ];
+  for (let i = 0; i < orphanedPaths.length; i++) {
+    fs.writeFileSync(orphanedPaths[i], String(Date.now()));
+    fs.utimesSync(orphanedPaths[i], ts[i] / 1000, ts[i] / 1000);
+  }
+  const afterOrphans = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
+  const triggers13a = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: afterOrphans.maxMtime, plugins_count: afterOrphans.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[13a] .orphaned_at writes do NOT bump mtime (filter active)',
+    afterOrphans.maxMtime === baseline.maxMtime);
+  assert('[13b] .orphaned_at writes do NOT bump count (filter active)',
+    afterOrphans.count === baseline.count);
+  assert('[13c] orphan-sweep produces zero plugins trigger',
+    !triggers13a.includes('plugins'));
+
+  // [13d] Add a real plugin file alongside the .orphaned_at markers — trigger fires.
+  const realNew = path.join(filterTree, 'marketplace/plugin/1.0/new-hook.json');
+  fs.writeFileSync(realNew, 'x');
+  const realFuture = t0 + 120_000;
+  fs.utimesSync(realNew, realFuture / 1000, realFuture / 1000);
+  const withRealWrite = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
+  const triggers13d = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: withRealWrite.maxMtime, plugins_count: withRealWrite.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[13d] real plugin file write still caught despite .orphaned_at siblings',
+    triggers13d.length === 1 && triggers13d[0] === 'plugins');
+
+  // [13e] CC GC reaps .orphaned_at markers — count must NOT drop (filter active).
+  for (const p of orphanedPaths) fs.unlinkSync(p);
+  const afterReap = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
+  assert('[13e] .orphaned_at reap leaves count unchanged (no false deletion trigger)',
+    afterReap.count === withRealWrite.count);
+
+  // [13f] Sanity: without the filter, the same .orphaned_at writes WOULD drift.
+  // Protects against a future refactor silently dropping the filter argument
+  // from collectSnapshot's plugins call site.
+  for (let i = 0; i < orphanedPaths.length; i++) {
+    fs.writeFileSync(orphanedPaths[i], String(Date.now()));
+    fs.utimesSync(orphanedPaths[i], (t0 + 150_000 + i * 1000) / 1000, (t0 + 150_000 + i * 1000) / 1000);
+  }
+  const unfiltered = scanRecursive(filterTree);
+  const filtered = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
+  assert('[13f] unfiltered scan sees .orphaned_at (regression sentinel: filter call-site must stay wired)',
+    unfiltered.count > filtered.count);
 }
 
 // --- Cleanup + summary ---

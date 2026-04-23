@@ -352,13 +352,31 @@ function hashWarnSettings(settingsReal) {
 // shallow scan of plugins/cache misses the drift. This is why the scan must
 // recurse even for plugins (where the prior shallow scan was specifically
 // broken).
-function scanRecursive(dir) {
+//
+// `ignoreBasenames` (optional Set<string>): filter CC-internal bookkeeping files
+// that churn without reflecting user-actionable state. Currently used for the
+// plugins/cache scan to drop `.orphaned_at` markers — CC writes these during
+// session-start orphan sweeps and periodic GC, and because `~/.ccs/shared/plugins/cache`
+// is shared across all CCS instances, any sibling session's sweep false-positives
+// every running session's drift signal. Filtering affects both mtime and count,
+// so an orphan sweep is invisible to checkDrift while real plugin writes are still
+// caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
+function scanRecursive(dir, ignoreBasenames) {
   let maxMtime = 0;
   let count = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
-    count = entries.length;
     for (const entry of entries) {
+      if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
+      count++;
+      // Skip directory mtimes: POSIX bumps a dir's mtime on any direct-child
+      // add/remove, which leaks through the ignoreBasenames filter (creating
+      // a filtered-basename file still touches its parent dir). Directories
+      // contribute nothing the file-level scan doesn't already capture — a
+      // new file carries its own fresh mtime, and deletions are caught by
+      // the count branch, not by mtime. Skipping dirs is safe across all
+      // three trees (agents/gsd/plugins) — see probe scenarios [2]-[4].
+      if (entry.isDirectory && entry.isDirectory()) continue;
       try {
         const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
         const st = fs.statSync(full);
@@ -368,6 +386,9 @@ function scanRecursive(dir) {
   } catch { /* missing dir */ }
   return { maxMtime, count };
 }
+
+// Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
+const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
 
 // Collect current snapshot for all 5 watched paths + version. `settings` is
 // hashed over the WARN-set projection rather than mtime'd — see HP-014's
@@ -381,7 +402,7 @@ function collectSnapshot(data) {
 
   const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
   const gsd = scanRecursive(path.join(os.homedir(), '.claude', 'get-shit-done'));
-  const plugins = scanRecursive(path.join(configDir, 'plugins', 'cache'));
+  const plugins = scanRecursive(path.join(configDir, 'plugins', 'cache'), PLUGIN_CACHE_IGNORE);
 
   const snapshot = {
     agents_mtime: agents.maxMtime,
