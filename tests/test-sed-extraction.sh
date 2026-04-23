@@ -408,6 +408,27 @@ test_18_regression_no_deferred_tag_unresolved() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 19: `### ...(deferred)` subheader must NOT anchor header-fallback range.
+# Regression guard for reports/2026-04-23-deferred-check-header-fallback-matches-h3.md.
+# Without the fix, sed matches line "### Theme 6: Runtime signals (deferred)"
+# and sweeps every `- ` bullet through the next `## ...` section.
+# ---------------------------------------------------------------------------
+
+test_19_h3_deferred_annotation_no_overmatch() {
+  echo "Test 19: ### subheader '(deferred)' annotation does not anchor header-fallback"
+  local f="$FIXTURES_DIR/h3-deferred-annotation.md"
+
+  local filtered
+  filtered=$(header_fallback_filtered "$f")
+
+  assert_contains "19a: real deferred item found" "$filtered" "Real deferred item that SHOULD be caught"
+  assert_not_contains "19b: theme body bullet not swept" "$filtered" "Theme body bullet should not appear"
+  assert_not_contains "19c: other theme body bullet not swept" "$filtered" "Another theme body bullet"
+  assert_not_contains "19d: next-theme body bullet not swept" "$filtered" "Yet another theme body bullet"
+  assert_line_count "19e: exactly 1 item survives filters" "$filtered" 1
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -449,6 +470,8 @@ echo ""
 test_17_regression_header_deferred_unresolved
 echo ""
 test_18_regression_no_deferred_tag_unresolved
+echo ""
+test_19_h3_deferred_annotation_no_overmatch
 echo ""
 
 print_results

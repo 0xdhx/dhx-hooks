@@ -39,7 +39,7 @@ extract_tag() {
 # Used as fallback when the <deferred> tag section is empty or missing.
 header_fallback_filtered() {
   local file="$1"
-  sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
+  sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
     | grep -E '^\s*- ' \
     | grep -v '\[captured' \
     | grep -v '\[existing' \

@@ -107,7 +107,7 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # extraction and (b) non-empty extraction but zero bullet items after filtering.
 check_header_fallback() {
   local file="$1"
-  MD_DEFERRED=$(sed -n '/^##.*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
+  MD_DEFERRED=$(sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
     | grep -E '^\s*- ' \
     | grep -v '\[captured' \
     | grep -v '\[existing' \
