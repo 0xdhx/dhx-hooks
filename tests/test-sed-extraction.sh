@@ -409,9 +409,12 @@ test_18_regression_no_deferred_tag_unresolved() {
 
 # ---------------------------------------------------------------------------
 # Test 19: `### ...(deferred)` subheader must NOT anchor header-fallback range.
-# Regression guard for reports/2026-04-23-deferred-check-header-fallback-matches-h3.md.
+# Regression guard for reports/done/2026-04-23-deferred-check-header-fallback-matches-h3.md.
 # Without the fix, sed matches line "### Theme 6: Runtime signals (deferred)"
 # and sweeps every `- ` bullet through the next `## ...` section.
+# Companion probe: tests/probes/probe-deferred-check-header-fallback.sh asserts
+# the same invariant against the live hook source (10 assertions, extracts sed
+# range from dhx-deferred-check.sh and tests/lib.sh to catch pattern drift).
 # ---------------------------------------------------------------------------
 
 test_19_h3_deferred_annotation_no_overmatch() {
