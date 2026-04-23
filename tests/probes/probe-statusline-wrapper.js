@@ -45,12 +45,17 @@ ok('duration: 4320 min (3d)',          formatBurnDuration(4320),      '3d');
 ok('duration: 10080 min (7d)',         formatBurnDuration(10080),     '7d');
 
 // --- § 2 statusEmoji --------------------------------------------------------
+// INVARIANT: the mapped set is exactly ccburn's three emitted statuses
+// (ccburn/utils/calculator.py:203 — the only producer). `at_pace` and
+// `exhausted` from prior ccburn revisions no longer exist and must not be
+// reintroduced without a matching producer.
 
 ok('emoji: behind_pace',   statusEmoji('behind_pace'),   '🧊');
-ok('emoji: at_pace',       statusEmoji('at_pace'),       '🟢');
+ok('emoji: on_pace',       statusEmoji('on_pace'),       '🟢');
 ok('emoji: ahead_of_pace', statusEmoji('ahead_of_pace'), '🚨');
-ok('emoji: exhausted',     statusEmoji('exhausted'),     '💀');
 ok('emoji: unknown → empty', statusEmoji('approaching'), '');
+ok('emoji: at_pace (retired) → empty', statusEmoji('at_pace'), '');
+ok('emoji: exhausted (retired) → empty', statusEmoji('exhausted'), '');
 ok('emoji: null → empty',    statusEmoji(null),          '');
 ok('emoji: undefined → empty', statusEmoji(undefined),   '');
 
@@ -86,7 +91,7 @@ ok('ccburn: utilization rounds half-up',
 // Hours fallback when minutes are null (long horizon): 2.5h → 2h30m.
 ok('ccburn: hours fallback converts to minutes',
    buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.5, status: 'at_pace', resets_in_hours: 2.5 } },
+     limits: { session: { utilization: 0.5, status: 'on_pace', resets_in_hours: 2.5 } },
    })),
    'S:🟢 50% (2h30m)');
 

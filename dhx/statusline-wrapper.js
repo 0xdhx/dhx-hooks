@@ -155,12 +155,19 @@ function appendTrace(entry) {
 // pace (behind = conserving, ahead = burning hot), which is what the user
 // actually reads at a glance — not raw % alone. Unknown statuses collapse to
 // empty so the segment still renders a pct without a misleading icon.
+//
+// INVARIANT: ccburn's get_status() returns exactly one of
+// {ahead_of_pace, on_pace, behind_pace} — see
+// ccburn/utils/calculator.py:203 (the only producer). Expired limits get
+// coerced to behind_pace in ccburn/app.py:677/693, so `exhausted` is never
+// emitted and doesn't need a branch here. Prior map carried `at_pace`/
+// `exhausted` — stale from an older ccburn; silently dropped session emoji
+// across every refresh once ccburn renamed to `on_pace`.
 function statusEmoji(status) {
   switch (status) {
     case 'behind_pace':   return '🧊';
-    case 'at_pace':       return '🟢';
+    case 'on_pace':       return '🟢';
     case 'ahead_of_pace': return '🚨';
-    case 'exhausted':     return '💀';
     default:              return '';
   }
 }
