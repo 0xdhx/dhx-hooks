@@ -16,6 +16,12 @@
 
 INPUT=$(cat)
 
+# INVARIANT: full reads are owned by ~/.claude/read-once/hook.sh (which writes
+# entries without a `partial` field). This hook must exit without writing on
+# full reads — a second writer would duplicate entries in reads.jsonl and
+# double-count TTL matches in dhx-read-guard.js. Guarded by
+# tests/probes/probe-read-partial-cache.sh Test 3.
+#
 # Fast path: if no offset/limit in the JSON, exit before any jq work.
 # Full reads are the common case (~95%+); this avoids 4 jq forks per Read.
 case "$INPUT" in

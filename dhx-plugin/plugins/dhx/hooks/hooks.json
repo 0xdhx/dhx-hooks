@@ -72,6 +72,10 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-poll-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-read-partial-cache.sh\""
           }
         ]
       }
