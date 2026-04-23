@@ -118,9 +118,37 @@ function runCcburn(stdinData) {
     });
     let out = '';
     json.stdout.on('data', chunk => out += chunk);
-    json.on('close', () => resolve(buildCcburnSegment(out)));
+    json.on('close', () => {
+      const segment = buildCcburnSegment(out);
+      if (segment) appendTrace({ ts: new Date().toISOString(), json: out.trim(), segment });
+      resolve(segment);
+    });
     json.on('error', () => resolve(''));
   });
+}
+
+// Rolling ccburn trace — ~/.cache/dhx/statusline-trace.jsonl (+ .prev on rotation).
+// Captures raw --json output + composed segment per refresh so a recurrence of
+// the 2026-04-23 "1h298" anomaly (duration ending in a digit — not producible
+// by formatBurnDuration()) can be replayed off-line: either ccburn emitted
+// malformed JSON-adjacent bytes or our composition went wrong. Size-bounded at
+// 1MB → rotate to .prev (~2MB disk ceiling). Append via fs.appendFile
+// fire-and-forget so the statusline refresh stays non-blocking. Retire by
+// 2026-06-01 if no matching anomaly lands in the trace — tracked by
+// docs/backlog.md::ccburn-trace-retire.
+const TRACE_FILE = path.join(os.homedir(), '.cache', 'dhx', 'statusline-trace.jsonl');
+const TRACE_MAX_BYTES = 1_000_000;
+function appendTrace(entry) {
+  try {
+    const line = JSON.stringify(entry) + '\n';
+    try {
+      const st = fs.statSync(TRACE_FILE);
+      if (st.size + line.length > TRACE_MAX_BYTES) {
+        fs.renameSync(TRACE_FILE, TRACE_FILE + '.prev');
+      }
+    } catch { /* first write — file absent, nothing to rotate */ }
+    fs.appendFile(TRACE_FILE, line, () => {});
+  } catch { /* trace must never block the statusline */ }
 }
 
 // Map ccburn's pace status → emoji. `status` reflects utilization-vs-budget-
