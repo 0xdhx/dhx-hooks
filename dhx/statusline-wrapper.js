@@ -151,10 +151,21 @@ function appendTrace(entry) {
   } catch { /* trace must never block the statusline */ }
 }
 
-// Map ccburn's pace status → emoji. `status` reflects utilization-vs-budget-
-// pace (behind = conserving, ahead = burning hot), which is what the user
-// actually reads at a glance — not raw % alone. Unknown statuses collapse to
-// empty so the segment still renders a pct without a misleading icon.
+// Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
+// budget-pace (behind = conserving, ahead = burning hot), which is what the
+// user actually reads at a glance — not raw % alone. Unknown statuses
+// collapse to empty so the segment still renders a pct without a misleading
+// icon.
+//
+// `on_pace` uses a dim `✓` (1 column, muted) instead of 🟢 (2 columns, full
+// weight). Rationale: `on_pace` carries no action — nothing to fix, nothing
+// to watch — so a muted glyph matches the signal's urgency; the original 🟢
+// was oversized relative to the surrounding monochrome text. `behind_pace`
+// (🧊) and `ahead_of_pace` (🚨) keep emoji because those states carry real
+// informational weight (conserving / burning hot) and the distinctive shape
+// earns the extra column. Tradeoff: segment width jitters by one column when
+// session transitions into/out of on_pace. Acceptable — status transitions
+// are rare (minutes/hours apart) vs. the timer's per-refresh tick.
 //
 // INVARIANT: ccburn's get_status() returns exactly one of
 // {ahead_of_pace, on_pace, behind_pace} — see
@@ -166,7 +177,7 @@ function appendTrace(entry) {
 function statusEmoji(status) {
   switch (status) {
     case 'behind_pace':   return '🧊';
-    case 'on_pace':       return '🟢';
+    case 'on_pace':       return '\x1b[2m✓\x1b[0m';
     case 'ahead_of_pace': return '🚨';
     default:              return '';
   }

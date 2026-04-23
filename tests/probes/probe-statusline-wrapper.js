@@ -51,7 +51,7 @@ ok('duration: 10080 min (7d)',         formatBurnDuration(10080),     '7d');
 // reintroduced without a matching producer.
 
 ok('emoji: behind_pace',   statusEmoji('behind_pace'),   '🧊');
-ok('emoji: on_pace',       statusEmoji('on_pace'),       '🟢');
+ok('emoji: on_pace',       statusEmoji('on_pace'),       '\x1b[2m✓\x1b[0m');
 ok('emoji: ahead_of_pace', statusEmoji('ahead_of_pace'), '🚨');
 ok('emoji: unknown → empty', statusEmoji('approaching'), '');
 ok('emoji: at_pace (retired) → empty', statusEmoji('at_pace'), '');
@@ -93,7 +93,7 @@ ok('ccburn: hours fallback converts to minutes',
    buildCcburnSegment(JSON.stringify({
      limits: { session: { utilization: 0.5, status: 'on_pace', resets_in_hours: 2.5 } },
    })),
-   'S:🟢 50% (2h30m)');
+   'S:\x1b[2m✓\x1b[0m 50% (2h30m)');
 
 // No reset time at all → segment still renders pct + emoji, no parens.
 ok('ccburn: missing resets → no duration',
