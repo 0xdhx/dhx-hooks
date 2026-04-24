@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.37.1
-// Patterns: HP-013, HP-014, HP-016, HP-019
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -236,6 +236,116 @@ function buildCcburnSegment(jsonText) {
   return parts.join(' · ');
 }
 
+// Plugin-registry drift detector. Catches clobber of the downstream registry
+// files CC's plugin resolver reads at session start — `plugins/known_marketplaces.json`
+// and `plugins/installed_plugins.json` — distinct from the settings-key clobber
+// class (HP-017) that `plugin_keys` already covers. Those two registry files
+// sit under `$CLAUDE_CONFIG_DIR/plugins/`; settings.json is where the user
+// *declares* a marketplace, but the resolver reads the downstream files to
+// *locate* it. When they drift out of sync, every new session's plugin hooks
+// silently fail to load. The 2026-04-24 incident: dhx-local was absent from
+// known_marketplaces.json for ~50 min despite settings declaring it; dhx-plugin
+// SessionStart hooks didn't fire; the existing plugin_keys check passed because
+// settings was fine.
+//
+// Runs inline in the statusline — not via a plugin hook — so the detector is
+// immune to the exact failure mode it catches (statusline is registered via
+// statusLine.command in settings.json and loaded at CC startup, not through
+// the plugin resolver). See HP-025.
+//
+// Scope: dhx-local marketplace + dhx@dhx-local plugin only. Broader coverage
+// across all enabled plugins is tempting but noisy — CC sometimes leaves
+// official plugins in transient orphan states that heal on the next session.
+// Widen after the narrow detector proves stable.
+//
+// Returns the first-matched state token (priority order below) or '' when
+// clean. Simultaneous faults collapse to the highest-priority token;
+// recovery is `/dhx:sym repair` regardless.
+//
+// Priority:
+//   1. UNREADABLE:<basename>      ENOENT or EACCES on km or installed_plugins
+//   2. BADJSON:<basename>         JSON.parse failure on km or installed_plugins
+//   3. MISSING:dhx-local          km lacks the extraKnownMarketplaces entry
+//   4. PATH:dhx-local             realpath mismatch across
+//                                 settings.extraKnownMarketplaces.dhx-local.source.path,
+//                                 km.dhx-local.source.path, km.dhx-local.installLocation
+//                                 (only checked when source.source === "directory")
+//   5. UNINSTALLED:dhx@dhx-local  installed_plugins.json lacks the plugin
+//   6. DISABLED:dhx@dhx-local     settings.enabledPlugins[x] !== true but plugin
+//                                 present in installed_plugins
+//
+// INVARIANT: 6 drift states + clean. Probe:
+// tests/probes/probe-plugin-registry.sh exercises every negative state plus a
+// clean-state assertion against the live registry files.
+function checkPluginRegistry(configDir) {
+  const MK = 'dhx-local';
+  const PLUGIN = 'dhx@dhx-local';
+
+  // Settings is the declaring source — this is the gate. If settings is
+  // unreadable/unparseable, or doesn't declare dhx-local, we skip silently:
+  //   (a) settings_chain and plugin_keys already cover settings-side faults,
+  //   (b) a fresh environment with no dhx declaration shouldn't trip
+  //       UNREADABLE/BADJSON on downstream registry files that wouldn't
+  //       matter to a resolver that never looks for dhx-local anyway.
+  // This ordering is what makes the detector scope-safe in probe harnesses
+  // (probe-health-suffix.js runs with an empty fake HOME + empty
+  // CLAUDE_CONFIG_DIR and must not fire registry warnings).
+  let settings;
+  try {
+    const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
+    settings = JSON.parse(fs.readFileSync(settingsReal, 'utf8'));
+  } catch { return ''; }
+
+  const declared = (settings.extraKnownMarketplaces || {})[MK];
+  if (!declared) return ''; // nothing declared — nothing to verify
+
+  const kmPath = path.join(configDir, 'plugins', 'known_marketplaces.json');
+  const ipPath = path.join(configDir, 'plugins', 'installed_plugins.json');
+
+  // Distinguish UNREADABLE (file gone / permission denied) from BADJSON (file
+  // present, parse fails) — operator needs to know whether to rebuild the
+  // file or repair its content.
+  let km, ip;
+  for (const [p, label] of [[kmPath, 'known_marketplaces.json'], [ipPath, 'installed_plugins.json']]) {
+    let raw;
+    try { raw = fs.readFileSync(p, 'utf8'); }
+    catch { return `UNREADABLE:${label}`; }
+    try {
+      const parsed = JSON.parse(raw);
+      if (p === kmPath) km = parsed; else ip = parsed;
+    } catch { return `BADJSON:${label}`; }
+  }
+
+  if (!(MK in km)) return `MISSING:${MK}`;
+
+  // Path equality only applies to directory-source marketplaces. Github-source
+  // marketplaces are tracked via the repo and installLocation is CC-managed;
+  // comparing paths would false-positive on every refresh.
+  if (declared.source && declared.source.source === 'directory') {
+    const entry = km[MK];
+    const settingsPath = declared.source.path;
+    const kmSourcePath = entry.source && entry.source.path;
+    const kmInstallLocation = entry.installLocation;
+    let rSettings, rKmSource, rKmInstall;
+    try { rSettings = fs.realpathSync(settingsPath); } catch { rSettings = settingsPath; }
+    try { rKmSource = kmSourcePath ? fs.realpathSync(kmSourcePath) : ''; } catch { rKmSource = kmSourcePath; }
+    try { rKmInstall = kmInstallLocation ? fs.realpathSync(kmInstallLocation) : ''; } catch { rKmInstall = kmInstallLocation; }
+    if (!rSettings || !rKmSource || !rKmInstall ||
+        rSettings !== rKmSource || rSettings !== rKmInstall) {
+      return `PATH:${MK}`;
+    }
+  }
+
+  // Enablement side: settings.enabledPlugins declares intent,
+  // installed_plugins.json records the install. Both must line up.
+  const enabled = settings.enabledPlugins && settings.enabledPlugins[PLUGIN];
+  const plugins = (ip && ip.plugins) || {};
+  if (!(PLUGIN in plugins)) return `UNINSTALLED:${PLUGIN}`;
+  if (enabled !== true) return `DISABLED:${PLUGIN}`;
+
+  return '';
+}
+
 // Read health cache written by dhx-health-check.sh (SessionStart).
 // Returns { front, tail } — each is a rendered warning segment or empty string.
 //
@@ -267,44 +377,57 @@ function buildCcburnSegment(jsonText) {
 // while this holds — grep hooks+skills repos for readers before extending.
 function readHealthCache() {
   return new Promise((resolve) => {
-    const empty = { front: '', tail: '' };
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
     fs.readFile(cacheFile, 'utf8', (err, data) => {
-      if (err) return resolve(empty);
+      // Start from an empty object so downstream detectors (sym-health
+      // override, plugin_registry) still fire even when health.json is missing
+      // or unparseable — those paths don't depend on SessionStart having run.
+      let h = {};
+      if (!err) {
+        try { h = JSON.parse(data); } catch { h = {}; }
+      }
+
       try {
-        const h = JSON.parse(data);
+        const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
+        const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
+        const ageMs = Date.now() - Date.parse(sym.checked_at || '');
+        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys) {
+          h.plugin_keys = sym.plugin_keys;
+        }
+      } catch { /* absent/malformed — defer to health.json's value */ }
 
-        try {
-          const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
-          const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
-          const ageMs = Date.now() - Date.parse(sym.checked_at || '');
-          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys) {
-            h.plugin_keys = sym.plugin_keys;
-          }
-        } catch { /* absent/malformed — defer to health.json's value */ }
+      // Plugin-registry drift runs inline every refresh (no SessionStart
+      // publisher) — it's the only class of clobber that can take out the
+      // plugin hooks that would otherwise write it. See checkPluginRegistry().
+      try {
+        const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+        const state = checkPluginRegistry(configDir);
+        if (state) h.plugin_registry = state;
+      } catch { /* detector errors never block the statusline */ }
 
-        const critical = [];
-        if (h.settings_chain && h.settings_chain !== 'ok')
-          critical.push(`settings:${h.settings_chain}`);
-        if (h.plugin_keys && h.plugin_keys !== 'ok')
-          critical.push(`plugin-keys:${h.plugin_keys}`);
+      const critical = [];
+      if (h.settings_chain && h.settings_chain !== 'ok')
+        critical.push(`settings:${h.settings_chain}`);
+      if (h.plugin_keys && h.plugin_keys !== 'ok')
+        critical.push(`plugin-keys:${h.plugin_keys}`);
+      if (h.plugin_registry && h.plugin_registry !== 'ok')
+        critical.push(`registry:${h.plugin_registry}`);
 
-        const advisory = [];
-        if (h.worktree_patches && h.worktree_patches !== 'patched')
-          advisory.push(`patches:${h.worktree_patches}`);
-        if (h.read_guard && h.read_guard !== 'patched')
-          advisory.push(`read-guard:${h.read_guard}`);
-        if (h.missing_symlinks > 0)
-          advisory.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+      const advisory = [];
+      if (h.worktree_patches && h.worktree_patches !== 'patched')
+        advisory.push(`patches:${h.worktree_patches}`);
+      if (h.read_guard && h.read_guard !== 'patched')
+        advisory.push(`read-guard:${h.read_guard}`);
+      if (h.missing_symlinks > 0)
+        advisory.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
 
-        const front = critical.length
-          ? `\x1b[38;5;208m⚠ ${critical.join(' ')} — /dhx:sym repair\x1b[0m`
-          : '';
-        const tail = advisory.length
-          ? `\x1b[31m⚠ ${advisory.join(' ')} — /dhx:sym repair\x1b[0m`
-          : '';
-        resolve({ front, tail });
-      } catch { resolve(empty); }
+      const front = critical.length
+        ? `\x1b[38;5;208m⚠ ${critical.join(' ')} — /dhx:sym repair\x1b[0m`
+        : '';
+      const tail = advisory.length
+        ? `\x1b[31m⚠ ${advisory.join(' ')} — /dhx:sym repair\x1b[0m`
+        : '';
+      resolve({ front, tail });
     });
   });
 }
@@ -690,4 +813,5 @@ module.exports = {
   statusEmoji,
   hashWarnSettings,
   canonicalize,
+  checkPluginRegistry,
 };
