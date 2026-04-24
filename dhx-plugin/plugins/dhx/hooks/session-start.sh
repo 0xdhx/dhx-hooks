@@ -13,9 +13,13 @@ SRC=$(echo "$INPUT" | jq -r '.source // "unknown"' 2>/dev/null || echo unknown)
 echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-probe.log
 
 # Dispatch to canonical scripts. Hand each its own stdin copy.
-# Run all three even if one fails — each is independent.
+# Run all four even if one fails — each is independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
+# Heal plugin registry drift (HP-025 companion) — runs BEFORE stale-worktree-sweep
+# so the heal establishes a valid baseline before downstream checks touch state.
+# No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
+bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
 
 exit 0
