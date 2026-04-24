@@ -58,9 +58,16 @@ if [ -L "$TARGET" ]; then
     # Already installed and pointing at our gate — nothing to do
     exit 0
   fi
-  echo "install-git-hooks: $TARGET is a symlink pointing at '$CURRENT' (not our gate)." >&2
-  echo "  Refusing to clobber. Inspect and remove it manually, then re-run." >&2
-  exit 1
+  # Self-heal: if the symlink points inside .claude/worktrees/ and the target
+  # no longer exists, the worktree was removed. Safe to clobber and reinstall.
+  if [[ "$CURRENT" == *"/.claude/worktrees/"* ]] && [ ! -e "$RESOLVED" ]; then
+    echo "install-git-hooks: removing stale worktree symlink (target: $CURRENT)"
+    rm "$TARGET"
+  else
+    echo "install-git-hooks: $TARGET is a symlink pointing at '$CURRENT' (not our gate)." >&2
+    echo "  Refusing to clobber. Inspect and remove it manually, then re-run." >&2
+    exit 1
+  fi
 fi
 
 if [ -e "$TARGET" ]; then
