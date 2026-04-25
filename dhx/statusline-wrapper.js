@@ -559,6 +559,13 @@ function scanRecursive(dir, ignoreBasenames) {
 // Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
 
+// GSD fork-aware drift suppression roots. Live tree is the install snapshot
+// `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
+// re-applied by the fork-sync command. See `isGsdDriftFromForkSync()` below
+// and docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
+const GSD_LIVE_ROOT = path.join(os.homedir(), '.claude', 'get-shit-done');
+const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'get-shit-done');
+
 // Collect current snapshot for all 5 watched paths + version. `settings` is
 // hashed over the WARN-set projection rather than mtime'd — see HP-014's
 // hot-reload note in the wrapper doc for why /effort, /model, /output-style,
@@ -570,7 +577,7 @@ function collectSnapshot(data) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
   const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
-  const gsd = scanRecursive(path.join(os.homedir(), '.claude', 'get-shit-done'));
+  const gsd = scanRecursive(GSD_LIVE_ROOT);
   const plugins = scanRecursive(path.join(configDir, 'plugins', 'cache'), PLUGIN_CACHE_IGNORE);
 
   const snapshot = {
@@ -591,6 +598,62 @@ function collectSnapshot(data) {
   } catch { /* missing or unresolvable — hash stays '' */ }
 
   return snapshot;
+}
+
+// Fork-aware suppression filter for the gsd drift trigger. Returns true iff
+// every file under `liveRoot` whose mtimeMs > snapshot.gsd_mtime is byte-equal
+// to its counterpart under `forkRoot` — meaning the post-snapshot writes are
+// the user's own fork-sync re-applying canonicals, not a real upstream change.
+//
+// Returns false (so the caller fires the gsd trigger as today) on:
+//   - canonical fork tree missing or unreadable (no fork system installed)
+//   - any newer-than-snapshot live file has NO canonical counterpart
+//     (genuine upstream update touching an unforked file)
+//   - any fork-tracked file's live bytes differ from canonical bytes
+//     (genuine local edit, or upstream touched a fork-tracked file)
+//   - any per-file read/stat error (fail-open)
+//   - any uncaught throw inside the helper (single try/catch wraps the body)
+//
+// Returns true (suppress) iff every newer-than-snapshot file has a byte-equal
+// canonical OR there are no newer-than-snapshot files at all (vacuously true;
+// in production this branch is unreachable because checkDrift() only invokes
+// the helper after the gsd mtime branch fired).
+//
+// Performance: invoked at most once per refresh, only when the gsd trigger
+// has fired AND the count branch did NOT fire. Reuses the same recursive
+// readdirSync walk shape as scanRecursive() to avoid double-traversal.
+//
+// liveRoot/forkRoot default to the production paths and are overridable so
+// tests/probes/probe-gsd-fork-aware-drift.sh can fixture isolated trees.
+function isGsdDriftFromForkSync(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = GSD_FORK_ROOT) {
+  try {
+    // Canonical tree must exist and be readable; otherwise fail-open.
+    try {
+      const st = fs.statSync(forkRoot);
+      if (!st.isDirectory()) return false;
+    } catch { return false; }
+
+    const entries = fs.readdirSync(liveRoot, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (entry.isDirectory && entry.isDirectory()) continue;
+      const full = entry.path ? path.join(entry.path, entry.name) : path.join(liveRoot, entry.name);
+      let liveStat;
+      try { liveStat = fs.statSync(full); } catch { return false; }
+      if (liveStat.mtimeMs <= snapshot.gsd_mtime) continue;
+
+      // Newer-than-snapshot live file — must have a byte-equal canonical.
+      const rel = path.relative(liveRoot, full);
+      const canonical = path.join(forkRoot, rel);
+      let canonicalBytes;
+      try { canonicalBytes = fs.readFileSync(canonical); } catch { return false; }
+      let liveBytes;
+      try { liveBytes = fs.readFileSync(full); } catch { return false; }
+      if (!liveBytes.equals(canonicalBytes)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Drift detection (D-02 through D-05): snapshot comparison.
@@ -652,13 +715,40 @@ function checkDrift(data) {
     if (current.agents_mtime > snapshot.agents_mtime ||
         current.agents_count < snapshot.agents_count) triggers.push('agents');
     if (current.settings_hash !== snapshot.settings_hash) triggers.push('settings');
-    if (current.gsd_mtime > snapshot.gsd_mtime ||
-        current.gsd_count < snapshot.gsd_count) triggers.push('gsd');
+
+    // gsd branch — split mtime and count so the count branch is non-suppressible.
+    // A deletion cannot be validated by byte-equal, so the helper is only invoked
+    // when the mtime branch fired alone. See `isGsdDriftFromForkSync` above and
+    // docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
+    const gsdMtimeFired = current.gsd_mtime > snapshot.gsd_mtime;
+    const gsdCountFired = current.gsd_count < snapshot.gsd_count;
+    let gsdSuppressed = false;
+    if (gsdMtimeFired || gsdCountFired) {
+      if (gsdMtimeFired && !gsdCountFired) {
+        gsdSuppressed = isGsdDriftFromForkSync(snapshot);
+      }
+      if (!gsdSuppressed) triggers.push('gsd');
+    }
+
     if (current.plugins_mtime > snapshot.plugins_mtime ||
         current.plugins_count < snapshot.plugins_count) triggers.push('plugins');
     if (current.version !== snapshot.version) triggers.push('version');
 
-    if (triggers.length === 0) return resolve('');
+    if (triggers.length === 0) {
+      // Re-baseline if a suppression occurred so we don't repeat the byte-compare
+      // every refresh. Without this, the post-fork-sync newer-than-snapshot files
+      // keep firing the gsd mtime branch (and the byte-compare) on every refresh
+      // until some other trigger forces a baseline write. (No effect when no
+      // triggers were ever raised — the snapshot already matches current.)
+      if (gsdSuppressed) {
+        try {
+          const tmp = snapshotFile + '.tmp.' + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify(current));
+          fs.renameSync(tmp, snapshotFile);
+        } catch { /* best-effort; suppression still holds for this refresh */ }
+      }
+      return resolve('');
+    }
 
     // Drift detected — age from snapshot file's own mtime (≈ session start)
     let ageMs = 0;
@@ -814,4 +904,5 @@ module.exports = {
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
+  isGsdDriftFromForkSync,
 };
