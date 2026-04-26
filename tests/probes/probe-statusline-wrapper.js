@@ -139,28 +139,29 @@ ok('ccburn: missing utilization → 0%',
 
 // --- § 4 computeMetaGlyph (2026-04-26 #2b additive meta-glyph) -------------
 // Aggregates {driftWarning, healthFront, healthTail, sigilCount} into a single
-// leftmost glyph: green ● (color 70) when ALL inputs clean, yellow ▲ (220)
-// when ANY fires. Purely additive — does not replace existing front
+// leftmost glyph: dim green ∙ (color 70) when ALL inputs clean, bright yellow
+// ⌃ (220) when ANY fires. Purely additive — does not replace existing front
 // composition. Color non-collision: 70/220 distinct from critical 208 and
 // advisory red 31. Probe pinned in tests/probes/probe-statusline-wrapper.js
-// per docs/decisions.md 2026-04-26 meta-glyph row.
+// per docs/decisions.md 2026-04-26 meta-glyph row (hairline glyphs locked
+// 2026-04-26 — see same-day "meta-glyph hairline glyphs" decisions row).
 
-const GREEN_DOT  = '\x1b[38;5;70m●\x1b[0m';
-const YELLOW_TRI = '\x1b[38;5;220m▲\x1b[0m';
+const GREEN_DOT  = '\x1b[2;38;5;70m∙\x1b[0m';
+const YELLOW_TRI = '\x1b[38;5;220m⌃\x1b[0m';
 
-ok('meta-glyph: all clear → green ●',         computeMetaGlyph('', '', '', 0),                       GREEN_DOT);
-ok('meta-glyph: drift fires → yellow ▲',      computeMetaGlyph('drift-text', '', '', 0),             YELLOW_TRI);
-ok('meta-glyph: critical fires → yellow ▲',   computeMetaGlyph('', 'critical-text', '', 0),          YELLOW_TRI);
-ok('meta-glyph: advisory fires → yellow ▲',   computeMetaGlyph('', '', 'advisory-text', 0),          YELLOW_TRI);
-ok('meta-glyph: 1 sigil → yellow ▲',          computeMetaGlyph('', '', '', 1),                       YELLOW_TRI);
-ok('meta-glyph: many sigils → yellow ▲',      computeMetaGlyph('', '', '', 6),                       YELLOW_TRI);
-ok('meta-glyph: mixed (drift+crit+adv+sigil) → yellow ▲',
+ok('meta-glyph: all clear → dim green ∙',         computeMetaGlyph('', '', '', 0),                       GREEN_DOT);
+ok('meta-glyph: drift fires → yellow ⌃',          computeMetaGlyph('drift-text', '', '', 0),             YELLOW_TRI);
+ok('meta-glyph: critical fires → yellow ⌃',       computeMetaGlyph('', 'critical-text', '', 0),          YELLOW_TRI);
+ok('meta-glyph: advisory fires → yellow ⌃',       computeMetaGlyph('', '', 'advisory-text', 0),          YELLOW_TRI);
+ok('meta-glyph: 1 sigil → yellow ⌃',              computeMetaGlyph('', '', '', 1),                       YELLOW_TRI);
+ok('meta-glyph: many sigils → yellow ⌃',          computeMetaGlyph('', '', '', 6),                       YELLOW_TRI);
+ok('meta-glyph: mixed (drift+crit+adv+sigil) → yellow ⌃',
    computeMetaGlyph('drift', 'crit', 'adv', 2), YELLOW_TRI);
-ok('meta-glyph: null inputs → green ● (!! coerces)',
+ok('meta-glyph: null inputs → dim green ∙ (!! coerces)',
    computeMetaGlyph(null, null, null, 0), GREEN_DOT);
-ok('meta-glyph: undefined inputs → green ●',  computeMetaGlyph(undefined, undefined, undefined, 0),  GREEN_DOT);
-// Edge: negative sigilCount (shouldn't happen, but guard against it). 0 → green.
-ok('meta-glyph: sigilCount = 0 (zero is falsy) → green ●', computeMetaGlyph('', '', '', 0), GREEN_DOT);
+ok('meta-glyph: undefined inputs → dim green ∙',  computeMetaGlyph(undefined, undefined, undefined, 0),  GREEN_DOT);
+// Edge: sigilCount = 0 falsy. 0 → dim green ∙.
+ok('meta-glyph: sigilCount = 0 (zero is falsy) → dim green ∙', computeMetaGlyph('', '', '', 0), GREEN_DOT);
 
 console.log();
 console.log(`${pass} passed, ${fail} failed`);

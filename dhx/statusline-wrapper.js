@@ -93,7 +93,7 @@ process.stdin.on('end', () => {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
 
-    // Meta-glyph (2026-04-26 #2b): purely additive leftmost ●/▲ aggregating
+    // Meta-glyph (2026-04-26 #2b): purely additive leftmost ∙/⌃ aggregating
     // drift + health.front + health.tail + sigilCount. Prepend AFTER the front
     // composition above so the full leftmost order is:
     //   meta-glyph SP <front-with-pipes> SP <renderer-line1>...
@@ -249,9 +249,9 @@ function computeSegmentSigil(segmentName) {
 //
 // Aggregates the four "something needs attention" signals — drift warning,
 // critical health (front), advisory health (tail), per-segment crash sigils —
-// into a single leftmost glyph. Green ● (color 70) means the pipeline is
-// running AND every signal is clean; yellow ▲ (color 220) means at least one
-// signal is firing (the user reads the existing detail to know which).
+// into a single leftmost glyph. Dim green ∙ (color 70) means the pipeline is
+// running AND every signal is clean; bright yellow ⌃ (color 220) means at
+// least one signal is firing (the user reads the existing detail to know which).
 //
 // Purely additive: prepended BEFORE the existing front composition so the full
 // leftmost order becomes meta-glyph → drift → critical-health → renderer-line1.
@@ -260,7 +260,7 @@ function computeSegmentSigil(segmentName) {
 //
 // Why a meta-glyph at all: today, a session with no health warnings shows
 // nothing in the front-of-stack zone — users can't distinguish "all good" from
-// "statusline broken / not running". An explicit green ● confirms the pipeline
+// "statusline broken / not running". An explicit dim green ∙ confirms the pipeline
 // is alive AND clean, distinct from segment-specific signals which only appear
 // during faults.
 //
@@ -270,7 +270,11 @@ function computeSegmentSigil(segmentName) {
 // output would have been; advisory sits at the tail.)
 function computeMetaGlyph(driftWarning, healthFront, healthTail, sigilCount) {
   const warn = !!driftWarning || !!healthFront || !!healthTail || sigilCount > 0;
-  return warn ? '\x1b[38;5;220m▲\x1b[0m' : '\x1b[38;5;70m●\x1b[0m';
+  // Hairline glyphs: ∙ (U+2219 bullet operator, dim green) for clean / ⌃ (U+2303
+  // up arrowhead, bright yellow) for warn. Chosen 2026-04-26 over solid ● / ▲ to
+  // recede on the clean path while preserving the third-state distinction —
+  // presence-vs-absence still detects "watcher dead." Colors unchanged.
+  return warn ? '\x1b[38;5;220m⌃\x1b[0m' : '\x1b[2;38;5;70m∙\x1b[0m';
 }
 
 // Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
