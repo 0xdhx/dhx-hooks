@@ -35,14 +35,42 @@ process.stdin.on('end', () => {
 
   // Run the dhx renderer, git info, cache-age, ccburn, health cache, and drift check in parallel.
   // ccburn collect silently feeds its database; compact output goes in the statusline.
+  // Each branch is wrapped via withSegmentDiag so a thrown exception in any one
+  // segment yields a red `⚠ <segment>?` sigil + a JSONL log line instead of
+  // collapsing the entire statusline to silent empty (2026-04-26 #4 self-diag).
   Promise.all([
-    runRenderer(input),
-    getGitInfo(cwd),
-    getCacheAge(data),
-    runCcburn(input),
-    readHealthCache(),
-    checkDrift(data),
-  ]).then(([rendererOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
+    withSegmentDiag('renderer', runRenderer(input)),
+    withSegmentDiag('git',      getGitInfo(cwd)),
+    withSegmentDiag('cacheAge', getCacheAge(data)),
+    withSegmentDiag('ccburn',   runCcburn(input)),
+    withSegmentDiag('health',   readHealthCache()),
+    withSegmentDiag('drift',    checkDrift(data)),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]) => {
+    // Process each segment — fire the sigil + log if it threw, else pass-through.
+    const ts = new Date().toISOString();
+    function unwrap(result, fallback) {
+      if (!result.error) return result.value;
+      appendStatuslineError({
+        ts,
+        segment: result.segmentName,
+        error_message: String((result.error && result.error.message) || result.error),
+        error_stack_first_line: ((result.error && result.error.stack) || '').split('\n')[0],
+        cwd,
+      });
+      return fallback(result.segmentName);
+    }
+    const sigil = computeSegmentSigil;
+    const rendererOutput = unwrap(rendererR, name => sigil(name)); // string carrying the sigil; split below yields [sigil, ''].
+    const gitInfo        = unwrap(gitInfoR,  name => sigil(name));
+    const cacheAge       = unwrap(cacheAgeR, name => sigil(name));
+    const burnOutput     = unwrap(burnOutputR, name => sigil(name));
+    const health         = unwrap(healthR,   name => ({ front: sigil(name), tail: '' }));
+    const driftWarning   = unwrap(driftR,    name => sigil(name));
+    // sigilCount is the count of segments that crashed this refresh — used by the
+    // meta-glyph composition (Task 3) as one of its OR-aggregated inputs.
+    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]
+      .filter(r => r.error).length;
+    void sigilCount; // referenced by meta-glyph block added in Task 3
     // The renderer may emit one or two lines. Line 1 carries identity +
     // runtime telemetry (model, ctx bar, dir); line 2, when present,
     // carries GSD state + repo signals. Git/cache/ccburn append to line 1;
@@ -149,6 +177,65 @@ function appendTrace(entry) {
     } catch { /* first write — file absent, nothing to rotate */ }
     fs.appendFile(TRACE_FILE, line, () => {});
   } catch { /* trace must never block the statusline */ }
+}
+
+// --- Per-segment self-diagnosis (2026-04-26 statusline observability bundle #4) ---
+//
+// Promise.all in runMain previously had a single outer .catch() that swallowed
+// any thrown exception inside ANY of the 6 branches and emitted "" — a silent
+// empty statusline indistinguishable from "no segments to show." Crash diagnosis
+// required mid-incident shell instrumentation. The wrap below converts each
+// branch into a {value, error, segmentName} envelope so the wrapper can:
+//
+//   1. Substitute a red `⚠ <segment>?` sigil where the segment's output would
+//      have been (preserves layout — sigil sits in the same column).
+//   2. Append a structured JSON line to ~/.cache/dhx/statusline-errors.jsonl
+//      so the operator can replay the crash off-line.
+//   3. Continue rendering the OTHER 5 segments — a single segment's failure no
+//      longer collapses the entire render.
+//
+// INVARIANT: Log writer failure (mocked appendFile/statSync/renameSync throw)
+// MUST NOT propagate out of appendStatuslineError. The outer try/catch swallows
+// EVERYTHING — disk-full, permission-denied, or any unforeseen I/O error must
+// not block the render path. Mirrors appendTrace exactly.
+//
+// INVARIANT: A structured warning that bubbles through readHealthCache (e.g.,
+// {front: "plugin-keys:MISSING", tail: ""}) is NOT a thrown exception and MUST
+// NOT trigger the sigil — that would be double-reporting the same condition.
+// Only thrown rejections inside the Promise.all branch fire the sigil.
+//
+// Probe: tests/probes/probe-statusline-self-diag.js exercises the rotation,
+// log-writer-failure resilience, clean-path no-write, and shape contract.
+const STATUSLINE_ERROR_FILE = path.join(os.homedir(), '.cache', 'dhx', 'statusline-errors.jsonl');
+const STATUSLINE_ERROR_MAX_BYTES = 1_000_000;
+
+function appendStatuslineError(entry) {
+  try {
+    const line = JSON.stringify(entry) + '\n';
+    try {
+      const st = fs.statSync(STATUSLINE_ERROR_FILE);
+      if (st.size + line.length > STATUSLINE_ERROR_MAX_BYTES) {
+        fs.renameSync(STATUSLINE_ERROR_FILE, STATUSLINE_ERROR_FILE + '.prev');
+      }
+    } catch { /* first write — file absent, nothing to rotate */ }
+    fs.appendFile(STATUSLINE_ERROR_FILE, line, () => {});
+  } catch { /* writer failure must never block the statusline */ }
+}
+
+// Wrap a segment promise so it always resolves to {value, error, segmentName}.
+// Never rejects — caller can destructure without try/catch noise.
+function withSegmentDiag(segmentName, promise) {
+  return Promise.resolve(promise).then(
+    value => ({ value, error: null, segmentName }),
+    error => ({ value: null, error, segmentName })
+  );
+}
+
+// Build the canonical sigil string for a crashed segment. Exposed so probes can
+// pin the format without re-parsing the wrapper source. Format:
+// `\x1b[31m⚠ <name>?\x1b[0m` — red `⚠ name?` reset.
+function computeSegmentSigil(segmentName) {
+  return `\x1b[31m⚠ ${segmentName}?\x1b[0m`;
 }
 
 // Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
@@ -905,4 +992,8 @@ module.exports = {
   canonicalize,
   checkPluginRegistry,
   isGsdDriftFromForkSync,
+  // Per-segment self-diagnosis (2026-04-26 #4)
+  withSegmentDiag,
+  appendStatuslineError,
+  computeSegmentSigil,
 };
