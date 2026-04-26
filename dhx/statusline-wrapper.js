@@ -66,11 +66,10 @@ process.stdin.on('end', () => {
     const burnOutput     = unwrap(burnOutputR, name => sigil(name));
     const health         = unwrap(healthR,   name => ({ front: sigil(name), tail: '' }));
     const driftWarning   = unwrap(driftR,    name => sigil(name));
-    // sigilCount is the count of segments that crashed this refresh — used by the
-    // meta-glyph composition (Task 3) as one of its OR-aggregated inputs.
+    // sigilCount is the count of segments that crashed this refresh — fed to
+    // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]
       .filter(r => r.error).length;
-    void sigilCount; // referenced by meta-glyph block added in Task 3
     // The renderer may emit one or two lines. Line 1 carries identity +
     // runtime telemetry (model, ctx bar, dir); line 2, when present,
     // carries GSD state + repo signals. Git/cache/ccburn append to line 1;
@@ -93,6 +92,14 @@ process.stdin.on('end', () => {
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
+
+    // Meta-glyph (2026-04-26 #2b): purely additive leftmost ●/▲ aggregating
+    // drift + health.front + health.tail + sigilCount. Prepend AFTER the front
+    // composition above so the full leftmost order is:
+    //   meta-glyph SP <front-with-pipes> SP <renderer-line1>...
+    // Existing detail unchanged — this only adds one glyph + space at column 0.
+    const metaGlyph = computeMetaGlyph(driftWarning, health.front, health.tail, sigilCount);
+    line1 = metaGlyph + ' ' + line1;
 
     // Advisory health (fork/symlink state) — red tail, session still works.
     // Prefer line 2 so it sits next to GSD/signals rather than crowding line 1.
@@ -236,6 +243,34 @@ function withSegmentDiag(segmentName, promise) {
 // `\x1b[31m⚠ <name>?\x1b[0m` — red `⚠ name?` reset.
 function computeSegmentSigil(segmentName) {
   return `\x1b[31m⚠ ${segmentName}?\x1b[0m`;
+}
+
+// --- Meta-glyph composition (2026-04-26 statusline observability bundle #2b) ---
+//
+// Aggregates the four "something needs attention" signals — drift warning,
+// critical health (front), advisory health (tail), per-segment crash sigils —
+// into a single leftmost glyph. Green ● (color 70) means the pipeline is
+// running AND every signal is clean; yellow ▲ (color 220) means at least one
+// signal is firing (the user reads the existing detail to know which).
+//
+// Purely additive: prepended BEFORE the existing front composition so the full
+// leftmost order becomes meta-glyph → drift → critical-health → renderer-line1.
+// Existing detail (drift text, critical/advisory health text, sigils) renders
+// unchanged after the glyph.
+//
+// Why a meta-glyph at all: today, a session with no health warnings shows
+// nothing in the front-of-stack zone — users can't distinguish "all good" from
+// "statusline broken / not running". An explicit green ● confirms the pipeline
+// is alive AND clean, distinct from segment-specific signals which only appear
+// during faults.
+//
+// Color non-collision: meta-glyph green 70 + yellow 220 are distinct from
+// critical 208 + advisory red 31 + sigil red 31. (Sigil and advisory share the
+// red palette but never co-locate — sigil sits where the segment's normal
+// output would have been; advisory sits at the tail.)
+function computeMetaGlyph(driftWarning, healthFront, healthTail, sigilCount) {
+  const warn = !!driftWarning || !!healthFront || !!healthTail || sigilCount > 0;
+  return warn ? '\x1b[38;5;220m▲\x1b[0m' : '\x1b[38;5;70m●\x1b[0m';
 }
 
 // Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
@@ -1003,4 +1038,6 @@ module.exports = {
   withSegmentDiag,
   appendStatuslineError,
   computeSegmentSigil,
+  // Meta-glyph composition (2026-04-26 #2b)
+  computeMetaGlyph,
 };
