@@ -35,14 +35,41 @@ process.stdin.on('end', () => {
 
   // Run the dhx renderer, git info, cache-age, ccburn, health cache, and drift check in parallel.
   // ccburn collect silently feeds its database; compact output goes in the statusline.
+  // Each branch is wrapped via withSegmentDiag so a thrown exception in any one
+  // segment yields a red `⚠ <segment>?` sigil + a JSONL log line instead of
+  // collapsing the entire statusline to silent empty (2026-04-26 #4 self-diag).
   Promise.all([
-    runRenderer(input),
-    getGitInfo(cwd),
-    getCacheAge(data),
-    runCcburn(input),
-    readHealthCache(),
-    checkDrift(data),
-  ]).then(([rendererOutput, gitInfo, cacheAge, burnOutput, health, driftWarning]) => {
+    withSegmentDiag('renderer', runRenderer(input)),
+    withSegmentDiag('git',      getGitInfo(cwd)),
+    withSegmentDiag('cacheAge', getCacheAge(data)),
+    withSegmentDiag('ccburn',   runCcburn(input)),
+    withSegmentDiag('health',   readHealthCache()),
+    withSegmentDiag('drift',    checkDrift(data)),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]) => {
+    // Process each segment — fire the sigil + log if it threw, else pass-through.
+    const ts = new Date().toISOString();
+    function unwrap(result, fallback) {
+      if (!result.error) return result.value;
+      appendStatuslineError({
+        ts,
+        segment: result.segmentName,
+        error_message: String((result.error && result.error.message) || result.error),
+        error_stack_first_line: ((result.error && result.error.stack) || '').split('\n')[0],
+        cwd,
+      });
+      return fallback(result.segmentName);
+    }
+    const sigil = computeSegmentSigil;
+    const rendererOutput = unwrap(rendererR, name => sigil(name)); // string carrying the sigil; split below yields [sigil, ''].
+    const gitInfo        = unwrap(gitInfoR,  name => sigil(name));
+    const cacheAge       = unwrap(cacheAgeR, name => sigil(name));
+    const burnOutput     = unwrap(burnOutputR, name => sigil(name));
+    const health         = unwrap(healthR,   name => ({ front: sigil(name), tail: '' }));
+    const driftWarning   = unwrap(driftR,    name => sigil(name));
+    // sigilCount is the count of segments that crashed this refresh — fed to
+    // computeMetaGlyph below as one of its OR-aggregated inputs.
+    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]
+      .filter(r => r.error).length;
     // The renderer may emit one or two lines. Line 1 carries identity +
     // runtime telemetry (model, ctx bar, dir); line 2, when present,
     // carries GSD state + repo signals. Git/cache/ccburn append to line 1;
@@ -65,6 +92,14 @@ process.stdin.on('end', () => {
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
+
+    // Meta-glyph (2026-04-26 #2b): purely additive leftmost ●/▲ aggregating
+    // drift + health.front + health.tail + sigilCount. Prepend AFTER the front
+    // composition above so the full leftmost order is:
+    //   meta-glyph SP <front-with-pipes> SP <renderer-line1>...
+    // Existing detail unchanged — this only adds one glyph + space at column 0.
+    const metaGlyph = computeMetaGlyph(driftWarning, health.front, health.tail, sigilCount);
+    line1 = metaGlyph + ' ' + line1;
 
     // Advisory health (fork/symlink state) — red tail, session still works.
     // Prefer line 2 so it sits next to GSD/signals rather than crowding line 1.
@@ -149,6 +184,93 @@ function appendTrace(entry) {
     } catch { /* first write — file absent, nothing to rotate */ }
     fs.appendFile(TRACE_FILE, line, () => {});
   } catch { /* trace must never block the statusline */ }
+}
+
+// --- Per-segment self-diagnosis (2026-04-26 statusline observability bundle #4) ---
+//
+// Promise.all in runMain previously had a single outer .catch() that swallowed
+// any thrown exception inside ANY of the 6 branches and emitted "" — a silent
+// empty statusline indistinguishable from "no segments to show." Crash diagnosis
+// required mid-incident shell instrumentation. The wrap below converts each
+// branch into a {value, error, segmentName} envelope so the wrapper can:
+//
+//   1. Substitute a red `⚠ <segment>?` sigil where the segment's output would
+//      have been (preserves layout — sigil sits in the same column).
+//   2. Append a structured JSON line to ~/.cache/dhx/statusline-errors.jsonl
+//      so the operator can replay the crash off-line.
+//   3. Continue rendering the OTHER 5 segments — a single segment's failure no
+//      longer collapses the entire render.
+//
+// INVARIANT: Log writer failure (mocked appendFile/statSync/renameSync throw)
+// MUST NOT propagate out of appendStatuslineError. The outer try/catch swallows
+// EVERYTHING — disk-full, permission-denied, or any unforeseen I/O error must
+// not block the render path. Mirrors appendTrace exactly.
+//
+// INVARIANT: A structured warning that bubbles through readHealthCache (e.g.,
+// {front: "plugin-keys:MISSING", tail: ""}) is NOT a thrown exception and MUST
+// NOT trigger the sigil — that would be double-reporting the same condition.
+// Only thrown rejections inside the Promise.all branch fire the sigil.
+//
+// Probe: tests/probes/probe-statusline-self-diag.js exercises the rotation,
+// log-writer-failure resilience, clean-path no-write, and shape contract.
+const STATUSLINE_ERROR_FILE = path.join(os.homedir(), '.cache', 'dhx', 'statusline-errors.jsonl');
+const STATUSLINE_ERROR_MAX_BYTES = 1_000_000;
+
+function appendStatuslineError(entry) {
+  try {
+    const line = JSON.stringify(entry) + '\n';
+    try {
+      const st = fs.statSync(STATUSLINE_ERROR_FILE);
+      if (st.size + line.length > STATUSLINE_ERROR_MAX_BYTES) {
+        fs.renameSync(STATUSLINE_ERROR_FILE, STATUSLINE_ERROR_FILE + '.prev');
+      }
+    } catch { /* first write — file absent, nothing to rotate */ }
+    fs.appendFile(STATUSLINE_ERROR_FILE, line, () => {});
+  } catch { /* writer failure must never block the statusline */ }
+}
+
+// Wrap a segment promise so it always resolves to {value, error, segmentName}.
+// Never rejects — caller can destructure without try/catch noise.
+function withSegmentDiag(segmentName, promise) {
+  return Promise.resolve(promise).then(
+    value => ({ value, error: null, segmentName }),
+    error => ({ value: null, error, segmentName })
+  );
+}
+
+// Build the canonical sigil string for a crashed segment. Exposed so probes can
+// pin the format without re-parsing the wrapper source. Format:
+// `\x1b[31m⚠ <name>?\x1b[0m` — red `⚠ name?` reset.
+function computeSegmentSigil(segmentName) {
+  return `\x1b[31m⚠ ${segmentName}?\x1b[0m`;
+}
+
+// --- Meta-glyph composition (2026-04-26 statusline observability bundle #2b) ---
+//
+// Aggregates the four "something needs attention" signals — drift warning,
+// critical health (front), advisory health (tail), per-segment crash sigils —
+// into a single leftmost glyph. Green ● (color 70) means the pipeline is
+// running AND every signal is clean; yellow ▲ (color 220) means at least one
+// signal is firing (the user reads the existing detail to know which).
+//
+// Purely additive: prepended BEFORE the existing front composition so the full
+// leftmost order becomes meta-glyph → drift → critical-health → renderer-line1.
+// Existing detail (drift text, critical/advisory health text, sigils) renders
+// unchanged after the glyph.
+//
+// Why a meta-glyph at all: today, a session with no health warnings shows
+// nothing in the front-of-stack zone — users can't distinguish "all good" from
+// "statusline broken / not running". An explicit green ● confirms the pipeline
+// is alive AND clean, distinct from segment-specific signals which only appear
+// during faults.
+//
+// Color non-collision: meta-glyph green 70 + yellow 220 are distinct from
+// critical 208 + advisory red 31 + sigil red 31. (Sigil and advisory share the
+// red palette but never co-locate — sigil sits where the segment's normal
+// output would have been; advisory sits at the tail.)
+function computeMetaGlyph(driftWarning, healthFront, healthTail, sigilCount) {
+  const warn = !!driftWarning || !!healthFront || !!healthTail || sigilCount > 0;
+  return warn ? '\x1b[38;5;220m▲\x1b[0m' : '\x1b[38;5;70m●\x1b[0m';
 }
 
 // Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
@@ -412,6 +534,13 @@ function readHealthCache() {
         critical.push(`plugin-keys:${h.plugin_keys}`);
       if (h.plugin_registry && h.plugin_registry !== 'ok')
         critical.push(`registry:${h.plugin_registry}`);
+      // hooks_wiring (2026-04-26 #1): manifest→symlink drift class. Mirrors the
+      // same `&& !== 'ok'` guard pattern as the other critical fields above —
+      // legacy health.json files written before this commit lack the field, so
+      // `h.hooks_wiring` is undefined, the guard fails, and no warning fires.
+      // Backward-compat invariant satisfied by the guard pattern itself.
+      if (h.hooks_wiring && h.hooks_wiring !== 'ok')
+        critical.push(`hooks-wiring:${h.hooks_wiring}`);
 
       const advisory = [];
       if (h.worktree_patches && h.worktree_patches !== 'patched')
@@ -905,4 +1034,10 @@ module.exports = {
   canonicalize,
   checkPluginRegistry,
   isGsdDriftFromForkSync,
+  // Per-segment self-diagnosis (2026-04-26 #4)
+  withSegmentDiag,
+  appendStatuslineError,
+  computeSegmentSigil,
+  // Meta-glyph composition (2026-04-26 #2b)
+  computeMetaGlyph,
 };
