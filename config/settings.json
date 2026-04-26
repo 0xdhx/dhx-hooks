@@ -66,19 +66,10 @@
       "Bash(PARENT:*)",
       "Bash(BRANCH:*)",
       "Bash(PHASE:*)",
-      "Bash(PREFERRED_RUNTIME:*)",
-      "Bash(RUNTIME_DIRS:*)",
-      "Bash(ORDERED_RUNTIME_DIRS:*)",
-      "Bash(LOCAL_VERSION_FILE:*)",
-      "Bash(GLOBAL_VERSION_FILE:*)",
-      "Bash(IS_LOCAL:*)",
-      "Bash(INSTALLED_VERSION:*)",
-      "Bash(INSTALL_SCOPE:*)",
-      "Bash(TARGET_RUNTIME:*)",
-      "Bash(HEALTHY:*)",
       "Bash(GSD_ITEMS:*)",
       "Bash(PROFILE_DIR:*)",
-      "Bash(CLAUDE_CONFIG_DIR=:*)",
+      "Bash(CLAUDE_CONFIG_DIR:*)",
+      "Bash(gsd-sdk:*)",
       "Bash(ccs:*)",
       "Bash(npm:*)",
       "Bash(mv:*)",
@@ -233,15 +224,6 @@
         ]
       },
       {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "READ_ONCE_TTL=172800 ~/.claude/read-once/hook.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Agent",
         "hooks": [
           {
@@ -267,17 +249,6 @@
             "type": "command",
             "command": "bash /home/dhx/.claude/hooks/gsd-validate-commit.sh",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/read-once/compact.sh"
           }
         ]
       }

@@ -75,7 +75,7 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-read-partial-cache.sh\""
+            "command": "bash \"$HOME/.claude/hooks/dhx-read-cache.sh\""
           }
         ]
       }

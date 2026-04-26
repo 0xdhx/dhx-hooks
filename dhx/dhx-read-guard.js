@@ -1,34 +1,63 @@
 #!/usr/bin/env node
 // DHX Read Guard — PreToolUse hook (fork of gsd-read-guard.js)
 //
-// Fork of gsd/gsd-read-guard.js v1.32.0 with session-aware gating replaced
-// by a global TTL-based cache lookup.
+// Fork of gsd-read-guard.js v1.32.0 with session-aware gating replaced
+// by a global TTL-based cache lookup. Rewritten in v1.1 Phase 1 for the
+// dhx-owned read-tracking stack (Option B; replaces ~/.claude/read-once/).
 //
-// Gate: Checks ~/.claude/read-once/reads.jsonl — a global TTL-based cache
-// shared across all CCS instances. Entries with ts within the last 2 hours
-// count as "read". This eliminates session-scoping false positives caused by
-// CCS instance swaps changing session_id.
+// Gate: Checks the dhx-owned XDG cache for recent reads. Entries with ts
+// within the last 2 hours count as "read". Pure global TTL eliminates
+// session-scoping false positives caused by CCS instance swaps changing
+// session_id (load-bearing citation:
+// reports/done/2026-04-15-read-guard-session-scoping-false-positives.md).
+//
+// Cache paths read (D-01 dual-path during migration window):
+//   - PRIMARY: ~/.cache/dhx/read-cache.jsonl (XDG, dhx-owned, D-04)
+//   - LEGACY:  ~/.claude/read-once/reads.jsonl (Boucle community path,
+//              read for in-flight session compatibility; removed in
+//              v1.1.1 follow-up commit per
+//              .planning/todos/pending/2026-04-26-v1-1-1-remove-legacy-path-read-fallback.md)
 //
 // Cache is written by:
-//   - read-once/hook.sh (full reads)
-//   - dhx-read-partial-cache.sh (partial reads with {"partial":true})
+//   - dhx-read-cache.sh (sole PreToolUse:Read writer; full + partial reads)
+//   - dhx-write-cache.sh (PostToolUse:Write|Edit; "source":"write" entries)
 //
-// Line format:  {"path":"/abs/path","ts":<unix>}
-//               {"path":"/abs/path","ts":<unix>,"partial":true}
+// Line format (D-08 schema with D-07 null-safety):
+//   {"path":"/abs/path","ts":<unix>,"source":"read"}
+//   {"path":"/abs/path","ts":<unix>,"source":"read","partial":true}
+//   {"path":"/abs/path","ts":<unix>,"source":"write"}
+//   {"path":"/abs/path","ts":<unix>}                    (legacy, no source)
+//   {"path":"/abs/path","ts":<unix>,"partial":true}     (legacy partial)
 //
-// Three-state detection:
+// D-07 null-safety: absent `source` field = treat as "read". D-08 semantics:
+// `source:"write"` entries count as full reads (writing IS a "you've seen
+// the bytes" signal — see dhx-write-cache.sh header for the false-positive
+// class this closes).
+//
+// D-17 PARTIAL+WRITE INVARIANT (defense-in-depth): the guard treats any
+// `partial:true` entry as partial regardless of the `source` value, by
+// design. Writers MUST NOT emit `partial:true` with `source:"write"`
+// (dhx-read-cache.sh writer header enforces this; only Read-tool partial
+// loads carry partial:true). HOWEVER, if a writer ever regresses and emits
+// the forbidden combo (partial:true + source:"write"), the guard's branch
+// here degrades SAFELY to a PARTIAL-READ NOTE rather than incorrectly
+// suppressing as a full read. This is the conservative/safe failure mode:
+// emitting an unnecessary advisory is better than missing a needed one.
+//
+// Three-state detection (REQ READ-04; collapse to two-state deferred to
+// v1.2 per READ-FUT-02 + D-03 dead-signal probe):
 //   - Full read in cache (within TTL) → suppress advisory entirely
 //   - Partial read in cache ({"partial":true}, within TTL) → light "PARTIAL-READ NOTE"
 //   - No read in cache within TTL → strong "READ-BEFORE-EDIT" advisory
 //
 // Caveats (accepted residuals):
-//   - If reads.jsonl doesn't exist or is empty, all edits get the advisory
+//   - If both caches don't exist or are empty, all edits get the advisory
 //     (safe degradation — same as before any Read happens in a session).
-//   - If dhx-read-partial-cache.sh is not installed, partial reads are not
-//     recorded in reads.jsonl and produce the strong advisory (safe degradation).
 //   - Global cache eliminates session-scoping false positives on CCS instance
 //     swap, session resume, and context compaction.
-//   - Entries older than 2 hours are pruned by hook.sh's hourly cleanup cycle.
+//   - Entries older than 2 hours are pruned by dhx-read-cache.sh's hourly
+//     cleanup cycle (.last-cleanup marker, flock-protected awk-rewrite —
+//     see D-13 in CONTEXT.md for the rename-then-append-back pattern).
 //
 // Exit semantics preserved from gsd: always exit 0, never block. Silent on
 // every error path (parse, stdin, I/O) — the hook must never be the reason
@@ -86,19 +115,28 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Global TTL-based cache lookup: check reads.jsonl for recent reads.
-    // Any error falls through to emit the "no read" advisory (safe default).
+    // Global TTL-based cache lookup: check both XDG and legacy paths for
+    // recent reads. Any error falls through to emit the "no read" advisory
+    // (safe default). D-01 dual-path read; D-07 null-safety; D-17 invariant.
     let hasFullRead = false;
     let hasPartialRead = false;
     try {
-      const globalCachePath = path.join(os.homedir(), '.claude', 'read-once', 'reads.jsonl');
-      if (fs.existsSync(globalCachePath)) {
-        const resolvedTarget = path.resolve(filePath);
-        const nowSec = Math.floor(Date.now() / 1000);
-        const ttl = 7200; // 2 hours
-        const contents = fs.readFileSync(globalCachePath, 'utf8');
-        const lines = contents.split('\n');
-        for (const line of lines) {
+      // PRIMARY: new XDG cache (D-04)
+      const primaryCachePath = path.join(os.homedir(), '.cache', 'dhx', 'read-cache.jsonl');
+      // LEGACY: Boucle path — read until v1.1.1 hygiene commit (D-01)
+      const legacyCachePath = path.join(os.homedir(), '.claude', 'read-once', 'reads.jsonl');
+
+      const resolvedTarget = path.resolve(filePath);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ttl = 7200; // 2 hours
+
+      // Reader factored out — same loop runs against both paths.
+      // Accumulator is monotonic per V-DUAL-PATH-NOOP (RESEARCH.md);
+      // no dedupe needed if same path appears in both caches.
+      const scanCache = (cachePath) => {
+        if (!fs.existsSync(cachePath)) return;
+        const contents = fs.readFileSync(cachePath, 'utf8');
+        for (const line of contents.split('\n')) {
           if (!line.trim()) continue;
           try {
             const entry = JSON.parse(line);
@@ -106,6 +144,15 @@ process.stdin.on('end', () => {
                 path.resolve(entry.path) === resolvedTarget &&
                 typeof entry.ts === 'number' &&
                 (nowSec - entry.ts) <= ttl) {
+              // D-07: absent `source` field = treat as "read" (legacy entries
+              //       from ~/.claude/read-once/hook.sh which emit {"path","ts"}).
+              // D-08: "source":"write" entries also count as full reads
+              //       (writing IS a "you've seen the bytes" signal — that is
+              //       why dhx-write-cache.sh exists).
+              // D-17: any `partial:true` entry is treated as partial regardless
+              //       of `source`, by design — defense-in-depth against a
+              //       writer regression emitting partial:true + source:"write"
+              //       (forbidden by writer invariant, but guard degrades safely).
               if (entry.partial) {
                 hasPartialRead = true;
               } else {
@@ -116,7 +163,10 @@ process.stdin.on('end', () => {
             // skip malformed line, continue scanning
           }
         }
-      }
+      };
+
+      scanCache(primaryCachePath);
+      scanCache(legacyCachePath);  // D-01: removed in v1.1.1 hygiene commit
     } catch {
       // fall through to advisory on any I/O error
     }
