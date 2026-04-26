@@ -118,19 +118,66 @@ function parsePaneEffort(paneText) {
 // comfortably. Still well inside one-read budget (~15ms vs ~40ms for
 // full scrollback). 500ms timeout absorbs pathological tmux server
 // slowness without blocking the renderer indefinitely.
-function getEffortFromPane() {
+//
+// Cache layer (added 2026-04-26 after tmux-server wedge incident — see
+// reports/2026-04-26-statusline-capture-pane-wedge.md). Per-session file
+// at /tmp/claude-effort-${sessionId} with 30s TTL. The renderer fires per-
+// refresh × N concurrent sessions; the 500ms client-side timeout bounds
+// renderer wait but NOT server-side load — by the time it fires the request
+// has already queued in tmux's epoll set. Cache drops aggregate IPC ~93%
+// in steady state. Glyph lags up to 30s after /effort (Alt+P) — acceptable
+// because effort changes are uncommon. Future P3 (hook-driven invalidation)
+// restores per-turn freshness without polling.
+function getEffortFromPane(sessionId) {
   const pane = process.env.TMUX_PANE;
   if (!pane) return null;
+
+  // Sanitize session_id. Mirrors the context-bridge fence-post in
+  // runStatusline (~L420). Three states:
+  //   - unset/empty (caller had no session_id)  → cache disabled, live capture still runs
+  //   - non-empty + safe (normal CC UUID)        → cache enabled
+  //   - non-empty + unsafe (path sep or `..`)    → reject outright (return null,
+  //                                                no tmux call, no cache touch)
+  // The reject branch is hardening: a malicious id should not get a free
+  // tmux IPC call as a side effect of "cache lookup failed".
+  const hasSession = sessionId != null && sessionId !== '';
+  const sessionSafe = hasSession && !/[/\\]|\.\./.test(sessionId);
+  if (hasSession && !sessionSafe) return null;
+
+  const cachePath = sessionSafe
+    ? path.join(os.tmpdir(), `claude-effort-${sessionId}`)
+    : null;
+  const CACHE_TTL_MS = 30_000;
+
+  if (cachePath) {
+    try {
+      const stat = fs.statSync(cachePath);
+      if (Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
+        const cached = fs.readFileSync(cachePath, 'utf8').trim();
+        if (KNOWN_EFFORT_LEVELS.has(cached)) return cached;
+      }
+    } catch { /* cache miss — fall through to live capture */ }
+  }
+
+  let effort = null;
   try {
     const out = execFileSync(
       'tmux',
       ['capture-pane', '-p', '-S', '-500', '-E', '-', '-t', pane],
       { encoding: 'utf8', timeout: 500, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return parsePaneEffort(out);
+    effort = parsePaneEffort(out);
   } catch {
     return null;
   }
+
+  // Write-through on success only. Failed reads (effort === null) must NOT
+  // pollute the cache — they'd mask a real value already on disk and pin
+  // the segment to "hidden" until the next live recapture succeeds.
+  if (effort && cachePath) {
+    try { fs.writeFileSync(cachePath, effort); } catch { /* best-effort */ }
+  }
+  return effort;
 }
 
 // Return the CCS profile letter when CLAUDE_CONFIG_DIR resolves to a CCS
@@ -391,10 +438,10 @@ function runStatusline() {
   try {
     const data = JSON.parse(input);
     const model = compactModel(data.model?.display_name);
-    const effort = renderEffort(getEffortFromPane());
     const ccsProfile = getCcsProfile();
     const dir = data.workspace?.current_dir || process.cwd();
     const session = data.session_id || '';
+    const effort = renderEffort(getEffortFromPane(session));
     const remaining = data.context_window?.remaining_percentage;
 
     // Context window display (shows USED percentage scaled to usable context)

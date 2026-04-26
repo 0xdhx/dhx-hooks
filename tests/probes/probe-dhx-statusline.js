@@ -196,7 +196,14 @@ okObj('KNOWN_EFFORT_LEVELS matches EFFORT_RENDER keys',
 // getEffortFromPane: integration. TMUX_PANE absent → null (no subprocess).
 const prevPane = process.env.TMUX_PANE;
 delete process.env.TMUX_PANE;
-ok('getEffortFromPane: no TMUX_PANE → null', getEffortFromPane(), null);
+ok('getEffortFromPane: no TMUX_PANE → null', getEffortFromPane('probe-no-tmux'), null);
+
+// Per-test session_ids isolate the on-disk cache file at /tmp/claude-effort-${id}
+// so a successful capture in one assertion can't shadow the next assertion's
+// live read. Each id gets unlinked at the end of the try.
+const cachePathFor = (id) => path.join(os.tmpdir(), `claude-effort-${id}`);
+const trackedCacheIds = [];
+const trackId = (id) => { trackedCacheIds.push(id); return id; };
 
 // Stub tmux via a temp shim on PATH that emits whatever DHX_TMUX_STUB_OUT
 // env holds. Lets us flip fixture output across assertions without
@@ -215,31 +222,165 @@ try {
 
   process.env.DHX_TMUX_STUB_OUT =
     '▝▜█████▛▘  Opus 4.7 (1M context) with xhigh effort · Claude Max\n';
-  ok('getEffortFromPane: stub banner → xhigh', getEffortFromPane(), 'xhigh');
+  ok('getEffortFromPane: stub banner → xhigh',
+    getEffortFromPane(trackId('probe-banner')), 'xhigh');
 
   process.env.DHX_TMUX_STUB_OUT =
     '✻ Simmering… (1m · ↓ 500 tokens · thinking with max effort)\n';
-  ok('getEffortFromPane: stub thinking → max', getEffortFromPane(), 'max');
+  ok('getEffortFromPane: stub thinking → max',
+    getEffortFromPane(trackId('probe-thinking')), 'max');
 
   process.env.DHX_TMUX_STUB_OUT = 'no effort markers here at all\n';
-  ok('getEffortFromPane: stub with no markers → null', getEffortFromPane(), null);
+  ok('getEffortFromPane: stub with no markers → null',
+    getEffortFromPane(trackId('probe-no-markers')), null);
 
   process.env.DHX_TMUX_STUB_OUT = '';
-  ok('getEffortFromPane: stub empty output → null', getEffortFromPane(), null);
+  ok('getEffortFromPane: stub empty output → null',
+    getEffortFromPane(trackId('probe-empty')), null);
 
   // Failing binary — shim that exits non-zero should surface as null, not crash.
   fs.writeFileSync(path.join(tmuxStubDir, 'tmux'), '#!/bin/sh\nexit 1\n');
   fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
-  ok('getEffortFromPane: tmux exits non-zero → null', getEffortFromPane(), null);
+  ok('getEffortFromPane: tmux exits non-zero → null',
+    getEffortFromPane(trackId('probe-exit1')), null);
 
   // Missing binary — PATH with no tmux at all.
   process.env.PATH = '/nonexistent-path-dir';
-  ok('getEffortFromPane: tmux not on PATH → null', getEffortFromPane(), null);
+  ok('getEffortFromPane: tmux not on PATH → null',
+    getEffortFromPane(trackId('probe-nopath')), null);
 
   process.env.PATH = prevPath;
   delete process.env.DHX_TMUX_STUB_OUT;
+
+  // --- Cache layer (added 2026-04-26) ---
+  // Restore working stub for cache-layer tests.
+  fs.writeFileSync(
+    path.join(tmuxStubDir, 'tmux'),
+    '#!/bin/sh\nprintf "%s" "$DHX_TMUX_STUB_OUT"\n',
+  );
+  fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
+  process.env.PATH = `${tmuxStubDir}:${prevPath}`;
+
+  // 1. Cache hit — pre-populated /tmp/claude-effort-<id> within TTL is
+  //    returned verbatim and the live tmux read is skipped. Verified
+  //    indirectly by stubbing tmux to emit a *different* level — cache
+  //    must win.
+  {
+    const id = trackId('probe-cache-hit-001');
+    fs.writeFileSync(cachePathFor(id), 'high');
+    process.env.DHX_TMUX_STUB_OUT =
+      '▝▜█████▛▘  Opus 4.7 (1M context) with max effort · Claude Max\n';
+    ok('getEffortFromPane: cache hit returns cached, ignores live',
+      getEffortFromPane(id), 'high');
+  }
+
+  // 2. Cache miss after TTL — same fixture but we age the cache file's
+  //    mtime past the 30s TTL via utimes; the live capture must run and
+  //    overwrite the cache.
+  {
+    const id = trackId('probe-cache-stale-001');
+    fs.writeFileSync(cachePathFor(id), 'low');
+    const past = (Date.now() - 60_000) / 1000;
+    fs.utimesSync(cachePathFor(id), past, past);
+    process.env.DHX_TMUX_STUB_OUT =
+      '✻ Simmering… (1m · ↓ 500 tokens · thinking with medium effort)\n';
+    ok('getEffortFromPane: stale cache → live recapture',
+      getEffortFromPane(id), 'medium');
+    ok('getEffortFromPane: stale cache → file overwritten',
+      fs.readFileSync(cachePathFor(id), 'utf8').trim(), 'medium');
+    const ageMs = Date.now() - fs.statSync(cachePathFor(id)).mtimeMs;
+    ok('getEffortFromPane: stale cache → mtime refreshed (<5s)',
+      ageMs < 5000, true);
+  }
+
+  // 3. Cache write failure tolerated — pre-create cachePath as a directory
+  //    so writeFileSync throws EISDIR. Renderer must still return the
+  //    parsed value.
+  {
+    const id = trackId('probe-cache-noperm-001');
+    fs.mkdirSync(cachePathFor(id));
+    process.env.DHX_TMUX_STUB_OUT =
+      '▝▜█████▛▘  Opus 4.7 (1M context) with high effort · Claude Max\n';
+    ok('getEffortFromPane: cache write failure does not break renderer',
+      getEffortFromPane(id), 'high');
+    fs.rmdirSync(cachePathFor(id));
+  }
+
+  // 4. Malicious session_id → null without touching tmux or cache. We
+  //    swap the stub binary to one that records invocations to a side
+  //    file, then assert nothing was recorded after each bad-id call.
+  {
+    const invocationLog = path.join(tmuxStubDir, 'invocations.log');
+    fs.writeFileSync(
+      path.join(tmuxStubDir, 'tmux'),
+      `#!/bin/sh\necho "called" >> "${invocationLog}"\nprintf "%s" "$DHX_TMUX_STUB_OUT"\n`,
+    );
+    fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
+    process.env.DHX_TMUX_STUB_OUT =
+      '▝▜█████▛▘  Opus 4.7 (1M context) with max effort · Claude Max\n';
+
+    const malicious = ['../etc/passwd', 'foo/bar', 'foo\\bar', '..', '.well/then'];
+    let allNull = true;
+    let anyTmuxCalled = false;
+    let anyCacheLeak = false;
+    const tmpDir = os.tmpdir();
+    const beforeFiles = new Set(
+      fs.readdirSync(tmpDir).filter(f => f.startsWith('claude-effort-'))
+    );
+    for (const id of malicious) {
+      const r = getEffortFromPane(id);
+      if (r !== null) allNull = false;
+      const afterFiles = fs.readdirSync(tmpDir).filter(f => f.startsWith('claude-effort-'));
+      for (const f of afterFiles) {
+        if (!beforeFiles.has(f)) { anyCacheLeak = true; break; }
+      }
+    }
+    if (fs.existsSync(invocationLog)) anyTmuxCalled = true;
+    ok('getEffortFromPane: malicious session_ids → null',
+      allNull, true);
+    ok('getEffortFromPane: malicious session_ids → no cache file leaked',
+      anyCacheLeak, false);
+    ok('getEffortFromPane: malicious session_ids → no tmux invocation',
+      anyTmuxCalled, false);
+    fs.rmSync(invocationLog, { force: true });
+
+    // Restore plain stub for any later tests.
+    fs.writeFileSync(
+      path.join(tmuxStubDir, 'tmux'),
+      '#!/bin/sh\nprintf "%s" "$DHX_TMUX_STUB_OUT"\n',
+    );
+    fs.chmodSync(path.join(tmuxStubDir, 'tmux'), 0o755);
+    delete process.env.DHX_TMUX_STUB_OUT;
+  }
+
+  // 5. Empty / null session_id → live capture runs but no cache file is
+  //    written. Codifies "cache is an optimization, not a correctness
+  //    dependency" — the renderer still works without a session_id.
+  {
+    const tmpDir = os.tmpdir();
+    const before = new Set(
+      fs.readdirSync(tmpDir).filter(f => f.startsWith('claude-effort-'))
+    );
+    process.env.DHX_TMUX_STUB_OUT =
+      '▝▜█████▛▘  Opus 4.7 (1M context) with high effort · Claude Max\n';
+    ok('getEffortFromPane: empty session_id still parses live value',
+      getEffortFromPane(''), 'high');
+    ok('getEffortFromPane: null session_id still parses live value',
+      getEffortFromPane(null), 'high');
+    const after = fs.readdirSync(tmpDir).filter(f => f.startsWith('claude-effort-'));
+    let leaked = false;
+    for (const f of after) if (!before.has(f)) { leaked = true; break; }
+    ok('getEffortFromPane: no cache file when session_id absent',
+      leaked, false);
+    delete process.env.DHX_TMUX_STUB_OUT;
+  }
+
+  process.env.PATH = prevPath;
 } finally {
   fs.rmSync(tmuxStubDir, { recursive: true, force: true });
+  for (const id of trackedCacheIds) {
+    fs.rmSync(cachePathFor(id), { force: true, recursive: true });
+  }
   if (prevPane !== undefined) process.env.TMUX_PANE = prevPane;
   else delete process.env.TMUX_PANE;
 }
