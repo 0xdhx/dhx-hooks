@@ -108,10 +108,111 @@ if [[ -z "$plugin_keys" ]]; then
   fi
 fi
 
+# --- Hooks-json wiring canary (HP-017 residual class — manifest→symlink drift) ---
+# HP-017 made plugin-manifest hook entries rewriter-safe (they live outside
+# settings.json), but the manifest still references scripts via paths under
+# $HOME/.claude/hooks/<basename> — and those are symlinks back to dhx/<basename>.
+# A missing or wrong-target symlink means the hook silently fails to fire even
+# though the manifest entry is intact. plugin_keys catches the settings-side
+# clobber; this canary catches the symlink-side drift.
+#
+# For each command line in the manifest:
+#   1. Strip interpreter (bash|node) and quotes; expand $HOME and ${CLAUDE_PLUGIN_ROOT}.
+#   2. Verify the target path exists on disk (script-missing → broken).
+#   3. If readlink-resolved path is under the dhx repo root, verify the
+#      basename is symlinked under ~/.claude/hooks/ AND the symlink resolves
+#      back to that same dhx path. Else (non-dhx path: dispatcher under
+#      dhx-plugin/, gsd scripts) → script-presence check is enough.
+#
+# Three env-var indirections enable fixture isolation in
+# tests/probes/probe-hooks-wiring.sh — same overridable-default pattern as
+# isGsdDriftFromForkSync(snapshot, liveRoot, forkRoot) in statusline-wrapper.js.
+#
+# INVARIANT: Manifest absent or unparseable → hooks_wiring="ok". Don't false-
+# positive a fresh-clone state where the manifest hasn't been generated yet;
+# the SessionStart-only execution cadence means a single noisy "broken" reading
+# would persist across the entire session.
+hooks_wiring="ok"
+manifest_default="/home/dhx/repos/hooks/dhx-plugin/plugins/dhx/hooks/hooks.json"
+manifest="${DHX_HOOKS_MANIFEST:-$manifest_default}"
+dhx_repo_root="${DHX_HOOKS_REPO_ROOT:-/home/dhx/repos/hooks/dhx}"
+hooks_dir="${DHX_HOOKS_INSTALL_DIR:-$HOME/.claude/hooks}"
+
+if [[ -f "$manifest" ]]; then
+  # ${CLAUDE_PLUGIN_ROOT} resolves to the directory containing .claude-plugin/
+  # — i.e., the plugin dir two levels up from hooks/hooks.json. Default uses
+  # the canonical path; tests can override DHX_HOOKS_MANIFEST without touching
+  # this variable since fixture manifests don't reference ${CLAUDE_PLUGIN_ROOT}.
+  plugin_root_default="$(dirname "$(dirname "$manifest_default")")"
+  broken=0
+  # Walk every command across all event blocks. `.. | objects | select(.command)`
+  # is more flexible than the canonical `.hooks | to_entries[] | .value[] | .hooks[]?`
+  # path because it tolerates schema variation (no-matcher blocks vs matcher blocks).
+  while IFS= read -r cmdline; do
+    [[ -z "$cmdline" ]] && continue
+    # Strip leading interpreter + space (`bash ` or `node `).
+    path="${cmdline#bash }"
+    path="${path#node }"
+    # Strip surrounding double-quotes.
+    path="${path#\"}"
+    path="${path%\"}"
+    # Expand env vars. Use sed for ${CLAUDE_PLUGIN_ROOT} because bash's `//`
+    # substitution misinterprets the literal `${...}` as a nested expansion;
+    # ${HOME} is fine since `$HOME` (no braces) escapes cleanly.
+    path="${path//\$HOME/$HOME}"
+    path=$(printf '%s' "$path" | sed "s|\${CLAUDE_PLUGIN_ROOT}|$plugin_root_default|g")
+
+    if [[ ! -e "$path" ]]; then
+      broken=$((broken + 1))
+      continue
+    fi
+
+    real=$(readlink -f "$path" 2>/dev/null || echo "")
+    if [[ -z "$real" ]]; then
+      broken=$((broken + 1))
+      continue
+    fi
+
+    # Symlink contract applies when EITHER:
+    #   (a) the declared path lives under the dhx hooks install dir (a dhx
+    #       script the manifest references via $HOME/.claude/hooks/<basename>),
+    #       OR
+    #   (b) the resolved path is under the dhx repo root (catches future
+    #       manifest formats that reference dhx scripts directly).
+    # Non-dhx scripts (e.g. dispatcher under dhx-plugin/, gsd-owned paths) are
+    # caught by neither branch — script-presence is the only check for them.
+    declared_in_hooks_dir=0
+    [[ "$path" == "$hooks_dir/"* ]] && declared_in_hooks_dir=1
+    real_in_dhx_repo=0
+    [[ "$real" == "$dhx_repo_root/"* ]] && real_in_dhx_repo=1
+
+    if (( declared_in_hooks_dir || real_in_dhx_repo )); then
+      basename=$(basename "$path")
+      link="$hooks_dir/$basename"
+      if [[ ! -L "$link" ]]; then
+        broken=$((broken + 1))
+        continue
+      fi
+      link_real=$(readlink -f "$link" 2>/dev/null || echo "")
+      # Symlink must resolve back to a file UNDER the dhx repo root. Any other
+      # target (decoy path, accidental relink to a moved location) counts as
+      # drift even if the file at the link target exists.
+      if [[ -z "$link_real" || "$link_real" != "$dhx_repo_root/"* ]]; then
+        broken=$((broken + 1))
+        continue
+      fi
+    fi
+  done < <(jq -r '.. | objects | select(.command) | .command' "$manifest" 2>/dev/null)
+
+  if (( broken > 0 )); then
+    hooks_wiring="BROKEN:$broken"
+  fi
+fi
+
 # --- Write health cache (atomic via temp + mv) ---
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 

@@ -499,6 +499,13 @@ function readHealthCache() {
         critical.push(`plugin-keys:${h.plugin_keys}`);
       if (h.plugin_registry && h.plugin_registry !== 'ok')
         critical.push(`registry:${h.plugin_registry}`);
+      // hooks_wiring (2026-04-26 #1): manifest→symlink drift class. Mirrors the
+      // same `&& !== 'ok'` guard pattern as the other critical fields above —
+      // legacy health.json files written before this commit lack the field, so
+      // `h.hooks_wiring` is undefined, the guard fails, and no warning fires.
+      // Backward-compat invariant satisfied by the guard pattern itself.
+      if (h.hooks_wiring && h.hooks_wiring !== 'ok')
+        critical.push(`hooks-wiring:${h.hooks_wiring}`);
 
       const advisory = [];
       if (h.worktree_patches && h.worktree_patches !== 'patched')
