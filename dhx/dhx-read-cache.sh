@@ -75,7 +75,17 @@ RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 # per invocation, atomic up to PIPE_BUF=4096 on Linux/WSL2 ext4.
 # (D-17 invariant: source:"read" hardcoded here; only Read-tool entries have
 # source:"read", and only those may carry partial:true.)
-echo "{\"path\":\"$RESOLVED\",\"ts\":$(date +%s),\"source\":\"read\"${PARTIAL_MARKER}}" >> "$CACHE"
+# WR-01: jq for JSONL escaping — paths containing `"` no longer break schema.
+# Schema requires `partial` field ABSENT for full reads (probe-read-cache.sh
+# V-WRITER-FULL asserts `.partial == null`), so emit it only when true.
+TS=$(date +%s)
+if [ -n "$PARTIAL_MARKER" ]; then
+  jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
+    '{path: $path, ts: $ts, source: "read", partial: true}' >> "$CACHE"
+else
+  jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
+    '{path: $path, ts: $ts, source: "read"}' >> "$CACHE"
+fi
 
 # Hourly TTL prune (D-13: rename-then-append-back inside flock -n subshell)
 NOW=$(date +%s)
@@ -99,7 +109,10 @@ if [ $(( NOW - LAST_CLEANUP_OUTER )) -gt 3600 ]; then
     # captured any in-flight pre-rename writes) and APPENDS the survivors
     # back to $CACHE (O_APPEND atomicity preserves both awk output and
     # concurrent appends).
-    mv "$CACHE" "${CACHE}.prune"
+    # WR-02: explicit failure handling — marker write must only fire on
+    # successful prune, otherwise the .last-cleanup gate suppresses retries
+    # for the next hour while stale entries accumulate.
+    mv "$CACHE" "${CACHE}.prune" || { echo "[$(date)] dhx-read-cache: mv failed during prune" >&2; exit 1; }
     # D-14: adversarial probe pause — env-var gated. Default unset = no-op.
     # When set (e.g., DHX_READ_CACHE_TEST_PAUSE_MS=200 from probe), forces
     # a deterministic sleep between mv and append-back so the adversarial
@@ -107,10 +120,16 @@ if [ $(( NOW - LAST_CLEANUP_OUTER )) -gt 3600 ]; then
     [ -n "${DHX_READ_CACHE_TEST_PAUSE_MS:-}" ] && sleep "$(awk -v ms="$DHX_READ_CACHE_TEST_PAUSE_MS" 'BEGIN { print ms/1000 }')"
     awk -F'"ts":' -v cutoff="$CUTOFF" '
       NF>=2 { split($2, a, /[^0-9]/); if (a[1]+0 >= cutoff) print }
-    ' "${CACHE}.prune" >> "$CACHE"
+    ' "${CACHE}.prune" >> "$CACHE" || {
+      echo "[$(date)] dhx-read-cache: awk failed during prune; rolling back" >&2
+      mv "${CACHE}.prune" "$CACHE" 2>/dev/null
+      exit 1
+    }
     rm -f "${CACHE}.prune"
     # D-13: marker write INSIDE the lock subshell — closes "marker reset even
     # on skipped prune" flagged in Gemini review.
+    # WR-02: only fires after successful awk + rm above (early-exit on failure
+    # leaves the prior marker untouched so the next writer retries the prune).
     echo "$NOW" > "$CLEANUP_MARKER"
   ) 200>"$LOCK"
 fi

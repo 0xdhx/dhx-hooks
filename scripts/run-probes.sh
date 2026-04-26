@@ -11,18 +11,6 @@
 # gate, by .planning/todos/pending/2026-04-26-v1-1-1-remove-legacy-path-read-fallback.md,
 # and by future probe-suite-gated work.
 #
-# WAVE-0 RED STATE NOTICE (D-23):
-# The 4 read-cache* probes shipped in this commit are intentional Wave-0
-# stubs that exit 1:
-#   - tests/probes/probe-read-cache.sh
-#   - tests/probes/probe-read-cache-concurrency.sh
-#   - tests/probes/probe-read-cache-cross-session.sh
-#   - tests/probes/probe-read-cache-prune-concurrency.sh
-# This runner reports those 4 as failed until Plans 02/03 of v1.1 Phase 1
-# land the actual assertions. Wave-0 red state is EXPECTED and not a
-# regression. The pre-commit gate (D-06, Plan 05) only fires AFTER Plans
-# 02/03 land assertions — at that point this runner goes green.
-#
 # Run directly:
 #   bash scripts/run-probes.sh
 # Exit code 0 = all probes passed. Nonzero = at least one probe failed

@@ -56,6 +56,8 @@ RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 
 GLOBAL_CACHE="${HOME}/.cache/dhx/read-cache.jsonl"
 mkdir -p "$(dirname "$GLOBAL_CACHE")"
-echo "{\"path\":\"$RESOLVED\",\"ts\":$(date +%s),\"source\":\"write\"}" >> "$GLOBAL_CACHE"
+# WR-01: jq for JSONL escaping — paths containing `"` no longer break schema.
+jq -cn --arg path "$RESOLVED" --argjson ts "$(date +%s)" \
+  '{path: $path, ts: $ts, source: "write"}' >> "$GLOBAL_CACHE"
 
 exit 0

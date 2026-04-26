@@ -126,7 +126,26 @@ process.stdin.on('end', () => {
       // LEGACY: Boucle path — read until v1.1.1 hygiene commit (D-01)
       const legacyCachePath = path.join(os.homedir(), '.claude', 'read-once', 'reads.jsonl');
 
-      const resolvedTarget = path.resolve(filePath);
+      // IN-02: align with shell writers' `realpath` semantics — both
+      // dhx-read-cache.sh and dhx-write-cache.sh resolve symlinks before
+      // emitting `path`. Using path.resolve here would miss matches when
+      // the target is a symlink (writer emits the resolved target, guard
+      // looks up the symlink string). Fall back to path.resolve when the
+      // file was deleted between Read and Edit (matches writer's
+      // `|| echo "$FILE_PATH"` fallback).
+      let resolvedTarget;
+      try {
+        resolvedTarget = fs.realpathSync(filePath);
+      } catch {
+        resolvedTarget = path.resolve(filePath);
+      }
+      const resolveEntryPath = (p) => {
+        try {
+          return fs.realpathSync(p);
+        } catch {
+          return path.resolve(p);
+        }
+      };
       const nowSec = Math.floor(Date.now() / 1000);
       const ttl = 7200; // 2 hours
 
@@ -141,7 +160,7 @@ process.stdin.on('end', () => {
           try {
             const entry = JSON.parse(line);
             if (entry && typeof entry.path === 'string' &&
-                path.resolve(entry.path) === resolvedTarget &&
+                resolveEntryPath(entry.path) === resolvedTarget &&
                 typeof entry.ts === 'number' &&
                 (nowSec - entry.ts) <= ttl) {
               // D-07: absent `source` field = treat as "read" (legacy entries

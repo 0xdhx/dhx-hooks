@@ -102,11 +102,11 @@ if [ "$BACKUP_AGE_SECS" -gt "$SEVEN_DAYS" ]; then
   exit 1
 fi
 
-cp "$BACKUP" "$LIVE_SETTINGS"
+cp "$BACKUP" "$LIVE_SETTINGS" || { echo "FAIL: cp failed restoring $LIVE_SETTINGS from $BACKUP"; exit 1; }
 echo "OK: restored $LIVE_SETTINGS from $BACKUP"
 
 # Step 2: mirror restored live settings into drift snapshot
-cp "$LIVE_SETTINGS" "$REPO/config/settings.json"
+cp "$LIVE_SETTINGS" "$REPO/config/settings.json" || { echo "FAIL: cp failed mirroring $LIVE_SETTINGS to $REPO/config/settings.json"; exit 1; }
 echo "OK: mirrored to $REPO/config/settings.json"
 
 # Step 3: restore symlink for partial-cache (conditional)
