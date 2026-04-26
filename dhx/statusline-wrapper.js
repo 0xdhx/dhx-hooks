@@ -109,7 +109,16 @@ process.stdin.on('end', () => {
       else       line1 += ` \x1b[2m│\x1b[0m ${health.tail}`;
     }
 
-    process.stdout.write(line2 ? `${line1}\n${line2}` : line1);
+    // Single-line collapse for narrow terminals (mobile termius/mosh/tmux):
+    // CC reserves N rows above the prompt for statusline; on small mobile screens
+    // there isn't enough free height for both rows and line 2 silently drops.
+    // Setting DHX_STATUSLINE_SINGLELINE=1 in the shell that launches `claude`
+    // joins both lines with the same dim pipe used between segments instead of
+    // emitting `\n`. Set per-profile (e.g. mobile CCS profile env) so desktop
+    // sessions retain the two-row layout.
+    const singleLine = process.env.DHX_STATUSLINE_SINGLELINE === '1';
+    const sep = singleLine ? ' \x1b[2m│\x1b[0m ' : '\n';
+    process.stdout.write(line2 ? `${line1}${sep}${line2}` : line1);
   }).catch(() => {
     // If everything fails, output nothing — don't break the statusline
   });
