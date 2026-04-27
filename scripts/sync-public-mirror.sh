@@ -19,7 +19,7 @@ set -euo pipefail
 
 REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
 PUBLIC_REMOTE="${PUBLIC_REMOTE:-git@github.com:0xdhx/dhx-hooks.git}"
-TAG_VERSION="${TAG_VERSION:-v0.1.0}"
+TAG_VERSION="${TAG_VERSION:-v0.1.1}"
 BUILD_DIR=$(mktemp -d -t dhx-hooks-public-XXXXXX)
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
@@ -56,6 +56,13 @@ git filter-repo \
   --paths-from-file "$REPO_ROOT/scripts/public-paths.txt" \
   --replace-message "$REPLACE_MSG_FILE" \
   --force >/dev/null 2>&1
+
+# Strip operator tooling — the sync script + paths config live under scripts/
+# but are private to this private→public flow (and the script self-references
+# "forgefinder" in its own scrub patterns, which would false-positive the
+# Class D verification below). This matches the live public mirror's existing
+# scripts/ inventory.
+rm -f scripts/sync-public-mirror.sh scripts/public-paths.txt
 
 # --- 3. Scrub pass ---------------------------------------------------------
 echo "[sync] scrubbing cross-references..."
@@ -227,6 +234,13 @@ echo "[sync] scrubs OK"
 # --- 4. Public README, CHANGELOG, LICENSE ---------------------------------
 echo "[sync] writing README/CHANGELOG/LICENSE..."
 
+# Copy public-extras files into the build dir (single source of truth for
+# files added to the public mirror that don't pre-exist in the private tree).
+# Idempotent — re-runs overwrite. Add new files to public-extras/ to ship them.
+if [ -f "$REPO_ROOT/public-extras/ARCHITECTURE.md" ]; then
+  cp "$REPO_ROOT/public-extras/ARCHITECTURE.md" ./ARCHITECTURE.md
+fi
+
 cat > README.md <<'README_EOF'
 # dhx-hooks
 
@@ -235,6 +249,8 @@ cat > README.md <<'README_EOF'
 [![Probes](https://img.shields.io/badge/probes-22%20regression-blue.svg)](tests/probes/)
 
 Claude Code hooks for the GSD (`get-shit-done`) workflow ecosystem. Plugin-manifest registered (rewriter-safe), probe-tested, ships as a public reference surface for the `dhx-` prefixed hook family. Active development happens in a private workflow repo; this mirror tracks the code surface only.
+
+For an overview of how the five hook surfaces compose, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick Start
 
@@ -358,6 +374,11 @@ All notable changes to dhx-hooks will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-27
+
+### Added
+- `ARCHITECTURE.md` — high-level overview of the five hook surfaces (read tracking, drift detection, workflow guards, statusline composition, plugin manifest) and how they compose. Authored as a public-facing companion to `README.md`'s per-event hook tables.
+
 ## [0.1.0] - 2026-04-26
 
 Initial public release. Mirror of the dhx hook surface from the private workflow repo. See README for the hook inventory.
@@ -374,6 +395,7 @@ Initial public release. Mirror of the dhx hook surface from the private workflow
 - **Persistent JSONL read-cache** (`dhx-read-cache.sh` + `dhx-read-guard.js`) — cross-tool, cross-session read tracking with 7200s TTL. Three-state advisory (silent / soft / strong) finer-grained than upstream's binary skip. CCS-multi-instance safe.
 - **Plugin-manifest registration** — survives Claude Code's atomic settings-rename rewriter.
 
+[0.1.1]: https://github.com/0xdhx/dhx-hooks/releases/tag/v0.1.1
 [0.1.0]: https://github.com/0xdhx/dhx-hooks/releases/tag/v0.1.0
 CHANGELOG_EOF
 
@@ -429,7 +451,7 @@ git push --force public HEAD:main >/dev/null 2>&1
 
 # Tag if absent (idempotent — `git tag` exits non-zero if tag already exists locally)
 if ! git rev-parse "$TAG_VERSION" >/dev/null 2>&1; then
-  git tag -a "$TAG_VERSION" -m "Initial public release"
+  git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION"
 fi
 git push --force public "$TAG_VERSION" >/dev/null 2>&1
 
@@ -445,7 +467,8 @@ for path in \
   tests/probes/probe-read-cache-prune-concurrency.sh \
   README.md \
   CHANGELOG.md \
-  LICENSE
+  LICENSE \
+  ARCHITECTURE.md
 do
   url="https://raw.githubusercontent.com/0xdhx/dhx-hooks/${PUB_HEAD}/${path}"
   code=$(curl -sf -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
