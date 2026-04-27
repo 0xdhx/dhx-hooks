@@ -5,14 +5,20 @@
 # Batch presents all items with brief recommendations, then walks through
 # each via AskUserQuestion. 'discuss' option gives deeper reasoning.
 #
-# Marker protocol — any of these silence the hook for an item:
+# Marker protocol — any of these silence the hook for an item. Recognized as
+# prefix OR end-of-bullet bracketed token:
 #   [captured]  or [captured: ticket]  — captured to backlog/todo via /dhx:capture
 #   [existing]  or [existing: path]    — already has a durable home
 #   [assessed]  or [assessed: reason]  — user confirmed: intentionally not captured
 #   [tracked: REQ-ID]                  — tracked against a requirement
+#   [note]      or [note: detail]      — non-actionable decision-trail commentary
 #   ~~item~~                           — strikethrough (legacy compat)
 #
-# Matching is prefix-based: [assessed matches [assessed], [assessed: ...], etc.
+# Filter logic is canonical at ~/.claude/dhx-tools/dhx-classify-deferred.sh —
+# this hook sources that script and calls classify_deferred_lines on the
+# deferred block. Drift between this hook and the skills-repo consumers
+# (/dhx:defer-review, /dhx:backlog audit, /dhx:capture) is enforced by
+# ~/repos/skills/tests/probe-classifier-cross-repo.sh.
 #
 # CRITICAL: [assessed] requires EXPLICIT USER APPROVAL. The agent must present
 # the item, give its assessment, and WAIT for the user to confirm. The
@@ -21,6 +27,16 @@
 INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
+
+# Source the canonical deferred-item classifier. Single source of truth shared
+# with the skills repo. If the symlink is missing (dhx-tools not installed in
+# this environment), fall back to no-op exit rather than blocking session-end.
+# Path expression duplicated rather than indirected through a variable so the
+# skills-repo cross-repo drift probe (probe-classifier-cross-repo.sh) can
+# statically assert the source target.
+if [ ! -f "${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh" ]; then exit 0; fi
+# shellcheck source=/dev/null
+. "${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh"
 
 # Loop prevention: Claude Code sets this after one block to avoid infinite loops.
 # We respect it — the block message instructs the agent to complete the full
@@ -108,12 +124,7 @@ if [ -z "$LATEST" ]; then exit 0; fi
 check_header_fallback() {
   local file="$1"
   MD_DEFERRED=$(sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | grep -E '^\s*- ' \
-    | grep -v '\[captured' \
-    | grep -v '\[existing' \
-    | grep -v '\[assessed' \
-    | grep -v '\[tracked' \
-    | grep -v '^\s*-\s*~~')
+    | classify_deferred_lines)
   if [ -n "$MD_DEFERRED" ]; then
     COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
     jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
@@ -131,14 +142,11 @@ fi
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
 if echo "$DEFERRED" | grep -qE '^\s*-?\s*[Nn]one(\s*$|\s+—)'; then exit 0; fi
 
-# Find unassessed items — filter out ALL recognized markers (prefix match)
-RAW_ITEMS=$(echo "$DEFERRED" | grep -E '^\s*- ' \
-  | grep -v '\[captured' \
-  | grep -v '\[existing' \
-  | grep -v '\[assessed' \
-  | grep -v '\[tracked' \
-  | grep -v '^\s*-\s*~~' \
-  | sed 's/^\s*- //')
+# Find unassessed items via the canonical classifier (sourced above).
+# classify_deferred_lines handles all 5 markers as prefix OR end-of-bullet
+# bracketed tokens, plus strikethrough. Trailing sed strips the bullet
+# prefix to match the downstream auto-silence loop's contract.
+RAW_ITEMS=$(printf '%s\n' "$DEFERRED" | classify_deferred_lines | sed 's/^\s*-\s*//')
 if [ -z "$RAW_ITEMS" ]; then check_header_fallback "$LATEST"; fi
 
 # Auto-silence: skip items that already have durable homes

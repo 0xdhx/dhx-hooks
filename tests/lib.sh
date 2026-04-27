@@ -22,6 +22,11 @@ FAIL=0
 # Production extraction functions
 # These mirror the patterns used in dhx/dhx-deferred-check.sh and
 # dhx/dhx-context-gate.sh. Keep in sync with the production hooks.
+#
+# Marker classification is delegated to the canonical script at
+# ~/.claude/dhx-tools/dhx-classify-deferred.sh (skills repo). Sourced lazily
+# inside header_fallback_filtered so this file remains source-able even when
+# dhx-tools isn't installed (the function then degrades to a no-op).
 # ---------------------------------------------------------------------------
 
 # extract_tag <file> <tagname>
@@ -39,13 +44,12 @@ extract_tag() {
 # Used as fallback when the <deferred> tag section is empty or missing.
 header_fallback_filtered() {
   local file="$1"
+  local classifier="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh"
+  if [ ! -f "$classifier" ]; then return 0; fi
+  # shellcheck source=/dev/null
+  . "$classifier"
   sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | grep -E '^\s*- ' \
-    | grep -v '\[captured' \
-    | grep -v '\[existing' \
-    | grep -v '\[assessed' \
-    | grep -v '\[tracked' \
-    | grep -v '^\s*-\s*~~' \
+    | classify_deferred_lines \
     || true
 }
 

@@ -90,19 +90,22 @@ fi
 # --- Behavioral invariants against the fixture ---
 
 # Mirror of the hook's filter chain (check_header_fallback body).
-# INVARIANT: this chain must stay in sync with dhx-deferred-check.sh:110-116
-# and tests/lib.sh:42-48. Chain divergence is caught by the parity check above
-# for sed; the grep filters below are stable across the three prior revisions.
+# INVARIANT: marker classification is delegated to the canonical script at
+# ~/.claude/dhx-tools/dhx-classify-deferred.sh — sourced once so the probe
+# exercises the exact filter the hook runs. Drift between the canonical
+# script and consumers is caught by ~/repos/skills/tests/probe-classifier-cross-repo.sh.
+CLASSIFIER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh"
+if [[ ! -f "$CLASSIFIER" ]]; then
+  echo "FAIL canonical classifier not found at $CLASSIFIER"
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$CLASSIFIER"
+
 run_fallback() {
   local range="$1"
   local file="$2"
-  eval "sed -n $range \"\$file\"" 2>/dev/null \
-    | grep -E '^\s*- ' \
-    | grep -v '\[captured' \
-    | grep -v '\[existing' \
-    | grep -v '\[assessed' \
-    | grep -v '\[tracked' \
-    | grep -v '^\s*-\s*~~'
+  eval "sed -n $range \"\$file\"" 2>/dev/null | classify_deferred_lines
 }
 
 # 3. Live pattern against fixture: exactly one bullet survives the filter chain.
