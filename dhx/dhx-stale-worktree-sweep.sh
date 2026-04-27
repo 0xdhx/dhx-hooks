@@ -12,7 +12,7 @@
 # Context: anthropics/claude-code#36182 plus observed CC behavior where the
 # 'locked' file keeps the outer session's PID, so `git worktree remove --force`
 # refuses removal until either unlock or session exit. Stale locked worktrees
-# then accumulate on disk indefinitely. See reports/2026-04-19-worktree-leak-gh-36182-third-incident.md.
+# then accumulate on disk indefinitely (gh#36182 worktree-leak class).
 #
 # Suppression: DHX_SKIP_STALE_WORKTREE_SWEEP=1
 

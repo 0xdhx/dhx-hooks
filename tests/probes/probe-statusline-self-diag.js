@@ -1,6 +1,5 @@
 // Probe: per-segment self-diagnosis sigil + JSONL log + rotation.
 //
-// Backs: docs/decisions.md 2026-04-26 statusline self-diag row.
 //
 // Invariants exercised:
 //   1. withSegmentDiag(name, promise) returns {value, error, segmentName} for both success and rejection.

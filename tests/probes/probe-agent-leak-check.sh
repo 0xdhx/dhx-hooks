@@ -21,7 +21,6 @@
 #   - nested-worktree CWD + missing PRE → silent (snapshot intentionally skipped)
 #   - non-nested CWD + missing PRE → DETECTION GAP diagnostic on stdout
 #
-# Backs: docs/decisions.md 2026-04-19 agent-leak-check row + 2026-04-20
 #        detection-gap invariant row.
 # Companion: probe-worktree-write-guard.sh covers the top-level/Skill detector.
 #

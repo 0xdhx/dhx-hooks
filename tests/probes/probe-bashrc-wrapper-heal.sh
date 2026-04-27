@@ -14,7 +14,7 @@
 # to one wouldn't propagate. This probe asserts content equality across
 # all three definitions so they can never diverge silently.
 #
-# Backs decisions.md 2026-04-17 row "plugin-keys load-gating verified +
+# Asserts plugin-keys load-gating verified +
 # bashrc auto-heal". Run: bash tests/probes/probe-bashrc-wrapper-heal.sh
 set -uo pipefail
 
