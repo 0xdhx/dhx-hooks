@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # probe-read-cache-prune-concurrency.sh — ADVERSARIAL no-loss-during-prune (D-13/D-14).
 #
-# Backs the v1.1 Phase 1 atomic-commit decisions.md row (D-13 rename-then-
+# Backs the D-13 rename-then-
 # append-back prune redesign supersedes D-02 prune body). This probe is
 # ADVERSARIAL, NOT PROBABILISTIC: it uses the env var
 # DHX_READ_CACHE_TEST_PAUSE_MS (D-14) to force a deterministic sleep

@@ -8,7 +8,6 @@
 //
 // Owned by the hooks repo (not by /gsd-update). Kept byte-distinct from
 // gsd-statusline.js so GSD updates never alter our rendering.
-// See docs/statusline-wrapper.md for segment table and color semantics.
 
 const fs = require('fs');
 const path = require('path');
@@ -120,7 +119,7 @@ function parsePaneEffort(paneText) {
 // slowness without blocking the renderer indefinitely.
 //
 // Cache layer (added 2026-04-26 after tmux-server wedge incident — see
-// reports/2026-04-26-statusline-capture-pane-wedge.md). Per-session file
+// statusline capture-pane wedge incident class). Per-session file
 // at /tmp/claude-effort-${sessionId} with 30s TTL. The renderer fires per-
 // refresh × N concurrent sessions; the 500ms client-side timeout bounds
 // renderer wait but NOT server-side load — by the time it fires the request

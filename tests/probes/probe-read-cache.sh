@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # probe-read-cache.sh — verify dhx-read-cache.sh + dhx-read-guard.js dual-path stack.
 #
-# Backs the v1.1 Phase 1 atomic-commit decisions.md row (Option B retire
-# ~/.claude/read-once/, own the read-tracking stack). Asserts:
+# Replaces ~/.claude/read-once/ with a dhx-owned read-tracking stack (Option B retire
+# ~/.claude/read-once/). Asserts:
 #   - Writer schema: {"path":<abs>,"ts":<num>,"source":"read","partial":true?}
 #   - Cache file at $HOME/.cache/dhx/read-cache.jsonl (XDG, D-04)
 #   - Guard 3-state branching against full/partial/no-read entries

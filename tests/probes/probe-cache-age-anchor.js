@@ -1,6 +1,5 @@
 // Probe: confirm getCacheAge anchors on the most recent type=assistant entry
 // with cache_read_input_tokens > 0, NOT on JSONL mtime.
-// Backs docs/decisions.md 2026-04-17 statusline cache-age JSONL anchor row +
 // HP-019 (JSONL transcript schema).
 // Run: node tests/probes/probe-cache-age-anchor.js
 //

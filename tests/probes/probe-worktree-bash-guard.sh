@@ -8,7 +8,6 @@
 # Silent (allow) on: reads, write-verbs scoped to worktree, cwd outside any
 # worktree, missing inputs.
 #
-# Backs: docs/decisions.md 2026-04-19 worktree-bash-guard row (co-row with
 # dhx-stale-worktree-sweep).
 #
 # Companion: probe-worktree-write-guard.sh (Edit|Write|MultiEdit matcher).
@@ -28,10 +27,10 @@ fi
 PASSED=0
 FAILED=0
 
-WT_CWD="/home/dhx/repos/forgefinder/.claude/worktrees/agent-test/"
-WT_PATH="/home/dhx/repos/forgefinder/.claude/worktrees/agent-test/scripts/hub.js"
-MAIN_PATH="/home/dhx/repos/forgefinder/scripts/hub.js"
-MAIN_CWD="/home/dhx/repos/forgefinder"
+WT_CWD="/home/dhx/repos/acme-app/.claude/worktrees/agent-test/"
+WT_PATH="/home/dhx/repos/acme-app/.claude/worktrees/agent-test/scripts/hub.js"
+MAIN_PATH="/home/dhx/repos/acme-app/scripts/hub.js"
+MAIN_CWD="/home/dhx/repos/acme-app"
 
 # Run hook and capture rc + stdout
 _run() {

@@ -12,8 +12,6 @@
 # citing a decision gets silently silenced regardless of whether it
 # has a real durable home.
 #
-# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row.
-# Parent report: ~/repos/skills/reports/2026-04-20-defer-hook-decision-label-false-positive.md
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 

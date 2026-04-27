@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # probe-read-cache-cross-session.sh — verify CCS-swap regression (global TTL).
 #
-# Backs the v1.1 Phase 1 atomic-commit decisions.md row (REQ READ-03,
-# READ-11) AND reports/done/2026-04-15-read-guard-session-scoping-false-positives.md
-# (the load-bearing citation for the global-TTL design). Asserts that the
+# Asserts (REQ READ-03,
+# READ-11) that the
 # guard's cache lookup is purely TTL-based (NOT session-scoped) so that
 # session_id changes from CCS instance swaps don't trigger false-positive
 # READ-BEFORE-EDIT advisories.

@@ -7,8 +7,6 @@
 // ccburn itself formatted; JSON-driven composition moved the format
 // decisions into our code, so the probe has to pin them.
 //
-// Pairs with: docs/statusline-wrapper.md "ccburn compact" section,
-// docs/decisions.md 2026-04-18 statusline-compaction row.
 
 const path = require('path');
 const WRAPPER = path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
@@ -143,8 +141,8 @@ ok('ccburn: missing utilization → 0%',
 // ⌃ (220) when ANY fires. Purely additive — does not replace existing front
 // composition. Color non-collision: 70/220 distinct from critical 208 and
 // advisory red 31. Probe pinned in tests/probes/probe-statusline-wrapper.js
-// per docs/decisions.md 2026-04-26 meta-glyph row (hairline glyphs locked
-// 2026-04-26 — see same-day "meta-glyph hairline glyphs" decisions row).
+// per the meta-glyph design (hairline glyphs locked
+// 2026-04-26).
 
 const GREEN_DOT  = '\x1b[2;38;5;70m∙\x1b[0m';
 const YELLOW_TRI = '\x1b[38;5;220m⌃\x1b[0m';

@@ -1,5 +1,4 @@
 // Probe: confirm hashWarnSettings() ignores benign mutations, trips on WARN-set changes.
-// Backs docs/decisions.md 2026-04-16 drift settings_hash row.
 // Run: node tests/probes/probe-settings-hash.js
 const crypto = require('crypto');
 const fs = require('fs');

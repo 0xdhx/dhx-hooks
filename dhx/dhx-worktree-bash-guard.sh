@@ -5,7 +5,7 @@
 # Companion to dhx-worktree-write-guard.sh. Blocks Bash tool calls that write
 # to main-repo absolute paths when cwd is inside a CC-managed worktree —
 # closes the shell-fallback channel of anthropics/claude-code #36182 (third
-# incident, 2026-04-19, reports/2026-04-19-worktree-leak-gh-36182-third-incident.md).
+# incident class, 2026-04-19 — gh#36182 worktree-leak).
 #
 # The write-guard only covers Edit|Write|MultiEdit. When CC's read-before-edit
 # enforcement rejects an Edit, agents fall back to `sed -i`, `tee`, `>`, etc.,

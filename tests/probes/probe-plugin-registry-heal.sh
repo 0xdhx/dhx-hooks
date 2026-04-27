@@ -4,7 +4,6 @@
 # specific starting state for $CONFIG/plugins/installed_plugins.json and the
 # cache dir, runs the hook, and asserts the resulting state.
 #
-# Backs docs/decisions.md 2026-04-24 registry-heal-hook row + HP-025 extension.
 # Run: bash tests/probes/probe-plugin-registry-heal.sh
 #
 # Pattern mirrors probe-plugin-keys.sh fake-HOME convention. Live ~/.claude
