@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
 # probe-sigpipe-pipefail-shapes.sh — static lint enforcing the HP-028 invariant
 #
-# Invariant: dhx/*.sh contains zero `cmd | grep -q PATTERN` shapes outside
+# Invariant: dhx/*.sh contains zero `cmd | grep -[qm] PATTERN` shapes outside
 # HP-028 reference comments. Such shapes are vulnerable to the SIGPIPE+pipefail
 # interaction documented in HP-028 — under `set -o pipefail`, when LHS output
-# exceeds the OS pipe buffer (~64 KiB on Linux), `grep -q`'s early exit causes
-# the LHS to receive SIGPIPE, the pipeline exits 141, pipefail propagates the
-# non-zero status, and the surrounding `if` body silently never runs.
+# exceeds the OS pipe buffer (~64 KiB on Linux), `grep -q`/`grep -m N`'s early
+# exit causes the LHS to receive SIGPIPE, the pipeline exits 141, pipefail
+# propagates the non-zero status, and the surrounding `if` body silently never
+# runs.
+#
+# Scope rationale (narrow extension, 2026-04-28): the lint targets `grep -q`
+# and `grep -m N` because both are structurally always used as truth-signal
+# readers in `if` conditions — exactly the surface where pipefail propagation
+# is load-bearing. Other early-exit readers HP-028 documents (`head -N`,
+# `awk '/PAT/{exit}'`, `sed '/PAT/q'`) are overwhelmingly used in capture
+# contexts (`$(... | head -N)`, often guarded by `|| true`) where the
+# pipeline's exit code doesn't propagate to control flow. A static lint
+# can't reliably classify capture-vs-test surroundings, so extending the
+# regex to those shapes would generate false positives without catching new
+# real bugs. HP-028 documents the broader class for reader awareness; the
+# lint enforces only the shapes with concrete SIGPIPE-bites-control-flow
+# evidence (rounds 1 + 2, commits c5e09f3 + 459df4c).
 #
 # Backs:
 #   - docs/decisions.md — 2026-04-28 row "SIGPIPE+pipefail audit sweep — round 1"
@@ -85,7 +99,7 @@ while IFS=: read -r file lineno content; do
   fi
 
   VIOLATIONS+=("$rel:$lineno: $content")
-done < <(grep -rn '| *grep -q' "$DHX_DIR" --include='*.sh' \
+done < <(grep -rn '| *grep -[qm]' "$DHX_DIR" --include='*.sh' \
            --exclude-dir='.inactive' --exclude-dir='.planned' \
            2>/dev/null || true)
 
@@ -98,10 +112,12 @@ else
     FAIL=$((FAIL + 1))
   done
   echo
-  echo "HP-028 — SIGPIPE+pipefail breaks 'cmd | grep -q PATTERN' when LHS"
-  echo "output exceeds the OS pipe buffer (~64 KiB on Linux). Replace with:"
+  echo "HP-028 — SIGPIPE+pipefail breaks 'cmd | grep -q PATTERN' (and"
+  echo "'cmd | grep -m N PATTERN') when LHS output exceeds the OS pipe"
+  echo "buffer (~64 KiB on Linux). Replace with:"
   echo "  grep -q PAT <<< \"\$VAR\"        # for variable inputs"
   echo "  grep -q PAT < <(cmd args)     # for command outputs"
+  echo "  (same swap shape applies to grep -m N)"
   echo
   echo "See docs/hook-patterns.md HP-028 for the full pattern, the canonical"
   echo "regression test in probe-restart-plugins-stop-hook.sh scenario [12],"

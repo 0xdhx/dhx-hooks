@@ -10,7 +10,9 @@ set -euo pipefail
 #   4. If docs/hook-patterns.md is staged, block any new `## HP-NNN`
 #      section that lacks a non-empty `**Evidence:**` block.
 #   5. Block any staged dhx hook introducing a SIGPIPE+pipefail-prone
-#      `cmd | grep -q PATTERN` shape (HP-028). Comment lines and lines
+#      `cmd | grep -[qm] PATTERN` shape (HP-028). Covers grep -q AND
+#      grep -m N (both structurally truth-signal readers in if-conditions
+#      — same SIGPIPE-bites-control-flow class). Comment lines and lines
 #      containing the literal `HP-028` are exempt. Companion at-rest
 #      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
 #   8. Run scripts/run-probes.sh when dhx/*.js or tests/probes/* are
@@ -156,7 +158,7 @@ if [ -n "$STAGED" ]; then
     [ -z "$f" ] && continue
     BLOB=$(git show ":$f" 2>/dev/null || true)
     [ -z "$BLOB" ] && continue
-    SHAPE_HITS=$(grep -n '| *grep -q' <<< "$BLOB" || true)
+    SHAPE_HITS=$(grep -n '| *grep -[qm]' <<< "$BLOB" || true)
     [ -z "$SHAPE_HITS" ] && continue
     while IFS=: read -r lineno content; do
       [ -z "$lineno" ] && continue
@@ -168,9 +170,10 @@ ERROR: $f:$lineno introduces a SIGPIPE+pipefail-prone shape (HP-028).
 
   $content
 
-  Replace 'cmd | grep -q PAT' with one of:
+  Replace 'cmd | grep -q PAT' (or 'cmd | grep -m N PAT') with one of:
     grep -q PAT <<< "\$VAR"        # for variable inputs
     grep -q PAT < <(cmd args)     # for command outputs
+    (same swap shape applies to grep -m N)
 
   See docs/hook-patterns.md HP-028 for the full pattern. Exempt the line
   by adding an 'HP-028' reference comment (intentional documentation,
