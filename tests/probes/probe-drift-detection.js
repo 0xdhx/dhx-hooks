@@ -675,11 +675,14 @@ const baseSnap = snap();
 // reload (manifest re-reads, `temp_git_*` clones during retry, fresh marketplace
 // pulls) push `plugins_mtime`/`plugins_count` past the snapshot, so the next
 // statusline refresh fires `⚠ restart plugins (Xm)` on a state the user just
-// fixed. Mitigation: `dhx-restart-plugins-marker.sh` writes
-// `~/.cache/dhx/plugins-rebaseline-${session_id}.marker` on the matching
-// UserPromptSubmit; `checkDrift()` consumes the marker on its next refresh,
-// rewrites ONLY the plugins fields on the loaded snapshot, persists, and
-// deletes the marker (single-shot).
+// fixed. Mitigation: `dhx-restart-plugins-stop.sh` writes
+// `~/.cache/dhx/plugins-rebaseline-${session_id}.marker` at next turn-end after
+// the slash command (Stop event scans the transcript for the
+// `<command-name>/(reload|restart)-plugins</command-name>` wrapper — see
+// HP-027 for why the trigger lives on Stop and not UserPromptSubmit).
+// `checkDrift()` consumes the marker on its next refresh, rewrites ONLY the
+// plugins fields on the loaded snapshot, persists, and deletes the marker
+// (single-shot).
 //
 // Probe reimplements the consumer locally — same convention as scanRecursive
 // and checkDriftLogic above — so wrapper drift in either direction flips an
