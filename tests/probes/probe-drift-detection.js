@@ -648,8 +648,12 @@ const baseSnap = snap();
   const filtered = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
   assert('[14e] unfiltered scan sees temp_git_* contents (regression sentinel: PATH_IGNORE call-site must stay wired)',
     unfiltered.count > filtered.count);
+  // Tolerance on the sentinel comparison: fs.utimesSync(p, ms/1000, ms/1000)
+  // round-trips through tv_sec/tv_nsec and loses sub-ms precision (observed
+  // -1/1024 ms drift on WSL2 ext4). Strict === flaked ~30% of runs without
+  // affecting the contract — gap to the next-highest mtime is 30_000 ms.
   assert('[14e2] unfiltered scan picks up temp_git_* mtime > realFutureMs (sentinel proves PATH_IGNORE is what suppresses it)',
-    unfiltered.maxMtime > filtered.maxMtime && unfiltered.maxMtime === sentinelMs);
+    unfiltered.maxMtime > filtered.maxMtime && Math.abs(unfiltered.maxMtime - sentinelMs) < 1);
 
   // [14f] Anchor check: a directory literally named `temp_git/` (no _<epoch>_<token>
   // suffix) is NOT filtered. Prevents the regex from over-matching legitimate
