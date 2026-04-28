@@ -102,6 +102,35 @@ sed -i 's|^# Backs quick task 260425-oeg — fork-aware gsd drift suppression\. 
 # Cross-repo skills/reports reference (probe-deferred-check-req-id-regex.sh:15)
 sed -i '/^# Parent report: ~\/repos\/skills\/reports\/[0-9-]\+-[a-z0-9-]\+\.md$/d' tests/probes/probe-deferred-check-req-id-regex.sh
 
+# Local reports/done/ Parent-report reference (probe-deferred-check-canonical-classifier.sh:15)
+# Orphaned by the Class A "Backs ... docs/decisions.md" scrub above.
+sed -i '/^# Parent report: reports\/done\/[0-9-]\+-[a-z0-9-]\+\.md$/d' tests/probes/probe-deferred-check-canonical-classifier.sh
+
+# Cross-repo skills/tests references — surfaced 2026-04-28 by canonical-
+# classifier sister-probe additions. Three sites; per-line surgical rewrites
+# to preserve substantive content while stripping the cross-repo path.
+#
+# probe-deferred-check-canonical-classifier.sh: 4-line "Sister probe:" block
+# describing the skills-repo companion probe. Delete the whole block; the
+# private-repo decisions row + skills-repo classifier story is internal to
+# the cross-repo workflow, not relevant to public consumers.
+sed -i '/^# Sister probe: ~\/repos\/skills\/tests\/probe-classifier-cross-repo\.sh runs the$/,/^# invariant visible from both repos. test suites\.$/d' tests/probes/probe-deferred-check-canonical-classifier.sh
+#
+# probe-deferred-check-header-fallback.sh:94: single-line "caught by
+# ~/repos/skills/..." reference at the tail of an INVARIANT comment.
+# Rewrite to drop the cross-repo path while preserving the drift-detection
+# claim.
+sed -i 's|^# script and consumers is caught by ~/repos/skills/tests/probe-classifier-cross-repo\.sh\.$|# script and consumers is caught by sister probes in the consumer repos.|' tests/probes/probe-deferred-check-header-fallback.sh
+#
+# dhx-deferred-check.sh:19-21: 3-line "Drift between this hook and the
+# skills-repo consumers ... is enforced by ~/repos/skills/..." sentence
+# spanning the end of one paragraph + the cross-repo ref. Truncate line 19
+# at "deferred block." then delete the trailing 2 lines that complete the
+# cross-repo sentence.
+sed -i 's|^# deferred block\. Drift between this hook and the skills-repo consumers$|# deferred block.|' dhx/dhx-deferred-check.sh
+sed -i '/^# (\/dhx:defer-review, \/dhx:backlog audit, \/dhx:capture) is enforced by$/d' dhx/dhx-deferred-check.sh
+sed -i '/^# ~\/repos\/skills\/tests\/probe-classifier-cross-repo\.sh\.$/d' dhx/dhx-deferred-check.sh
+
 # Fixture: forgefinder pattern reference
 sed -i 's|original forgefinder 22\.1 pattern|real-world 22.1 pattern|' tests/fixtures/backtick-collision.md
 
