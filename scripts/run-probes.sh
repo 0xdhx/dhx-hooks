@@ -18,6 +18,20 @@
 
 set -uo pipefail
 
+# Clear inherited git env vars so probes that build tmpdir fixtures (git init,
+# worktree-add, etc.) don't trip over the parent's index/dir/work-tree paths.
+# Surfaced 2026-04-28 when verify-hook-patterns.sh check #8 first ran the
+# probe suite from inside a pre-commit context: probe-stale-worktree-sweep.sh
+# fixtures emitted `fatal: .git/index: index file open failed: Not a directory`
+# because $GIT_INDEX_FILE leaked from the outer commit operation. Probes that
+# don't run git remain unaffected. User-config vars (GIT_PAGER, GIT_EDITOR,
+# GIT_TERMINAL_PROMPT, etc.) are deliberately preserved.
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+      GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
+      GIT_PREFIX GIT_INTERNAL_GETTEXT_SH_SCHEME GIT_REFLOG_ACTION
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 FAIL=0
 PASS=0
