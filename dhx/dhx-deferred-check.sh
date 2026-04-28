@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-deferred-check.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-004, HP-005, HP-006, HP-009
+# Patterns: HP-001, HP-002, HP-004, HP-005, HP-006, HP-009, HP-028
 # Surfaces UNASSESSED deferred items from CONTEXT.md before context clears.
 # Batch presents all items with brief recommendations, then walks through
 # each via AskUserQuestion. 'discuss' option gives deeper reasoning.
@@ -90,7 +90,7 @@ if [ -n "$PHASE_ALLOWLIST" ]; then
     dir_name=$(basename "$(dirname "$candidate")")
     phase_from_dir=$(echo "$dir_name" | grep -oE '^[0-9]+' | sed 's/^0*//')
     [ -z "$phase_from_dir" ] && phase_from_dir="0"
-    if echo "$PHASE_ALLOWLIST" | grep -qFx "$phase_from_dir"; then
+    if grep -qFx "$phase_from_dir" <<< "$PHASE_ALLOWLIST"; then
       LATEST="$candidate"
       break
     fi
@@ -140,7 +140,7 @@ if [ -z "$DEFERRED" ]; then
 fi
 
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
-if echo "$DEFERRED" | grep -qE '^\s*-?\s*[Nn]one(\s*$|\s+—)'; then exit 0; fi
+if grep -qE '^\s*-?\s*[Nn]one(\s*$|\s+—)' <<< "$DEFERRED"; then exit 0; fi
 
 # Find unassessed items via the canonical classifier (sourced above).
 # classify_deferred_lines handles all 5 markers as prefix OR end-of-bullet
@@ -179,8 +179,10 @@ while IFS= read -r item; do
       HAS_HOME=true
       break
     fi
-    # Backlog
-    if grep -rl "$rid" "$CWD/.planning/backlog/" 2>/dev/null | head -1 | grep -q .; then
+    # Backlog. `grep -rq` short-circuits on first match — collapses the
+    # `grep -rl … | head -1 | grep -q .` choreography that was SIGPIPE-prone
+    # under pipefail (HP-028).
+    if grep -rq "$rid" "$CWD/.planning/backlog/" 2>/dev/null; then
       HAS_HOME=true
       break
     fi
@@ -192,7 +194,7 @@ while IFS= read -r item; do
     for bf in $REF_FILES; do
       bname=$(basename "$bf")
       if [ -f "$CWD/.planning/backlog/$bname" ] || \
-         find "$CWD/.planning/todos" -name "$bname" 2>/dev/null | head -1 | grep -q .; then
+         [ -n "$(find "$CWD/.planning/todos" -name "$bname" -print -quit 2>/dev/null)" ]; then
         HAS_HOME=true
         break
       fi

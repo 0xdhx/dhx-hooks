@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-execute-stop-review.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-003, HP-004, HP-005, HP-006, HP-009
+# Patterns: HP-001, HP-002, HP-003, HP-004, HP-005, HP-006, HP-009, HP-028
 # Safety net for execution pipelines. If a phase execution completed
 # (VERIFICATION.md + SUMMARY.md evidence) but the /dhx:execute review
 # wasn't performed, blocks with review prompt.
@@ -36,7 +36,7 @@ if [ ! -d "$CWD/.planning/phases" ]; then exit 0; fi
 # calls from the parent level (HP-003: hooks don't propagate INTO agents, but
 # Agent spawn calls are visible in the parent transcript).
 TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript // ""' 2>/dev/null)
-if ! echo "$TRANSCRIPT" | grep -qiE 'gsd-execute-phase|gsd:execute-phase|dhx:execute|gsd-executor|gsd-verifier'; then
+if ! grep -qiE 'gsd-execute-phase|gsd:execute-phase|dhx:execute|gsd-executor|gsd-verifier' <<< "$TRANSCRIPT"; then
   exit 0  # Not an execution session — no review needed
 fi
 
@@ -50,7 +50,7 @@ RECENT_SUMMARY=$(find "$PHASE_DIR" -name "*-SUMMARY.md" -mmin -30 2>/dev/null | 
 [ -z "$RECENT_SUMMARY" ] && exit 0
 
 # Gate: Check if review was already performed (reuses TRANSCRIPT from above)
-if echo "$TRANSCRIPT" | grep -qi 'plan-to-execution fidelity\|execution-to-plan fidelity\|context-to-code fidelity\|silent descoping.*check\|EXECUTION REVIEW'; then
+if grep -qi 'plan-to-execution fidelity\|execution-to-plan fidelity\|context-to-code fidelity\|silent descoping.*check\|EXECUTION REVIEW' <<< "$TRANSCRIPT"; then
   exit 0  # Review already done
 fi
 
@@ -98,7 +98,7 @@ if [ -f "$STATE_FILE" ]; then
     PHASE_INT=$(echo "$PHASE" | grep -oE '^[0-9]+' | sed 's/^0*//')
     [ -z "$PHASE_INT" ] && PHASE_INT="0"
 
-    if ! echo "$PHASE_ALLOWLIST" | grep -qFx "$PHASE_INT"; then
+    if ! grep -qFx "$PHASE_INT" <<< "$PHASE_ALLOWLIST"; then
       exit 0  # Detected phase unrelated to STATE.md — likely bulk restore
     fi
   fi

@@ -45,6 +45,7 @@ If you find yourself writing a probe that exercises two or more components' outp
 | `probe-statusline-self-diag.js` | decisions.md 2026-04-26 statusline self-diag row | `node tests/probes/probe-statusline-self-diag.js` |
 | `probe-hooks-wiring.sh` | decisions.md 2026-04-26 hooks-wiring canary row | `bash tests/probes/probe-hooks-wiring.sh` |
 | `probe-last-prompt-segment.js` | docs/statusline-wrapper.md § "Last user prompt segment" (2026-04-27 statusline session item 1) | `node tests/probes/probe-last-prompt-segment.js` |
+| `probe-execute-stop-review.sh` | decisions.md 2026-04-28 SIGPIPE+pipefail audit round-2 row (HP-028 lines 39 / 53 transcript-scan regression) | `bash tests/probes/probe-execute-stop-review.sh` |
 
 ## Running all probes
 

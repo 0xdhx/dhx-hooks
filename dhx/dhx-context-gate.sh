@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-context-gate.sh — PostToolUse hook (Write matcher)
-# Patterns: HP-003, HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009, HP-028
 # Validates CONTEXT.md structural completeness on Write.
 # Blocks (exit 2) when required DHX sections are missing.
 # Accepts documented placeholder text as valid.
@@ -37,14 +37,14 @@ CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // empty')
 # Gate 3: Only DHX-format CONTEXT.md (has tagged sections).
 # Line-anchored — a backticked mention of `<decisions>` in body prose should
 # not qualify a non-DHX file as DHX-format.
-if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<decisions>[[:space:]]*$'; then
+if ! grep -qE '^[[:space:]]*<decisions>[[:space:]]*$' <<< "$CONTENT"; then
   exit 0
 fi
 
 FAILURES=""
 
 # Check 1: Numbered decisions (D-XX: pattern)
-if ! echo "$CONTENT" | grep -qE 'D-[0-9]+:'; then
+if ! grep -qE 'D-[0-9]+:' <<< "$CONTENT"; then
   FAILURES="${FAILURES}- Decisions are not numbered (use D-01, D-02, etc.)\n"
 fi
 
@@ -58,7 +58,7 @@ fi
 REFS=$(echo "$CONTENT" | sed -n '/^[[:space:]]*<canonical_refs>[[:space:]]*$/,/^[[:space:]]*<\/canonical_refs>[[:space:]]*$/p')
 if [ -z "$REFS" ]; then
   FAILURES="${FAILURES}- <canonical_refs> section is missing\n"
-elif ! echo "$REFS" | grep -qE '(^\s*-\s*`|No external specs)'; then
+elif ! grep -qE '(^\s*-\s*`|No external specs)' <<< "$REFS"; then
   FAILURES="${FAILURES}- <canonical_refs> section is empty (add file paths or 'No external specs')\n"
 fi
 
@@ -70,12 +70,12 @@ fi
 
 # Check 4: Code context exists. Line-anchored so a body-prose mention of
 # `<code_context>` cannot mask a missing section.
-if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<code_context>[[:space:]]*$'; then
+if ! grep -qE '^[[:space:]]*<code_context>[[:space:]]*$' <<< "$CONTENT"; then
   FAILURES="${FAILURES}- <code_context> section is missing\n"
 fi
 
 # Check 5: Specifics exists. Same line-anchoring rationale as Check 4.
-if ! echo "$CONTENT" | grep -qE '^[[:space:]]*<specifics>[[:space:]]*$'; then
+if ! grep -qE '^[[:space:]]*<specifics>[[:space:]]*$' <<< "$CONTENT"; then
   FAILURES="${FAILURES}- <specifics> section is missing\n"
 fi
 

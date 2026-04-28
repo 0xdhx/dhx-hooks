@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-assessed-guard.sh — PreToolUse hook (Write|Edit matcher)
-# Patterns: HP-003, HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009, HP-028
 # Prevents agents from marking deferred items [assessed] without user approval.
 #
 # [captured], [existing], [tracked] are fine — they have verifiable backing.
@@ -39,7 +39,7 @@ if [ "$TOOL" = "Edit" ]; then
   OLD=$(echo "$INPUT" | jq -r '.tool_input.old_string // empty')
   NEW=$(echo "$INPUT" | jq -r '.tool_input.new_string // empty')
   # Adding [assessed] if it's in new but not in old
-  if echo "$NEW" | grep -q '\[assessed' && ! echo "$OLD" | grep -q '\[assessed'; then
+  if grep -q '\[assessed' <<< "$NEW" && ! grep -q '\[assessed' <<< "$OLD"; then
     ADDING_ASSESSED=true
   fi
 fi
@@ -55,7 +55,7 @@ if [ "$TOOL" = "Write" ]; then
     fi
   else
     # New file with assessed markers
-    if echo "$CONTENT" | grep -q '\[assessed'; then
+    if grep -q '\[assessed' <<< "$CONTENT"; then
       ADDING_ASSESSED=true
     fi
   fi

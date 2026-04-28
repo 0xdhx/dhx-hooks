@@ -141,6 +141,105 @@ else
   check "smoke test: wrong bullet survived — output: $RESULT" 0
 fi
 
+# --- Section 6: HP-028 round-2 — auto-silence pipelines collapsed ---
+#
+# Lines 183 and 195 of the hook used to be:
+#   grep -rl "$rid" "$DIR" 2>/dev/null | head -1 | grep -q .
+#   find "$DIR" -name "$bname" 2>/dev/null | head -1 | grep -q .
+# Both were `cmd | head -1 | grep -q .` shapes — `head -1` is the early-exit
+# reader that can SIGPIPE the upstream `grep -rl` / `find` under pipefail.
+# Round-2 sweep collapsed each into a single command that short-circuits
+# without a pipeline:
+#   grep -rq "$rid" "$DIR" 2>/dev/null
+#   [ -n "$(find "$DIR" -name "$bname" -print -quit 2>/dev/null)" ]
+# Both forms eliminate the multi-stage pipeline so SIGPIPE+pipefail can't apply.
+#
+# Source-level invariants (Section 6.1–6.4): the broken shapes must not
+# reappear, and the canonical collapse must be present. Anchored to live
+# source so any reversion is loud.
+
+# 6.1 No `head -1 | grep -q` pipelines (the broken shape) outside comments.
+#     Strip lines whose first non-space character is `#` so the round-2 commit
+#     comment that documents the prior shape doesn't trip the regex.
+if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'head -1[[:space:]]*\|[[:space:]]*grep -q'; then
+  check "no 'head -1 | grep -q' pipelines remain (HP-028 round-2)" 0
+else
+  check "no 'head -1 | grep -q' pipelines remain (HP-028 round-2)" 1
+fi
+
+# 6.2 No `grep -rl … |` pipelines targeting the backlog (the broken shape
+#     for line 183) outside comments.
+if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'grep -rl .*\.planning/backlog'; then
+  check "no 'grep -rl … .planning/backlog' pipeline remains (line 183)" 0
+else
+  check "no 'grep -rl … .planning/backlog' pipeline remains (line 183)" 1
+fi
+
+# 6.3 Backlog containment uses `grep -rq` short-circuit form.
+if grep -qE 'grep -rq[[:space:]]+"\$rid"[[:space:]]+"\$CWD/\.planning/backlog/"' "$HOOK"; then
+  check "backlog containment uses 'grep -rq' (line 183 collapsed form)" 1
+else
+  check "backlog containment does not use 'grep -rq' — collapsed form missing" 0
+fi
+
+# 6.4 Todos basename lookup uses `find -print -quit` short-circuit form.
+if grep -qE 'find[[:space:]]+"\$CWD/\.planning/todos"[[:space:]]+-name[[:space:]]+"\$bname"[[:space:]]+-print[[:space:]]+-quit' "$HOOK"; then
+  check "todos basename lookup uses 'find … -print -quit' (line 195 collapsed form)" 1
+else
+  check "todos basename lookup does not use 'find … -print -quit' — collapsed form missing" 0
+fi
+
+# --- Section 7: behavioral smoke for the collapsed forms ---
+#
+# Build a synthetic .planning/backlog tree with $rid early in the listing and
+# verify `grep -rq` detects it; build a synthetic .planning/todos tree with
+# $bname present and verify `find -print -quit` detects it. These exercise
+# the exact idioms the hook now uses, not the hook's full Stop pipeline.
+TMP_FIXTURE=$(mktemp -d /tmp/probe-deferred-collapse.XXXXXX)
+trap 'rm -rf "$TMP_FIXTURE"' EXIT
+
+mkdir -p "$TMP_FIXTURE/.planning/backlog"
+# Multiple files in the backlog; $rid only present in one. grep -rq must
+# short-circuit on first match without piping to head.
+for i in $(seq 1 20); do
+  printf 'unrelated content %d\n' "$i" > "$TMP_FIXTURE/.planning/backlog/item-$i.md"
+done
+echo 'tracked under REQ-V2-004 with extra context' > "$TMP_FIXTURE/.planning/backlog/has-rid.md"
+
+if grep -rq "REQ-V2-004" "$TMP_FIXTURE/.planning/backlog/" 2>/dev/null; then
+  check "smoke: 'grep -rq REQ-V2-004' detects match in synthetic backlog" 1
+else
+  check "smoke: 'grep -rq REQ-V2-004' missed the match — collapse form broken" 0
+fi
+
+# Negative case: rid absent → no match.
+if grep -rq "DOES-NOT-EXIST-99" "$TMP_FIXTURE/.planning/backlog/" 2>/dev/null; then
+  check "smoke: 'grep -rq' false-positive on absent rid" 0
+else
+  check "smoke: 'grep -rq' correctly returns no match for absent rid" 1
+fi
+
+mkdir -p "$TMP_FIXTURE/.planning/todos"
+touch "$TMP_FIXTURE/.planning/todos/2026-04-15-some-todo.md"
+touch "$TMP_FIXTURE/.planning/todos/2026-04-20-target-todo.md"
+touch "$TMP_FIXTURE/.planning/todos/2026-04-25-other-todo.md"
+
+# Positive: target file detected via find -print -quit.
+HIT=$(find "$TMP_FIXTURE/.planning/todos" -name "2026-04-20-target-todo.md" -print -quit 2>/dev/null)
+if [ -n "$HIT" ]; then
+  check "smoke: 'find … -print -quit' detects matching basename" 1
+else
+  check "smoke: 'find … -print -quit' missed the match — collapse form broken" 0
+fi
+
+# Negative: absent basename → empty result.
+MISS=$(find "$TMP_FIXTURE/.planning/todos" -name "nonexistent.md" -print -quit 2>/dev/null)
+if [ -z "$MISS" ]; then
+  check "smoke: 'find … -print -quit' correctly returns empty for absent basename" 1
+else
+  check "smoke: 'find … -print -quit' false-positive on absent basename: $MISS" 0
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]
