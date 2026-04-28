@@ -68,8 +68,8 @@ if [ "$ADDING_ASSESSED" = false ]; then exit 0; fi
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 if [ -n "$CWD" ]; then
   REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"
-  # Review active if marker exists and is less than 30 minutes old
-  if [ -f "$REVIEW_MARKER" ] && [ "$(find "$REVIEW_MARKER" -mmin -30 2>/dev/null)" ]; then
+  # Review active if marker exists and is less than 60 minutes old
+  if [ -f "$REVIEW_MARKER" ] && [ "$(find "$REVIEW_MARKER" -mmin -60 2>/dev/null)" ]; then
     exit 0
   fi
 fi
