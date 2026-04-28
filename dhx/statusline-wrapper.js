@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.37.1
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)

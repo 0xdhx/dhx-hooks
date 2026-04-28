@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-restart-plugins-marker.sh — UserPromptSubmit hook
-# Patterns: HP-008
+# Patterns: HP-008, HP-026
 # Writes a marker file when the user runs /restart-plugins or
 # /reload-plugins so the statusline drift detector can rebaseline its
 # plugins-tree snapshot on the next refresh — clearing the stale
