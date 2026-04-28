@@ -13,6 +13,12 @@ set -euo pipefail
 #      `cmd | grep -q PATTERN` shape (HP-028). Comment lines and lines
 #      containing the literal `HP-028` are exempt. Companion at-rest
 #      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
+#   8. Run scripts/run-probes.sh when dhx/*.js or tests/probes/* are
+#      staged. Catches wrapper require-boundary changes that don't
+#      update fake-$HOME fixtures + probe edits that break their own
+#      assertions. Trigger scoped narrowly so dhx/*.sh edits don't pay
+#      the probe-suite cost (sed-extraction + citation-check at #6/#7
+#      already cover hook-side regressions).
 #
 # Exclusions: misc/*.sh, .planned/**, .inactive/**, gsd/**, *.js/*.cjs/*.mjs
 # Bypass: git commit --no-verify (git handles natively; no extra envvar).
@@ -186,6 +192,20 @@ fi
 if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-citation-check.sh" ]; then
   echo "Running citation-check tests..."
   bash tests/test-citation-check.sh || { echo "FAILED: citation-check tests"; exit 1; }
+fi
+
+# 8. Run probe suite when dhx/*.js or tests/probes/* are staged. Catches
+#    the silent-red incident class — wrapper require-boundary changes that
+#    don't update fake-$HOME fixtures, probe edits that break their own
+#    assertions. Companion to the 2026-04-28 fixture centralization in
+#    tests/probes/_make-fake-home.js: the helper provides a single fix-point
+#    for new wrapper requires; this gate ensures that fix-point is in fact
+#    updated before the regression lands. Trigger scoped narrowly: dhx/*.sh
+#    edits don't pay the suite cost (#6/#7 cover hook-side regressions).
+PROBE_TRIGGER=$(git diff --cached --name-only -- 'dhx/*.js' 'tests/probes/' || true)
+if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
+  echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
+  bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
 fi
 
 if [ "$FAIL" -ne 0 ]; then
