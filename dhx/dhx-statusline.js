@@ -345,12 +345,13 @@ function formatLine2Gsd(s) {
 
   const parts = [];
 
-  // Milestone group: version + truncated name + completion.
+  // Milestone group: version + completion. Milestone name dropped 2026-04-27
+  // (quick task 260427-u89): the 20-char-capped truncation consistently
+  // produced an ellipsis that added no diagnostic value at the cost of a
+  // line-2 column the budget+context row needed. `truncate` and NAME_MAX stay
+  // imported because phase name (line ~376) still uses them.
   const msPieces = [];
   if (s.milestone) msPieces.push(`\x1b[2m${s.milestone}\x1b[0m`);
-  if (s.milestoneName && s.milestoneName !== 'milestone') {
-    msPieces.push(`\x1b[2m${truncate(s.milestoneName, NAME_MAX)}\x1b[0m`);
-  }
   if (s.completedPhases != null && s.totalPhases != null) {
     // Color scales with completion: red at 0/N, dim 1–74%, dim-green 75–99%,
     // bright green at 100%. Signals trajectory at a glance.
@@ -563,27 +564,36 @@ function runStatusline() {
       } catch (e) {}
     }
 
-    // --- Line 1: model + CCS + [task |] dir + ctx ---
+    // --- Line 1: model + CCS + [task |] dir + ctx + signals ---
     const dirname = path.basename(dir);
     // CCS profile letter — dim yellow, slight accent so active profile is
     // visible without overpowering the dim model name it sits next to.
     const profileSegment = ccsProfile ? ` \x1b[2;33m${ccsProfile}\x1b[0m` : '';
     // Active todo task bubbles to line 1 (bold) so the "what am I doing?"
-    // signal stays where the eye lands first. Line 2 carries GSD+signals.
+    // signal stays where the eye lands first. Line 2 carries GSD state only.
     const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
     // Effort glyph sits after the model, separated by a space so the two
     // segments don't visually merge. Hidden when settings.json has no
     // effortLevel (e.g. CCS instance swap before first /effort).
     const effortSeg = effort ? ` ${effort}` : '';
-    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
-    // --- Line 2: GSD state │ repo signals (conditional) ---
-    // Gate: any of milestone/phase/status present OR any repo signal > 0.
-    // Separator between the two groups is a pipe, matching the existing
-    // line-1 convention (pipes between groups, dots within a group).
-    const gsdLine2 = formatLine2Gsd(gsdState);
+    // Repo signals (R/T/B) live at the END of line 1 as of 2026-04-27 (quick
+    // task 260427-u89): every "live" signal (model → ctx → signals) sits on
+    // the row the eye scans first; line 2 became the budget+context row
+    // (ccburn + GSD state, composed by the wrapper).
     const signalsLine2 = formatLine2Signals(repoSignals);
-    const line2Pieces = [gsdLine2, signalsLine2].filter(Boolean);
+    const line1Base = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
+    // Filter+join idiom gates the trailing dim pipe — empty signals → no
+    // dangling separator at line end.
+    const line1 = [line1Base, signalsLine2].filter(Boolean).join(' \x1b[2m│\x1b[0m ');
+
+    // --- Line 2: GSD state (conditional) ---
+    // Gate: any of milestone/phase/status present. Repo signals moved to
+    // line 1 (above); ccburn prepends to this line in statusline-wrapper.js.
+    // Filter+join preserved so an empty gsdLine2 still produces empty line2
+    // (the wrapper's burnOutput-prepend then decides whether line 2 emits).
+    const gsdLine2 = formatLine2Gsd(gsdState);
+    const line2Pieces = [gsdLine2].filter(Boolean);
     const line2 = line2Pieces.length ? line2Pieces.join(' \x1b[2m│\x1b[0m ') : '';
 
     process.stdout.write(line2 ? `${line1}\n${line2}` : line1);
