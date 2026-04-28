@@ -50,7 +50,7 @@ process.stdin.on('end', () => {
     withSegmentDiag('cacheAge',   getCacheAge(data)),
     withSegmentDiag('ccburn',     runCcburn(input)),
     withSegmentDiag('lastPrompt', getLastUserPrompt(data)),
-    withSegmentDiag('health',     readHealthCache()),
+    withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
   ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, lastPromptR, healthR, driftR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
@@ -444,9 +444,44 @@ function buildCcburnSegment(jsonText) {
 // INVARIANT: 6 drift states + clean. Probe:
 // tests/probes/probe-plugin-registry.sh exercises every negative state plus a
 // clean-state assertion against the live registry files.
-function checkPluginRegistry(configDir) {
+//
+// STARTUP SUPPRESSION WINDOW (added 2026-04-28). CC's plugin resolver runs
+// asynchronously during session-init and may not have written
+// known_marketplaces.json by the time the first statusline refresh fires —
+// producing a transient `registry:MISSING:dhx-local` warning that resolves
+// itself within ~5-15s. Suppress for `REGISTRY_STARTUP_SUPPRESS_MS` (default
+// 30s) anchored on the drift snapshot file's mtime (≈ session start; written
+// by checkDrift's first invocation). Persistent failures still surface after
+// the window — the suppression is bounded, not absolute. Snapshot absent →
+// first refresh → in startup → suppress (race fail-safe; self-resolves on
+// the next refresh once checkDrift writes the file). Env override
+// `DHX_REGISTRY_SUPPRESS_MS=0` disables the window entirely (used by probes
+// that test the detector itself; users who want strict immediate firing can
+// set it too).
+const REGISTRY_STARTUP_SUPPRESS_MS = (() => {
+  const raw = parseInt(process.env.DHX_REGISTRY_SUPPRESS_MS, 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+})();
+function checkPluginRegistry(configDir, sessionId) {
   const MK = 'dhx-local';
   const PLUGIN = 'dhx@dhx-local';
+
+  // Startup suppression — see REGISTRY_STARTUP_SUPPRESS_MS comment above.
+  // Skip the check when sessionId absent (caller didn't pass — probably an
+  // ad-hoc invocation; keep historical behavior of firing immediately) or
+  // when the env override is 0 (probes/strict mode).
+  if (sessionId && REGISTRY_STARTUP_SUPPRESS_MS > 0) {
+    try {
+      const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
+      const ccTicks = findCCTicks(process.ppid);
+      const suffix = ccTicks ? `-p${ccTicks}` : '';
+      const snapshotFile = path.join(cacheDir, `drift-snapshot-${sessionId}${suffix}.json`);
+      const ageMs = Date.now() - fs.statSync(snapshotFile).mtimeMs;
+      if (ageMs >= 0 && ageMs < REGISTRY_STARTUP_SUPPRESS_MS) return '';
+    } catch {
+      return ''; // snapshot absent → in startup window
+    }
+  }
 
   // Settings is the declaring source — this is the gate. If settings is
   // unreadable/unparseable, or doesn't declare dhx-local, we skip silently:
@@ -542,7 +577,7 @@ function checkPluginRegistry(configDir) {
 // INVARIANT: sole runtime reader of ~/.cache/dhx/health.json. Atomic schema
 // extension (new field in same commit as new reader branch) is safe only
 // while this holds — grep hooks+skills repos for readers before extending.
-function readHealthCache() {
+function readHealthCache(sessionId) {
   return new Promise((resolve) => {
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
     fs.readFile(cacheFile, 'utf8', (err, data) => {
@@ -568,7 +603,7 @@ function readHealthCache() {
       // plugin hooks that would otherwise write it. See checkPluginRegistry().
       try {
         const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-        const state = checkPluginRegistry(configDir);
+        const state = checkPluginRegistry(configDir, sessionId);
         if (state) h.plugin_registry = state;
       } catch { /* detector errors never block the statusline */ }
 

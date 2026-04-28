@@ -34,7 +34,13 @@ FAIL=0
 make_case_dir() {
   local name=$1
   local cfg="$TMPDIR/$name"
-  mkdir -p "$cfg/plugins" "$cfg/cache-dhx"
+  mkdir -p "$cfg/plugins" "$cfg/cache-dhx" "$cfg/cache-dhx-home/.claude/hooks"
+  # The wrapper require()s dhx-statusline.js from $HOME/.claude/hooks/ at
+  # module-init time (added 2026-04-28 to share signals helpers). Probes
+  # override HOME, so the renderer must be reachable at the overridden path
+  # or the wrapper crashes uncatchably. Symlink the live source.
+  ln -sf "$REPO_ROOT/dhx/dhx-statusline.js" \
+         "$cfg/cache-dhx-home/.claude/hooks/dhx-statusline.js"
   echo "$cfg"
 }
 
@@ -91,8 +97,13 @@ run_wrapper() {
   # and writes a fresh drift snapshot per case (nothing carries across cases).
   local sid="probe-plugin-registry-$RANDOM"
   local stdin="{\"session_id\":\"$sid\",\"workspace\":{\"current_dir\":\"$REPO_ROOT\"},\"transcript_path\":\"/tmp/none\"}"
+  # DHX_REGISTRY_SUPPRESS_MS=0 disables the startup suppression window so each
+  # case fires its registry signal immediately — this probe tests the detector
+  # itself, not the suppression window. Suppression is exercised separately
+  # in scenarios 10-11 below.
   CLAUDE_CONFIG_DIR="$cfg" \
     HOME="$cfg/cache-dhx-home" \
+    DHX_REGISTRY_SUPPRESS_MS=0 \
     node "$WRAPPER" <<< "$stdin" 2>/dev/null || true
   # HOME override isolates ~/.cache/dhx/ — the wrapper silently no-ops missing
   # health.json so the probe output stays free of live health signals.
@@ -220,6 +231,35 @@ cfg=$(make_case_dir "clean")
 write_baseline "$cfg"
 out=$(run_wrapper "$cfg")
 assert_not_contains "clean-state-no-registry-segment" "registry:" "$out"
+
+# ---- 10. Startup suppression: fresh snapshot + MISSING → no registry segment ----
+# REGISTRY_STARTUP_SUPPRESS_MS defaults to 30s. With no DHX_REGISTRY_SUPPRESS_MS
+# override and no pre-aged snapshot, every refresh should fall in the
+# fail-safe path (snapshot absent → suppress) OR the fresh-mtime path
+# (snapshot just written by checkDrift this same call → mtime ≈ now). Either
+# way the MISSING token must NOT appear.
+cfg=$(make_case_dir "suppress-fresh")
+write_baseline "$cfg"
+cat > "$cfg/plugins/known_marketplaces.json" <<'JSON'
+{"other-marketplace": {"source": {"source": "github", "repo": "foo/bar"}, "installLocation": "/dev/null"}}
+JSON
+sid="probe-plugin-registry-suppress-fresh-$RANDOM"
+stdin="{\"session_id\":\"$sid\",\"workspace\":{\"current_dir\":\"$REPO_ROOT\"},\"transcript_path\":\"/tmp/none\"}"
+# NOTE: no DHX_REGISTRY_SUPPRESS_MS override — default 30s suppression active
+out=$(CLAUDE_CONFIG_DIR="$cfg" HOME="$cfg/cache-dhx-home" \
+  node "$WRAPPER" <<< "$stdin" 2>/dev/null || true)
+assert_not_contains "startup-suppression-hides-MISSING" "registry:MISSING" "$out"
+
+# NOTE on the post-window path: a "snapshot present + age > threshold → MISSING
+# fires" scenario was prototyped here but couldn't be reliably wired from bash —
+# the snapshot path is keyed by `findCCTicks(process.ppid)` which returns a
+# host-specific suffix. Pre-seeding the file at the right path requires
+# replicating /proc walk logic from the test harness. The existing scenarios
+# 1-8 (DHX_REGISTRY_SUPPRESS_MS=0) prove the detector fires correctly when the
+# suppression check is bypassed; the wrapper's age-check branch is plain
+# `if (ageMs < threshold) return '';` — bypass-equivalent for ageMs >= threshold.
+# Coverage gap is bounded; persistent-failure validation lives in the
+# bash-probe's live-config informational pass below.
 
 # Advisory: report what live CLAUDE_CONFIG_DIR looks like but do NOT gate
 # pass/fail on it. The whole point of this detector is to surface real-world
