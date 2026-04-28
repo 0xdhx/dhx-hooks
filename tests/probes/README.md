@@ -44,6 +44,7 @@ If you find yourself writing a probe that exercises two or more components' outp
 | `probe-gsd-fork-aware-drift.sh` | quick task 260425-oeg fork-aware gsd suppression | `bash tests/probes/probe-gsd-fork-aware-drift.sh` |
 | `probe-statusline-self-diag.js` | decisions.md 2026-04-26 statusline self-diag row | `node tests/probes/probe-statusline-self-diag.js` |
 | `probe-hooks-wiring.sh` | decisions.md 2026-04-26 hooks-wiring canary row | `bash tests/probes/probe-hooks-wiring.sh` |
+| `probe-last-prompt-segment.js` | docs/statusline-wrapper.md § "Last user prompt segment" (2026-04-27 statusline session item 1) | `node tests/probes/probe-last-prompt-segment.js` |
 
 ## Running all probes
 
