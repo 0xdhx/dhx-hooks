@@ -9,6 +9,10 @@ set -euo pipefail
 #      resolve to a `## HP-NNN ` section in docs/hook-patterns.md.
 #   4. If docs/hook-patterns.md is staged, block any new `## HP-NNN`
 #      section that lacks a non-empty `**Evidence:**` block.
+#   5. Block any staged dhx hook introducing a SIGPIPE+pipefail-prone
+#      `cmd | grep -q PATTERN` shape (HP-028). Comment lines and lines
+#      containing the literal `HP-028` are exempt. Companion at-rest
+#      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
 #
 # Exclusions: misc/*.sh, .planned/**, .inactive/**, gsd/**, *.js/*.cjs/*.mjs
 # Bypass: git commit --no-verify (git handles natively; no extra envvar).
@@ -135,14 +139,50 @@ EOF
   fi
 fi
 
-# 5. Run sed extraction tests when relevant files are staged
+# 5. Block staged dhx hooks that introduce SIGPIPE+pipefail-prone shapes.
+#    HP-028: `cmd | grep -q PATTERN` silently drops the match when LHS
+#    output exceeds the OS pipe buffer (~64 KiB) under pipefail. Comment
+#    lines and lines containing the literal `HP-028` are exempt — same
+#    exclusions as the at-rest invariant probe at
+#    tests/probes/probe-sigpipe-pipefail-shapes.sh (BRE regex parity).
+if [ -n "$STAGED" ]; then
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    BLOB=$(git show ":$f" 2>/dev/null || true)
+    [ -z "$BLOB" ] && continue
+    SHAPE_HITS=$(grep -n '| *grep -q' <<< "$BLOB" || true)
+    [ -z "$SHAPE_HITS" ] && continue
+    while IFS=: read -r lineno content; do
+      [ -z "$lineno" ] && continue
+      trimmed="${content#"${content%%[![:space:]]*}"}"
+      case "$trimmed" in '#'*) continue ;; esac
+      case "$content" in *HP-028*) continue ;; esac
+      cat >&2 <<EOF
+ERROR: $f:$lineno introduces a SIGPIPE+pipefail-prone shape (HP-028).
+
+  $content
+
+  Replace 'cmd | grep -q PAT' with one of:
+    grep -q PAT <<< "\$VAR"        # for variable inputs
+    grep -q PAT < <(cmd args)     # for command outputs
+
+  See docs/hook-patterns.md HP-028 for the full pattern. Exempt the line
+  by adding an 'HP-028' reference comment (intentional documentation,
+  heredoc bodies, etc.).
+EOF
+      FAIL=1
+    done <<< "$SHAPE_HITS"
+  done <<< "$STAGED"
+fi
+
+# 6. Run sed extraction tests when relevant files are staged
 STAGED_HOOKS=$(git diff --cached --name-only -- 'dhx/*.sh' 'tests/' || true)
 if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-sed-extraction.sh" ]; then
   echo "Running sed extraction tests..."
   bash tests/test-sed-extraction.sh || { echo "FAILED: sed extraction tests"; exit 1; }
 fi
 
-# 6. Run citation-check tests when relevant files are staged
+# 7. Run citation-check tests when relevant files are staged
 if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-citation-check.sh" ]; then
   echo "Running citation-check tests..."
   bash tests/test-citation-check.sh || { echo "FAILED: citation-check tests"; exit 1; }
