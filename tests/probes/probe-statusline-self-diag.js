@@ -49,22 +49,13 @@ function freshWrapper(homeDir) {
   return require(WRAPPER_PATH);
 }
 
-// Real renderer module — symlinked into each fake $HOME so the wrapper's
-// module-load `require(STATUSLINE_SCRIPT)` resolves under HOME=tmpdir.
-// Required since 2026-04-28 (commit 30893e3, "move signals to L1 tail")
-// when getRepoSignals/formatLine2Signals moved out of the renderer's
-// runStatusline() body and became a wrapper-level require dependency.
-// dhx-statusline.js gates its top-level runStatusline() on
-// `require.main === module`, so requiring it from the wrapper has no
-// I/O side effects.
-const REAL_RENDERER = path.resolve(__dirname, '..', '..', 'dhx', 'dhx-statusline.js');
+// Fake-$HOME setup centralized in _make-fake-home.js — see that module's
+// header for the wrapper require-boundary rationale (2026-04-28 commit
+// 30893e3 + same-day silent-red repair + centralization rows).
+const { makeFakeHome } = require('./_make-fake-home');
 
 function makeHome(name) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), `selfdiag-${name}-`));
-  fs.mkdirSync(path.join(home, '.cache', 'dhx'), { recursive: true });
-  fs.mkdirSync(path.join(home, '.claude', 'hooks'), { recursive: true });
-  fs.symlinkSync(REAL_RENDERER, path.join(home, '.claude', 'hooks', 'dhx-statusline.js'));
-  return home;
+  return makeFakeHome(`selfdiag-${name}-`);
 }
 
 function logPath(home) {
