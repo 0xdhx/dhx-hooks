@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-worktree-bash-guard.sh — PreToolUse hook (Bash matcher)
-# Patterns: HP-003, HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009, HP-028
 #
 # Companion to dhx-worktree-write-guard.sh. Blocks Bash tool calls that write
 # to main-repo absolute paths when cwd is inside a CC-managed worktree —
@@ -53,14 +53,14 @@ MAIN_ROOT=$(dirname "$(dirname "$(dirname "$WT_ROOT")")")
 # command string. Anchored token matches to cut false positives (e.g., `sed`
 # without `-i` is a read operation, so we require the `-i`).
 HAS_WRITE_VERB=0
-if echo "$CMD" | grep -qE '(^|[^[:alnum:]_])sed[[:space:]]+(-[[:alnum:]]*i|[^-][^[:space:]]*[[:space:]]+-[[:alnum:]]*i)'; then
+if grep -qE '(^|[^[:alnum:]_])sed[[:space:]]+(-[[:alnum:]]*i|[^-][^[:space:]]*[[:space:]]+-[[:alnum:]]*i)' <<< "$CMD"; then
   HAS_WRITE_VERB=1
-elif echo "$CMD" | grep -qE '(^|[^[:alnum:]_])(tee|dd|install)[[:space:]]'; then
+elif grep -qE '(^|[^[:alnum:]_])(tee|dd|install)[[:space:]]' <<< "$CMD"; then
   HAS_WRITE_VERB=1
-elif echo "$CMD" | grep -qE '[[:space:]]>>?[[:space:]]*[^[:space:]|&;]'; then
+elif grep -qE '[[:space:]]>>?[[:space:]]*[^[:space:]|&;]' <<< "$CMD"; then
   # > or >> redirection targeting a path (not >| process sub or >& fd)
   HAS_WRITE_VERB=1
-elif echo "$CMD" | grep -qE '(^|[^[:alnum:]_])python3?[[:space:]]+-c'; then
+elif grep -qE '(^|[^[:alnum:]_])python3?[[:space:]]+-c' <<< "$CMD"; then
   HAS_WRITE_VERB=1
 fi
 
@@ -68,7 +68,7 @@ fi
 
 # --- Is a main-repo absolute path referenced? ---
 # Escape MAIN_ROOT for regex use (dots, slashes — use fixed-string grep instead)
-if ! echo "$CMD" | grep -qF "$MAIN_ROOT/"; then
+if ! grep -qF "$MAIN_ROOT/" <<< "$CMD"; then
   exit 0
 fi
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-009
+# Patterns: HP-001, HP-002, HP-009, HP-028
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Guard 1: stop_hook_active boolean (official API — true on second+ firing)
@@ -118,7 +118,7 @@ if [[ "$TEST_CMD" == *"pytest"* ]] && [ -d ".pytest_cache" ]; then
   LF_OUTPUT=$(eval "$LF_CMD" 2>&1) || LF_EXIT=$?
 
   if [ "$LF_EXIT" -eq 0 ]; then
-    if echo "$LF_OUTPUT" | grep -q "no tests ran"; then
+    if grep -q "no tests ran" <<< "$LF_OUTPUT"; then
       log "No previously-failed tests (suite was clean) → skipping full suite"
       rm -f "$COUNTER_FILE"
       exit 0

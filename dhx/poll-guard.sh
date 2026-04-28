@@ -1,6 +1,6 @@
 #!/bin/bash
 # poll-guard: PreToolUse hook for Claude Code Read tool
-# Patterns: HP-007
+# Patterns: HP-007, HP-028
 # Rate-limits reads of background task output files to prevent busy-polling.
 # Complements read-once (content dedup) with frequency rate-limiting.
 #
@@ -34,7 +34,7 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty') || exit 0
 PATTERNS="${POLL_GUARD_PATTERNS:-/tasks/.*\.output$}"
 MATCH=false
 for pat in $PATTERNS; do
-  if printf '%s\n' "$FILE_PATH" | grep -qE "$pat"; then
+  if grep -qE "$pat" <<< "$FILE_PATH"; then
     MATCH=true; break
   fi
 done

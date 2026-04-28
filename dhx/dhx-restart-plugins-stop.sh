@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # dhx-restart-plugins-stop.sh — Stop hook
 # Patterns: HP-020 (Stop event reliability), HP-026 (marker semantics),
-#           HP-027 (CLI slash commands bypass UserPromptSubmit).
+#           HP-027 (CLI slash commands bypass UserPromptSubmit),
+#           HP-028 (SIGPIPE+pipefail breaks `cmd | grep -q` on overflow).
 #
 # When the user runs `/reload-plugins` or `/restart-plugins` (CLI slash
 # commands), `UserPromptSubmit` does NOT fire (HP-027). `Stop` fires
