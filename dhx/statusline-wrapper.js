@@ -45,13 +45,14 @@ process.stdin.on('end', () => {
   // segment yields a red `⚠ <segment>?` sigil + a JSONL log line instead of
   // collapsing the entire statusline to silent empty (2026-04-26 #4 self-diag).
   Promise.all([
-    withSegmentDiag('renderer', runRenderer(input)),
-    withSegmentDiag('git',      getGitInfo(cwd)),
-    withSegmentDiag('cacheAge', getCacheAge(data)),
-    withSegmentDiag('ccburn',   runCcburn(input)),
-    withSegmentDiag('health',   readHealthCache()),
-    withSegmentDiag('drift',    checkDrift(data)),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]) => {
+    withSegmentDiag('renderer',   runRenderer(input)),
+    withSegmentDiag('git',        getGitInfo(cwd)),
+    withSegmentDiag('cacheAge',   getCacheAge(data)),
+    withSegmentDiag('ccburn',     runCcburn(input)),
+    withSegmentDiag('lastPrompt', getLastUserPrompt(data)),
+    withSegmentDiag('health',     readHealthCache()),
+    withSegmentDiag('drift',      checkDrift(data)),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, lastPromptR, healthR, driftR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -66,15 +67,16 @@ process.stdin.on('end', () => {
       return fallback(result.segmentName);
     }
     const sigil = computeSegmentSigil;
-    const rendererOutput = unwrap(rendererR, name => sigil(name)); // string carrying the sigil; split below yields [sigil, ''].
-    const gitInfo        = unwrap(gitInfoR,  name => sigil(name));
-    const cacheAge       = unwrap(cacheAgeR, name => sigil(name));
+    const rendererOutput = unwrap(rendererR,   name => sigil(name)); // string carrying the sigil; split below yields [sigil, ''].
+    const gitInfo        = unwrap(gitInfoR,    name => sigil(name));
+    const cacheAge       = unwrap(cacheAgeR,   name => sigil(name));
     const burnOutput     = unwrap(burnOutputR, name => sigil(name));
-    const health         = unwrap(healthR,   name => ({ front: sigil(name), tail: '' }));
-    const driftWarning   = unwrap(driftR,    name => sigil(name));
+    const lastPrompt     = unwrap(lastPromptR, name => sigil(name));
+    const health         = unwrap(healthR,     name => ({ front: sigil(name), tail: '' }));
+    const driftWarning   = unwrap(driftR,      name => sigil(name));
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
-    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]
+    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, lastPromptR, healthR, driftR]
       .filter(r => r.error).length;
     // The renderer may emit one or two lines. Line 1 carries identity +
     // runtime telemetry (model, ctx bar, dir, repo signals); line 2, when
@@ -118,12 +120,15 @@ process.stdin.on('end', () => {
     line1 = metaGlyph + ' ' + line1;
 
     // ccburn (2026-04-27 quick task 260427-u89): moves to line 2 head — the
-    // budget/context row groups with GSD state. Gate semantics preserved: line
-    // 2 emits when ANY of {burnOutput, rendererLine2, health.tail} is present.
-    // The filter+join idiom keeps an empty burnOutput from leaving a stray
-    // dim pipe in front of rendererLine2.
+    // budget/context row groups with GSD state. lastPrompt (2026-04-27 item 1
+    // of statusline session) slots between ccburn and the GSD block — read-only
+    // context next to budget signals, before live GSD state. Gate semantics
+    // preserved: line 2 emits when ANY of {burnOutput, lastPrompt, rendererLine2,
+    // health.tail} is present. The filter+join idiom keeps an empty piece from
+    // leaving a stray dim pipe in front of the next.
     const line2Pieces = [];
     if (burnOutput)    line2Pieces.push(burnOutput);
+    if (lastPrompt)    line2Pieces.push(lastPrompt);
     if (rendererLine2) line2Pieces.push(rendererLine2);
     let line2 = line2Pieces.join(' \x1b[2m│\x1b[0m ');
 
@@ -1051,6 +1056,94 @@ function readCacheAnchor(transcriptPath) {
   } finally {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
   }
+}
+
+// Last user prompt segment (L2). Tail-reads the 64KB window of the JSONL
+// transcript and reverse-scans for the most recent type=user entry whose
+// message.content is either a string OR an array starting with a {type:text}
+// block. tool_result entries (array starting with {type:tool_result}) are
+// skipped — those are harness-injected responses to assistant tool calls,
+// not user-authored prompts. Empty / control-only / parse-fail entries are
+// skipped and the scan continues. Slash commands ARE user prompts.
+//
+// Updates after submission, not while typing — the JSONL only gains a user
+// entry once Enter is pressed. Acceptable: segment semantic is "last
+// submitted prompt," not "current draft."
+//
+// Returns the cleaned + truncated raw text (no ANSI), or null if no usable
+// entry exists in the window. getLastUserPrompt wraps in dim gray for L2.
+//
+// Architecturally mirrors readCacheAnchor (same 64KB tail-read shape) but
+// kept as a separate helper rather than consolidating both into a shared
+// readTranscriptTail — the reverse-scan predicates differ entirely, and the
+// I/O surface is small enough that the shared layer would add indirection
+// without saving substantial code. The OS page cache absorbs back-to-back
+// reads of the same path within a single Promise.all cycle.
+//
+// INVARIANT: depends on JSONL transcript schema (HP-019). type=user entries
+// carry .message.content as either a string OR an array of content blocks
+// (text/tool_result/tool_use). Filtering to text+string is the contract that
+// keeps tool_result responses out of the segment. Probe:
+// tests/probes/probe-last-prompt-segment.js.
+function readLastUserPromptText(transcriptPath) {
+  const WINDOW = 65536;
+  const MAX_CHARS = 20;
+  let fd;
+  try {
+    fd = fs.openSync(transcriptPath, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return null;
+    const len = Math.min(WINDOW, size);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    const startIdx = size > WINDOW ? 1 : 0;
+    for (let i = lines.length - 1; i >= startIdx; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.type !== 'user') continue;
+      const content = entry.message && entry.message.content;
+      let raw = null;
+      if (typeof content === 'string') {
+        raw = content;
+      } else if (Array.isArray(content) && content.length > 0
+                 && content[0] && content[0].type === 'text') {
+        raw = content[0].text;
+      }
+      if (typeof raw !== 'string' || raw.length === 0) continue;
+      // Defensive: strip control chars (incl. ANSI ESC \x1b), collapse \s runs.
+      // 20-char preview makes terminal-injection moot, but stripping ESC
+      // explicitly defends against pasted ANSI surviving the truncation.
+      const cleaned = raw.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!cleaned) continue;
+      // Mirrors dhx-statusline.js::truncate(): total width capped at MAX_CHARS,
+      // with `…` consuming the last column when truncation occurs.
+      return cleaned.length <= MAX_CHARS
+        ? cleaned
+        : cleaned.slice(0, MAX_CHARS - 1) + '…';
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
+  }
+}
+
+// Format the last-user-prompt text in dim gray for L2 display, or '' to hide.
+// Dim gray matches "static identity / de-emphasized" semantics in the color
+// table — the prompt is read-only context, not a live signal, and must NOT
+// compete with the L1 live cluster (cache → git → signals).
+function getLastUserPrompt(data) {
+  return new Promise((resolve) => {
+    const transcriptPath = data && data.transcript_path;
+    if (!transcriptPath) return resolve('');
+    const text = readLastUserPromptText(transcriptPath);
+    if (!text) return resolve('');
+    resolve(`\x1b[2m${text}\x1b[0m`);
+  });
 }
 
 // Fast git info: branch, dirty count, ahead/behind
