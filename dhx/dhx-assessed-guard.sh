@@ -76,7 +76,15 @@ fi
 
 # INVARIANT: fires for parent AND subagent Write|Edit calls (HP-003 verified
 # 2026-04-21). Uniform enforcement intended — no agent_id short-circuit.
-# Block: no active review session, agent is self-marking
-jq -n '{"decision": "block", "reason": "[assessed] markers require user approval. Run /dhx:defer-review to review each deferred item with the user. If mid-review already, the 30-min approval marker expired — re-run /dhx:defer-review."}'
+# Block: no active review session, agent is self-marking.
+# Branch the message on marker presence — if the marker exists but expired,
+# `touch` is a lighter recovery than re-running the skill (which re-walks
+# already-disposed items).
+if [ -n "${REVIEW_MARKER:-}" ] && [ -f "$REVIEW_MARKER" ]; then
+  REASON="[assessed] markers require user approval. Mid-review marker expired (>60 min). Re-touch with: touch \"$REVIEW_MARKER\" — or re-run /dhx:defer-review if you've lost context."
+else
+  REASON="[assessed] markers require user approval. Run /dhx:defer-review to review each deferred item with the user."
+fi
+jq -n --arg reason "$REASON" '{"decision": "block", "reason": $reason}'
 
 exit 0
