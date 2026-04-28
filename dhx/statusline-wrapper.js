@@ -939,6 +939,28 @@ function checkDrift(data) {
       return writeBaselineAndReturnClean();
     }
 
+    // Marker-driven rebaseline: when the user runs `/restart-plugins` (or
+    // `/reload-plugins`), `dhx/dhx-restart-plugins-marker.sh` writes a
+    // `plugins-rebaseline-${session_id}.marker` in this same cacheDir.
+    // CC's in-process plugin reload runs against the same PID+ccTicks, so
+    // the snapshot file persists and CC's plugin-cache writes look like
+    // drift on the next refresh. Surgical fix: rewrite ONLY the plugins
+    // fields (mtime + count) on the loaded snapshot to current values, then
+    // delete the marker (single-shot semantics). Other triggers (agents,
+    // settings, gsd, version) flow through unchanged.
+    const markerFile = path.join(cacheDir, `plugins-rebaseline-${data.session_id}.marker`);
+    try {
+      fs.statSync(markerFile);  // throws ENOENT if absent
+      snapshot.plugins_mtime = current.plugins_mtime;
+      snapshot.plugins_count = current.plugins_count;
+      try {
+        const tmp = snapshotFile + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(snapshot));
+        fs.renameSync(tmp, snapshotFile);
+      } catch { /* best-effort persistence; in-memory snapshot still rebaselined */ }
+      try { fs.unlinkSync(markerFile); } catch { /* concurrent refresh consumed it first; harmless */ }
+    } catch { /* marker absent or unreadable — no-op, normal drift compare follows */ }
+
     // Compare: collect which paths drifted (short labels match snapshot keys).
     // Exposing triggers enables tuning — without this, every false positive
     // looks identical and there's no way to diagnose which signal is noisy.

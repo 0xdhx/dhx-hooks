@@ -23,6 +23,8 @@
 //  12. Clock-skew: future mtime still caught by `>` even with count stable
 //  13. .orphaned_at basename filter (CC orphan-sweep noise)
 //  14. temp_git_* path-segment filter (CC install-cycle clone noise)
+//  15. /restart-plugins marker-driven rebaseline of plugins fields
+//      (single-shot consumption, surgical scope, per-session keying)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -660,6 +662,133 @@ const baseSnap = snap();
   const afterLookalike = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
   assert('[14f] non-CC `temp_git/` (no epoch suffix) is NOT filtered — anchor on _<digits>_<token>',
     afterLookalike.maxMtime > withRealWrite.maxMtime);
+}
+
+// --- 15. /restart-plugins marker-driven rebaseline ---
+//
+// CC's `/restart-plugins` reloads the plugin resolver in-process — same PID,
+// same ccTicks, same drift-snapshot file path. Plugin-cache writes during the
+// reload (manifest re-reads, `temp_git_*` clones during retry, fresh marketplace
+// pulls) push `plugins_mtime`/`plugins_count` past the snapshot, so the next
+// statusline refresh fires `⚠ restart plugins (Xm)` on a state the user just
+// fixed. Mitigation: `dhx-restart-plugins-marker.sh` writes
+// `~/.cache/dhx/plugins-rebaseline-${session_id}.marker` on the matching
+// UserPromptSubmit; `checkDrift()` consumes the marker on its next refresh,
+// rewrites ONLY the plugins fields on the loaded snapshot, persists, and
+// deletes the marker (single-shot).
+//
+// Probe reimplements the consumer locally — same convention as scanRecursive
+// and checkDriftLogic above — so wrapper drift in either direction flips an
+// assertion red.
+//
+// Invariants under test:
+//  a) Without marker, snapshot.plugins_mtime preserved → plugins trigger fires.
+//  b) With marker, snapshot.plugins fields overwritten → plugins trigger does
+//     NOT fire.
+//  c) Marker is deleted after read (single-shot).
+//  d) Other triggers preserved when marker is consumed: an agents-tree drift
+//     concurrent with plugin-cache drift sees ONLY the plugins suppressed.
+//  e) Garbage content in marker still consumed (file presence is the signal,
+//     not the content).
+//  f) Unrelated session marker (different session_id) does NOT suppress this
+//     session's plugins drift — keying is per-session.
+{
+  function consumeMarker(snapshot, current, markerFile) {
+    let consumed = false;
+    try {
+      fs.statSync(markerFile);
+      snapshot.plugins_mtime = current.plugins_mtime;
+      snapshot.plugins_count = current.plugins_count;
+      try { fs.unlinkSync(markerFile); } catch {}
+      consumed = true;
+    } catch { /* absent — no-op */ }
+    return { snapshot, consumed };
+  }
+
+  const session = 'sess-15';
+  const markerDir = path.join(TMP, 'marker-cache');
+  fs.mkdirSync(markerDir, { recursive: true });
+  const markerPath = path.join(markerDir, `plugins-rebaseline-${session}.marker`);
+
+  // Build a snapshot/current pair where plugins fields differ (drift exists)
+  // and agents/gsd/settings/version match (no other drift).
+  const baselinePlugins = { plugins_mtime: 1000, plugins_count: 5 };
+  const driftedPlugins  = { plugins_mtime: 2000, plugins_count: 8 };
+  const sharedRest = {
+    agents_mtime: 1, agents_count: 1,
+    gsd_mtime: 1, gsd_count: 1,
+    settings_hash: 'x', version: 'v',
+  };
+  const baseSnapForMarker = { ...sharedRest, ...baselinePlugins };
+  const currentForMarker  = { ...sharedRest, ...driftedPlugins };
+
+  // [15a] No marker → plugins trigger fires (sanity / negative control).
+  {
+    const snap = { ...baseSnapForMarker };
+    if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+    const { snapshot, consumed } = consumeMarker(snap, currentForMarker, markerPath);
+    const triggers = checkDriftLogic(currentForMarker, snapshot);
+    assert('[15a] without marker → plugins trigger fires (negative control)',
+      consumed === false && triggers.includes('plugins'));
+  }
+
+  // [15b] With marker → plugins trigger does NOT fire (marker rebaselines).
+  {
+    const snap = { ...baseSnapForMarker };
+    fs.writeFileSync(markerPath, String(Date.now()));
+    const { snapshot, consumed } = consumeMarker(snap, currentForMarker, markerPath);
+    const triggers = checkDriftLogic(currentForMarker, snapshot);
+    assert('[15b] with marker → plugins trigger suppressed (rebaseline applied)',
+      consumed === true && !triggers.includes('plugins'));
+    // [15c] Marker deleted after read (single-shot).
+    assert('[15c] marker file consumed (single-shot, deleted after read)',
+      !fs.existsSync(markerPath));
+  }
+
+  // [15d] Other triggers preserved: agents drift concurrent with plugins drift
+  // + marker → only plugins suppressed; agents still fires.
+  {
+    const snap = { ...baseSnapForMarker };
+    const currentMixed = {
+      ...currentForMarker,
+      agents_mtime: sharedRest.agents_mtime + 100,
+    };
+    fs.writeFileSync(markerPath, String(Date.now()));
+    const { snapshot } = consumeMarker(snap, currentMixed, markerPath);
+    const triggers = checkDriftLogic(currentMixed, snapshot);
+    assert('[15d] marker suppresses plugins only — agents drift still fires',
+      triggers.includes('agents') && !triggers.includes('plugins'));
+    if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+  }
+
+  // [15e] Garbage content in marker still consumed (presence is the signal).
+  {
+    const snap = { ...baseSnapForMarker };
+    fs.writeFileSync(markerPath, '\x00\xffnot-an-epoch\n\n');
+    const { snapshot, consumed } = consumeMarker(snap, currentForMarker, markerPath);
+    const triggers = checkDriftLogic(currentForMarker, snapshot);
+    assert('[15e] marker with garbage content still consumed (file presence is the signal)',
+      consumed === true && !triggers.includes('plugins'));
+    assert('[15e2] garbage marker still single-shot (deleted after read)',
+      !fs.existsSync(markerPath));
+  }
+
+  // [15f] Unrelated session marker does NOT suppress this session's drift —
+  // markerPath is built from this session's session_id; a different session's
+  // marker file resolves to a different basename and the statSync misses.
+  {
+    const snap = { ...baseSnapForMarker };
+    const otherMarker = path.join(markerDir, 'plugins-rebaseline-other-session.marker');
+    fs.writeFileSync(otherMarker, String(Date.now()));
+    if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath);
+    const { snapshot, consumed } = consumeMarker(snap, currentForMarker, markerPath);
+    const triggers = checkDriftLogic(currentForMarker, snapshot);
+    assert('[15f] unrelated session marker does NOT suppress this session (per-session keying)',
+      consumed === false && triggers.includes('plugins'));
+    assert('[15f2] unrelated session marker remains untouched (no cross-session GC)',
+      fs.existsSync(otherMarker));
+    fs.unlinkSync(otherMarker);
+  }
 }
 
 // --- Cleanup + summary ---
