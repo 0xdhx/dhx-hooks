@@ -602,7 +602,7 @@ ok('e2e: single line has compact model',
 ok('e2e: effort glyph renders with space after model',
   strip(outSingle).includes('o4.7+ ⣤'), true);
 
-// hooks repo (signals only, no GSD frontmatter) → two lines
+// hooks repo (GSD frontmatter present + signals on disk) → two lines
 const outHooks = renderWithFixtures({
   session_id: 'probe',
   model: { display_name: 'Opus 4.7 (1M context)' },
@@ -610,13 +610,13 @@ const outHooks = renderWithFixtures({
   context_window: { total_tokens: 1_000_000, remaining_percentage: 85 },
 });
 const [hLine1, hLine2] = outHooks.split('\n');
-// Repo signals moved to line 1 end as of 2026-04-27 (quick task 260427-u89).
-// hooks repo carries GSD frontmatter in .planning/STATE.md, so gsdLine2 is
-// non-empty → line 2 still emits. The shift: signals (R/T/B) now live on
-// line 1; line 2 carries GSD state only.
+// Repo signals (R/T/B) computation moved OUT of the renderer on 2026-04-28 —
+// the wrapper imports formatLine2Signals/getRepoSignals via require() and
+// appends after git. Renderer in isolation must NOT emit signals on either
+// line; line 2 carries GSD state only.
 ok('e2e: hooks repo produces two lines', outHooks.includes('\n'), true);
-ok('e2e: hooks repo line 1 has R prefix', strip(hLine1).match(/R\d+/) !== null, true);
-ok('e2e: hooks repo line 2 does NOT have R prefix', strip(hLine2 || '').match(/R\d+/) === null, true);
+ok('e2e: renderer line 1 does NOT emit signals (wrapper owns)', strip(hLine1).match(/R\d+/) === null, true);
+ok('e2e: renderer line 2 does NOT emit signals (wrapper owns)', strip(hLine2 || '').match(/R\d+/) === null, true);
 
 // Clean up e2e tmux stub after all renderWithFixtures calls complete.
 fs.rmSync(e2eStubDir, { recursive: true, force: true });

@@ -525,12 +525,13 @@ function runStatusline() {
       }
     }
 
-    // GSD state + repo signals are assembled for line 2 (below). The legacy
-    // single-line formatGsdState() is retained for the module export and
-    // unit tests, but is no longer rendered inline — its information now
-    // lives on line 2 next to repo signals.
+    // GSD state is assembled for line 2 (below). The legacy single-line
+    // formatGsdState() is retained for the module export and unit tests but
+    // is no longer rendered inline. Repo signals (R/T/B) moved out of the
+    // renderer entirely on 2026-04-28: the wrapper imports formatLine2Signals
+    // + getRepoSignals via require() and appends signals after git so the L1
+    // tail reads cache → git → signals (live signals at the right edge).
     const gsdState = readGsdState(dir) || {};
-    const repoSignals = getRepoSignals(dir);
 
     // GSD update available?
     // Check shared cache first (#1421), fall back to runtime-specific cache for
@@ -564,7 +565,11 @@ function runStatusline() {
       } catch (e) {}
     }
 
-    // --- Line 1: model + CCS + [task |] dir + ctx + signals ---
+    // --- Line 1: model + CCS + [task |] dir + ctx ---
+    // The wrapper appends cache, git, and repo signals (R/T/B) after this
+    // base — see statusline-wrapper.js for the L1 tail order. Renderer
+    // emits ONLY model/ctx so the wrapper owns the live-signal cluster
+    // (cache/git/signals) at the right edge.
     const dirname = path.basename(dir);
     // CCS profile letter — dim yellow, slight accent so active profile is
     // visible without overpowering the dim model name it sits next to.
@@ -577,21 +582,13 @@ function runStatusline() {
     // effortLevel (e.g. CCS instance swap before first /effort).
     const effortSeg = effort ? ` ${effort}` : '';
 
-    // Repo signals (R/T/B) live at the END of line 1 as of 2026-04-27 (quick
-    // task 260427-u89): every "live" signal (model → ctx → signals) sits on
-    // the row the eye scans first; line 2 became the budget+context row
-    // (ccburn + GSD state, composed by the wrapper).
-    const signalsLine2 = formatLine2Signals(repoSignals);
-    const line1Base = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
-    // Filter+join idiom gates the trailing dim pipe — empty signals → no
-    // dangling separator at line end.
-    const line1 = [line1Base, signalsLine2].filter(Boolean).join(' \x1b[2m│\x1b[0m ');
+    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
     // --- Line 2: GSD state (conditional) ---
-    // Gate: any of milestone/phase/status present. Repo signals moved to
-    // line 1 (above); ccburn prepends to this line in statusline-wrapper.js.
-    // Filter+join preserved so an empty gsdLine2 still produces empty line2
-    // (the wrapper's burnOutput-prepend then decides whether line 2 emits).
+    // Gate: any of milestone/phase/status present. ccburn prepends to this
+    // line in statusline-wrapper.js. Filter+join preserved so an empty
+    // gsdLine2 still produces empty line2 (the wrapper's burnOutput-prepend
+    // then decides whether line 2 emits).
     const gsdLine2 = formatLine2Gsd(gsdState);
     const line2Pieces = [gsdLine2].filter(Boolean);
     const line2 = line2Pieces.length ? line2Pieces.join(' \x1b[2m│\x1b[0m ') : '';

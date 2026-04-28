@@ -15,6 +15,12 @@ const os = require('os');
 // Resolve renderer via ~/.claude/hooks/ (not __dirname, which follows symlinks)
 const STATUSLINE_SCRIPT = path.join(os.homedir(), '.claude', 'hooks', 'dhx-statusline.js');
 
+// Repo-signals (R/T/B) computation moved out of the renderer on 2026-04-28 so
+// the wrapper can place signals AFTER cache/git on line 1 (live-signal cluster
+// reads cache → git → signals left-to-right). require()ing the renderer module
+// is safe — its top-level runStatusline() is gated by `require.main === module`.
+const { getRepoSignals, formatLine2Signals } = require(STATUSLINE_SCRIPT);
+
 // Gate top-level stdin wiring on direct invocation so probe-harness
 // require()s don't hang waiting for stdin to close.
 if (require.main === module) runMain();
@@ -78,14 +84,19 @@ process.stdin.on('end', () => {
     // eye line — line 2 when we have one, line 1 otherwise.
     const [rendererLine1, rendererLine2 = ''] = rendererOutput.trimEnd().split('\n');
 
-    // Line 1 append order changed 2026-04-27 (quick task 260427-u89):
-    //   - cacheAge moves BEFORE gitInfo so the live signal stack reads
-    //     model → ctx → signals (renderer) → cache → git left-to-right.
-    //   - ccburn (burnOutput) moves OFF line 1 entirely; it prepends line 2
-    //     below to group with the other budget/context signals.
+    // Line 1 append order (locked 2026-04-28):
+    //   model → ctx → cache → git → signals
+    // - cacheAge BEFORE gitInfo so static budget signal precedes live VCS state.
+    // - signals (R/T/B) come from getRepoSignals + formatLine2Signals (imported
+    //   from the renderer module so the helpers stay single-source-of-truth).
+    //   Placed AFTER git so the live-signal cluster reads left→right by recency.
+    // - ccburn (burnOutput) moves OFF line 1 entirely; it prepends line 2
+    //   below to group with the other budget/context signals.
     let line1 = rendererLine1;
     if (cacheAge) line1 += ` \x1b[2m│\x1b[0m ${cacheAge}`;
     if (gitInfo)  line1 += ` \x1b[2m│\x1b[0m ${gitInfo}`;
+    const signals = formatLine2Signals(getRepoSignals(cwd));
+    if (signals)  line1 += ` \x1b[2m│\x1b[0m ${signals}`;
 
     // Front-of-stack (orange 208, left of Claude/cwd): drift + critical health
     // (session-wiring degraded: plugin_keys, settings_chain). Separate segments
