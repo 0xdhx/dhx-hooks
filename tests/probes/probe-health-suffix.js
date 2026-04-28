@@ -17,6 +17,13 @@ const os = require('os');
 const path = require('path');
 
 const WRAPPER = path.resolve(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
+// Real renderer module — symlinked into the spawned wrapper's $HOME so its
+// module-load `require(STATUSLINE_SCRIPT)` resolves. Required since 2026-04-28
+// (commit 30893e3, "move signals to L1 tail") when getRepoSignals /
+// formatLine2Signals moved from the renderer's runStatusline() body into
+// wrapper-level require'd exports. The wrapper also spawns this same script
+// for live rendering — symlinking covers both code paths.
+const REAL_RENDERER = path.resolve(__dirname, '..', '..', 'dhx', 'dhx-statusline.js');
 const SUFFIX_REGEX = /— \/dhx:sym repair/g;
 
 function runWith(healthJson) {
@@ -24,6 +31,8 @@ function runWith(healthJson) {
   try {
     const cacheDir = path.join(tmp, '.cache', 'dhx');
     fs.mkdirSync(cacheDir, { recursive: true });
+    fs.mkdirSync(path.join(tmp, '.claude', 'hooks'), { recursive: true });
+    fs.symlinkSync(REAL_RENDERER, path.join(tmp, '.claude', 'hooks', 'dhx-statusline.js'));
     if (healthJson !== null) {
       fs.writeFileSync(path.join(cacheDir, 'health.json'), healthJson);
     }
