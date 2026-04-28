@@ -163,6 +163,36 @@ reset_cache
 run_hook "{\"transcript_path\":\"$TMP/transcript.jsonl\",\"session_id\":\"sess-bonus\"}"
 assert_marker_present "[bonus] command-name in mixed transcript fires" "sess-bonus"
 
+# [12] SIGPIPE+pipefail regression: when tail must write more after grep -q
+# matches early, the broken `tail | grep -q` form under `set -o pipefail`
+# loses the marker. grep -q exits on first match → tail's next write SIGPIPEs
+# (exit 141) → pipefail propagates → if-condition evaluates false.
+# Live evidence: 2026-04-28 trace from session fe8a6b58 captured tail50_match=2
+# but NO_MATCH from the if-branch in the same script invocation. Fix uses
+# process substitution so tail runs in a subshell whose exit doesn't propagate.
+#
+# Determinism: a single post-match line larger than the Linux pipe buffer
+# (64KB) guarantees SIGPIPE. We place the pattern at line 151 (first in the
+# tail-50 window) followed by one 256KB line — tail's write of that line
+# always blocks/SIGPIPEs once grep -q has closed its read end.
+reset_cache
+{
+  # 150 small prefix lines (outside tail-50 window — content irrelevant)
+  for i in $(seq 1 150); do
+    printf '{"type":"system","text":"prefix-%d"}\n' "$i"
+  done
+  # pattern at line 151 = first line of tail -n 50's output
+  echo '{"type":"user","message":{"role":"user","content":"<command-name>/reload-plugins</command-name>"}}'
+  # one giant line (256KB > 64KB pipe buffer) — guarantees SIGPIPE on broken impl
+  printf '{"type":"assistant","text":"giant-line %s"}\n' "$(printf 'x%.0s' {1..262144})"
+  # 48 small trailing lines to fill out tail-50
+  for i in $(seq 1 48); do
+    printf '{"type":"assistant","text":"trailing-%d"}\n' "$i"
+  done
+} > "$TMP/transcript.jsonl"
+run_hook "{\"transcript_path\":\"$TMP/transcript.jsonl\",\"session_id\":\"sess-sigpipe\"}"
+assert_marker_present "[12] post-match pipe-buffer overflow does not lose marker (SIGPIPE+pipefail regression)" "sess-sigpipe"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

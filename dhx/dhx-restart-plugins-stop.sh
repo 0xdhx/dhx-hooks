@@ -22,6 +22,14 @@
 #
 # Silent on happy path; exits 0 unconditionally so a parse / write failure
 # never blocks the user's turn.
+#
+# IMPORTANT: the trigger detection must NOT use `tail | grep -q` directly
+# under `set -o pipefail`. `grep -q` exits on first match → `tail` is killed
+# with SIGPIPE → pipefail propagates non-zero → `if` evaluates false even
+# when matches exist. Process substitution sidesteps the pipefail-watched
+# pipeline (tail runs in a subshell whose exit code doesn't propagate).
+# Probe scenario [12] regression-tests this for transcripts large enough
+# to fill the pipe buffer before grep reaches a match.
 set -euo pipefail
 
 INPUT=$(cat)
@@ -45,8 +53,8 @@ esac
 # `<command-name>/X</command-name>` inside the user-message content (see
 # HP-027 for the verification probe). Anchor on the exact tag form so
 # unrelated mentions in tool results / prose don't false-match.
-if tail -n 50 "$TRANSCRIPT" 2>/dev/null \
-   | grep -q '<command-name>/\(reload-plugins\|restart-plugins\)</command-name>'; then
+if grep -q '<command-name>/\(reload-plugins\|restart-plugins\)</command-name>' \
+       <(tail -n 50 "$TRANSCRIPT" 2>/dev/null); then
   CACHE_DIR="${HOME}/.cache/dhx"
   mkdir -p "$CACHE_DIR" 2>/dev/null || exit 0
   MARKER="${CACHE_DIR}/plugins-rebaseline-${SESSION_ID}.marker"
