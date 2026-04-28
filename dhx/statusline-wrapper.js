@@ -71,16 +71,21 @@ process.stdin.on('end', () => {
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, healthR, driftR]
       .filter(r => r.error).length;
     // The renderer may emit one or two lines. Line 1 carries identity +
-    // runtime telemetry (model, ctx bar, dir); line 2, when present,
-    // carries GSD state + repo signals. Git/cache/ccburn append to line 1;
-    // advisory health lands on whichever line is last so it never scrolls
-    // out of the user's eye line — line 2 when we have one, line 1 otherwise.
+    // runtime telemetry (model, ctx bar, dir, repo signals); line 2, when
+    // present, carries GSD state. Cache/git append to line 1; ccburn now
+    // prepends line 2 (2026-04-27 quick task 260427-u89). Advisory health
+    // lands on whichever line is last so it never scrolls out of the user's
+    // eye line — line 2 when we have one, line 1 otherwise.
     const [rendererLine1, rendererLine2 = ''] = rendererOutput.trimEnd().split('\n');
 
+    // Line 1 append order changed 2026-04-27 (quick task 260427-u89):
+    //   - cacheAge moves BEFORE gitInfo so the live signal stack reads
+    //     model → ctx → signals (renderer) → cache → git left-to-right.
+    //   - ccburn (burnOutput) moves OFF line 1 entirely; it prepends line 2
+    //     below to group with the other budget/context signals.
     let line1 = rendererLine1;
-    if (gitInfo)   line1 += ` \x1b[2m│\x1b[0m ${gitInfo}`;
-    if (cacheAge)  line1 += ` \x1b[2m│\x1b[0m ${cacheAge}`;
-    if (burnOutput) line1 += ` \x1b[2m│\x1b[0m ${burnOutput}`;
+    if (cacheAge) line1 += ` \x1b[2m│\x1b[0m ${cacheAge}`;
+    if (gitInfo)  line1 += ` \x1b[2m│\x1b[0m ${gitInfo}`;
 
     // Front-of-stack (orange 208, left of Claude/cwd): drift + critical health
     // (session-wiring degraded: plugin_keys, settings_chain). Separate segments
@@ -101,9 +106,20 @@ process.stdin.on('end', () => {
     const metaGlyph = computeMetaGlyph(driftWarning, health.front, health.tail, sigilCount);
     line1 = metaGlyph + ' ' + line1;
 
+    // ccburn (2026-04-27 quick task 260427-u89): moves to line 2 head — the
+    // budget/context row groups with GSD state. Gate semantics preserved: line
+    // 2 emits when ANY of {burnOutput, rendererLine2, health.tail} is present.
+    // The filter+join idiom keeps an empty burnOutput from leaving a stray
+    // dim pipe in front of rendererLine2.
+    const line2Pieces = [];
+    if (burnOutput)    line2Pieces.push(burnOutput);
+    if (rendererLine2) line2Pieces.push(rendererLine2);
+    let line2 = line2Pieces.join(' \x1b[2m│\x1b[0m ');
+
     // Advisory health (fork/symlink state) — red tail, session still works.
-    // Prefer line 2 so it sits next to GSD/signals rather than crowding line 1.
-    let line2 = rendererLine2;
+    // Prefer line 2 so it sits next to ccburn/GSD rather than crowding line 1.
+    // Tail-health falls back to line 1 only when line 2 would otherwise be
+    // empty (no ccburn, no GSD content).
     if (health.tail) {
       if (line2) line2 += ` \x1b[2m│\x1b[0m ${health.tail}`;
       else       line1 += ` \x1b[2m│\x1b[0m ${health.tail}`;

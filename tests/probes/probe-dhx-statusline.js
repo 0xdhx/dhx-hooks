@@ -513,14 +513,23 @@ const fullState = {
 };
 ok('formatLine2Gsd: full state',
   strip(formatLine2Gsd(fullState)),
-  'v1.4 Research Orchestrat… (7/10) · exec · 24.1 Hub Eviction Redesi…');
+  'v1.4 (7/10) · exec · 24.1 Hub Eviction Redesi…');
 
 ok('formatLine2Gsd: empty state → empty', formatLine2Gsd({}), '');
 ok('formatLine2Gsd: null state → empty', formatLine2Gsd(null), '');
 
 ok('formatLine2Gsd: partial (no status/phase)',
   strip(formatLine2Gsd({ milestone: 'v1.0', milestoneName: 'Init' })),
-  'v1.0 Init');
+  'v1.0');
+
+// Milestone-name drop end-to-end gate (2026-04-27 quick task 260427-u89): a
+// state carrying ONLY a milestone_name must produce empty output — the name
+// is no longer rendered. The `hasContent` gate keeps milestoneName as a
+// content trigger so legacy state shapes don't render an empty separator
+// row, but the milestone-name piece itself never lands in `parts`.
+ok('formatLine2Gsd: name-only state → empty (name no longer rendered)',
+  strip(formatLine2Gsd({ milestoneName: 'Some Long Project Name' })),
+  '');
 
 ok('formatLine2Gsd: completion green at 100%',
   formatLine2Gsd({ milestone: 'v2.0', completedPhases: 5, totalPhases: 5 }).includes('\x1b[32m('),
@@ -601,8 +610,13 @@ const outHooks = renderWithFixtures({
   context_window: { total_tokens: 1_000_000, remaining_percentage: 85 },
 });
 const [hLine1, hLine2] = outHooks.split('\n');
+// Repo signals moved to line 1 end as of 2026-04-27 (quick task 260427-u89).
+// hooks repo carries GSD frontmatter in .planning/STATE.md, so gsdLine2 is
+// non-empty → line 2 still emits. The shift: signals (R/T/B) now live on
+// line 1; line 2 carries GSD state only.
 ok('e2e: hooks repo produces two lines', outHooks.includes('\n'), true);
-ok('e2e: hooks repo line 2 has R prefix', strip(hLine2 || '').match(/R\d+/) !== null, true);
+ok('e2e: hooks repo line 1 has R prefix', strip(hLine1).match(/R\d+/) !== null, true);
+ok('e2e: hooks repo line 2 does NOT have R prefix', strip(hLine2 || '').match(/R\d+/) === null, true);
 
 // Clean up e2e tmux stub after all renderWithFixtures calls complete.
 fs.rmSync(e2eStubDir, { recursive: true, force: true });
