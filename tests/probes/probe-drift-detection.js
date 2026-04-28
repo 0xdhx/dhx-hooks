@@ -21,6 +21,8 @@
 //      silently (unified guard with the older settings_hash migration)
 //  11. scanRecursive().count accuracy after add N / remove M
 //  12. Clock-skew: future mtime still caught by `>` even with count stable
+//  13. .orphaned_at basename filter (CC orphan-sweep noise)
+//  14. temp_git_* path-segment filter (CC install-cycle clone noise)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -47,13 +49,17 @@ const { hashWarnSettings } = require('../../dhx/statusline-wrapper.js');
 // this scanner and the wrapper's shows up as a red assertion on the shared
 // fixtures.
 
-function scanRecursive(dir, ignoreBasenames) {
+function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   let maxMtime = 0;
   let count = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
       if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
+      if (ignorePathPattern) {
+        const full = entry.path ? path.join(entry.path, entry.name) : entry.name;
+        if (ignorePathPattern.test(full)) continue;
+      }
       count++;
       if (entry.isDirectory && entry.isDirectory()) continue;
       try {
@@ -67,6 +73,7 @@ function scanRecursive(dir, ignoreBasenames) {
 }
 
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
+const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)temp_git_\d+_[a-z0-9]+(\/|$)/;
 
 function scanShallow(dir) {
   // Legacy shallow scan — retained for scenario [5] regression-sentinel only.
@@ -549,6 +556,110 @@ const baseSnap = snap();
   const filtered = scanRecursive(filterTree, PLUGIN_CACHE_IGNORE);
   assert('[13f] unfiltered scan sees .orphaned_at (regression sentinel: filter call-site must stay wired)',
     unfiltered.count > filtered.count);
+}
+
+// --- 14. Plugin cache: temp_git_* path-segment filter suppresses CC install-cycle noise ---
+//
+// CC clones marketplace sources into `temp_git_<epoch_ms>_<token>/` subtrees
+// under `plugins/cache/` while resolving plugin installs — typically when a
+// plugin is declared in `enabledPlugins` but missing from `installed_plugins.json`,
+// triggering retry-on-session-start. Clones land mid-snapshot, no GC removes
+// them, and `~/.ccs/shared/plugins/cache` is symlinked across all CCS instances
+// so a single instance's clone trips the drift detector in every other live
+// session — same architectural class as the 2026-04-23 `.orphaned_at` filter.
+//
+// Invariants under test:
+//  a) Files inside a `temp_git_*` subtree do NOT bump mtime.
+//  b) Files inside a `temp_git_*` subtree do NOT bump count.
+//  c) The `temp_git_*` directory entry itself is filtered (not just descendants).
+//  d) Real plugin file writes are still caught when a `temp_git_*` clone races
+//     in the same scan window.
+//  e) Regression sentinel: unfiltered scan (no PATH_IGNORE) WOULD see the
+//     temp_git_* contents — protects the call-site wiring from a future
+//     refactor silently dropping the third argument to scanRecursive.
+//  f) Pattern is anchored on `_<digits>_<token>` shape — a non-CC dir named
+//     literally `temp_git/` (no epoch suffix) does NOT get filtered.
+{
+  const tgTree = path.join(TMP, 'tempgit-tree');
+  fs.mkdirSync(tgTree);
+  const real = path.join(tgTree, 'marketplace/plugin/1.0/hooks.json');
+  fs.mkdirSync(path.dirname(real), { recursive: true });
+  fs.writeFileSync(real, 'x');
+  const t0 = BASE_MS;
+  restampTree(tgTree, t0);
+
+  const baseline = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+
+  // [14a/b] Add a temp_git_* clone with several files at future mtimes.
+  const cloneDir = path.join(tgTree, 'temp_git_1777339524887_b57n2d');
+  fs.mkdirSync(cloneDir);
+  const clonePaths = [
+    path.join(cloneDir, '.claude-plugin/marketplace.json'),
+    path.join(cloneDir, 'plugins/superpowers/hooks/hooks.json'),
+    path.join(cloneDir, 'README.md'),
+  ];
+  const cloneFutureMs = t0 + 60_000;
+  for (const p of clonePaths) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, 'cloned');
+    fs.utimesSync(p, cloneFutureMs / 1000, cloneFutureMs / 1000);
+  }
+  fs.utimesSync(cloneDir, cloneFutureMs / 1000, cloneFutureMs / 1000);
+
+  const afterClone = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const triggers14ab = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: afterClone.maxMtime, plugins_count: afterClone.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[14a] temp_git_* descendants do NOT bump mtime (path-prefix filter active)',
+    afterClone.maxMtime === baseline.maxMtime);
+  assert('[14b] temp_git_* descendants do NOT bump count (path-prefix filter active)',
+    afterClone.count === baseline.count);
+  assert('[14c] temp_git_* dir entry itself is filtered (no count contribution from the dir)',
+    afterClone.count === baseline.count);  // count would be baseline+1 if the dir entry leaked through
+  assert('[14] temp_git_* clone produces zero plugins trigger',
+    !triggers14ab.includes('plugins'));
+
+  // [14d] Real plugin file write while temp_git_* clone exists — trigger fires.
+  const realNew = path.join(tgTree, 'marketplace/plugin/1.0/new-hook.json');
+  fs.writeFileSync(realNew, 'x');
+  const realFutureMs = t0 + 90_000;
+  fs.utimesSync(realNew, realFutureMs / 1000, realFutureMs / 1000);
+  const withRealWrite = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const triggers14d = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: withRealWrite.maxMtime, plugins_count: withRealWrite.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[14d] real plugin file write still caught despite temp_git_* sibling',
+    triggers14d.length === 1 && triggers14d[0] === 'plugins');
+
+  // [14e] Regression sentinel: unfiltered scan WOULD see temp_git_* contents.
+  // Protects against a future refactor silently dropping the PATH_IGNORE arg
+  // from collectSnapshot's plugins call site. Stamp one temp_git file ABOVE
+  // the real-write mtime so the mtime sentinel asserts visibly — without this
+  // bump, both unfiltered and filtered max would tie at realFutureMs and the
+  // mtime sentinel would silently pass on equality rather than on the path
+  // filter actually working.
+  const sentinelMs = realFutureMs + 30_000;
+  fs.utimesSync(clonePaths[0], sentinelMs / 1000, sentinelMs / 1000);
+  const unfiltered = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE);  // no PATH_IGNORE
+  const filtered = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  assert('[14e] unfiltered scan sees temp_git_* contents (regression sentinel: PATH_IGNORE call-site must stay wired)',
+    unfiltered.count > filtered.count);
+  assert('[14e2] unfiltered scan picks up temp_git_* mtime > realFutureMs (sentinel proves PATH_IGNORE is what suppresses it)',
+    unfiltered.maxMtime > filtered.maxMtime && unfiltered.maxMtime === sentinelMs);
+
+  // [14f] Anchor check: a directory literally named `temp_git/` (no _<epoch>_<token>
+  // suffix) is NOT filtered. Prevents the regex from over-matching legitimate
+  // user-created paths that happen to share a prefix.
+  const lookalike = path.join(tgTree, 'temp_git/inner.md');
+  fs.mkdirSync(path.dirname(lookalike), { recursive: true });
+  fs.writeFileSync(lookalike, 'y');
+  const lookalikeFutureMs = t0 + 120_000;
+  fs.utimesSync(lookalike, lookalikeFutureMs / 1000, lookalikeFutureMs / 1000);
+  const afterLookalike = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  assert('[14f] non-CC `temp_git/` (no epoch suffix) is NOT filtered — anchor on _<digits>_<token>',
+    afterLookalike.maxMtime > withRealWrite.maxMtime);
 }
 
 // --- Cleanup + summary ---

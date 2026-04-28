@@ -672,13 +672,24 @@ function hashWarnSettings(settingsReal) {
 // every running session's drift signal. Filtering affects both mtime and count,
 // so an orphan sweep is invisible to checkDrift while real plugin writes are still
 // caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
-function scanRecursive(dir, ignoreBasenames) {
+function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   let maxMtime = 0;
   let count = 0;
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
       if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
+      // Path-prefix filter: skip entries whose ancestry includes a CC bookkeeping
+      // segment (e.g. `temp_git_<digits>_<token>/` install-cycle extraction dirs).
+      // Basename-only matching is insufficient because `readdirSync({recursive:true})`
+      // returns leaf files by their OWN basename — `temp_git_*` only appears as
+      // an intermediate path component, never as an entry.name for the leaves
+      // inside it. We test the full constructed path so both the dir entry
+      // itself AND every descendant are dropped from mtime + count.
+      if (ignorePathPattern) {
+        const full = entry.path ? path.join(entry.path, entry.name) : entry.name;
+        if (ignorePathPattern.test(full)) continue;
+      }
       count++;
       // Skip directory mtimes: POSIX bumps a dir's mtime on any direct-child
       // add/remove, which leaks through the ignoreBasenames filter (creating
@@ -701,6 +712,16 @@ function scanRecursive(dir, ignoreBasenames) {
 // Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
 
+// Path-segment filter for CC's install-cycle extraction directories. CC clones
+// marketplace sources into `temp_git_<epoch_ms>_<token>/` siblings under
+// `plugins/cache/` while resolving plugin installs (e.g. retry attempts for a
+// declared-but-uninstalled plugin), then the dir lingers post-extraction with
+// no GC. A clone races snapshot capture (snapshot at T, clone finishes at T+~500ms),
+// so every refresh after sees plugins_mtime advance and fires `triggers.push('plugins')`
+// → spurious `⚠ restart plugins`. Same architectural class as `.orphaned_at`
+// (CC-internal bookkeeping, drift-irrelevant). See decisions.md 2026-04-27 row.
+const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)temp_git_\d+_[a-z0-9]+(\/|$)/;
+
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
 // re-applied by the fork-sync command. See `isGsdDriftFromForkSync()` below
@@ -720,7 +741,11 @@ function collectSnapshot(data) {
 
   const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
   const gsd = scanRecursive(GSD_LIVE_ROOT);
-  const plugins = scanRecursive(path.join(configDir, 'plugins', 'cache'), PLUGIN_CACHE_IGNORE);
+  const plugins = scanRecursive(
+    path.join(configDir, 'plugins', 'cache'),
+    PLUGIN_CACHE_IGNORE,
+    PLUGIN_CACHE_PATH_IGNORE,
+  );
 
   const snapshot = {
     agents_mtime: agents.maxMtime,
