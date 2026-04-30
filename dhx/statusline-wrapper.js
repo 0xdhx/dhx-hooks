@@ -30,6 +30,16 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
+  // PROBE-01 capture branch (D-16) — file-gated; no-op when ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe absent.
+  const probeDir = (process.env.XDG_RUNTIME_DIR || '/tmp') + '/dhx-statusline-stdin-probe';
+  const flagPath = probeDir + '/flag';
+  if (fs.existsSync(flagPath)) {
+    try {
+      const captureFile = probeDir + '/capture-' + (process.env.DHX_PROBE_RUN_ID || 'latest') + '.json';
+      fs.writeFileSync(captureFile, input);
+    } catch { /* probe-only */ }
+  }
+
   let data = {};
   let cwd;
   try {
