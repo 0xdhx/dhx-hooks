@@ -36,8 +36,32 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 FAIL=0
 PASS=0
 TIMEOUT=0
+SKIPPED=0
+
+# Supersession-watchdog probes (D-12) are operator-invoked manually with
+# specific environment requirements (e.g. ANTHROPIC_API_KEY for --bare cells).
+# They emit Convention A exit codes (0/1/2) that don't map to suite pass/fail
+# semantics. Skip them here; they're run on-demand per phase 03 plan 03.
+SUPERSESSION_WATCHDOGS=(
+  "probe-installed-plugins-no-natural-heal.sh"
+)
+
+is_supersession_watchdog() {
+  local base="$1"
+  for s in "${SUPERSESSION_WATCHDOGS[@]}"; do
+    [ "$base" = "$s" ] && return 0
+  done
+  return 1
+}
+
 for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   [ -e "$p" ] || continue
+  if is_supersession_watchdog "$(basename "$p")"; then
+    echo "[SKIPPED] $(basename "$p") — supersession-watchdog probe, run manually with required env"
+    SKIPPED=$((SKIPPED+1))
+    echo "---"
+    continue
+  fi
   case "$p" in
     *.js) timeout 30 node "$p" ;;
     *.sh) timeout 30 bash "$p" ;;
@@ -54,5 +78,5 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   fi
   echo "---"
 done
-echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out)"
+echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped)"
 [ "$FAIL" -eq 0 ]
