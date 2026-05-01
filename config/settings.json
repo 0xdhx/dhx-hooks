@@ -145,7 +145,6 @@
       "Bash(rm -rf ~)",
       "Bash(git push --force *)",
       "Bash(git push -f *)",
-      "Bash(git reset --hard*)",
       "Bash(mkfs *)",
       "Bash(dd if=*)",
       "Bash(chmod -R 777 *)"
@@ -276,7 +275,10 @@
       }
     }
   },
-  "effortLevel": "xhigh",
+  "effortLevel": "medium",
   "awaySummaryEnabled": true,
-  "skipDangerousModePermissionPrompt": true
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "remoteControlAtStartup": true,
+  "agentPushNotifEnabled": false
 }
