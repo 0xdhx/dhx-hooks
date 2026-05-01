@@ -8,6 +8,7 @@
 # Closes the D-29 forward-reference: after Task 3 lands, row count in
 # SAFE_FOR_LIVE.md must equal probe file count.
 # Run: bash tests/probes/probe-safe-for-live-tags.sh
+# SAFE_FOR_LIVE: yes  (read-only grep over repo files; no live mutation)
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
