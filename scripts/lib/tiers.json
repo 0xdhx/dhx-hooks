@@ -1,0 +1,4 @@
+{
+  "critical": ["settings_chain", "plugin_keys", "plugin_registry", "hooks_wiring"],
+  "advisory": ["worktree_patches", "read_guard", "missing_symlinks"]
+}
