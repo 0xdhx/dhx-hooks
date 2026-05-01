@@ -70,6 +70,17 @@ assert_eq "dhx-health-check.sh jq predicate matches canonical" "$health_pred" "$
 probe_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$PLUGIN_KEYS_PROBE" | head -1)
 assert_eq "probe-plugin-keys.sh jq predicate matches canonical" "$probe_pred" "$canonical_pred"
 
+# 4th site (D-15 extension): scripts/install-plugin.sh
+# Resolved relative to this probe so the assertion is correct in both the
+# main checkout AND in worktrees under .claude/worktrees/ (where the live
+# `/home/dhx/repos/hooks/scripts/install-plugin.sh` may not yet exist
+# pre-merge). The other 3 sites use absolute live paths because BASHRC
+# lives in $HOME (not in-repo) and the existing convention predates
+# parallel-execution worktree usage.
+INSTALL_PLUGIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/install-plugin.sh"
+install_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$INSTALL_PLUGIN" | head -1)
+assert_eq "install-plugin.sh jq predicate matches canonical" "$install_pred" "$canonical_pred"
+
 # --- 3. Wrapper uses `command claude` for heal subcommands so it doesn't recurse ---
 # Without `command`, the heal calls would re-enter the wrapper function and loop.
 assert "heal uses 'command claude' (no recursion)" \
