@@ -138,16 +138,17 @@
     ],
     "deny": [
       "Read(./.env*)",
-      "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
+      "Read(~/.ssh/**)",
       "Bash(*|*taskkill*)",
-      "Bash(rm -rf /)",
-      "Bash(rm -rf ~)",
+      "Bash(chmod -R 777 *)",
+      "Bash(dd if=*)",
       "Bash(git push --force *)",
       "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
       "Bash(mkfs *)",
-      "Bash(dd if=*)",
-      "Bash(chmod -R 777 *)"
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)"
     ],
     "defaultMode": "bypassPermissions"
   },
