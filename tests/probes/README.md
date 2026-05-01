@@ -23,6 +23,43 @@ Worked example: `probe-sym-health-override.js` — tests the interaction of `rea
 
 If you find yourself writing a probe that exercises two or more components' outputs together — write it as an integration probe, and flag future plans to consider the latency/composition shape of adjacent work.
 
+## Supersession-watchdog probes
+
+A probe is a **supersession-watchdog probe** when it asserts the negative premise that an upstream-CC behavior has NOT changed — i.e., the probe answers "is our scoped work still warranted, or has upstream shipped a fix that supersedes it?" Exit 0 = premise holds (work warranted). Exit non-zero = supersession found, scope shrinks.
+
+**Distinct from** regression probes (which assert "still works" — green is good) and integration probes (which exercise composition). Supersession-watchdog probes assert "still needed" — exit 0 is the GOOD news that work warranted; exit non-zero is the GOOD news that work can be cancelled.
+
+**Lifecycle:**
+- **Authored** alongside a v1.x feature scope where the scope's premise rests on a current-CC behavior that may shift upstream.
+- **Re-run** on every CC version bump (manual or via future `health.sh` opt-in mode) until upstream supersession actually occurs.
+- **Retired** by a follow-up `docs/decisions.md` row when supersession is observed (move to `tests/probes/.inactive/` per HP-probe convention).
+
+**Cross-version cadence (v1.3+):** outcome JSON files land at `tests/probes/.results/v{milestone}-phase-{N}/` (e.g., `v1.2-phase-0/`). The outcome JSON `cc_version` field — populated live from `claude --version` at probe-run time, NOT a literal — is the cross-version comparison key. v1.3+ ops re-run probes and append to `tests/probes/.results/v1.3-phase-{N}/` without code edits.
+
+**Header tag convention (Phase 3 onward):** supersession-watchdog probes carry two top-of-file tags as supplementary fields in the existing comment block:
+- `# SAFE_FOR_LIVE: yes|no` — `yes` if the probe is read-only against live state (e.g., file-gated wrapper edit); `no` if it requires sandbox isolation (e.g., subprocess invocation against `CLAUDE_CONFIG_DIR=$mktemp_d`).
+- `# RUNTIME: ~Ns` — order-of-magnitude wallclock budget; informs operator scheduling.
+
+These tags are a **supersession-watchdog convention only** — regression and integration probes do NOT need them retroactively.
+
+**"Arm the probe" gesture (D-16/D-17 convention; live-capture-style probes):**
+
+When a supersession-watchdog probe needs to capture data from a long-running CC process (e.g., the statusline-wrapper), an **env-var-gated handshake is impossible** — environment variables do not propagate from a probe-shell parent to an already-running CC subprocess (verified across 4 CC mechanisms; statusline `env` field, hooks reference, `CLAUDE_ENV_FILE`, `CLAUDECODE`). The canonical alternative is a **fixed-path file-presence convention**:
+
+- The probe (and its wrapper edit, if any) reads from a fixed path under `${XDG_RUNTIME_DIR:-/tmp}/<probe-slug>/`.
+- The wrapper checks `fs.existsSync(<dir>/flag)` on every invocation; the gate is no-op when the directory is absent.
+- The probe arms live-capture mode by `mkdir -p` of the fixed dir, writes the run_id into the flag file content (D-32 — env vars don't propagate sideways to wrapper subprocesses), waits for the wrapper to write a run-id-stamped capture file, then trap-cleans.
+- The probe ALSO uses directory presence as a **mode discriminator**: dir present → live-capture; dir absent → fixtures-only-mode + exit 0 (the `bash scripts/run-probes.sh` integration path).
+
+`probe-effort-level-stdin-absent.sh` is the reference implementation of this convention.
+
+**Current supersession-watchdog probes:**
+
+| Probe | Backs | Run |
+|-------|-------|-----|
+| `probe-effort-level-stdin-absent.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-01 | `mkdir -p ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe && bash tests/probes/probe-effort-level-stdin-absent.sh` |
+| `probe-installed-plugins-no-natural-heal.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-02 + HP-025 | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-no-natural-heal.sh` |
+
 ## Current probes
 
 | Probe | Backs | Run |

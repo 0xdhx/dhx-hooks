@@ -249,6 +249,43 @@ if [ "$CROSS_REPO" != "0" ]; then
   exit 1
 fi
 
+# Probe-results PII leak check (D-09 defense-in-depth):
+# Outcome JSON files are sanitized at source by the probe scripts (boolean fields
+# for path-shaped concerns), but a regression in any probe could write paths.
+# This catches such regressions before they reach the public mirror.
+RESULTS_OUT=$(grep -rEnI "(/home/|/Users/|$(hostname -s))" tests/probes/.results/ 2>/dev/null)
+RESULTS_LEAK=$([ -z "$RESULTS_OUT" ] && echo 0 || echo "$RESULTS_OUT" | wc -l)
+if [ "$RESULTS_LEAK" != "0" ]; then
+  echo "[sync] FAIL probe-results PII leak: $RESULTS_LEAK references in tests/probes/.results/"
+  echo "$RESULTS_OUT"
+  exit 1
+fi
+
+# Probe-results positive-grep (D-30 cross-machine drift detection):
+# Each outcome JSON's observations.published_from_hostname must be a 64-char SHA-256
+# hex (synthetic identifier; never literal hostname). This positive-grep block
+# matches the synthetic identifier across results files; absence of matches when
+# results files exist is a regression signal (probe author may have skipped D-30).
+RESULTS_HASH_OUT=$(grep -rEohI '"published_from_hostname"\s*:\s*"[a-f0-9]{64}"' tests/probes/.results/ 2>/dev/null)
+if [ -d "tests/probes/.results" ]; then
+  RESULTS_FILE_COUNT=$(find tests/probes/.results -name '*.json' 2>/dev/null | wc -l)
+  if [ "$RESULTS_FILE_COUNT" != "0" ] && [ -z "$RESULTS_HASH_OUT" ]; then
+    echo "[sync] FAIL probe-results published_from_hostname missing (D-30): $RESULTS_FILE_COUNT result files but 0 SHA-256 hostname-hash matches"
+    exit 1
+  fi
+fi
+
+# Positive assertion: every committed outcome JSON is valid JSON
+RESULTS_INVALID=0
+for f in tests/probes/.results/*/*.json; do
+  [ -f "$f" ] || continue
+  jq -e . "$f" >/dev/null 2>&1 || { echo "[sync] FAIL invalid JSON in $f"; RESULTS_INVALID=$((RESULTS_INVALID+1)); }
+done
+if [ "$RESULTS_INVALID" != "0" ]; then
+  echo "[sync] FAIL: $RESULTS_INVALID outcome JSON files failed jq parse"
+  exit 1
+fi
+
 # Local user path leak — accepted as operator-path visibility (not secrets).
 USER_PATH_OUT=$(grep -rnI "/home/dhx/repos/hooks" . --exclude-dir=.git 2>/dev/null)
 USER_PATH=$([ -z "$USER_PATH_OUT" ] && echo 0 || echo "$USER_PATH_OUT" | wc -l)
