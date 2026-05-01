@@ -81,8 +81,9 @@ CAPTURE_FILE="$PROBE_DIR/capture-$RUN_ID.json"
 # Trap-clean only this run's flag + capture file (preserve probe dir for operator concurrency)
 trap 'rm -f "$FLAG_FILE" "$CAPTURE_FILE"' EXIT
 
-export DHX_PROBE_RUN_ID="$RUN_ID"
-: > "$FLAG_FILE"
+# Run-id propagation channel: flag file content (env var doesn't reach the wrapper subprocess
+# launched by CC's parent process — sibling, not child, of probe's bash).
+echo "$RUN_ID" > "$FLAG_FILE"
 echo ""
 echo "Live capture: trigger a statusline refresh (any keystroke / new turn). Waiting up to 30s..."
 

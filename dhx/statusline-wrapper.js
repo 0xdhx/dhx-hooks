@@ -31,11 +31,14 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
   // PROBE-01 capture branch (D-16) — file-gated; no-op when ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe absent.
+  // Run-id propagation channel: flag file content (env var doesn't reach this sibling subprocess from the probe's bash).
   const probeDir = (process.env.XDG_RUNTIME_DIR || '/tmp') + '/dhx-statusline-stdin-probe';
   const flagPath = probeDir + '/flag';
   if (fs.existsSync(flagPath)) {
     try {
-      const captureFile = probeDir + '/capture-' + (process.env.DHX_PROBE_RUN_ID || 'latest') + '.json';
+      let runId = 'latest';
+      try { const c = fs.readFileSync(flagPath, 'utf8').trim(); if (c) runId = c; } catch { /* fall back to latest */ }
+      const captureFile = probeDir + '/capture-' + runId + '.json';
       fs.writeFileSync(captureFile, input);
     } catch { /* probe-only */ }
   }
