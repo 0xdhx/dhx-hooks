@@ -9,6 +9,7 @@
 // wrapper diverges from the probe and flips assertions. The probe IS the
 // contract — keep them in sync deliberately.
 
+// SAFE_FOR_LIVE: yes   (re-implements function locally; tmp-file fixtures only)
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

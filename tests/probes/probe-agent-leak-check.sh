@@ -27,6 +27,7 @@
 #
 # Run: bash tests/probes/probe-agent-leak-check.sh
 
+# SAFE_FOR_LIVE: no   (writes baselines under live `$HOME/.cache/dhx/` (session-tag prefixed + trap cleanup, but writes hit the live cache directory))
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -2,6 +2,7 @@
 # probe-watch-digest.sh — probe for dhx-watch-digest.sh
 # Test groups: S (surface logic), R (render), T (system signal)
 
+# SAFE_FOR_LIVE: yes   (per-test mktemp_state registry with trap cleanup; no live writes)
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

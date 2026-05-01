@@ -39,6 +39,7 @@
 // Companion: tests/probes/probe-migration.js — schema-migration in isolation.
 // Companion: /tmp/drift-smoke-test.md (ephemeral) — end-to-end display path.
 
+// SAFE_FOR_LIVE: yes   (mkdtempSync + tmp-file fixtures; reimplemented compare core; no live writes)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

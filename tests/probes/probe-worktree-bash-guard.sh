@@ -15,6 +15,7 @@
 #
 # Run: bash tests/probes/probe-worktree-bash-guard.sh
 
+# SAFE_FOR_LIVE: yes   (hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution))
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

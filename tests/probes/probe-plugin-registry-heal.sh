@@ -10,6 +10,7 @@
 # Pattern mirrors probe-plugin-keys.sh fake-HOME convention. Live ~/.claude
 # and ~/.ccs/shared/ are never touched.
 
+# SAFE_FOR_LIVE: yes   (mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/`)
 set -u
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-plugin-registry-heal.sh"

@@ -1,6 +1,7 @@
 // Probe: confirm hashWarnSettings() ignores benign mutations, trips on WARN-set changes.
 // Backs docs/decisions.md 2026-04-16 drift settings_hash row.
 // Run: node tests/probes/probe-settings-hash.js
+// SAFE_FOR_LIVE: yes   (reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation))
 const crypto = require('crypto');
 const fs = require('fs');
 

@@ -3,6 +3,7 @@
 // consequence. Validates publisher override, TTL, fallback, and correct tier
 // classification across all health classes.
 
+// SAFE_FOR_LIVE: yes   (mkdtempSync; tmp-file fixtures only)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

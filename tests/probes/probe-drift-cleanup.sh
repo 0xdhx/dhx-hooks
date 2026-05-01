@@ -16,6 +16,7 @@
 #
 # Backs: docs/decisions.md 2026-04-19 drift-cache orphan-sweep row.
 
+# SAFE_FOR_LIVE: no   (sets `$TMPHOME/.cache/dhx` and runs `dhx-health-check.sh` under HOME=$TMPHOME (sandboxed); but uses HOME override and live `/proc` reads — sandbox confines writes)
 set -u
 
 HOOK="$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-health-check.sh"

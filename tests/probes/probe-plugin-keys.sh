@@ -9,6 +9,7 @@
 #   C. Staleness cutoff: a >1h checked_at must not be trusted.
 # Does not mutate live ~/.cache/dhx/sym-health.json — all fixture I/O happens
 # inside an isolated HOME-like tmpdir and a disposable settings.json path.
+# SAFE_FOR_LIVE: yes   (mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; live read of settings is jq -e only)
 set -u
 
 TMPDIR=$(mktemp -d)

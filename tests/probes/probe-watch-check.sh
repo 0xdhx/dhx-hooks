@@ -2,6 +2,7 @@
 # probe-watch-check.sh — probe for dhx-watch-check.sh
 # Test groups: C (cadence), F (filter), H (hint classifier), E (errors), A (atomicity)
 
+# SAFE_FOR_LIVE: yes   (per-test mktemp_state registry with trap cleanup; no live writes)
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

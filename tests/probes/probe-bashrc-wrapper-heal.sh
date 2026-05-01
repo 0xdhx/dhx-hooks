@@ -16,6 +16,7 @@
 #
 # Backs decisions.md 2026-04-17 row "plugin-keys load-gating verified +
 # bashrc auto-heal". Run: bash tests/probes/probe-bashrc-wrapper-heal.sh
+# SAFE_FOR_LIVE: yes   (grep-only against live `~/.bashrc` and in-repo files; no writes)
 set -uo pipefail
 
 pass=0

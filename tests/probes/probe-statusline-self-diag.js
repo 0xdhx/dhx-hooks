@@ -18,6 +18,7 @@
 // How to run:
 //   node tests/probes/probe-statusline-self-diag.js
 
+// SAFE_FOR_LIVE: yes   (mktemp HOME + `process.env.HOME` override per subtest; appendFile lands under temp HOME only)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

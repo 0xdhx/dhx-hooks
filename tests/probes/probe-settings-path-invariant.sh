@@ -7,6 +7,7 @@
 #
 # Backs architecture.md § Settings file chain.
 # Run: bash tests/probes/probe-settings-path-invariant.sh
+# SAFE_FOR_LIVE: yes   (readlink + stat read-only against live settings chain; no writes)
 set -uo pipefail
 
 pass=0

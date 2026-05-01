@@ -20,6 +20,7 @@
 #   bash tests/probes/probe-read-cache.sh
 # Exit code 0 = pass. Nonzero with [FAIL] line = test failure.
 
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"

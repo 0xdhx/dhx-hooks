@@ -8,6 +8,7 @@
 // convention) so a future regression in the wrapper diverges from the probe and
 // flips assertions. The probe IS the contract.
 
+// SAFE_FOR_LIVE: yes   (re-implements function locally; tmp-file fixtures only)
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

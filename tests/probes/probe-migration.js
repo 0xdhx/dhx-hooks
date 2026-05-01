@@ -3,6 +3,7 @@
 //   (a) pre-hash (2026-04-16) — no settings_hash, carries settings_mtime
 //   (b) pre-count (2026-04-18) — has settings_hash but no *_count fields
 // Unified migration guard fires on either absence.
+// SAFE_FOR_LIVE: yes   (re-implemented compare core; tmp-file fixtures via os.tmpdir)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
