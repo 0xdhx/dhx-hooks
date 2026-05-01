@@ -10,6 +10,7 @@
 // Pairs with: docs/statusline-wrapper.md "ccburn compact" section,
 // docs/decisions.md 2026-04-18 statusline-compaction row.
 
+// SAFE_FOR_LIVE: yes   (pure require + helper function tests; no FS writes)
 const path = require('path');
 const WRAPPER = path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
 const { buildCcburnSegment, formatBurnDuration, statusEmoji, computeMetaGlyph } = require(WRAPPER);

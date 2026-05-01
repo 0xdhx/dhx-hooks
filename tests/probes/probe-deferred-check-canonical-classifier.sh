@@ -21,6 +21,7 @@
 #
 # Run: bash tests/probes/probe-deferred-check-canonical-classifier.sh
 
+# SAFE_FOR_LIVE: yes   (static grep + sourcing test against in-repo classifier; mktemp fixture for source-test)
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

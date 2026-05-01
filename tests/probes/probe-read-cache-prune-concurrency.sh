@@ -40,6 +40,7 @@
 #   - "thundering herd on stale .last-cleanup" (D-13: re-read marker INSIDE lock)
 #   - "probe expectation too deterministic" (D-14: adversarial DHX_READ_CACHE_TEST_PAUSE_MS)
 
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; adversarial prune contention contained in $TMPHOME)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"

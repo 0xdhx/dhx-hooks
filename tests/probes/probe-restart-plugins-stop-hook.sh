@@ -25,6 +25,7 @@
 #   - docs/hook-patterns.md — HP-026, HP-027
 #   - docs/statusline-wrapper.md — Drift Detection § Marker-driven rebaseline
 
+# SAFE_FOR_LIVE: yes   (mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP)
 set -u
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-restart-plugins-stop.sh"

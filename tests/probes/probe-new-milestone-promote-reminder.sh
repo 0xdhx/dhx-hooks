@@ -11,6 +11,7 @@
 # Backs: docs/decisions.md 2026-04-20 dhx-new-milestone-promote-reminder row
 # Run:   bash tests/probes/probe-new-milestone-promote-reminder.sh
 
+# SAFE_FOR_LIVE: yes   (mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation)
 set -u
 HOOK=/home/dhx/repos/hooks/dhx/dhx-new-milestone-promote-reminder.sh
 PASS=0

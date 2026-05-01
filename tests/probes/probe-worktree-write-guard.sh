@@ -14,6 +14,7 @@
 #
 # Run: bash tests/probes/probe-worktree-write-guard.sh
 
+# SAFE_FOR_LIVE: yes   (hook subshell test with synthetic stdin; assertions on hook exit code only)
 set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-worktree-write-guard.sh"

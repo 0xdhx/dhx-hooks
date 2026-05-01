@@ -11,6 +11,7 @@
 // probe-sym-health-override.js — this file stays scoped to warning-format contract.
 // Run: node tests/probes/probe-health-suffix.js
 
+// SAFE_FOR_LIVE: yes   (uses `_make-fake-home` (mktemp + HOME override per spawn); fully sandboxed)
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');

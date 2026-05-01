@@ -36,6 +36,7 @@
 #
 # Run: bash tests/probes/probe-execute-stop-review.sh
 
+# SAFE_FOR_LIVE: yes   (mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live writes)
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

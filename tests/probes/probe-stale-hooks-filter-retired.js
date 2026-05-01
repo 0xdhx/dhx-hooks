@@ -15,6 +15,7 @@
 //
 // Run: `node tests/probes/probe-stale-hooks-filter-retired.js`
 
+// SAFE_FOR_LIVE: yes   (read-only assertions against repo-tracked source files)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

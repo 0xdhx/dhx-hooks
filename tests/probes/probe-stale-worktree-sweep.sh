@@ -18,6 +18,7 @@
 #
 # Run: bash tests/probes/probe-stale-worktree-sweep.sh
 
+# SAFE_FOR_LIVE: yes   (mktemp + fake worktree state; never operates on live worktrees)
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

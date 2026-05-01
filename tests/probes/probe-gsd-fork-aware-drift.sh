@@ -21,6 +21,7 @@
 # in checkDrift()'s wiring (helper is not invoked when current.gsd_count <
 # snapshot.gsd_count). Not exercised here; helper is the unit under test.
 
+# SAFE_FOR_LIVE: yes   (mktemp + node -e require with explicit liveRoot/forkRoot args; never reads live `~/.claude`)
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -19,6 +19,7 @@
 # fixtures is `/home/dhx/repos/hooks/dhx-plugin`, which exists; a tmpdir
 # alternative path is also used to synthesize the PATH mismatch case.
 
+# SAFE_FOR_LIVE: yes   (mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry)
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

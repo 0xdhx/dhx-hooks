@@ -15,6 +15,7 @@
 #   bash tests/probes/probe-write-cache.sh
 # Exit code 0 = pass. Nonzero with a [FAIL] line = test failure.
 
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; cache writes contained in $TMPHOME/.cache/dhx)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-write-cache.sh"

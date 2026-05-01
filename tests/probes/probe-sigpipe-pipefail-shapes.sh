@@ -55,6 +55,7 @@
 # Run: bash tests/probes/probe-sigpipe-pipefail-shapes.sh
 # Exit 0 = no violations, 1 = one or more violations.
 
+# SAFE_FOR_LIVE: yes   (static lint grepping in-repo `dhx/*.sh` for pipeline shapes; no writes)
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

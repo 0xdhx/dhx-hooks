@@ -25,6 +25,7 @@
 # How to run:
 #   bash tests/probes/probe-hooks-wiring.sh
 
+# SAFE_FOR_LIVE: yes   (mktemp + full env-var override (HOME, DHX_HOOKS_MANIFEST, DHX_HOOKS_REPO_ROOT, DHX_HOOKS_INSTALL_DIR); never touches live repo)
 set -u
 
 # Probe must run against the dhx-health-check.sh living in the same repo

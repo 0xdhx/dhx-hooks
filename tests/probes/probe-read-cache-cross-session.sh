@@ -19,6 +19,7 @@
 # INTEGRATION: exercises composition of writer + guard across simulated
 # session_id changes. Per tests/probes/README.md § Integration probes.
 
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"

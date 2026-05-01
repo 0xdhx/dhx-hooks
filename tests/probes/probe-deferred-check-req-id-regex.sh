@@ -17,6 +17,7 @@
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 
+# SAFE_FOR_LIVE: yes   (regex-equality static check against hook source; no writes)
 set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-deferred-check.sh"

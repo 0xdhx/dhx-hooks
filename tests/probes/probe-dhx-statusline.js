@@ -16,6 +16,7 @@
 // getCcsProfile, truncate, getRepoSignals, formatLine2Gsd,
 // formatLine2Signals).
 
+// SAFE_FOR_LIVE: yes   (re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

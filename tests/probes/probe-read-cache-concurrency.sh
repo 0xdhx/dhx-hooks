@@ -16,6 +16,7 @@
 #   bash tests/probes/probe-read-cache-concurrency.sh
 # Exit code 0 = pass. Nonzero with [FAIL] line = test failure.
 
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/`)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"
