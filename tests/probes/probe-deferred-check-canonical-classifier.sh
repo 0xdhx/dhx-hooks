@@ -253,6 +253,30 @@ else
   check "smoke: 'find … -print -quit' false-positive on absent basename: $MISS" 0
 fi
 
+# --- Section 8: block-message exposes the marker contract ---
+#
+# Anchored against the MSG= heredoc body specifically — protects against
+# accidental drift back to the one-line "/dhx:defer-review only" shape that
+# hides the inline marker path. Header comments are already covered by
+# Section 3; scoping this check to the runtime message body makes the two
+# assertions complementary rather than redundant.
+#
+# Backs: docs/decisions.md 2026-05-02 block-message marker-syntax row.
+# Parent report: reports/done/2026-04-27-defer-hook-misses-already-captured-items.md
+#   Fix 2 — block-message marker exposure.
+MSG_BLOCK=$(awk '/^MSG="/{f=1} f{print} f && /"$/ && !/^MSG="/{f=0}' "$HOOK")
+if [[ -z "$MSG_BLOCK" ]]; then
+  check "could not extract MSG= block from hook — assertion shape changed" 0
+else
+  for marker in captured existing assessed tracked note; do
+    if echo "$MSG_BLOCK" | grep -qE "\[${marker}[]:]"; then
+      check "MSG block exposes [${marker}…] marker" 1
+    else
+      check "MSG block missing [${marker}…] marker — drift to skill-only flow" 0
+    fi
+  done
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]

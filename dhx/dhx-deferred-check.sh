@@ -156,17 +156,25 @@ if [ -z "$CLASSIFIED" ]; then check_header_fallback "$LATEST"; fi
 UNCAPTURED=$(printf '%s\n' "$CLASSIFIED" | auto_silence_deferred_lines "$LATEST")
 if [ -z "$UNCAPTURED" ]; then exit 0; fi
 
-# Count and format
+# Count
 COUNT=$(echo "$UNCAPTURED" | wc -l | tr -d ' ')
-ITEM_LIST=$(echo "$UNCAPTURED" | sed 's/^/  - /')
 
 # Signal that deferred review is active (assessed-guard checks this)
 REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"
 touch "$REVIEW_MARKER"
 
+# Multi-line block message exposes the inline marker contract so trivial
+# cases can resolve via Edit without invoking /dhx:defer-review. Marker
+# syntax is canonical at ~/.claude/dhx-tools/dhx-classify-deferred.sh
+# (CLASSIFY_DEFERRED_MARKERS) and mirrored in this hook's header (lines 9-15).
 MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s) in ${LATEST}.
 
-Invoke /dhx:defer-review ${LATEST} to resolve before session end."
+Resolve via /dhx:defer-review ${LATEST}, OR mark inline:
+  [captured: <ref>]    item filed to backlog/todo
+  [existing: <path>]   item already tracked elsewhere
+  [assessed: <reason>] intentionally not captured (requires user approval)
+  [tracked: REQ-ID]    tracked against a requirement
+  [note: <detail>]     non-actionable decision-trail commentary"
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
