@@ -620,28 +620,56 @@ function readHealthCache(sessionId) {
         if (state) h.plugin_registry = state;
       } catch { /* detector errors never block the statusline */ }
 
+      // Tier classification — field set comes from scripts/lib/tiers.json (D-07
+      // Phase 5 migration; Phase 4 D-02 source-of-truth lock). Comparator + format
+      // are heterogeneous per-field, so they live in JS handler tables alongside
+      // the JSON-iterated array. The iteration order follows the JSON array
+      // order — predictable, parity-checked by probe-tiers-parity.sh.
+      // Backward-compat: `h.X && h.X !== 'ok'` guard pattern preserved (legacy
+      // health.json files lacking newer fields fall through silently).
+      // D-08 try/catch fallback: missing/corrupt tiers.json → empty arrays
+      // (iterable default) so `for (const k of TIERS.critical)` is a silent
+      // no-op rather than `TypeError: not iterable`. UI hot path stays alive.
+      // D-10 runtime guards: critical fails closed if CRITICAL_PREFIX[k] missing
+      // (treats unknown field as if absent — no `undefined:<value>` output);
+      // advisory skips silently if handler missing. Probe checks current keys
+      // only; runtime guard is second-line defense against future tiers.json
+      // additions where someone forgets paired handler updates.
+      let TIERS = { critical: [], advisory: [] };
+      try {
+        TIERS = require('../scripts/lib/tiers.json');
+      } catch (e) {
+        // Fall back gracefully if scripts/lib/tiers.json is missing or unparseable.
+        // The empty arrays keep `for (const k of TIERS.critical)` loops below
+        // as a silent no-op (NO TypeError: not iterable), so the statusline
+        // still renders the rest of the line — just with no tier glyph.
+        // This defends the UI hot path on the consumer side; drift detection
+        // lives in tests/probes/probe-tiers-parity.sh.
+      }
+      const CRITICAL_PREFIX = {
+        settings_chain:   'settings',
+        plugin_keys:      'plugin-keys',
+        plugin_registry:  'registry',
+        hooks_wiring:     'hooks-wiring',
+      };
+      const ADVISORY_HANDLERS = {
+        worktree_patches: (v) => v && v !== 'patched' ? `patches:${v}` : null,
+        read_guard:       (v) => v && v !== 'patched' ? `read-guard:${v}` : null,
+        missing_symlinks: (v) => v > 0 ? `${v} broken symlink${v > 1 ? 's' : ''}` : null,
+      };
+
       const critical = [];
-      if (h.settings_chain && h.settings_chain !== 'ok')
-        critical.push(`settings:${h.settings_chain}`);
-      if (h.plugin_keys && h.plugin_keys !== 'ok')
-        critical.push(`plugin-keys:${h.plugin_keys}`);
-      if (h.plugin_registry && h.plugin_registry !== 'ok')
-        critical.push(`registry:${h.plugin_registry}`);
-      // hooks_wiring (2026-04-26 #1): manifest→symlink drift class. Mirrors the
-      // same `&& !== 'ok'` guard pattern as the other critical fields above —
-      // legacy health.json files written before this commit lack the field, so
-      // `h.hooks_wiring` is undefined, the guard fails, and no warning fires.
-      // Backward-compat invariant satisfied by the guard pattern itself.
-      if (h.hooks_wiring && h.hooks_wiring !== 'ok')
-        critical.push(`hooks-wiring:${h.hooks_wiring}`);
+      for (const k of TIERS.critical) {
+        if (!CRITICAL_PREFIX[k]) continue; // D-10 fail-closed: unknown field treated as absent
+        if (h[k] && h[k] !== 'ok') critical.push(`${CRITICAL_PREFIX[k]}:${h[k]}`);
+      }
 
       const advisory = [];
-      if (h.worktree_patches && h.worktree_patches !== 'patched')
-        advisory.push(`patches:${h.worktree_patches}`);
-      if (h.read_guard && h.read_guard !== 'patched')
-        advisory.push(`read-guard:${h.read_guard}`);
-      if (h.missing_symlinks > 0)
-        advisory.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+      for (const k of TIERS.advisory) {
+        if (!ADVISORY_HANDLERS[k]) continue; // D-10 skip silently: unknown advisory field
+        const piece = ADVISORY_HANDLERS[k](h[k]);
+        if (piece) advisory.push(piece);
+      }
 
       const front = critical.length
         ? `\x1b[38;5;208m⚠ ${critical.join(' ')} — /dhx:sym repair\x1b[0m`
