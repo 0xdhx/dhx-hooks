@@ -205,10 +205,21 @@ fi
 #    for new wrapper requires; this gate ensures that fix-point is in fact
 #    updated before the regression lands. Trigger scoped narrowly: dhx/*.sh
 #    edits don't pay the suite cost (#6/#7 cover hook-side regressions).
+#
+#    DHX_RED_COMMIT=1 opt-out: TDD-RED probe commits intentionally fail
+#    the suite (target machinery for the assertion doesn't exist yet — the
+#    paired GREEN commit closes RED). Setting DHX_RED_COMMIT=1 skips ONLY
+#    this check; the other 7 checks above still gate. Targeted bypass
+#    preferred over `--no-verify` (which disables all 8). Repo precedent:
+#    f8fbab1, ae2e5db, b7333b4, 3aa2eed all needed this opt-out.
 PROBE_TRIGGER=$(git diff --cached --name-only -- 'dhx/*.js' 'tests/probes/' || true)
 if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
-  echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
-  bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
+  if [ "${DHX_RED_COMMIT:-0}" = "1" ]; then
+    echo "Skipping probe suite — DHX_RED_COMMIT=1 (TDD-RED commit; pair with GREEN to close)."
+  else
+    echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
+    bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
+  fi
 fi
 
 if [ "$FAIL" -ne 0 ]; then
