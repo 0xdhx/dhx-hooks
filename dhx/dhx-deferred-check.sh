@@ -142,71 +142,18 @@ fi
 # Check for "None" placeholder — anchored to avoid matching "none" mid-sentence
 if grep -qE '^\s*-?\s*[Nn]one(\s*$|\s+—)' <<< "$DEFERRED"; then exit 0; fi
 
-# Find unassessed items via the canonical classifier (sourced above).
-# classify_deferred_lines handles all 5 markers as prefix OR end-of-bullet
-# bracketed tokens, plus strikethrough. Trailing sed strips the bullet
-# prefix to match the downstream auto-silence loop's contract.
-RAW_ITEMS=$(printf '%s\n' "$DEFERRED" | classify_deferred_lines | sed 's/^\s*-\s*//')
-if [ -z "$RAW_ITEMS" ]; then check_header_fallback "$LATEST"; fi
+# Find unassessed items via the canonical classifier (sourced above), then
+# drop items that already have a durable home. Both filters live in the
+# canonical script — single source of truth so hook count and skill count
+# (/dhx:defer-review) cannot diverge. See
+# ~/.claude/dhx-tools/dhx-classify-deferred.sh `auto_silence_deferred_lines`
+# header for the REQ-ID + dated-filename regex set and the leading-{2,}
+# INVARIANT that rejects D-NN/Q-NN/F-NN GSD labels (backed by
+# tests/probes/probe-deferred-check-req-id-regex.sh).
+CLASSIFIED=$(printf '%s\n' "$DEFERRED" | classify_deferred_lines)
+if [ -z "$CLASSIFIED" ]; then check_header_fallback "$LATEST"; fi
 
-# Auto-silence: skip items that already have durable homes
-UNCAPTURED=""
-while IFS= read -r item; do
-  HAS_HOME=false
-
-  # Check 1: requirement IDs (DATA-F01, QUAL-01, REQ-V2-004, etc.)
-  # Regex captures multi-segment IDs — the old [A-Z]+-[A-Z]?[0-9]+ pattern
-  # truncated `REQ-V2-004` to `REQ-V2` and dropped the numeric suffix.
-  # INVARIANT: leading {2,} rejects GSD decision/question/fork labels
-  # (D-NN, Q-NN, F-NN) which appear by design in ROADMAP/REQUIREMENTS/
-  # backlog for traceability and were silently silencing genuine deferrals.
-  # Backed by tests/probes/probe-deferred-check-req-id-regex.sh.
-  REQ_IDS=$(echo "$item" | grep -oE '[A-Z]{2,}(-[A-Z0-9]+)+' | head -3)
-  for rid in $REQ_IDS; do
-    # Current-milestone requirements
-    if grep -q "$rid" "$CWD/.planning/REQUIREMENTS.md" 2>/dev/null; then
-      HAS_HOME=true
-      break
-    fi
-    # Active roadmap — catches requirements parked for future milestones
-    # (e.g., REQ-V2-004 pre-scoped in v1.1 under a v2.0 section)
-    if grep -q "$rid" "$CWD/.planning/ROADMAP.md" 2>/dev/null; then
-      HAS_HOME=true
-      break
-    fi
-    # Milestone-scoped requirements files (v1.1-REQUIREMENTS.md etc.)
-    if grep -rq "$rid" "$CWD/.planning/milestones/" --include='*REQUIREMENTS*.md' 2>/dev/null; then
-      HAS_HOME=true
-      break
-    fi
-    # Backlog. `grep -rq` short-circuits on first match — collapses the
-    # `grep -rl … | head -1 | grep -q .` choreography that was SIGPIPE-prone
-    # under pipefail (HP-028).
-    if grep -rq "$rid" "$CWD/.planning/backlog/" 2>/dev/null; then
-      HAS_HOME=true
-      break
-    fi
-  done
-
-  # Check 2: referenced .md filenames — any format (backtick, parens, bare)
-  if [ "$HAS_HOME" = false ]; then
-    REF_FILES=$(echo "$item" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md' | sort -u)
-    for bf in $REF_FILES; do
-      bname=$(basename "$bf")
-      if [ -f "$CWD/.planning/backlog/$bname" ] || \
-         [ -n "$(find "$CWD/.planning/todos" -name "$bname" -print -quit 2>/dev/null)" ]; then
-        HAS_HOME=true
-        break
-      fi
-    done
-  fi
-
-  if [ "$HAS_HOME" = false ]; then
-    UNCAPTURED="${UNCAPTURED}${item}
-"
-  fi
-done <<< "$RAW_ITEMS"
-UNCAPTURED=$(echo "$UNCAPTURED" | sed '/^$/d')
+UNCAPTURED=$(printf '%s\n' "$CLASSIFIED" | auto_silence_deferred_lines "$LATEST")
 if [ -z "$UNCAPTURED" ]; then exit 0; fi
 
 # Count and format

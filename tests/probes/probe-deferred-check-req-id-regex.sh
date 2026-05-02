@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # probe-deferred-check-req-id-regex.sh
 #
-# Regression probe for dhx/dhx-deferred-check.sh REQ_IDS regex.
+# Regression probe for the auto-silence REQ-ID regex consumed by
+# dhx/dhx-deferred-check.sh.
 #
 # Invariant: the requirement-ID regex used to decide whether a deferred
 # item "has a durable home" must match real requirement IDs (≥2-char
@@ -12,29 +13,37 @@
 # citing a decision gets silently silenced regardless of whether it
 # has a real durable home.
 #
-# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row.
+# Source-of-truth: as of the 2026-05-02 cross-repo extraction, the regex
+# lives in `auto_silence_deferred_lines` inside the canonical classifier
+# at ~/.claude/dhx-tools/dhx-classify-deferred.sh (skills-repo authority).
+# The hook sources that script and calls the helper; this probe extracts
+# the regex from the canonical source rather than the hook so the
+# invariant tracks the live definition.
+#
+# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row,
+# extended by the 2026-05-02 auto-silence-extraction row.
 # Parent report: ~/repos/skills/reports/2026-04-20-defer-hook-decision-label-false-positive.md
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 
-# SAFE_FOR_LIVE: yes   (regex-equality static check against hook source; no writes)
+# SAFE_FOR_LIVE: yes   (regex-equality static check against canonical script; no writes)
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-deferred-check.sh"
+CLASSIFIER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh"
 
-if [[ ! -r "$HOOK" ]]; then
-  echo "FAIL hook not readable: $HOOK"
+if [[ ! -r "$CLASSIFIER" ]]; then
+  echo "FAIL canonical classifier not readable: $CLASSIFIER"
   exit 1
 fi
 
-# Extract the live regex from the REQ_IDS= assignment. Anchoring the probe
-# to the source (rather than a hard-coded copy) makes regressions loud:
-# if the assignment moves or changes, the probe breaks visibly rather
-# than validating a stale copy.
-REGEX=$(grep -E '^\s*REQ_IDS=' "$HOOK" | head -1 | grep -oE "'[^']+'" | tr -d "'")
+# Extract the live regex from the `req_ids=` assignment inside
+# auto_silence_deferred_lines. Anchoring the probe to the source (rather
+# than a hard-coded copy) makes regressions loud: if the assignment moves
+# or changes, the probe breaks visibly rather than validating a stale copy.
+REGEX=$(grep -E '^[[:space:]]*req_ids=' "$CLASSIFIER" | head -1 | grep -oE "'[^']+'" | tr -d "'")
 
 if [[ -z "$REGEX" ]]; then
-  echo "FAIL could not extract REQ_IDS regex from $HOOK"
+  echo "FAIL could not extract req_ids regex from $CLASSIFIER"
   exit 1
 fi
 

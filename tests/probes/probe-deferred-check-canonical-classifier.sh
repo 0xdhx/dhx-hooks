@@ -60,11 +60,21 @@ else
   check "hook does NOT source canonical classifier — drift mode reintroduced" 0
 fi
 
-# 2. The hook calls classify_deferred_lines (the function exported by the canonical script)
+# 2. The hook calls classify_deferred_lines (marker filter)
 if grep -q 'classify_deferred_lines' "$HOOK"; then
   check "hook calls classify_deferred_lines" 1
 else
   check "hook missing classify_deferred_lines call" 0
+fi
+
+# 2b. The hook calls auto_silence_deferred_lines (durable-home filter).
+#     Added 2026-05-02 with the cross-repo extraction — locks the second
+#     half of the pipeline. Inline reintroduction of REQ-ID / dated-filename
+#     cross-references in the hook is the precise drift this asserts against.
+if grep -q 'auto_silence_deferred_lines' "$HOOK"; then
+  check "hook calls auto_silence_deferred_lines" 1
+else
+  check "hook missing auto_silence_deferred_lines call — inline auto-silence drift" 0
 fi
 
 # --- Section 2: hook does NOT inline the marker filter ---
@@ -144,50 +154,52 @@ fi
 
 # --- Section 6: HP-028 round-2 — auto-silence pipelines collapsed ---
 #
-# Lines 183 and 195 of the hook used to be:
-#   grep -rl "$rid" "$DIR" 2>/dev/null | head -1 | grep -q .
-#   find "$DIR" -name "$bname" 2>/dev/null | head -1 | grep -q .
-# Both were `cmd | head -1 | grep -q .` shapes — `head -1` is the early-exit
-# reader that can SIGPIPE the upstream `grep -rl` / `find` under pipefail.
-# Round-2 sweep collapsed each into a single command that short-circuits
-# without a pipeline:
+# Pre-2026-05-02 the auto-silence loop was inline in the hook (lines 183/195)
+# and used `grep -rl … | head -1 | grep -q .` / `find … | head -1 | grep -q .`
+# shapes — `head -1` is the early-exit reader that can SIGPIPE the upstream
+# `grep -rl` / `find` under pipefail. Round-2 sweep collapsed each into a
+# single short-circuiting command with no multi-stage pipeline:
 #   grep -rq "$rid" "$DIR" 2>/dev/null
 #   [ -n "$(find "$DIR" -name "$bname" -print -quit 2>/dev/null)" ]
-# Both forms eliminate the multi-stage pipeline so SIGPIPE+pipefail can't apply.
 #
-# Source-level invariants (Section 6.1–6.4): the broken shapes must not
-# reappear, and the canonical collapse must be present. Anchored to live
-# source so any reversion is loud.
+# As of 2026-05-02 the auto-silence body lives in `auto_silence_deferred_lines`
+# inside the canonical classifier (~/.claude/dhx-tools/dhx-classify-deferred.sh).
+# Sections 6.1/6.2 still assert the hook stays free of broken shapes; 6.3/6.4
+# follow the collapsed forms to their new home in the canonical script. The
+# variable name pivots from `$CWD` to `$project_root` because the helper
+# resolves the project root from its `$1` (a CONTEXT.md path) by walking
+# parents to find `.planning/`. The bug class (SIGPIPE under pipefail) is
+# identical in both locations.
 
 # 6.1 No `head -1 | grep -q` pipelines (the broken shape) outside comments.
 #     Strip lines whose first non-space character is `#` so the round-2 commit
 #     comment that documents the prior shape doesn't trip the regex.
 if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'head -1[[:space:]]*\|[[:space:]]*grep -q'; then
-  check "no 'head -1 | grep -q' pipelines remain (HP-028 round-2)" 0
+  check "no 'head -1 | grep -q' pipelines remain in hook (HP-028 round-2)" 0
 else
-  check "no 'head -1 | grep -q' pipelines remain (HP-028 round-2)" 1
+  check "no 'head -1 | grep -q' pipelines remain in hook (HP-028 round-2)" 1
 fi
 
 # 6.2 No `grep -rl … |` pipelines targeting the backlog (the broken shape
-#     for line 183) outside comments.
+#     for the pre-extraction line 183) outside comments.
 if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'grep -rl .*\.planning/backlog'; then
-  check "no 'grep -rl … .planning/backlog' pipeline remains (line 183)" 0
+  check "no 'grep -rl … .planning/backlog' pipeline remains in hook" 0
 else
-  check "no 'grep -rl … .planning/backlog' pipeline remains (line 183)" 1
+  check "no 'grep -rl … .planning/backlog' pipeline remains in hook" 1
 fi
 
-# 6.3 Backlog containment uses `grep -rq` short-circuit form.
-if grep -qE 'grep -rq[[:space:]]+"\$rid"[[:space:]]+"\$CWD/\.planning/backlog/"' "$HOOK"; then
-  check "backlog containment uses 'grep -rq' (line 183 collapsed form)" 1
+# 6.3 Canonical script's backlog containment uses `grep -rq` short-circuit form.
+if grep -qE 'grep -rq[[:space:]]+"\$rid"[[:space:]]+"\$project_root/\.planning/backlog/"' "$CLASSIFIER"; then
+  check "backlog containment in canonical script uses 'grep -rq' (collapsed form)" 1
 else
-  check "backlog containment does not use 'grep -rq' — collapsed form missing" 0
+  check "backlog containment in canonical script does not use 'grep -rq' — collapsed form missing" 0
 fi
 
-# 6.4 Todos basename lookup uses `find -print -quit` short-circuit form.
-if grep -qE 'find[[:space:]]+"\$CWD/\.planning/todos"[[:space:]]+-name[[:space:]]+"\$bname"[[:space:]]+-print[[:space:]]+-quit' "$HOOK"; then
-  check "todos basename lookup uses 'find … -print -quit' (line 195 collapsed form)" 1
+# 6.4 Canonical script's todos basename lookup uses `find -print -quit` short-circuit form.
+if grep -qE 'find[[:space:]]+"\$project_root/\.planning/todos"[[:space:]]+-name[[:space:]]+"\$bname"[[:space:]]+-print[[:space:]]+-quit' "$CLASSIFIER"; then
+  check "todos basename lookup in canonical script uses 'find … -print -quit' (collapsed form)" 1
 else
-  check "todos basename lookup does not use 'find … -print -quit' — collapsed form missing" 0
+  check "todos basename lookup in canonical script does not use 'find … -print -quit' — collapsed form missing" 0
 fi
 
 # --- Section 7: behavioral smoke for the collapsed forms ---
