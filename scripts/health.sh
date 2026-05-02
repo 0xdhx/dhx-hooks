@@ -28,6 +28,13 @@
 # Exit codes: 0 = all ok; 1 = any critical fails (wins over advisory);
 # 2 = only advisory fails.
 #
+# Env vars:
+#   DHX_HEALTH_TIMEOUT=<positive-int>  per-check timeout in seconds (default 30).
+#                                       Strict refusal on invalid values (exit 1).
+#                                       Intended primarily for probe-suite ergonomics
+#                                       (see G-04-01, Phase 4 Plan 04).
+#   DHX_HEALTH_REPO_ROOT=<path>        override repo path (test-only).
+#
 # Usage:
 #   bash scripts/health.sh
 #   bash scripts/health.sh --json | tail -n1 | jq .
@@ -40,6 +47,26 @@ source "$REPO/scripts/lib/tiers.sh" || {
   echo "health: failed to source $REPO/scripts/lib/tiers.sh" >&2
   exit 1
 }
+
+# G-04-01 (Phase 4 Plan 04): per-check timeout parameterized via DHX_HEALTH_TIMEOUT.
+# Default 30 (preserves D-10 + pre-G-04-01 behavior — semantically identical when
+# unset, per D-36). Override allows probe-suite ergonomics — probe-health-sh-tiering.sh
+# sets DHX_HEALTH_TIMEOUT=2 to keep its timeout-case scenario inside run-probes.sh's
+# D-16 30s budget. Strict positive-integer validation (PLANNER DISCRETION CALL):
+# invalid value → exit 1 with diagnostic (matches D-20 pre-flight format).
+#
+# IMPORTANT (D-32): use ${DHX_HEALTH_TIMEOUT-30} (NO COLON), not ${DHX_HEALTH_TIMEOUT:-30}.
+# The colon form treats empty-string as unset and silently falls back to 30, defeating
+# the strict-refusal contract for empty values. The no-colon form passes empty through
+# to the regex check, which correctly refuses it.
+#
+# Placement: BEFORE the mode-parsing block as interface-wide strict env validation
+# (D-39 — uniform refusal regardless of mode).
+TIMEOUT_S="${DHX_HEALTH_TIMEOUT-30}"
+if ! [[ $TIMEOUT_S =~ ^[1-9][0-9]*$ ]]; then
+  echo "health: invalid DHX_HEALTH_TIMEOUT='$TIMEOUT_S' (must be positive integer)" >&2
+  exit 1
+fi
 
 # Per <interfaces> in 04-02-PLAN.md — each leaf tool maps to exactly one
 # tiers.json key. The mapping is the join between two cohorts (D-28):
@@ -132,14 +159,14 @@ for entry in "${CHECKS[@]}"; do
 
   start_ms=$(date +%s%3N 2>/dev/null || echo 0)
   # shellcheck disable=SC2086
-  timeout 30 bash -c "$cmd" >/dev/null 2>&1
+  timeout "$TIMEOUT_S" bash -c "$cmd" >/dev/null 2>&1
   rc=$?
   end_ms=$(date +%s%3N 2>/dev/null || echo 0)
   dur=$((end_ms - start_ms))
 
   if [ "$rc" -eq 124 ]; then
     status="timeout"
-    dur=30000
+    dur=$((TIMEOUT_S * 1000))
     if [[ "$tier" == "critical" ]]; then
       crit_failures+=("$name")
     else
@@ -163,7 +190,7 @@ for entry in "${CHECKS[@]}"; do
   else
     case "$status" in
       ok)      printf '  OK    %s (%s)\n' "$name" "$tier" ;;
-      timeout) printf '  [TIMEOUT 30s] %s (%s)\n' "$name" "$tier" ;;
+      timeout) printf '  [TIMEOUT %ds] %s (%s)\n' "$TIMEOUT_S" "$name" "$tier" ;;
       fail)    printf '  FAIL  %s (%s, exit %d)\n' "$name" "$tier" "$rc" ;;
     esac
   fi
