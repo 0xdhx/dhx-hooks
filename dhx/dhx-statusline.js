@@ -13,7 +13,6 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
 
 // --- Model + CCS identity ----------------------------------------------------
 
@@ -51,133 +50,6 @@ const EFFORT_RENDER = {
 function renderEffort(level) {
   const r = EFFORT_RENDER[level];
   return r ? `${r.color}${r.glyph}\x1b[0m` : '';
-}
-
-// Known effort-level strings. Rejects random word matches from user chat
-// that happen to fit the "with X effort" regex — only CC-generated effort
-// strings pass. New levels CC adds in the future must be added here to
-// render; until then they silently fall through to empty (honest).
-const KNOWN_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-
-// Extract the most recent effort-level from CC's own pane output. Matches:
-//   "Opus 4.7 (1M context) with xhigh effort · Claude Max"    — session banner
-//   "✻ Simmering… (13m · ↓ 3.7k tokens · thinking with xhigh effort)" — spinner
-// Either of those persists in scrollback — banner prints on
-// startup/resume/clear, thinking spinner leaves its final line when the turn
-// settles. Bottom-up scan returns the most-recent mention; after Alt+P the
-// glyph lags until the next thinking-capable turn writes a new marker.
-//
-// Regex is two alternatives joined with `|` so one scan covers both lines.
-// Each alternative requires BOTH a CC-specific prefix AND an end-of-line
-// anchor to reject scrollback that quotes these strings — source diffs,
-// doc edits containing code like `"thinking with max effort)'"`, chat
-// transcripts echoed back. Real CC output has a fixed visual prefix; any
-// quoting of that text in pane scrollback comes with leading indent +
-// diff markers + line numbers instead.
-//   - Banner:   `▝▜█████▛▘  Opus 4.7 (1M) with xhigh effort · Claude Max`
-//                splash-logo prefix + ends at "Claude Max"
-//   - Spinner:  `✻ Simmering… (1m · ↓ 339 tokens · thinking with max effort)`
-//                CC-rotation spinner glyph at line start + ends at `)`
-//
-// Spinner glyph whitelist derived from observed CC output across 14 live
-// panes: ✻ ✽ · ✶ ✢ ✸ * ⏵ ◉ ◐ ◈ ◆ ♦. If CC adds new rotation glyphs,
-// spinner matches degrade to the banner fallback (still correct at session
-// start / resume / clear). Whitelist update is a one-line change.
-const PANE_EFFORT_RE =
-  /(?:▝▜█████▛▘.*with (\w+) effort\s+\S\s+Claude Max\s*$|(?:^|\s)[✻✽·✶✢✸⏵*◉◐◈◆♦]\s.*?thinking with (\w+) effort\)\s*$)/;
-
-function parsePaneEffort(paneText) {
-  if (!paneText) return null;
-  const lines = paneText.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(PANE_EFFORT_RE);
-    if (m) {
-      const level = m[1] || m[2];
-      if (KNOWN_EFFORT_LEVELS.has(level)) return level;
-    }
-  }
-  return null;
-}
-
-// Read the current session's effort from tmux pane scrollback. This is the
-// only per-session surface we've found in CC 2.1.112 — settings.json is
-// shared (multiple sessions overwrite each other) and the statusline stdin
-// JSON has no effort field (confirmed via 379-refresh live probe across 5+
-// sessions, plus 8+ open GH issues asking for one).
-//
-// Returns null when:
-//   - not running inside tmux (TMUX_PANE unset)
-//   - tmux binary missing or capture-pane call fails
-//   - no banner or thinking line in the captured window
-// All failure modes hide the glyph silently — honest > wrong.
-//
-// `-S -500 -E -` captures the last 500 lines of scrollback+viewport.
-// Sized empirically: a heavy session (94k-line scrollback) observed in
-// live probe pushed banner + last real thinking-with-effort line ~400
-// lines above the viewport bottom — 200 missed them, 500 catches them
-// comfortably. Still well inside one-read budget (~15ms vs ~40ms for
-// full scrollback). 500ms timeout absorbs pathological tmux server
-// slowness without blocking the renderer indefinitely.
-//
-// Cache layer (added 2026-04-26 after tmux-server wedge incident — see
-// reports/2026-04-26-statusline-capture-pane-wedge.md). Per-session file
-// at /tmp/claude-effort-${sessionId} with 30s TTL. The renderer fires per-
-// refresh × N concurrent sessions; the 500ms client-side timeout bounds
-// renderer wait but NOT server-side load — by the time it fires the request
-// has already queued in tmux's epoll set. Cache drops aggregate IPC ~93%
-// in steady state. Glyph lags up to 30s after /effort (Alt+P) — acceptable
-// because effort changes are uncommon. Future P3 (hook-driven invalidation)
-// restores per-turn freshness without polling.
-function getEffortFromPane(sessionId) {
-  const pane = process.env.TMUX_PANE;
-  if (!pane) return null;
-
-  // Sanitize session_id. Mirrors the context-bridge fence-post in
-  // runStatusline (~L420). Three states:
-  //   - unset/empty (caller had no session_id)  → cache disabled, live capture still runs
-  //   - non-empty + safe (normal CC UUID)        → cache enabled
-  //   - non-empty + unsafe (path sep or `..`)    → reject outright (return null,
-  //                                                no tmux call, no cache touch)
-  // The reject branch is hardening: a malicious id should not get a free
-  // tmux IPC call as a side effect of "cache lookup failed".
-  const hasSession = sessionId != null && sessionId !== '';
-  const sessionSafe = hasSession && !/[/\\]|\.\./.test(sessionId);
-  if (hasSession && !sessionSafe) return null;
-
-  const cachePath = sessionSafe
-    ? path.join(os.tmpdir(), `claude-effort-${sessionId}`)
-    : null;
-  const CACHE_TTL_MS = 30_000;
-
-  if (cachePath) {
-    try {
-      const stat = fs.statSync(cachePath);
-      if (Date.now() - stat.mtimeMs < CACHE_TTL_MS) {
-        const cached = fs.readFileSync(cachePath, 'utf8').trim();
-        if (KNOWN_EFFORT_LEVELS.has(cached)) return cached;
-      }
-    } catch { /* cache miss — fall through to live capture */ }
-  }
-
-  let effort = null;
-  try {
-    const out = execFileSync(
-      'tmux',
-      ['capture-pane', '-p', '-S', '-500', '-E', '-', '-t', pane],
-      { encoding: 'utf8', timeout: 500, stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    effort = parsePaneEffort(out);
-  } catch {
-    return null;
-  }
-
-  // Write-through on success only. Failed reads (effort === null) must NOT
-  // pollute the cache — they'd mask a real value already on disk and pin
-  // the segment to "hidden" until the next live recapture succeeds.
-  if (effort && cachePath) {
-    try { fs.writeFileSync(cachePath, effort); } catch { /* best-effort */ }
-  }
-  return effort;
 }
 
 // Return the CCS profile letter when CLAUDE_CONFIG_DIR resolves to a CCS
@@ -442,7 +314,7 @@ function runStatusline() {
     const ccsProfile = getCcsProfile();
     const dir = data.workspace?.current_dir || process.cwd();
     const session = data.session_id || '';
-    const effort = renderEffort(getEffortFromPane(session));
+    const effort = renderEffort(data.effort?.level);
     const remaining = data.context_window?.remaining_percentage;
 
     // Context window display (shows USED percentage scaled to usable context)
@@ -604,8 +476,8 @@ function runStatusline() {
 module.exports = {
   readGsdState, parseStateMd, formatGsdState,
   compactModel, getCcsProfile,
-  renderEffort, getEffortFromPane, parsePaneEffort,
-  EFFORT_RENDER, KNOWN_EFFORT_LEVELS,
+  renderEffort,
+  EFFORT_RENDER,
   truncate, findRepoRoot, getRepoSignals,
   formatLine2Gsd, formatLine2Signals,
 };
