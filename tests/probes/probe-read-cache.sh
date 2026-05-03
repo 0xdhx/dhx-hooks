@@ -6,15 +6,15 @@
 #   - Writer schema: {"path":<abs>,"ts":<num>,"source":"read","partial":true?}
 #   - Cache file at $HOME/.cache/dhx/read-cache.jsonl (XDG, D-04)
 #   - Guard 3-state branching against full/partial/no-read entries
-#   - Guard reads BOTH primary (XDG) AND legacy (~/.claude/read-once/reads.jsonl)
-#     paths during migration window (D-01)
 #   - Guard treats absent `source` field as "read" (D-07 null-safety)
 #   - TTL expiry: entries with ts < NOW-7200 produce READ-BEFORE-EDIT (D-15, V-TTL-EXPIRY)
 #
 # INVARIANT: writer is the SOLE PreToolUse:Read writer post-Phase 1
 # (D-05 collapses Boucle hook.sh + dhx-read-partial-cache.sh into one).
-# Cache lives at XDG location, NOT ~/.claude/read-once/. Guard's read-both
-# loop is monotonic (no dedupe needed) per V-DUAL-PATH-NOOP.
+# Cache lives at XDG location, NOT ~/.claude/read-once/.
+#
+# D-01 dual-path (also read ~/.claude/read-once/reads.jsonl) removed in v1.1.1
+# hygiene commit (2026-05-03). V-GUARD-LEGACY-PATH assertion (Test 11) removed.
 #
 # Run directly:
 #   bash tests/probes/probe-read-cache.sh
@@ -124,24 +124,13 @@ OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
 echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("READ-BEFORE-EDIT")' >/dev/null \
   || cleanup_fail "V-GUARD-NO-READ-STRONG: empty cache + existing file did not emit READ-BEFORE-EDIT: $OUTPUT"
 
-# Test 11 (V-GUARD-LEGACY-PATH): primary cache empty, LEGACY cache has full-read → suppress (D-01)
+# Test 12 (V-GUARD-NULL-SOURCE): primary cache entry without source field → treated as full read (D-07)
 > "$CACHE"
-LEGACY_CACHE="$TMPHOME/.claude/read-once/reads.jsonl"
-mkdir -p "$(dirname "$LEGACY_CACHE")"
-# Legacy entry shape: no `source` field (Boucle hook.sh emits {"path","ts"})
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW}" >> "$LEGACY_CACHE"
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-GUARD-LEGACY-PATH: legacy cache entry should suppress advisory (D-01 read-both regression): $OUTPUT"
-
-# Test 12 (V-GUARD-NULL-SOURCE): legacy-shape entry {path,ts} without source field → treated as full read (D-07)
-# (Test 11 already covered this case; explicit test here documents D-07 invariant)
-> "$LEGACY_CACHE"
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW}" >> "$LEGACY_CACHE"  # legacy schema, no source
+echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW}" >> "$CACHE"  # no source field — D-07 null-safety
 OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
 [ -z "$OUTPUT" ] || cleanup_fail "V-GUARD-NULL-SOURCE: D-07 null-safety regression — absent source field should = full read: $OUTPUT"
 
 # Test 13 (V-GUARD-WRITE-AS-FULL): {source:"write"} entry → treated as full read (D-08 semantics)
-> "$LEGACY_CACHE"
 > "$CACHE"
 echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"write\"}" >> "$CACHE"
 OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
@@ -152,12 +141,11 @@ OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
 # and empty-cache-strong. Pre-populate with a stale-but-not-removed entry; the TTL
 # filter inside scanCache should exclude it from the accumulator.
 > "$CACHE"
-> "$LEGACY_CACHE"
 STALE_TS=$(( NOW - 8000 ))   # 8000s > 7200s TTL
 echo "{\"path\":\"$TMPFILE\",\"ts\":$STALE_TS,\"source\":\"read\"}" >> "$CACHE"
 OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
 echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("READ-BEFORE-EDIT")' >/dev/null \
   || cleanup_fail "V-TTL-EXPIRY (D-15): past-TTL entry (ts=NOW-8000) should NOT suppress; expected READ-BEFORE-EDIT, got: $OUTPUT"
 
-echo "[PASS] dhx-read-cache.sh: 14/14 assertions (writer 7 + guard 6 + V-TTL-EXPIRY 1)"
+echo "[PASS] dhx-read-cache.sh: 13/13 assertions (writer 7 + guard 5 + V-TTL-EXPIRY 1)"
 exit 0

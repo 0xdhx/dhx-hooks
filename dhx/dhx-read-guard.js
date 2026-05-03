@@ -11,12 +11,13 @@
 // session_id (load-bearing citation:
 // reports/done/2026-04-15-read-guard-session-scoping-false-positives.md).
 //
-// Cache paths read (D-01 dual-path during migration window):
-//   - PRIMARY: ~/.cache/dhx/read-cache.jsonl (XDG, dhx-owned, D-04)
-//   - LEGACY:  ~/.claude/read-once/reads.jsonl (Boucle community path,
-//              read for in-flight session compatibility; removed in
-//              v1.1.1 follow-up commit per
-//              .planning/todos/pending/2026-04-26-v1-1-1-remove-legacy-path-read-fallback.md)
+// Cache path read:
+//   - ~/.cache/dhx/read-cache.jsonl (XDG, dhx-owned, D-04)
+//
+// D-01 dual-path migration-window fallback (also read ~/.claude/read-once/reads.jsonl
+// during the ~1 week post-Phase-1 window while in-flight CC sessions still wrote to
+// the legacy path) removed in v1.1.1 hygiene commit (2026-05-03): >1 week elapsed,
+// all sessions confirmed restarted, legacy cache mtime >2h stale.
 //
 // Cache is written by:
 //   - dhx-read-cache.sh (sole PreToolUse:Read writer; full + partial reads)
@@ -115,16 +116,13 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Global TTL-based cache lookup: check both XDG and legacy paths for
-    // recent reads. Any error falls through to emit the "no read" advisory
-    // (safe default). D-01 dual-path read; D-07 null-safety; D-17 invariant.
+    // Global TTL-based cache lookup (XDG primary cache only; D-01 legacy fallback
+    // removed in v1.1.1 hygiene commit). Any error falls through to emit the
+    // "no read" advisory (safe default). D-07 null-safety; D-17 invariant.
     let hasFullRead = false;
     let hasPartialRead = false;
     try {
-      // PRIMARY: new XDG cache (D-04)
       const primaryCachePath = path.join(os.homedir(), '.cache', 'dhx', 'read-cache.jsonl');
-      // LEGACY: Boucle path — read until v1.1.1 hygiene commit (D-01)
-      const legacyCachePath = path.join(os.homedir(), '.claude', 'read-once', 'reads.jsonl');
 
       // IN-02: align with shell writers' `realpath` semantics — both
       // dhx-read-cache.sh and dhx-write-cache.sh resolve symlinks before
@@ -185,7 +183,6 @@ process.stdin.on('end', () => {
       };
 
       scanCache(primaryCachePath);
-      scanCache(legacyCachePath);  // D-01: removed in v1.1.1 hygiene commit
     } catch {
       // fall through to advisory on any I/O error
     }
