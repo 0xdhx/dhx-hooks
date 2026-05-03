@@ -5,6 +5,11 @@
 # during an active phase execution. Catches plan-to-execution drift at
 # the moment verification completes, before the session ends.
 # Advisory only — no blocking.
+#
+# 2026-05-03 consolidation: absorbed dhx-post-execute-review.sh — both fired
+# lockstep on gsd-verifier completion (47/49 firings/7d). Phase number is
+# derived from STATE.md (mirrors dhx-deferred-check.sh:62-81) and merged into
+# the message preamble; pointer to /dhx:execute review skill appended.
 
 INPUT=$(cat)
 
@@ -31,11 +36,27 @@ done
 SUMMARY_COUNT=$(find "$PLANNING_DIR/phases" -name "*-SUMMARY.md" -mmin -30 2>/dev/null | wc -l)
 [ "$SUMMARY_COUNT" -eq 0 ] && exit 0
 
-cat << 'ENDJSON'
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
-    "additionalContext": "EXECUTION REVIEW — Verifier completed. Phase execution is complete. Apply fidelity review before session ends:\n1. PLAN-TO-EXECUTION FIDELITY: Compare each completed task against its plan description, not just the task title. Were any tasks simplified during implementation without flagging?\n2. CONTEXT-TO-CODE FIDELITY: Do committed changes align with CONTEXT.md decisions? Or was a different interpretation quietly built? Diff the intent against the result.\n3. SILENT DESCOPING: Were any plan tasks dropped or partially implemented without recording the deviation? Check for tasks that disappeared between plan and execution summary.\nIf drift is detected on any of these, flag it now with specific evidence — don't let it compound into downstream phases."
-  }
-}
-ENDJSON
+# Derive phase number from STATE.md (mirrors dhx-deferred-check.sh:62-81).
+# Degrade gracefully — if unparseable, fall through with empty PHASE.
+STATE_FILE="$PLANNING_DIR/STATE.md"
+PHASE=""
+if [ -f "$STATE_FILE" ]; then
+  SIGNAL_LINES=$(grep -E '^stopped_at:|^\*\*Phase:\*\*|^\*\*Current Phase:\*\*|^\*\*Current focus:\*\*|^\*\*Last Activity Description:\*\*|^\*\*Last activity description:\*\*' "$STATE_FILE" 2>/dev/null)
+  STATE_NUM=$({
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '[Pp]hase[[:space:]]+[0-9]+(\.[0-9]+)?' | sed 's/^[Pp]hase[[:space:]]*//'
+    printf '%s\n' "$SIGNAL_LINES" | grep -oE '^\*\*(Current )?Phase:\*\*[[:space:]]+[0-9]+(\.[0-9]+)?' | sed -E 's/^\*\*[^*]+\*\*[[:space:]]*//'
+  } | grep -v '^$' | head -1)
+  if [ -n "$STATE_NUM" ]; then
+    PHASE=$(echo "$STATE_NUM" | sed -E 's/^0*([0-9])/\1/')
+  fi
+fi
+
+if [ -n "$PHASE" ]; then
+  PREAMBLE="EXECUTION REVIEW — Phase ${PHASE} verifier completed. Phase execution is complete."
+else
+  PREAMBLE="EXECUTION REVIEW — Verifier completed. Phase execution is complete."
+fi
+
+CTX="${PREAMBLE} Apply fidelity review before session ends:\n1. PLAN-TO-EXECUTION FIDELITY: Compare each completed task against its plan description, not just the task title. Were any tasks simplified during implementation without flagging?\n2. CONTEXT-TO-CODE FIDELITY: Do committed changes align with CONTEXT.md decisions? Or was a different interpretation quietly built? Diff the intent against the result.\n3. SILENT DESCOPING: Were any plan tasks dropped or partially implemented without recording the deviation? Check for tasks that disappeared between plan and execution summary.\nIf drift is detected on any of these, flag it now with specific evidence — don't let it compound into downstream phases.\nRun /dhx:execute (no args) for the full review."
+
+jq -n --arg ctx "$CTX" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}'

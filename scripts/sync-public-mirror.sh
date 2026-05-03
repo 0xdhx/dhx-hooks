@@ -373,8 +373,7 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | `dhx-write-cache.sh` | `Write\|Edit` | Mirrors successful writes into the read cache (`source:"write"` entries) — closes Write→Edit false-positive class. |
 | `dhx-context-gate.sh` | `Write` | Blocks (exit 2) when CONTEXT.md is missing required DHX sections. |
 | `dhx-execute-checkpoint.sh` | `Agent` | Drift detection calibration injected when a `gsd-executor` agent completes. |
-| `dhx-post-execute-review.sh` | `Agent` | Triggers `/dhx:execute` post-execution review when a `gsd-verifier` agent completes during phase execution. |
-| `dhx-execute-review.sh` | `Agent` | Execution fidelity review on `gsd-verifier` completion. |
+| `dhx-execute-review.sh` | `Agent` | Execution fidelity review on `gsd-verifier` completion (includes phase-number derivation from `STATE.md` + pointer to `/dhx:execute` review skill — absorbed `dhx-post-execute-review.sh` 2026-05-03). |
 | `dhx-audit-checkpoint.sh` | `Agent` | Audit calibration on `gsd-verifier` completion (counteracts optimistic completion bias). |
 | `dhx-agent-leak-check.sh` | `Agent` | Diffs current `git status` against the pre-dispatch baseline; warns on isolation leaks. |
 

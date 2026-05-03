@@ -134,10 +134,6 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-post-execute-review.sh\""
-          },
-          {
-            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-execute-review.sh\""
           },
           {
