@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # dhx-session-id-stamp.sh — SessionStart hook
-# Patterns: HP-015 (SessionStart provides session_id), HP-017 (plugin manifest),
-#           HP-029 (one hook per SessionStart matcher block)
+# Patterns: HP-015 (SessionStart provides session_id), HP-017 (plugin manifest)
 #
 # Writes the current session_id + transcript_path to a deterministic file
 # under the project's JSONL dir, so skills (specifically /dhx:report skill-use
