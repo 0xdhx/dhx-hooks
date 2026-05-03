@@ -28,6 +28,8 @@ fi
 
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
+AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""')
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // ""')
 
 _TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
 
@@ -36,10 +38,21 @@ SOURCE_EXTS="py js ts tsx jsx rs go"
 # INVARIANT: flag file is keyed by SESSION_ID from stdin. Subagent
 # propagated fires carry the PARENT's session_id (HP-003 verified), so
 # the parent's Stop consumer always sees the flag. No agent_id branch.
+#
+# Diagnostic log (no behavior change, 2026-05-03): when the flag is set,
+# we append one line to ~/.cache/dhx/source-write-flag.log capturing the
+# extension, file path, parent session_id, and (when subagent-propagated)
+# agent_id + agent_type. Closes the perception/reality gap from the test-
+# gate Q5 framing — when a user perceives "doc-only turn fired the gate,"
+# `grep agent_id= ~/.cache/dhx/source-write-flag.log | tail` shows which
+# subagent wrote a tracked source file under the parent's session.
 EXT="${FILE_PATH##*.}"
 for src_ext in $SOURCE_EXTS; do
   if [ "$EXT" = "$src_ext" ]; then
     touch "$_TMPDIR/claude-source-dirty-${SESSION_ID}.flag"
+    mkdir -p "$HOME/.cache/dhx" 2>/dev/null || true
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] ext=$EXT path=$FILE_PATH session=$SESSION_ID agent_id=$AGENT_ID agent_type=$AGENT_TYPE" \
+      >> "$HOME/.cache/dhx/source-write-flag.log" 2>/dev/null || true
     break
   fi
 done

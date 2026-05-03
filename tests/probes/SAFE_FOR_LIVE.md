@@ -59,6 +59,7 @@ asserts row count == file count.
 | `probe-statusline-self-diag.js` | yes | mktemp HOME + `process.env.HOME` override per subtest; appendFile lands under temp HOME only |
 | `probe-statusline-wrapper.js` | yes | pure require + helper function tests; no FS writes |
 | `probe-sym-health-override.js` | yes | mkdtempSync; tmp-file fixtures only |
+| `probe-test-gate-cgroup.sh` | no | invokes real `systemd-run --user --scope` to enforce cgroup MemoryMax / RuntimeMaxSec on subprocesses; HOME / TMPDIR / CLAUDE_PROJECT_DIR all override to per-scenario mktemp dir, but the transient systemd-run scope units land under live user@.service (self-cleanup on exit; not config drift) |
 | `probe-tiers-parity.sh` | yes | read-only grep + jq parse over repo files; no live mutation (Wave 2 tag preserved) |
 | `probe-watch-check.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
