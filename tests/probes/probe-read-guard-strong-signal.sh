@@ -229,14 +229,13 @@ for instance in "${INSTANCES[@]}"; do
       NEVER_READ="$SANDBOX/_never_read_$cell_id.txt"
       echo "synthetic content for SCHEMA-02 cell $cell_id" > "$NEVER_READ"
 
-      # Inode-isolation guard (PROBE-02 pattern adapted for synthetic file)
-      live_inode="absent"
-      sandbox_inode=$(stat -c %i "$NEVER_READ" 2>/dev/null)
-      if [[ "$sandbox_inode" == "$live_inode" ]]; then
-        emit_verdict "$cell_id" "inconclusive" "false" "setup_failure: inode collision" "absent" "$NEVER_READ" "false" "false" "null" "null"
-        rm -rf "$TMPROOT"; trap - EXIT
-        continue
-      fi
+      # WR-02: inode-isolation guard removed — the synthetic NEVER_READ file is
+      # created fresh in $TMPROOT (mktemp -d) and has no live counterpart. The
+      # PROBE-02 pattern protects against routing a truncate to a live file via
+      # hardlink/symlink chain; here there's no truncate and no live file. mktemp -d
+      # failure short-circuits earlier via `set -uo pipefail`. If a future regression
+      # re-points NEVER_READ at a live path, replace this comment with a positive
+      # path-prefix assertion (`[[ "$NEVER_READ" == "$SANDBOX/"* ]]`).
 
       # D-18e surgical jq unregister (preserves matcher + dhx-assessed-guard.sh)
       unregister_read_guard "$SANDBOX/dhx-plugin/plugins/dhx/hooks/hooks.json"
