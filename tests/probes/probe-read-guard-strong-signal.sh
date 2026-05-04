@@ -274,7 +274,13 @@ for instance in "${INSTANCES[@]}"; do
 
       read -r verdict edit_inv guard_fire hex hou < <(classify_from_stream "$TMPROOT/cell.stream.jsonl")
       case "$verdict" in runtime_rejected) rej=true ;; *) rej=false ;; esac
-      stderr_excerpt=$(head -c 300 "$TMPROOT/cell.stderr" 2>/dev/null | tr '\n' ' ')
+      # IN-04: head -c truncates by bytes; if a multi-byte UTF-8 char straddles
+      # byte 300 the tail bytes are invalid UTF-8 and downstream consumers
+      # reading verdicts.jsonl with strict UTF-8 may bork. Funnel through
+      # iconv -f UTF-8 -t UTF-8//IGNORE to drop straddled bytes silently.
+      stderr_excerpt=$(LC_ALL=C.UTF-8 head -c 300 "$TMPROOT/cell.stderr" 2>/dev/null \
+                       | iconv -f UTF-8 -t UTF-8//IGNORE 2>/dev/null \
+                       | tr '\n' ' ')
       emit_verdict "$cell_id" "$verdict" "$rej" "stream parsed; stderr_head=$stderr_excerpt" "absent" "$NEVER_READ" "$edit_inv" "$guard_fire" "$hex" "$hou"
 
       rm -rf "$TMPROOT"; trap - EXIT
