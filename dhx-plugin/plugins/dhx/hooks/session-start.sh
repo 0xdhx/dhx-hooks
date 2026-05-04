@@ -21,5 +21,6 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
 # No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
 bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 
 exit 0
