@@ -59,6 +59,9 @@ When a supersession-watchdog probe needs to capture data from a long-running CC 
 |-------|-------|-----|
 | `probe-effort-level-stdin-absent.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-01 | `mkdir -p ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe && bash tests/probes/probe-effort-level-stdin-absent.sh` |
 | `probe-installed-plugins-no-natural-heal.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-02 + HP-025 | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-no-natural-heal.sh` |
+| `probe-installed-plugins-badjson-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; needs auth (credentials_file or `ANTHROPIC_API_KEY`) |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; needs auth |
+| `probe-known-marketplaces-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 (km path) | Operator-invoked; needs auth |
 
 ## Schema-evolution probes
 
