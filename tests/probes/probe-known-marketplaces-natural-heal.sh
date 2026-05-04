@@ -255,6 +255,8 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
   # D-17: single canonical truncated shape (Hn() rehydration is shape-agnostic from resolver's POV).
   printf '%s' '{"version": 2, "marke' > "$SANDBOX_KM"   # truncated/malformed JSON
   pre_size_cell1=$(stat -c %s "$SANDBOX_KM" 2>/dev/null || echo 0)
+  pre_size="$pre_size_cell1"   # WR-01: pre_size in JSON reflects actual pre-Hn() state
+                               # (post-fixture write), NOT the cp'd-live snapshot.
   echo "Cell 1 (default -p): wrote km BADJSON fixture ($pre_size_cell1 bytes); invoking claude -p (auth: $cell1_auth_method)"
   set +e
   cell1_stderr=$(HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" timeout 30 claude -p "noop" </dev/null 2>&1 >/dev/null)
