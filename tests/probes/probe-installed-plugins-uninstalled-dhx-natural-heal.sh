@@ -137,7 +137,7 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
     SKIP_CELLS=true
   fi
 
-  # NOTE: Cell 2 (--bare -p) DROPPED per Pattern A note 3 — D-07a is Cell 1 only.
+  # NOTE: Cell 2 (--bare -p) DROPPED per Pattern A note 3 — D-07b is Cell 1 only.
 
   # Sanitized settings.json copy
   if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
