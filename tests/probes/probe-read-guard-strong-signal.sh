@@ -291,6 +291,13 @@ main_cells=$((total - 2))    # subtract the 2 control cells
 main_rejected=$(grep -E '"cell_id":"s' "$VERDICTS" | grep -c '"verdict":"runtime_rejected"' || true)
 main_allowed=$(grep -E '"cell_id":"s' "$VERDICTS" | grep -c '"verdict":"runtime_allowed"' || true)
 main_inconclusive=$(grep -E '"cell_id":"s' "$VERDICTS" | grep -c '"verdict":"inconclusive' || true)
+# IN-02: main_inconclusive is computed for the summary line + outcome JSON only;
+# it does NOT factor into the classification ladder. Inconclusive cells implicitly
+# count toward (main_cells - main_rejected), depressing the rejected percentage.
+# An all-inconclusive run produces LOW (rejected=0), which is the correct floor
+# per SCHEMA-05 (LOW → REFUTE). If a future regression demands an explicit
+# inconclusive-floor branch (e.g., "majority-inconclusive degrades verdict"),
+# the place to add it is between the HIGH and MEDIUM branches below.
 
 c17_correct=$(grep -E '"cell_id":"control_17' "$VERDICTS" | grep -c '"verdict":"runtime_rejected"' || true)
 c18_correct=$(grep -E '"cell_id":"control_18' "$VERDICTS" | grep -c '"verdict":"runtime_allowed"' || true)
