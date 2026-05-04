@@ -296,8 +296,14 @@ c17_correct=$(grep -E '"cell_id":"control_17' "$VERDICTS" | grep -c '"verdict":"
 c18_correct=$(grep -E '"cell_id":"control_18' "$VERDICTS" | grep -c '"verdict":"runtime_allowed"' || true)
 
 # D-18c dynamic classification (no hardcoded -ge 16; main_cells determines threshold)
+# WR-03: zero-cell guard — when all instance dirs are absent, main_cells=0 and
+# `0 -eq 0` would otherwise evaluate to HIGH ("100% main rejected"), pushing
+# READ-FUT-02-IMPL on zero observations. INVALID is the correct verdict for
+# no-evidence scenarios.
 if [[ "$c17_correct" -ne 1 || "$c18_correct" -ne 1 ]]; then
   classification="INVALID"
+elif [[ "$main_cells" -eq 0 ]]; then
+  classification="INVALID"   # no observations — not a verdict
 elif [[ "$main_rejected" -eq "$main_cells" ]]; then
   classification="HIGH"
 elif (( main_rejected * 5 >= main_cells * 4 )); then     # ≥ 80%
