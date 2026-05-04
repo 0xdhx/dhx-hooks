@@ -1,8 +1,13 @@
 #!/bin/bash
 # probe-read-guard-strong-signal.sh (SCHEMA-02; READ-FUT-02 dead-signal probe)
 #
-# SAFE_FOR_LIVE: yes   (read-only — temporarily UNREGISTERS dhx-read-guard.js in
-#                       sandboxed plugin manifest only; live state untouched)
+# SAFE_FOR_LIVE: no   (sandboxed via D-18d cp -rL; runs claude -p subprocess
+#                      with timeout 60 per cell × 18 cells = ~9-15min wallclock,
+#                      exceeds run-probes.sh 30s/probe budget — operator-invoked.
+#                      Read-only against live plugin/manifest state; sandbox-only
+#                      mutation, but routed through SAFE_FOR_LIVE=no so default
+#                      `bash scripts/run-probes.sh` (filter=yes) skips it and the
+#                      pre-commit gate cannot trip on the long runtime.)
 # RUNTIME: ~9-15min (20-cell matrix; operator-invoked outside run-probes.sh wrapper)
 #
 # Observation-only soft-verdict probe per D-03. Exits 0 unconditionally (per SCHEMA-03).
