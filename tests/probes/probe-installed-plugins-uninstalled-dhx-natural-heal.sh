@@ -26,10 +26,13 @@
 #
 # Run: ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh
 #
-# D-25 set-flag discipline: file top is `set -uo pipefail` only; NO mid-script
-# set -e re-enable. Targeted `set +e ... rc=$?` blocks gate every subprocess
-# call so an early jq/stat exit-1 cannot abort before the ambiguous outcome
-# JSON is written.
+# D-25 set-flag discipline (WR-04 corrected): file top is `set -uo pipefail`
+# only — `errexit` is NEVER enabled. The original draft sprinkled `set +e`
+# around every subprocess; those calls were no-ops (you can't disable a flag
+# that was never on) and have been removed. The actual safety mechanism is
+# `rc=$?` immediately after each subprocess call: that captures the exit
+# code regardless of `errexit`, so an early jq/stat exit-1 cannot abort
+# before the ambiguous outcome JSON is written.
 #
 # D-22 (cross-AI review 2026-05-03): asserts live `claude --version` matches
 # baseline 2.1.121; mismatch rewrites .conclusion to "ambiguous" (gate-halting)
@@ -96,13 +99,11 @@ fi
 # ----------------------------------------------------------------------------
 # cp -rL deref of plugin state (RESEARCH MEDIUM-4: live cache may be stale;
 # that's correct supersession-watchdog behavior — reads live cache as-of-run-time)
-# D-25: targeted set +e block
+# D-25 (WR-04): cp_rc=$? captures rc directly; errexit never enabled.
 # ----------------------------------------------------------------------------
 if [[ "$SKIP_CELLS" == "false" ]]; then
-  set +e
   cp -rL "$LIVE_CFG/plugins/." "$SANDBOX/plugins/"
   cp_rc=$?
-  set +e   # remain in targeted-set mode; no set -e re-enable
   if [[ "$cp_rc" -ne 0 ]]; then
     echo "FATAL: cp -rL failed (rc=$cp_rc) — cannot construct sandbox"
     cell_outcome="setup_failure"
@@ -120,10 +121,8 @@ fi
 # ----------------------------------------------------------------------------
 if [[ "$SKIP_CELLS" == "false" ]]; then
   if [[ -f "$LIVE_CFG/.credentials.json" ]]; then
-    set +e
     cp "$(readlink -f "$LIVE_CFG/.credentials.json")" "$SANDBOX/.credentials.json"
     chmod 600 "$SANDBOX/.credentials.json"
-    set +e
     cell1_auth_method="credentials_file"
   fi
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
@@ -142,9 +141,7 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
 
   # Sanitized settings.json copy
   if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
-    set +e
     cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
-    set +e
   fi
 fi
 
@@ -160,11 +157,9 @@ fi
 if [[ "$SKIP_CELLS" == "false" ]]; then
   HOOKS_JSON="$SANDBOX/plugins/cache/dhx-local/dhx/0.1.0/hooks/hooks.json"
   if [[ -f "$HOOKS_JSON" ]]; then
-    set +e
     jq 'del(.hooks.SessionStart)' "$HOOKS_JSON" > "$TMPROOT/hooks.tmp" \
       && mv "$TMPROOT/hooks.tmp" "$HOOKS_JSON"
     jq_rc=$?
-    set +e
 
     if [[ "$jq_rc" -ne 0 ]]; then
       echo "FATAL: jq mutation failed (rc=$jq_rc)"
@@ -176,10 +171,8 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
     else
       # Acceptance assertion — verify the mutation actually removed SessionStart
       # (RESEARCH MEDIUM-1 acceptance criterion):
-      set +e
       jq -e '.hooks | has("SessionStart")' "$HOOKS_JSON" >/dev/null 2>&1
       still_present_rc=$?
-      set +e
       if [[ "$still_present_rc" -eq 0 ]]; then
         echo "FATAL: post-jq SessionStart still present at .hooks.SessionStart — jq path mutation failed"
         cell_outcome="setup_failure"
@@ -213,10 +206,8 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
     FAIL=$((FAIL+1))
     SKIP_CELLS=true
   else
-    set +e
     sandbox_inode=$(stat -c %i "$SANDBOX_IP" 2>/dev/null)
     live_inode=$(stat -c %i "$LIVE_IP" 2>/dev/null || echo "MISSING")
-    set +e
     if [[ "$sandbox_inode" == "$live_inode" ]]; then
       echo "FATAL: inode collision (sandbox=$sandbox_inode live=$live_inode) — sandbox not isolated; ABORT before truncate"
       cell_outcome="setup_failure"
@@ -230,9 +221,7 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
       PASS=$((PASS+1))
 
       # Capture pre-state size for outcome JSON
-      set +e
       pre_size=$(stat -c %s "$SANDBOX_IP" 2>/dev/null || echo 0)
-      set +e
     fi
   fi
 fi
@@ -258,14 +247,11 @@ EOF
   pre_size="$pre_size_cell1"   # WR-01: pre_size in JSON reflects actual pre-Hn() state
                                # (post-fixture write), NOT the cp'd-live snapshot.
   echo "Cell 1 (default -p): wrote UNINSTALLED:dhx synthetic-v2 fixture ($pre_size_cell1 bytes); invoking claude -p (auth: $cell1_auth_method)"
-  set +e
   cell1_stderr=$(HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" timeout 30 claude -p "noop" </dev/null 2>&1 >/dev/null)
   cell1_rc=$?
-  set +e
   post_size=$(stat -c %s "$SANDBOX_IP" 2>/dev/null || echo 0)
 
   # Validate post-state JSON shape if non-zero, then check dhx + preservation of fakes
-  set +e
   if [[ "$post_size" -gt 0 ]] && jq -e . "$SANDBOX_IP" >/dev/null 2>&1; then
     json_validity_post=true
     if jq -e '.plugins["dhx@dhx-local"]' "$SANDBOX_IP" >/dev/null 2>&1; then
@@ -283,7 +269,6 @@ EOF
       post_fake_b=true
     fi
   fi
-  set +e
   echo "Cell 1 result: post_size=$post_size json_valid=$json_validity_post dhx_entry=$dhx_entry_present_post post_fake_a=$post_fake_a post_fake_b=$post_fake_b rc=$cell1_rc"
 fi
 
@@ -360,9 +345,7 @@ fi
 # Outcome JSON write (D-08 schema + sanitization; RESEARCH HIGH-1 live cc_version;
 # D-22 cell{N}_rc; D-23 per-cell auth_method; D-30 hostname-hash).
 # ----------------------------------------------------------------------------
-set +e
 CC_VERSION=$(claude --version 2>/dev/null | awk '{print $1}')
-set +e
 [[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)
