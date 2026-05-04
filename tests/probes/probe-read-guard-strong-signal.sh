@@ -98,6 +98,17 @@ build_sandbox() {
   if [[ -d "$idir/.claude" ]]; then
     cp -rL "$idir/.claude/"* "$sandbox/" 2>/dev/null || true
   fi
+  # Layer 4: credentials — seed instance-specific .credentials.json so claude -p
+  # can authenticate when CLAUDE_CONFIG_DIR=$sandbox overrides credential lookup.
+  # Without this, sandboxed claude -p hits apiKeySource=none → "Not logged in"
+  # (Wave 0 OQ1 plan-sanctioned INVALID). Per-instance creds at
+  # ~/.ccs/instances/$instance/.credentials.json (CCS topology — sibling to
+  # .claude/, not inside it). Mirrors heal probe pattern (BADJSON :120-123).
+  local instance_creds="$idir/.credentials.json"
+  if [[ -f "$instance_creds" ]]; then
+    cp "$(readlink -f "$instance_creds")" "$sandbox/.credentials.json"
+    chmod 600 "$sandbox/.credentials.json"
+  fi
 }
 
 # D-18e jq surgical unregister — live schema verified (top-level "hooks", PreToolUse path)
