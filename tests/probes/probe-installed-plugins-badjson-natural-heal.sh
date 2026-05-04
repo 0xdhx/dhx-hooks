@@ -351,8 +351,16 @@ OBSERVATIONS=$(jq -n \
 
 # JSON-time sanitizer: refuse to write if observations contain /home/, /Users/,
 # or system hostname. Defense-in-depth pairs with D-09 sync-public-mirror.sh scrub.
-HOST=$(hostname -s)
-if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
+# WR-05: empty $HOST would make the regex `(/home/|/Users/|)` match everything
+# (false-positive PII rejection); a hostname with regex specials (`host.local`)
+# would also expand to a non-literal match. Sentinel-substitute empty/localhost,
+# then escape regex specials before splicing into the alternation.
+HOST=$(hostname -s 2>/dev/null)
+if [[ -z "$HOST" ]] || [[ "$HOST" == "localhost" ]]; then
+  HOST="__no_host_check__"   # sentinel that won't match any real string
+fi
+HOST_ESCAPED=$(printf '%s' "$HOST" | sed 's/[][\\.*^$/+?(){}|]/\\&/g')
+if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST_ESCAPED)"; then
   echo "FATAL: observations contain PII; refusing write"
   exit 2
 fi
