@@ -15,6 +15,14 @@
 # + 2 negative controls = 20 total. Per-cell JSONL line emitted to schema-02-verdicts.jsonl.
 # Aggregator computes HIGH/MED/LOW per dynamic SCHEMA-05 (D-18c) at end of run.
 #
+# IN-05 DISCOVERABILITY: exit 0 is unconditional per SCHEMA-03 / D-03 — including
+# the pre-flight INVALID path (controls fail) and the no-evidence INVALID path
+# (no instance dirs present, WR-03 zero-cell guard). Consumers MUST parse
+# `classification=` from stdout (or use schema-02-verdicts.jsonl line count:
+# 2 = pre-flight INVALID, 3-19 = partial main, 20 = full matrix). CI runners
+# integrating the probe should grep `classification=` from stdout — exit-status
+# alone hides the INVALID/HIGH/MEDIUM/LOW distinction by design.
+#
 # WAVE 0 OQ1 OUTCOME (06-03 Task 1, 2026-05-04): claude -p in sandboxed CLAUDE_CONFIG_DIR
 # context returns "Not logged in" (apiKeySource=none). Both auth-failed and resume-mode
 # cells degrade to the same `inconclusive_harness_failure` verdict per D-18a. Matrix
