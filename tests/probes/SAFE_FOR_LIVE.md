@@ -38,7 +38,10 @@ asserts row count == file count.
 | `probe-hooks-wiring.sh` | yes | mktemp + full env-var override (HOME, DHX_HOOKS_MANIFEST, DHX_HOOKS_REPO_ROOT, DHX_HOOKS_INSTALL_DIR); never touches live repo |
 | `probe-install-plugin-idempotency.sh` | no | mktemp + fake HOME confines writes; invokes install-plugin.sh subprocess against fake CCS topology (Wave 1 tag preserved) |
 | `probe-install-plugin-multi-instance.sh` | no | mktemp + fake HOME confines writes; invokes install-plugin.sh subprocess against fake CCS topology (Wave 1 tag preserved) |
+| `probe-installed-plugins-badjson-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 BADJSON branch supersession probe — D-07a) |
 | `probe-installed-plugins-no-natural-heal.sh` | no | requires `ANTHROPIC_API_KEY`; runs real `claude` subprocess (supersession-watchdog) |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 UNINSTALLED:dhx@dhx-local branch supersession probe — D-07b) |
+| `probe-known-marketplaces-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 km mini-probe — D-11 HEAL-07) |
 | `probe-last-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
 | `probe-migration.js` | yes | re-implemented compare core; tmp-file fixtures via os.tmpdir |
 | `probe-new-milestone-promote-reminder.sh` | yes | mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation |
@@ -46,9 +49,11 @@ asserts row count == file count.
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
 | `probe-plugin-registry.sh` | yes | mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry |
 | `probe-read-cache-concurrency.sh` | yes | mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/` |
+| `probe-read-cache-d17-invariant.sh` | yes | read-only scan of live `~/.cache/dhx/read-cache.jsonl` (Phase 6 C3 SCHEMA-01 D-17 invariant scanner — Convention A exit 0/1/2; jq array-length counting per D-23) |
 | `probe-read-cache-cross-session.sh` | yes | mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME |
 | `probe-read-cache-prune-concurrency.sh` | yes | mktemp HOME isolation; adversarial prune contention contained in $TMPHOME |
 | `probe-read-cache.sh` | yes | mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx |
+| `probe-read-guard-strong-signal.sh` | yes | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched (D-18d sandbox isolation held; Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03) |
 | `probe-restart-plugins-stop-hook.sh` | yes | mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP |
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |

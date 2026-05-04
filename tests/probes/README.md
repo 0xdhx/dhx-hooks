@@ -60,6 +60,28 @@ When a supersession-watchdog probe needs to capture data from a long-running CC 
 | `probe-effort-level-stdin-absent.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-01 | `mkdir -p ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe && bash tests/probes/probe-effort-level-stdin-absent.sh` |
 | `probe-installed-plugins-no-natural-heal.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-02 + HP-025 | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-no-natural-heal.sh` |
 
+## Schema-evolution probes
+
+A probe is a **schema-evolution probe** when it answers "should we migrate this data shape?" — i.e., the probe enforces an invariant in current code and would surface as exit non-zero IF the code's data schema regressed. Distinct from supersession-watchdog (which asks "is upstream still broken?") and integration probes (which exercise composition).
+
+**Lifecycle:**
+- **Authored** alongside a v1.x scope where the question "should we migrate the schema?" needs an empirical answer.
+- **Re-run** at each milestone close to detect regression OR validate that the migration is needed.
+- **Retired** when the migration ships (REFUTE → close as not-needed; PASS → schedule v1.x impl phase).
+
+**Header tag convention:** schema-evolution probes carry `# SAFE_FOR_LIVE: yes` (read-only against live state by design — they SCAN, they don't mutate). Per D-24 strengthened parity test, every probe in `tests/probes/*.sh` MUST carry the `# SAFE_FOR_LIVE:` header (yes or no); missing headers fail the parity test.
+
+**Soft-verdict semantics (SCHEMA-02 pattern):** observation-only probes emit per-cell JSONL verdicts; aggregator computes HIGH/MED/LOW consensus per SCHEMA-05. HIGH gate required for irreversible decisions. Anything other than HIGH defaults to REFUTE preserving the existing branch. Per D-18a (cross-AI review), verdicts derive from CC's structured event stream (`claude -p --output-format stream-json --include-hook-events --verbose`), NOT from file content.
+
+**Multi-cell matrix protocol (SCHEMA-04):** when the probe needs cross-axis evidence, follow HP-024 precedent: full cross-product (e.g., 3 instances × 3 modes × 2 sessions = 18 main cells) + 2 negative-control cells running as a PRE-FLIGHT GATE (D-18f). Pre-register protocol in phase CONTEXT.md before any cell runs. Aggregator threshold is dynamic (D-18c): `main_cells = total - 2`; HIGH = 100% main rejected; MED = ≥80%; LOW otherwise; INVALID = control failure.
+
+**Current schema-evolution probes:**
+
+| Probe | Backs | Run |
+|-------|-------|-----|
+| `probe-read-cache-d17-invariant.sh` | decisions.md 2026-05-03 SCHEMA-01 row + REQ READ-FUT-01 | `bash tests/probes/probe-read-cache-d17-invariant.sh` (~1s) |
+| `probe-read-guard-strong-signal.sh` | decisions.md 2026-05-03 SCHEMA-02 row + REQ READ-FUT-02 + 20-cell aggregator | `bash tests/probes/probe-read-guard-strong-signal.sh` (operator-invoked; ~9-15min wallclock; DOES NOT fit inside `run-probes.sh` 30s/probe budget — invoke directly) |
+
 ## Current probes
 
 | Probe | Backs | Run |

@@ -12,8 +12,8 @@
 # and by future probe-suite-gated work.
 #
 # Run directly:
-#   bash scripts/run-probes.sh                              # bare — all non-supersession probes
-#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes   # health.sh delegate (D-26)
+#   bash scripts/run-probes.sh                              # bare — defaults to --filter SAFE_FOR_LIVE=yes (D-14)
+#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes   # explicit health.sh delegate (D-26)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=no    # sandbox-only (D-26+D-27)
 # Exit code 0 = all probes passed. Nonzero = at least one probe failed
 # or timed out (124). Exit 2 = invalid flag value or D-27 PWD+CONFIG_DIR
@@ -37,9 +37,11 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
       GIT_PREFIX GIT_INTERNAL_GETTEXT_SH_SCHEME GIT_REFLOG_ACTION
 
 # ----- D-26: --filter SAFE_FOR_LIVE=yes|no flag (Phase 4 Plan 02) -----
-# Composition rule: SUPERSESSION_WATCHDOGS skip applies first; --filter applies
-# to the REMAINING set. Bare invocation (no --filter) preserves backward compat
-# for verify-hook-patterns.sh check #8 + sync-public-mirror.sh:413 consumers.
+# Bare invocation defaults to SAFE_FOR_LIVE=yes — supersession-watchdog probes
+# (and any other SAFE_FOR_LIVE=no) are skipped via header-tag match through the
+# existing matches_filter() loop, not via a hardcoded array. (D-14; backlog
+# 2026-05-01-retire-supersession-watchdogs-hardcoded-list-via-filter-flag.md
+# trigger fired Phase 6 C1 — 3 new SAFE_FOR_LIVE=no probes shipped.)
 FILTER_KEY=""
 FILTER_VAL=""
 while [[ $# -gt 0 ]]; do
@@ -85,24 +87,14 @@ PASS=0
 TIMEOUT=0
 SKIPPED=0
 
-# Supersession-watchdog probes (D-12) are operator-invoked manually with
-# specific environment requirements (e.g. ANTHROPIC_API_KEY for --bare cells).
-# They emit Convention A exit codes (0/1/2) that don't map to suite pass/fail
-# semantics. Skip them here; they're run on-demand per phase 03 plan 03.
-SUPERSESSION_WATCHDOGS=(
-  "probe-installed-plugins-no-natural-heal.sh"
-)
-
-is_supersession_watchdog() {
-  local base="$1"
-  for s in "${SUPERSESSION_WATCHDOGS[@]}"; do
-    [ "$base" = "$s" ] && return 0
-  done
-  return 1
-}
+# D-14 default-injection (Phase 6 C4): bare invocation defaults to
+# SAFE_FOR_LIVE=yes — supersession-watchdog probes (and any other
+# SAFE_FOR_LIVE=no) are skipped via header-tag match through the existing
+# matches_filter() loop, not via a hardcoded array. (D-14; backlog
+# 2026-05-01-retire-supersession-watchdogs-hardcoded-list-via-filter-flag.md)
+if [[ -z "$FILTER_KEY" ]]; then FILTER_KEY="SAFE_FOR_LIVE"; FILTER_VAL="yes"; fi
 
 # D-26: filter check — returns 0 (run) if filter passes, 1 (skip) if filter excludes.
-# Composition: caller invokes is_supersession_watchdog FIRST; only on miss does it call this.
 matches_filter() {
   local file="$1"
   [[ -z "$FILTER_KEY" ]] && return 0   # bare invocation — no filter
@@ -123,12 +115,6 @@ matches_filter() {
 
 for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   [ -e "$p" ] || continue
-  if is_supersession_watchdog "$(basename "$p")"; then
-    echo "[SKIPPED] $(basename "$p") — supersession-watchdog probe, run manually with required env"
-    SKIPPED=$((SKIPPED+1))
-    echo "---"
-    continue
-  fi
   if ! matches_filter "$p"; then
     echo "---"
     continue
