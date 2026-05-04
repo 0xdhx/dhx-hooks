@@ -53,7 +53,7 @@ asserts row count == file count.
 | `probe-read-cache-cross-session.sh` | yes | mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME |
 | `probe-read-cache-prune-concurrency.sh` | yes | mktemp HOME isolation; adversarial prune contention contained in $TMPHOME |
 | `probe-read-cache.sh` | yes | mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx |
-| `probe-read-guard-strong-signal.sh` | yes | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched (D-18d sandbox isolation held; Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03) |
+| `probe-read-guard-strong-signal.sh` | no | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched. **Re-classified to `no` by Phase 6 CR-01 (commit `4774a73`):** read-only against live state by intent, but routed through SAFE_FOR_LIVE=no because 9-15min wallclock exceeds run-probes.sh 30s/probe budget — operator-invoked only (Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03). See "Long-runtime / auth-required probes — invocation runbook" below. |
 | `probe-restart-plugins-stop-hook.sh` | yes | mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP |
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |
@@ -112,3 +112,29 @@ asserts row count == file count.
   mktemp). Classified `yes` because the live touch is read-only and the
   predictable `/tmp` paths are conventional fixture handling, not live-state
   mutation.
+
+## Long-runtime / auth-required probes — invocation runbook
+
+Authored 2026-05-03 from Phase 6 CR-01 follow-on. These probes are tagged
+`SAFE_FOR_LIVE: no` and excluded from the default `bash scripts/run-probes.sh`
+sweep (which filters `SAFE_FOR_LIVE=yes`). They run a real `claude -p`
+subprocess against a sandboxed `CLAUDE_CONFIG_DIR`, require auth, and
+exceed the 30s/probe wrapper budget.
+
+| Probe | Runtime | Auth | Sandbox | Operator command |
+|-------|---------|------|---------|------------------|
+| `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` OR seeded `~/.claude/.credentials.json` (cell 1); `ANTHROPIC_API_KEY` only (cell 2) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
+| `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
+| `probe-read-guard-strong-signal.sh` | ~9-15min | seed `~/.claude/.credentials.json` into sandbox `CLAUDE_CONFIG_DIR` (D-18d sandbox loses live credential reachability; current Wave 0 OQ1 INVALID state caused by `apiKeySource=none` in sandboxed subprocess) | mktemp + cp -rL dhx-plugin/ + ~/.claude/plugins/ + `CLAUDE_CONFIG_DIR=$SANDBOX` | `cp ~/.claude/.credentials.json $SANDBOX/.credentials.json && bash tests/probes/probe-read-guard-strong-signal.sh` (operator must seed credentials inside the sandbox per probe internals) |
+
+**Routing via `--probes-unsafe`:** `bash scripts/run-probes.sh --probes-unsafe`
+delegates to `--filter SAFE_FOR_LIVE=no` and runs all four probes (plus any
+other `no`-tagged probes). Refused if `PWD` or `CLAUDE_CONFIG_DIR` resolves
+under `~/.ccs` (D-27 sandboxing gate). Direct `bash <probe>` invocation
+bypasses the wrapper entirely — preferred for long-runtime probes that
+exceed the 30s/probe budget.
+
+**Outcome consumption:**
+- Heal probes: per-cell outcome JSON at `tests/probes/.results/v1.2-phase-6/<probe>.json`. Convention A exit semantics (0/1/2 all valid).
+- SCHEMA-02 probe: per-cell verdicts at `tests/probes/.results/v1.2-phase-6/schema-02-verdicts.jsonl`. exit 0 unconditional per D-03 / SCHEMA-03; consumers MUST grep `classification=` from stdout (HIGH/MEDIUM/LOW/INVALID per D-18c + WR-03 zero-cell guard) — exit-status alone hides INVALID. Mapping: HIGH → READ-FUT-02-IMPL trigger; everything else → REFUTE-default per SCHEMA-05 (READ-FUT-02 closes as not-needed).
