@@ -66,6 +66,7 @@ asserts row count == file count.
 | `probe-sym-health-override.js` | yes | mkdtempSync; tmp-file fixtures only |
 | `probe-test-gate-cgroup.sh` | no | invokes real `systemd-run --user --scope` to enforce cgroup MemoryMax / RuntimeMaxSec on subprocesses; HOME / TMPDIR / CLAUDE_PROJECT_DIR all override to per-scenario mktemp dir, but the transient systemd-run scope units land under live user@.service (self-cleanup on exit; not config drift) |
 | `probe-tiers-parity.sh` | yes | read-only grep + jq parse over repo files; no live mutation (Wave 2 tag preserved) |
+| `probe-v1-1-1-gate.sh` | yes | read-only: git log + stat + pgrep + ps + jq -e against settings.json + bash scripts/verify-hooks.sh (also read-only); 8 env-var overrides for companion-test injection (DHX_PROBE_*); no FS writes (Phase 7 LEGACY closure doctrine artifact) |
 | `probe-watch-check.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-worktree-bash-guard.sh` | yes | hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution) |
