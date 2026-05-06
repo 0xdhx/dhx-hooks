@@ -10,7 +10,6 @@
 # Output file: <CLAUDE_CONFIG_DIR-resolved>/projects/<encoded-cwd>/.current-session.id
 # Format    : <session_id>\t<transcript_path>\t<cwd>\t<iso8601-ts>\n  (single TSV line)
 #
-# Spec: ~/repos/skills/reports/2026-05-03-session-id-jsonl-context-spec.md
 # Known limitation (R-2): parallel CC sessions in the same cwd race; last writer
 # wins. Resolver's mtime-newest fallback recovers the right value at synthesis time.
 # Known limitation (R-4 / HP-012): hook does not fire for the session it was
