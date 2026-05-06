@@ -82,6 +82,16 @@
             "command": "bash \"$HOME/.claude/hooks/dhx-read-cache.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use-gh-issue-create.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
