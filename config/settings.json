@@ -141,6 +141,9 @@
       "Read(~/.aws/**)",
       "Read(~/.ssh/**)",
       "Bash(*|*taskkill*)",
+      "Bash(*get-shit-done-cc *)",
+      "Bash(*npm i*get-shit-done*)",
+      "Bash(*npx*get-shit-done*)",
       "Bash(chmod -R 777 *)",
       "Bash(dd if=*)",
       "Bash(git push --force *)",
@@ -206,7 +209,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$HOME/.claude/hooks/gsd-read-injection-scanner.js\"",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-read-injection-scanner.js\"",
             "timeout": 5
           }
         ]
@@ -218,7 +221,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$HOME/.claude/hooks/gsd-prompt-guard.js\"",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-prompt-guard.js\"",
             "timeout": 5
           }
         ]
@@ -237,7 +240,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/home/dhx/.claude/hooks/gsd-workflow-guard.js\"",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"/home/dhx/.claude/hooks/gsd-workflow-guard.js\"",
             "timeout": 5
           }
         ]
@@ -276,10 +279,15 @@
       }
     }
   },
-  "effortLevel": "medium",
+  "effortLevel": "xhigh",
   "awaySummaryEnabled": true,
   "tui": "fullscreen",
+  "voice": {
+    "enabled": true,
+    "mode": "hold"
+  },
   "skipDangerousModePermissionPrompt": true,
   "remoteControlAtStartup": true,
-  "agentPushNotifEnabled": false
+  "agentPushNotifEnabled": false,
+  "voiceEnabled": true
 }
