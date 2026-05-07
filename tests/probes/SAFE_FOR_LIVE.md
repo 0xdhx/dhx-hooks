@@ -65,6 +65,7 @@ asserts row count == file count.
 | `probe-statusline-wrapper.js` | yes | pure require + helper function tests; no FS writes |
 | `probe-sym-health-override.js` | yes | mkdtempSync; tmp-file fixtures only |
 | `probe-test-gate-cgroup.sh` | no | invokes real `systemd-run --user --scope` to enforce cgroup MemoryMax / RuntimeMaxSec on subprocesses; HOME / TMPDIR / CLAUDE_PROJECT_DIR all override to per-scenario mktemp dir, but the transient systemd-run scope units land under live user@.service (self-cleanup on exit; not config drift) |
+| `probe-test-gate-phase-aware.sh` | yes | mktemp + HOME / TMPDIR / CLAUDE_PROJECT_DIR overrides; per-fixture `git init` confines git state to the sandbox; runner is a stub `python` that records argv (no real pytest); no live writes (2026-05-07 phase-aware skip regression probe) |
 | `probe-tiers-parity.sh` | yes | read-only grep + jq parse over repo files; no live mutation (Wave 2 tag preserved) |
 | `probe-v1-1-1-gate.sh` | yes | read-only: git log + stat + pgrep + ps + jq -e against settings.json + bash scripts/verify-hooks.sh (also read-only); 8 env-var overrides for companion-test injection (DHX_PROBE_*); no FS writes (Phase 7 LEGACY closure doctrine artifact) |
 | `probe-watch-check.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |

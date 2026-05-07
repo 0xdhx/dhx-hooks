@@ -22,6 +22,11 @@
 #   2. .claude/skip-test-gate sentinel
 #   3. .claude/test-gate.json {"enabled": false}
 #
+# Phase-aware skip (post-source-flag, pre-runner): defers the gate when the
+# project's .planning/STATE.md shows mid-execute AND a HEAD-reachable PLAN.md
+# contracts intentional RED commits AND HEAD is not the GREEN-flip commit.
+# Fail-soft: any check error → run the gate normally.
+#
 # Guard 1: stop_hook_active boolean (official API — true on second+ firing)
 # Guard 2: file-based counter keyed by session_id (handles edge cases where
 #          stop_hook_active resets unexpectedly: compaction, crashes, #9602)
@@ -138,6 +143,57 @@ fi
 # Flag exists → source was written. Consume it.
 rm -f "$SOURCE_FLAG"
 log "Source files written this turn → running tests"
+
+# --- Phase-aware skip: defer gate during intentional-RED phase windows ---
+# When a multi-plan phase is mid-execute and a HEAD-reachable PLAN.md
+# contracts intentional RED commits (D-05(v) bisectable RED→GREEN), the Stop
+# hook fires between Wave-1 RED and Wave-2 GREEN-flip and reports
+# RED-by-design tests as failures. Skip when ALL THREE conditions hold; the
+# user's `/dhx:test {phase}` is the structured verification path. Defense-in-
+# depth alongside any plan-side `it.fails()`-style convention.
+#
+# Fail-soft: any check that errors → don't skip → run the gate normally. The
+# skip path must NOT be more trusted than the alarm path.
+PHASE_SKIP_REASON=""
+PHASE_SKIP_PHASE=""
+STATE_FILE="$PROJECT_DIR/.planning/STATE.md"
+if [ -f "$STATE_FILE" ] && \
+   grep -qiE '^status:[[:space:]]*executing' "$STATE_FILE" 2>/dev/null; then
+  # HEAD-reachable PLAN.md walk. `git log -50` narrows search; sort -u dedupes
+  # plans modified across multiple commits. Any pipeline error → empty list.
+  PLAN_FILES=$(cd "$PROJECT_DIR" 2>/dev/null && \
+    git log -50 --pretty=format: --name-only 2>/dev/null \
+      | grep -E '^\.planning/phases/.+/.+-PLAN\.md$' | sort -u || true)
+  if [ -n "$PLAN_FILES" ]; then
+    while IFS= read -r plan; do
+      [ -z "$plan" ] && continue
+      plan_content=$(cd "$PROJECT_DIR" 2>/dev/null && git show "HEAD:$plan" 2>/dev/null) || continue
+      if grep -qE '(RED|D-05\(v\)|intentional.*failure|expected.*failure|bisectable)' <<< "$plan_content" 2>/dev/null; then
+        PHASE_SKIP_PHASE=$(echo "$plan" | sed -nE 's|.*/phases/([^/]+)/.*|\1|p')
+        PHASE_SKIP_REASON="phase contracts intentional RED at $plan"
+        break
+      fi
+    done <<< "$PLAN_FILES"
+  fi
+  # Override: if HEAD's commit subject names GREEN/flip, the user wants the
+  # gate to run and verify the flip — clear the skip reason.
+  if [ -n "$PHASE_SKIP_REASON" ]; then
+    HEAD_MSG=$(cd "$PROJECT_DIR" 2>/dev/null && git log -1 --format=%s HEAD 2>/dev/null) || HEAD_MSG=""
+    if grep -qiE '\b(green|flip)\b|\(GREEN\)' <<< "$HEAD_MSG" 2>/dev/null; then
+      log "Phase-aware: HEAD subject names GREEN/flip ('$HEAD_MSG') → running gate"
+      PHASE_SKIP_REASON=""
+    fi
+  fi
+fi
+
+if [ -n "$PHASE_SKIP_REASON" ]; then
+  PHASE_DISPLAY="${PHASE_SKIP_PHASE:-the active phase}"
+  SKIP_MSG="[stop-hook] Skipping test-gate: $PHASE_SKIP_REASON. Re-run /dhx:test $PHASE_DISPLAY for verification."
+  log "Phase-aware skip: $PHASE_SKIP_REASON (phase=$PHASE_DISPLAY)"
+  jq -nc --arg msg "$SKIP_MSG" '{hookSpecificOutput:{hookEventName:"Stop",additionalContext:$msg}}'
+  rm -f "$COUNTER_FILE"
+  exit 0
+fi
 
 # --- Detect test runner (9-step cascade → TEST_RUNNER_ARGV array) ---
 cd "$PROJECT_DIR" || exit 0
