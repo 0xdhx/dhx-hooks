@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# dhx-execute-checkpoint.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011
+# dhx-execute-checkpoint.sh — SubagentStop hook
+# Patterns: HP-011, HP-021
 # Injects drift detection calibration when a gsd-executor agent completes.
 # Advisory only — no blocking.
+#
+# 2026-05-07 event migration: PostToolUse:Agent → SubagentStop. PostToolUse:Agent
+# fires AT DISPATCH for run_in_background=true (HP-011 addendum) — the checkpoint
+# would ask for a drift review against work that didn't exist yet. SubagentStop
+# fires on actual subagent completion (HP-021, CC 2.1.112). Stdin shape changes:
+# `tool_input.subagent_type` → `agent_type`. The fallback to the old shape is
+# kept during the transition window for stale-snapshot safety per HP-012.
 #
 # 2026-05-03 once-per-phase gate (Tier 1 plugin token-reduction Step 2/2):
 # Original Apr-6 design fired per-plan; the matcher migration preserved
@@ -16,7 +23,7 @@ INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-AGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // empty')
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // .tool_input.subagent_type // empty')
 
 # Gate: Only gsd-executor completions
 [ "$AGENT_TYPE" != "gsd-executor" ] && exit 0
@@ -58,7 +65,7 @@ fi
 cat << 'ENDJSON'
 {
   "hookSpecificOutput": {
-    "hookEventName": "PostToolUse",
+    "hookEventName": "SubagentStop",
     "additionalContext": "EXECUTION CHECKPOINT — Executor plan completed. Before proceeding to the next plan or ending the session, verify:\n1. Do committed changes match CONTEXT.md decisions? Check for silent descoping or scope creep.\n2. Were any CONTEXT.md decisions modified during implementation without recording the deviation?\n3. Are there deferred items from implementation that need /dhx:capture?\nIf drift is detected, flag it now — don't wait for end-of-session review."
   }
 }

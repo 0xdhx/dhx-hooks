@@ -135,6 +135,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-execute-checkpoint.sh\""
           },
           {
@@ -144,11 +155,6 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-audit-checkpoint.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
-            "timeout": 10
           }
         ]
       }

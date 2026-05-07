@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# dhx-execute-review.sh — PostToolUse hook (Agent matcher)
-# Patterns: HP-011
+# dhx-execute-review.sh — SubagentStop hook
+# Patterns: HP-011, HP-021
 # Injects execution fidelity review when a gsd-verifier agent completes
 # during an active phase execution. Catches plan-to-execution drift at
 # the moment verification completes, before the session ends.
 # Advisory only — no blocking.
+#
+# 2026-05-07 event migration: PostToolUse:Agent → SubagentStop. PostToolUse:Agent
+# fires AT DISPATCH for run_in_background=true (HP-011 addendum); the review
+# would arrive against work that hadn't run yet. SubagentStop fires on actual
+# subagent completion (HP-021, CC 2.1.112). Stdin shape changes:
+# `tool_input.subagent_type` → `agent_type`. Old-shape fallback retained for
+# the transition window per HP-012 (stale-snapshot safety).
 #
 # 2026-05-03 consolidation: absorbed dhx-post-execute-review.sh — both fired
 # lockstep on gsd-verifier completion (47/49 firings/7d). Phase number is
@@ -15,7 +22,7 @@ INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-AGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // empty')
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // .tool_input.subagent_type // empty')
 
 # Gate: Only gsd-verifier completions
 [ "$AGENT_TYPE" != "gsd-verifier" ] && exit 0
@@ -59,4 +66,4 @@ fi
 
 CTX="${PREAMBLE} Apply fidelity review before session ends:\n1. PLAN-TO-EXECUTION FIDELITY: Compare each completed task against its plan description, not just the task title. Were any tasks simplified during implementation without flagging?\n2. CONTEXT-TO-CODE FIDELITY: Do committed changes align with CONTEXT.md decisions? Or was a different interpretation quietly built? Diff the intent against the result.\n3. SILENT DESCOPING: Were any plan tasks dropped or partially implemented without recording the deviation? Check for tasks that disappeared between plan and execution summary.\nIf drift is detected on any of these, flag it now with specific evidence — don't let it compound into downstream phases.\nRun /dhx:execute (no args) for the full review."
 
-jq -n --arg ctx "$CTX" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}'
+jq -n --arg ctx "$CTX" '{hookSpecificOutput: {hookEventName: "SubagentStop", additionalContext: $ctx}}'
