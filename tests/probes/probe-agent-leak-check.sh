@@ -321,8 +321,21 @@ jq -e '.hooks.SubagentStop[] | .hooks[] | select(.command | contains("dhx-agent-
   || check "[13b] leak-check registered on SubagentStop" fail
 PA_AGENT_BLOCKS=$(jq '[.hooks.PostToolUse[] | select(.matcher == "Agent")] | length' "$MANIFEST" 2>/dev/null)
 [[ "$PA_AGENT_BLOCKS" == "0" ]] && check "[13c] PostToolUse:Agent block REMOVED" pass || check "[13c] PostToolUse:Agent block REMOVED (got $PA_AGENT_BLOCKS)" fail
-SUBAGENT_STOP_COUNT=$(jq '.hooks.SubagentStop[0].hooks | length' "$MANIFEST" 2>/dev/null)
-[[ "$SUBAGENT_STOP_COUNT" == "4" ]] && check "[13d] SubagentStop block grew from 3 to 4 entries" pass || check "[13d] SubagentStop block has 4 entries (got $SUBAGENT_STOP_COUNT)" fail
+# WR-04: assert leak-check is the LAST entry in the SubagentStop block, not
+# that the block has exactly 4 entries. Hardcoding count==4 is brittle — the
+# next legitimate hook added to SubagentStop (catch-all event for subagent
+# completion; obvious roadmap appetite for new SubagentStop hooks) breaks
+# this assertion even though leak-check is still correctly registered. The
+# semantically meaningful invariant — "leak-check IS in the block" — is
+# already covered by [13b]; the additional ordering invariant ("leak-check
+# is the LAST entry, i.e. fires AFTER the other SubagentStop hooks") is
+# robust to future SubagentStop additions and still catches accidental
+# de-registration / displacement.
+LAST_CMD=$(jq -r '.hooks.SubagentStop[0].hooks[-1].command' "$MANIFEST" 2>/dev/null)
+case "$LAST_CMD" in
+  *dhx-agent-leak-check.sh*) check "[13d] leak-check is LAST in SubagentStop block (ordering invariant)" pass ;;
+  *) check "[13d] leak-check is LAST in SubagentStop block (got tail=${LAST_CMD})" fail ;;
+esac
 
 # === [14] D-07 FIFO correlation: parent-state mutation between back-to-back snapshots ===
 # Premise (D-07): wave-execute parent-state is invariant within a back-to-back
