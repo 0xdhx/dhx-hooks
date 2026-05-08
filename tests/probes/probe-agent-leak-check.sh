@@ -96,17 +96,25 @@ check() {
   fi
 }
 
+# WR-05: build JSON via `jq -n --arg`, NOT `printf '%s'`. printf-templated
+# JSON is unsafe for any input containing `"`, backslash, or control chars —
+# the resulting payload would be malformed and the probe's malformed-JSON
+# branch [12] would start triggering for the wrong reason in OTHER scenarios.
+# Current usage is ASCII-safe (session tags, mktemp paths, hardcoded subagent
+# strings), but the production hooks use jq -n --arg by design (snapshot.sh:64);
+# matching that pattern in the probe removes a latent foot-gun before a future
+# probe extension trips it.
 pre_input() {
   local sid="$1" cwd="$2" iso="${3:-worktree}" agent="${4:-test}"
-  printf '{"session_id":"%s","cwd":"%s","tool_input":{"isolation":"%s","subagent_type":"%s"}}' \
-    "$sid" "$cwd" "$iso" "$agent"
+  jq -n --arg sid "$sid" --arg cwd "$cwd" --arg iso "$iso" --arg agent "$agent" \
+    '{session_id:$sid, cwd:$cwd, tool_input:{isolation:$iso, subagent_type:$agent}}'
 }
 
 post_input() {
   local sid="$1" cwd="$2" agent="${3:-test}"
   # SubagentStop payload (HP-021 verified key set; 4 keys sufficient — check.sh only reads session_id).
-  printf '{"agent_type":"%s","session_id":"%s","cwd":"%s","hook_event_name":"SubagentStop"}' \
-    "$agent" "$sid" "$cwd"
+  jq -n --arg agent "$agent" --arg sid "$sid" --arg cwd "$cwd" \
+    '{agent_type:$agent, session_id:$sid, cwd:$cwd, hook_event_name:"SubagentStop"}'
 }
 
 # Helper: append matching baseline + meta files for a session to BASELINES tracking.
