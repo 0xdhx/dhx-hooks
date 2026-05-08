@@ -39,6 +39,55 @@ FAIL=0
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
 
+# --- D-18: write_outcome() shell function — DRY single source of truth ----
+# Args: $1=arm, $2=run_id, $3=conclusion, $4=exit_code, $5=observations_json
+# Path layout per D-08: tests/probes/.results/v1.3-phase-9/<cc_version>/<arm>-<run_id>.json
+# Deterministic baseline path: <cc_version>/fixtures-only-baseline.json (no ts field per G-02)
+write_outcome() {
+  local arm="$1" run_id="$2" conclusion="$3" exit_code_arg="$4" observations="$5"
+  local cc_version
+  cc_version=$(timeout 1s claude --version 2>/dev/null | awk '{print $1}' || echo "unknown")
+  [[ -n "$cc_version" ]] || cc_version="unknown"
+
+  local out_dir_base="$REPO_ROOT/tests/probes/.results/v1.3-phase-9"
+  local out_dir="$out_dir_base/$cc_version"
+  mkdir -p "$out_dir"
+
+  local out_file
+  if [[ "$arm" == "fixtures-only" && "$run_id" == "baseline" ]]; then
+    # Deterministic baseline (G-02): no ts field, has built_against_cc_version
+    out_file="$out_dir/fixtures-only-baseline.json"
+    jq -n \
+      --arg id "probe-subagent-stop-sync" \
+      --argjson code "$exit_code_arg" \
+      --arg built_cc "$cc_version" \
+      --arg arm "$arm" \
+      --arg run "$run_id" \
+      --argjson obs "$observations" \
+      --arg conc "$conclusion" \
+      '{probe_id:$id, exit_code:$code, exit_code_convention:"exit_0_means_subagent_stop_fires_for_arm", built_against_cc_version:$built_cc, arm:$arm, run_id:$run, observations:$obs, conclusion:$conc}' \
+      > "$out_file"
+  else
+    # Live (or non-baseline fixtures) outcome: includes ts; gitignored per D-08
+    out_file="$out_dir/${arm}-${run_id}.json"
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq -n \
+      --arg id "probe-subagent-stop-sync" \
+      --argjson code "$exit_code_arg" \
+      --arg cc "$cc_version" \
+      --arg ts "$ts" \
+      --arg run "$run_id" \
+      --arg arm "$arm" \
+      --argjson obs "$observations" \
+      --arg conc "$conclusion" \
+      '{probe_id:$id, exit_code:$code, exit_code_convention:"exit_0_means_subagent_stop_fires_for_arm", cc_version:$cc, ts:$ts, run_id:$run, arm:$arm, observations:$obs, conclusion:$conc}' \
+      > "$out_file"
+  fi
+
+  echo "OK   outcome-json-written: $out_file"
+}
+
 assert_eq() {
   local name="$1" got="$2" want="$3"
   if [[ "$got" == "$want" ]]; then
@@ -60,6 +109,8 @@ assert_eq "fixture: bg flag-parse arm" "$got_arm" "bg"
 if [[ ! -d "$PROBE_DIR" ]]; then
   echo "---"
   echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: install -d -m 700 $PROBE_DIR)"
+  # D-18 + G-02: deterministic fixtures-only baseline write
+  write_outcome "fixtures-only" "baseline" "fixtures_only_baseline" 0 '{}'
   if [[ "$FAIL" -eq 0 ]]; then
     exit 0
   else
@@ -109,14 +160,15 @@ trap '[[ -n "$MANIFEST_BAK" && -f "$MANIFEST_BAK" ]] && mv "$MANIFEST_BAK" "$MAN
 
 case "${DHX_PROBE_FORCE_RED:-}" in
   broken-marker)
-    # Sentinel-file mechanism: marker hook (Plan 02) checks for
-    # $PROBE_DIR/force-red-broken-marker file and exits without writing capture.
-    # File-sentinel works across CC's hook subprocess boundary (env vars do not
-    # reliably propagate per HP-011). Plan 02 Task 4 will add the touch call.
-    # In RED scaffolding (this commit), no marker exists at all — falls through
-    # to the normal capture path which also FAILs no-capture. Inversion
-    # (FAIL→PASS) logic gates on EXPECT_FAIL at the classification step.
-    echo "DHX_PROBE_FORCE_RED=broken-marker — expecting FAIL no-capture as PASS (probe catches broken marker)"
+    # File-sentinel mechanism (env vars do not propagate across CC's hook
+    # subprocess boundary per HP-011 — file-sentinel works cross-process).
+    # Marker hook checks for $PROBE_DIR/force-red-broken-marker and exits
+    # without writing capture; probe expects FAIL no-capture as PASS.
+    SENTINEL_FILE="$PROBE_DIR/force-red-broken-marker"
+    touch "$SENTINEL_FILE"
+    # Sentinel cleanup is handled by the live-capture block trap (D-09 hoist
+    # in Plan 01 — single trap site, force-red-* glob covers this sentinel).
+    echo "DHX_PROBE_FORCE_RED=broken-marker — sentinel file created at $SENTINEL_FILE; expecting FAIL no-capture as PASS"
     EXPECT_FAIL=1
     ;;
   missing-from-manifest)
@@ -221,6 +273,50 @@ if [[ "${EXPECT_FAIL:-0}" -eq 1 ]]; then
     conclusion="red_state_missed"
   fi
 fi
+
+# --- Outcome JSON write (D-04 (b) + (d) refined by D-08; D-18 DRY refactor) ---
+# Build per-arm observation block + invoke write_outcome
+# D-30 hostname-hash for synthetic identifier (PII surface — paths-summarized)
+HOSTNAME_HASH=$(printf '%s' "$(hostname -s)" | sha256sum | awk '{print $1}')
+
+if [[ -s "$CAPTURE_FILE" ]] && jq -e . "$CAPTURE_FILE" >/dev/null 2>&1; then
+  payload_keys=$(jq -c '.payload | keys' "$CAPTURE_FILE" 2>/dev/null || echo "[]")
+  marker_version_captured=$(jq -r '.metadata.marker_version // 0' "$CAPTURE_FILE" 2>/dev/null || echo "0")
+  captured_at_field=$(jq -r '.metadata.captured_at // ""' "$CAPTURE_FILE" 2>/dev/null || echo "")
+else
+  payload_keys="[]"
+  marker_version_captured=0
+  captured_at_field=""
+fi
+
+ARM_OBSERVATION=$(jq -n \
+  --argjson fired "$(if [[ "$exit_code" -eq 0 ]]; then echo true; else echo false; fi)" \
+  --argjson elapsed_seconds "${ELAPSED:-0}" \
+  --argjson payload_top_level_keys "$payload_keys" \
+  --argjson marker_version "$marker_version_captured" \
+  --arg captured_at "$captured_at_field" \
+  '{fired: $fired, elapsed_seconds: $elapsed_seconds, payload_top_level_keys: $payload_top_level_keys, marker_version: $marker_version, captured_at: $captured_at}')
+
+if [[ "${ARM:-}" == "sync" ]]; then
+  OBSERVATIONS=$(jq -n --argjson sync "$ARM_OBSERVATION" --arg published_from_hostname "$HOSTNAME_HASH" \
+    '{sync_arm: $sync, bg_arm: null, published_from_hostname: $published_from_hostname}')
+elif [[ "${ARM:-}" == "bg" ]]; then
+  OBSERVATIONS=$(jq -n --argjson bg "$ARM_OBSERVATION" --arg published_from_hostname "$HOSTNAME_HASH" \
+    '{sync_arm: null, bg_arm: $bg, published_from_hostname: $published_from_hostname}')
+else
+  OBSERVATIONS=$(jq -n --arg published_from_hostname "$HOSTNAME_HASH" \
+    '{sync_arm: null, bg_arm: null, published_from_hostname: $published_from_hostname}')
+fi
+
+# JSON-time PII sanitizer (D-21 load-bearing gate)
+HOST=$(hostname -s)
+if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
+  echo "FATAL: observations contain PII; refusing write"
+  exit 2
+fi
+
+write_outcome "${ARM:-unknown}" "${RUN_ID:-unknown}" "$conclusion" "$exit_code" "$OBSERVATIONS"
+PASS=$((PASS+1))
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL  arm=${ARM:-fixtures-only}  conclusion=$conclusion  exit_code=$exit_code"
