@@ -34,8 +34,17 @@ CWD=$(jq -r '.cwd // empty' <<<"$INPUT" 2>/dev/null)
 [[ -d "$CWD/.git" || -f "$CWD/.git" ]] || exit 0
 
 # Don't snapshot when dispatching FROM inside a worktree (parent is a subtree
-# and main-repo state is the responsibility of the outer dispatch)
-[[ "$CWD" == *".claude/worktrees/"* ]] && exit 0
+# and main-repo state is the responsibility of the outer dispatch).
+# WR-08: explicit `if` form for guard clauses under set -e. The
+# `[[ TEST ]] && exit 0` idiom is set-e-fragile — when TEST is false, the
+# compound returns 1, and although `set -e` doesn't abort here today (because
+# `[[ ]]` is part of an && list, exempt per bash manual), the safety relies
+# on a non-obvious bash rule. A future "simplification" to `[[ ]] || exit 0`
+# would silently flip the semantics. The explicit form matches the rest of
+# this script (line 41) and check.sh:54.
+if [[ "$CWD" == *".claude/worktrees/"* ]]; then
+  exit 0
+fi
 
 SESSION=$(jq -r '.session_id // empty' <<<"$INPUT" 2>/dev/null)
 if [[ -z "$SESSION" ]]; then
