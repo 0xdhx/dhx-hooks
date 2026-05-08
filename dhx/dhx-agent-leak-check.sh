@@ -83,38 +83,26 @@ fi
 # Required: schema_version, cwd, isolation, dispatched_at. (subagent_type
 # tolerated absent → "unknown" fallback in WARNING.)
 # Missing-field path → DETECTION GAP, symmetric with malformed-JSON path.
+#
+# BL-01 fix: schema problems on ONE sidecar must NOT block sibling valid pairs.
+# Continue past malformed/missing-field metas (preserve on disk for forensics);
+# accumulate SCHEMA_GAPS for a single batched DETECTION GAP message; still pick
+# OLDEST_META from the surviving valid sidecars so wave-execute parallel
+# dispatches don't lose leak detection on every sibling subagent forever.
 # ============================================================================
 OLDEST_META=""
 OLDEST_TS=""
+SCHEMA_GAPS=()   # accumulate (file + reason) for batch reporting
 for meta in "${META_FILES[@]}"; do
-  # First: malformed JSON → DETECTION GAP (D-02).
+  # First: malformed JSON → record gap, preserve on disk, continue to siblings.
   if ! jq -e . "$meta" >/dev/null 2>&1; then
     PAIRED_PRE="${meta%.meta.json}.pre"
     if [[ -f "$PAIRED_PRE" ]]; then PRE_STATE="present"; else PRE_STATE="absent"; fi
-    cat <<MALFORMED
-⚠ AGENT-LEAK DETECTION GAP — sidecar metadata for session ${SESSION} is malformed.
-
-Found: ${meta} (jq parse failure)
-Pair:  ${PAIRED_PRE} (${PRE_STATE})
-
-The dhx-agent-leak-snapshot.sh hook wrote a metadata sidecar that this check
-cannot parse. Leak detection for this dispatch is BLIND because isolation
-context cannot be restored. The pair has been preserved on disk for forensic
-inspection (NOT cleaned up — investigate before next dispatch).
-
-Common causes:
-  - Snapshot wrote partial JSON before crash (set -euo pipefail interruption).
-  - Filesystem corruption or out-of-space mid-write.
-  - Manual edit of the cache file.
-
-Inspect with:
-  cat ${meta}
-  cat ${PAIRED_PRE}
-MALFORMED
-    exit 0
+    SCHEMA_GAPS+=("${meta} (malformed JSON; pair=${PAIRED_PRE} ${PRE_STATE})")
+    continue
   fi
 
-  # Second: D-10 strict schema validation — missing required field → DETECTION GAP.
+  # Second: D-10 strict schema validation — missing required field → record gap.
   MISSING_FIELDS=()
   for field in schema_version cwd isolation dispatched_at; do
     if ! jq -e --arg f "$field" 'has($f) and (.[$f] != null) and (.[$f] != "")' "$meta" >/dev/null 2>&1; then
@@ -124,19 +112,8 @@ MALFORMED
   if [[ ${#MISSING_FIELDS[@]} -gt 0 ]]; then
     PAIRED_PRE="${meta%.meta.json}.pre"
     if [[ -f "$PAIRED_PRE" ]]; then PRE_STATE="present"; else PRE_STATE="absent"; fi
-    cat <<SCHEMAGAP
-⚠ AGENT-LEAK DETECTION GAP — sidecar metadata for session ${SESSION} is missing required field(s).
-
-Found: ${meta}
-Missing field(s): ${MISSING_FIELDS[*]}
-Pair:  ${PAIRED_PRE} (${PRE_STATE})
-
-The sidecar parses as JSON but is missing fields required by the D-02 schema
-contract (schema_version, cwd, isolation, dispatched_at). Leak detection for
-this dispatch is BLIND. The pair has been preserved on disk for forensic
-inspection (NOT cleaned up — investigate before next dispatch).
-SCHEMAGAP
-    exit 0
+    SCHEMA_GAPS+=("${meta} (missing required field(s): ${MISSING_FIELDS[*]}; pair=${PAIRED_PRE} ${PRE_STATE})")
+    continue
   fi
 
   # Third: pick oldest by dispatched_at (D-03 FIFO consumption).
@@ -147,6 +124,33 @@ SCHEMAGAP
     OLDEST_META="$meta"
   fi
 done
+
+# BL-01 fix: emit a SINGLE combined DETECTION GAP listing all schema-problem
+# sidecars (preserved on disk for forensic inspection), then continue with
+# whatever valid pair (if any) was found. This decouples "preserve for forensics"
+# from "block sibling processing" — without it, one corrupt sidecar would
+# permanently block all valid sibling pairs in the same session (silent #36182
+# regression).
+if [[ ${#SCHEMA_GAPS[@]} -gt 0 ]]; then
+  cat <<SCHEMAGAP
+⚠ AGENT-LEAK DETECTION GAP — ${#SCHEMA_GAPS[@]} sidecar(s) for session ${SESSION} have schema problems.
+
+The following sidecar(s) cannot be parsed or are missing required field(s) per
+the D-02 schema contract (schema_version, cwd, isolation, dispatched_at).
+Each problem pair is preserved on disk for forensic inspection (NOT cleaned up —
+investigate before next dispatch). Sibling valid pairs (if any) are still being
+processed below. Leak detection for the affected dispatch(es) is BLIND because
+isolation context cannot be restored.
+
+$(printf '  - %s\n' "${SCHEMA_GAPS[@]}")
+
+Common causes:
+  - Snapshot wrote partial JSON before crash (set -euo pipefail interruption).
+  - Filesystem corruption or out-of-space mid-write.
+  - Manual edit of the cache file.
+  - Schema-version skew between snapshot.sh and check.sh (HP-012 transition window).
+SCHEMAGAP
+fi
 
 [[ -n "$OLDEST_META" ]] || exit 0   # all sidecars filtered out
 
