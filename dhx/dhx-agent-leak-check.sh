@@ -20,6 +20,15 @@
 
 set -euo pipefail   # MIRROR existing check.sh; pipefail-safe via // empty + || true
 
+# WR-02: explicit schema-version compatibility window. Bump these in lockstep
+# with snapshot.sh's `schema_version: N` payload when the D-02 schema evolves.
+# Sidecars outside [SCHEMA_MIN_SUPPORTED..SCHEMA_MAX_SUPPORTED] surface as a
+# DETECTION GAP (version-skew), preserved on disk for forensic inspection.
+# Without this, a future v2 sidecar would parse fine but be interpreted under
+# v1 field semantics — silent data corruption across the HP-012 transition window.
+SCHEMA_MIN_SUPPORTED=1
+SCHEMA_MAX_SUPPORTED=1
+
 INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
@@ -113,6 +122,18 @@ for meta in "${META_FILES[@]}"; do
     PAIRED_PRE="${meta%.meta.json}.pre"
     if [[ -f "$PAIRED_PRE" ]]; then PRE_STATE="present"; else PRE_STATE="absent"; fi
     SCHEMA_GAPS+=("${meta} (missing required field(s): ${MISSING_FIELDS[*]}; pair=${PAIRED_PRE} ${PRE_STATE})")
+    continue
+  fi
+
+  # WR-02: validate schema_version VALUE (not just presence). A future schema
+  # bump leaves stale CC processes running v1 snapshot.sh while the new
+  # check.sh expects vN — without this gate, fields are accepted under wrong
+  # semantics. Outside [MIN..MAX] → record gap, preserve on disk, continue.
+  SV=$(jq -r '.schema_version // empty' "$meta" 2>/dev/null)
+  if ! [[ "$SV" =~ ^[0-9]+$ ]] || (( SV < SCHEMA_MIN_SUPPORTED )) || (( SV > SCHEMA_MAX_SUPPORTED )); then
+    PAIRED_PRE="${meta%.meta.json}.pre"
+    if [[ -f "$PAIRED_PRE" ]]; then PRE_STATE="present"; else PRE_STATE="absent"; fi
+    SCHEMA_GAPS+=("${meta} (unsupported schema_version=${SV:-<empty>}; supported=${SCHEMA_MIN_SUPPORTED}..${SCHEMA_MAX_SUPPORTED}; pair=${PAIRED_PRE} ${PRE_STATE})")
     continue
   fi
 
