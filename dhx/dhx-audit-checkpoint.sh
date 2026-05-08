@@ -22,10 +22,5 @@ AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // .tool_input.subagent_type // 
 [ "$AGENT_TYPE" != "gsd-verifier" ] && exit 0
 
 cat << 'ENDJSON'
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SubagentStop",
-    "additionalContext": "AUDIT CHECKPOINT — Verifier completed. Apply anti-optimism review:\n1. Does 'verified' mean 'tested and confirmed working' or 'code exists that should work'? Only the former counts.\n2. Are acceptance criteria evaluated individually, or summarized as 'all met'? Check each one.\n3. Were any criteria silently dropped or weakened from the original CONTEXT.md?\n4. If this completes the milestone, run /dhx:audit before archiving.\n5. Run /dhx:nyquist to validate test coverage for this phase before proceeding to the next phase."
-  }
-}
+{ "systemMessage": "AUDIT CHECKPOINT — Verifier completed. Apply anti-optimism review:\n1. Does 'verified' mean 'tested and confirmed working' or 'code exists that should work'? Only the former counts.\n2. Are acceptance criteria evaluated individually, or summarized as 'all met'? Check each one.\n3. Were any criteria silently dropped or weakened from the original CONTEXT.md?\n4. If this completes the milestone, run /dhx:audit before archiving.\n5. Run /dhx:nyquist to validate test coverage for this phase before proceeding to the next phase." }
 ENDJSON

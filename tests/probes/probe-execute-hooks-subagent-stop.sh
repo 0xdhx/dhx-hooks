@@ -9,10 +9,11 @@
 #
 # Scenarios:
 #   1. SubagentStop stdin (agent_type:gsd-executor) → checkpoint fires;
-#      hookEventName in output JSON is "SubagentStop"
+#      output uses top-level `systemMessage` (advisory-only schema)
 #   2. SubagentStop stdin (agent_type:gsd-verifier, mid-execute fixture)
-#      → execute-review fires with phase preamble
+#      → execute-review fires with phase preamble in `systemMessage`
 #   3. SubagentStop stdin (agent_type:gsd-verifier) → audit-checkpoint fires
+#      with audit message in `systemMessage`
 #   4. SubagentStop stdin (agent_type:general-purpose) → all three silent
 #   5. Backward-compat: old PostToolUse:Agent shape (.tool_input.subagent_type)
 #      → hooks still parse via fallback
@@ -20,10 +21,18 @@
 #      → silent
 #   7. execute-review without recent SUMMARY.md → silent (mid-execute gate)
 #
+# Each emit-scenario (1, 2, 3) calls assert_stop_schema from
+# tests/probes/lib/assert-stop-schema.sh — three sub-assertions per call:
+# valid JSON, no hookSpecificOutput key, all top-level keys in advisory-event
+# allowlist. Catches regressions to the pre-2026-05-08 wrapped shape.
+#
 # Backs:
-#   - docs/decisions.md — 2026-05-07 SubagentStop migration row
+#   - docs/decisions.md — 2026-05-07 SubagentStop migration row (event class)
+#                       — 2026-05-08 supersession row (output channel reshape)
 #   - docs/hook-patterns.md — HP-021 SubagentStop, HP-011 addendum
+#   - docs/hook-dev-guide.md — "Output JSON Schema (advisory-only events)"
 #   - reports/done/2026-05-06-dhx-execute-test-drive-review-2.md (Code Issue #5)
+#   - reports/2026-05-08-subagentstop-hookspecificoutput-schema-audit.md
 #
 # Run: bash tests/probes/probe-execute-hooks-subagent-stop.sh
 #
@@ -45,6 +54,9 @@ PASS=0
 FAIL=0
 HOOK_OUT=""
 HOOK_EXIT=0
+
+# shellcheck source=lib/assert-stop-schema.sh
+source "$(dirname "$0")/lib/assert-stop-schema.sh"
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -116,17 +128,18 @@ clear_markers() {
 }
 
 # ----------------------------------------------------------------------------
-# Scenario 1 — checkpoint fires with SubagentStop hookEventName for
-# gsd-executor. Output JSON's `hookEventName` field MUST be "SubagentStop"
-# (was previously "PostToolUse" — the migration changed both the input event
-# binding AND the output event-name field).
+# Scenario 1 — checkpoint fires for gsd-executor with advisory-only schema:
+# output JSON uses top-level `systemMessage` (no `hookSpecificOutput` envelope).
+# 2026-05-07 migration set hookEventName="SubagentStop" inside the wrapper;
+# 2026-05-08 supersession unwraps to bare `systemMessage` per schema.
 # ----------------------------------------------------------------------------
 clear_markers
 PROJ=$(setup_project s1)
 STDIN='{"agent_type":"gsd-executor","session_id":"sid-s1","cwd":"'"$PROJ"'","hook_event_name":"SubagentStop"}'
 run_hook "$CHECKPOINT" "$PROJ" "$STDIN"
 assert_exit 0 "[1] checkpoint SubagentStop stdin (gsd-executor) → exit 0"
-assert_stdout_contains '"hookEventName": "SubagentStop"' "[1] output JSON carries SubagentStop event name"
+assert_stdout_contains '"systemMessage"' "[1] output JSON uses top-level systemMessage channel"
+assert_stop_schema "$HOOK_OUT" "[1]"
 assert_stdout_contains "EXECUTION CHECKPOINT" "[1] output carries checkpoint message"
 
 # ----------------------------------------------------------------------------
@@ -138,16 +151,8 @@ PROJ=$(setup_project s2)
 STDIN='{"agent_type":"gsd-verifier","session_id":"sid-s2","cwd":"'"$PROJ"'","hook_event_name":"SubagentStop"}'
 run_hook "$REVIEW" "$PROJ" "$STDIN"
 assert_exit 0 "[2] execute-review SubagentStop stdin (gsd-verifier, mid-execute) → exit 0"
-# execute-review uses `jq -n` which emits "key": "val" with a space; the other
-# two hooks use heredoc with "key":"val". Match space-agnostically here.
-if grep -qE '"hookEventName":[[:space:]]*"SubagentStop"' <<< "$HOOK_OUT"; then
-  echo "OK   [2] output JSON carries SubagentStop event name"
-  PASS=$((PASS + 1))
-else
-  echo "FAIL [2] output JSON missing SubagentStop event name"
-  echo "     output: $HOOK_OUT"
-  FAIL=$((FAIL + 1))
-fi
+assert_stdout_contains '"systemMessage"' "[2] output JSON uses top-level systemMessage channel"
+assert_stop_schema "$HOOK_OUT" "[2]"
 assert_stdout_contains "Phase 31.1 verifier completed" "[2] phase preamble derived from STATE.md"
 
 # ----------------------------------------------------------------------------
@@ -159,7 +164,8 @@ PROJ=$(setup_project s3)
 STDIN='{"agent_type":"gsd-verifier","session_id":"sid-s3","cwd":"'"$PROJ"'","hook_event_name":"SubagentStop"}'
 run_hook "$AUDIT" "$PROJ" "$STDIN"
 assert_exit 0 "[3] audit-checkpoint SubagentStop stdin (gsd-verifier) → exit 0"
-assert_stdout_contains '"hookEventName": "SubagentStop"' "[3] output JSON carries SubagentStop event name"
+assert_stdout_contains '"systemMessage"' "[3] output JSON uses top-level systemMessage channel"
+assert_stop_schema "$HOOK_OUT" "[3]"
 assert_stdout_contains "AUDIT CHECKPOINT" "[3] output carries audit message"
 
 # ----------------------------------------------------------------------------

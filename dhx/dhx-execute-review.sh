@@ -66,4 +66,4 @@ fi
 
 CTX="${PREAMBLE} Apply fidelity review before session ends:\n1. PLAN-TO-EXECUTION FIDELITY: Compare each completed task against its plan description, not just the task title. Were any tasks simplified during implementation without flagging?\n2. CONTEXT-TO-CODE FIDELITY: Do committed changes align with CONTEXT.md decisions? Or was a different interpretation quietly built? Diff the intent against the result.\n3. SILENT DESCOPING: Were any plan tasks dropped or partially implemented without recording the deviation? Check for tasks that disappeared between plan and execution summary.\nIf drift is detected on any of these, flag it now with specific evidence — don't let it compound into downstream phases.\nRun /dhx:execute (no args) for the full review."
 
-jq -n --arg ctx "$CTX" '{hookSpecificOutput: {hookEventName: "SubagentStop", additionalContext: $ctx}}'
+jq -n --arg ctx "$CTX" '{systemMessage: $ctx}'
