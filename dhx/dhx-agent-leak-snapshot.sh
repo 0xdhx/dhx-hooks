@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-agent-leak-snapshot.sh — PreToolUse hook (Agent matcher)
-# Patterns: HP-009, HP-011
+# Patterns: HP-009, HP-011, HP-021
 #
 # Captures a baseline `git status --porcelain` of the main repo before a
 # worktree-isolated agent dispatches. Paired with dhx-agent-leak-check.sh
@@ -45,10 +45,31 @@ fi
 CACHE="$HOME/.cache/dhx"
 mkdir -p "$CACHE" 2>/dev/null || exit 0
 
-# Capture baseline. On error (non-git dir, permission), exit silently.
-git -C "$CWD" status --porcelain 2>/dev/null > "$CACHE/agent-leak-${SESSION}.pre" || {
-  rm -f "$CACHE/agent-leak-${SESSION}.pre" 2>/dev/null
+# D-03 timestamp keying + D-02 sidecar schema + D-04(c) both-or-none atomicity.
+TIMESTAMP_NS=$(date +%s%N)
+PRE="$CACHE/agent-leak-${SESSION}-${TIMESTAMP_NS}.pre"
+META="$CACHE/agent-leak-${SESSION}-${TIMESTAMP_NS}.meta.json"
+META_TMP="${META}.tmp"
+
+# Write baseline FIRST. On error, exit 0 silently (preserve current behavior).
+git -C "$CWD" status --porcelain 2>/dev/null > "$PRE" || {
+  rm -f "$PRE" 2>/dev/null
   exit 0
 }
 
+# Read subagent_type for sidecar payload (still available at PreToolUse:Agent).
+SUBAGENT_TYPE=$(jq -r '.tool_input.subagent_type // empty' <<<"$INPUT" 2>/dev/null)
+
+# Write sidecar SECOND via .tmp + mv. On any failure, roll back baseline (both-or-none).
+if jq -n \
+    --arg cwd "$CWD" \
+    --arg iso "$ISOLATION" \
+    --arg sa "$SUBAGENT_TYPE" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schema_version: 1, cwd: $cwd, isolation: $iso, subagent_type: $sa, dispatched_at: $ts}' \
+    > "$META_TMP" 2>/dev/null && mv "$META_TMP" "$META" 2>/dev/null; then
+  : # success — both files in place
+else
+  rm -f "$PRE" "$META_TMP" "$META" 2>/dev/null
+fi
 exit 0
