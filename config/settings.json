@@ -5,6 +5,8 @@
       "Read",
       "WebFetch",
       "WebSearch",
+      "Bash(npm view get-shit-done-cc:*)",
+      "Bash(npm list -g get-shit-done-cc:*)",
       "Bash(git:*)",
       "Bash(node:*)",
       "Bash(python3:*)",
