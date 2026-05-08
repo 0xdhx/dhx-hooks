@@ -21,7 +21,18 @@
 
 set -uo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Resolve REPO to the canonical main-repo root, even when invoked from a worktree.
+# The live ~/.claude/hooks/*  symlinks point at main-repo `dhx/` paths, so verifying
+# wiring from a worktree must compare against the same path namespace — otherwise every
+# source reports MISS (worktree-vs-main symlink-target mismatch) even when correctly
+# installed. `git rev-parse --git-common-dir` returns the path to the shared .git dir
+# (absolute in worktrees, relative in the main repo); its parent is the main-repo root.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if GCD=$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null); then
+  REPO="$(cd "$SCRIPT_DIR" && cd "$GCD/.." && pwd)"
+else
+  REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 DHX_DIR="$REPO/dhx"
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS="$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null || true)"
