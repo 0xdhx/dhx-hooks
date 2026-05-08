@@ -52,11 +52,19 @@ SESSION_TAG="probe-$$-$(date +%s%N)"
 CACHE="$HOME/.cache/dhx"
 mkdir -p "$CACHE"
 
-# Track baseline files we create so cleanup can remove them
+# Track baseline files we create so cleanup can remove them.
+# WR-07: default-initialize TMP and BASELINES BEFORE installing the EXIT trap.
+# Under `set -u`, if the script aborts between `trap cleanup EXIT` (below) and
+# the `mktemp -d` assignment (further down), the trap fires and references
+# `$TMP` — without this default, that's an unbound-variable error inside the
+# trap, the trap aborts before reaching the BASELINES sweep, and any partial
+# state on disk leaks. Default-init keeps the "trap before allocation"
+# robustness pattern intact AND tolerates pre-mktemp aborts.
+TMP=""
 BASELINES=()
 
 cleanup() {
-  rm -rf "$TMP" 2>/dev/null
+  [[ -n "${TMP:-}" ]] && rm -rf "$TMP" 2>/dev/null
   for b in "${BASELINES[@]}"; do
     rm -f "$b" 2>/dev/null
   done
