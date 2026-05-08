@@ -98,7 +98,25 @@ fi
 # accumulate SCHEMA_GAPS for a single batched DETECTION GAP message; still pick
 # OLDEST_META from the surviving valid sidecars so wave-execute parallel
 # dispatches don't lose leak detection on every sibling subagent forever.
+#
+# WR-01 FIFO ordering: the canonical "oldest" key is the filename's TIMESTAMP_NS
+# suffix (nanosecond resolution from snapshot.sh:49 `date +%s%N`), NOT the
+# JSON `dispatched_at` field (second resolution; ties on bursts within the same
+# wall-clock second). Filename ns is strictly more informative and resolves
+# bursts deterministically. `dispatched_at` remains in the schema as
+# presentation-only metadata for forensics; do NOT key FIFO on it.
 # ============================================================================
+# WR-01 helper: extract the TIMESTAMP_NS suffix from a sidecar filename. The
+# convention is agent-leak-${SESSION}-${TIMESTAMP_NS}.meta.json (snapshot.sh:51).
+# Returns the ns string on stdout, or empty if the filename doesn't match.
+fifo_key() {
+  local path="$1" base
+  base="${path##*/}"               # strip directory
+  base="${base%.meta.json}"        # strip extension
+  base="${base##agent-leak-${SESSION}-}"  # strip session prefix → leaves TIMESTAMP_NS
+  printf '%s' "$base"
+}
+
 OLDEST_META=""
 OLDEST_TS=""
 SCHEMA_GAPS=()   # accumulate (file + reason) for batch reporting
@@ -137,9 +155,11 @@ for meta in "${META_FILES[@]}"; do
     continue
   fi
 
-  # Third: pick oldest by dispatched_at (D-03 FIFO consumption).
-  TS=$(jq -r '.dispatched_at // empty' "$meta" 2>/dev/null)
-  [[ -z "$TS" ]] && continue   # defensive — should be unreachable post D-10
+  # Third: pick oldest by FILENAME ns suffix (D-03 FIFO consumption).
+  # WR-01: canonical FIFO key is the ns suffix (nanosecond resolution),
+  # NOT JSON `dispatched_at` (second resolution; ties on bursts).
+  TS=$(fifo_key "$meta")
+  [[ -z "$TS" ]] && continue   # defensive — filename didn't match expected shape
   if [[ -z "$OLDEST_TS" || "$TS" < "$OLDEST_TS" ]]; then
     OLDEST_TS="$TS"
     OLDEST_META="$meta"
@@ -188,10 +208,11 @@ if ! mv "$OLDEST_META" "$CLAIMED_META" 2>/dev/null; then
   shopt -u nullglob
   [[ ${#REMAINING[@]} -eq 0 ]] && exit 0   # nothing left to claim
   # Recompute oldest among remaining (defensive — usually one mv loss is rare).
+  # WR-01: same filename-ns FIFO key as the primary loop above.
   OLDEST_META=""
   OLDEST_TS=""
   for meta in "${REMAINING[@]}"; do
-    TS=$(jq -r '.dispatched_at // empty' "$meta" 2>/dev/null)
+    TS=$(fifo_key "$meta")
     [[ -z "$TS" ]] && continue
     if [[ -z "$OLDEST_TS" || "$TS" < "$OLDEST_TS" ]]; then
       OLDEST_TS="$TS"

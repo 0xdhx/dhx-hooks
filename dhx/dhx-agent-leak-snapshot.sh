@@ -46,6 +46,12 @@ CACHE="$HOME/.cache/dhx"
 mkdir -p "$CACHE" 2>/dev/null || exit 0
 
 # D-03 timestamp keying + D-02 sidecar schema + D-04(c) both-or-none atomicity.
+# WR-01: TIMESTAMP_NS (nanosecond from `date +%s%N`) is the CANONICAL FIFO KEY
+# consumed by check.sh. The schema's `dispatched_at` field (second resolution)
+# is presentation-only metadata for forensics — it ties on bursts within the
+# same wall-clock second and must NOT be used as the FIFO ordering key.
+# Do NOT drop the ns suffix from the filename; check.sh's fifo_key() helper
+# parses it directly via parameter expansion.
 TIMESTAMP_NS=$(date +%s%N)
 PRE="$CACHE/agent-leak-${SESSION}-${TIMESTAMP_NS}.pre"
 META="$CACHE/agent-leak-${SESSION}-${TIMESTAMP_NS}.meta.json"
