@@ -273,23 +273,50 @@ META_BEFORE=("$CACHE/agent-leak-${SID}-"*.meta.json)
 shopt -u nullglob
 [[ ${#META_BEFORE[@]} -eq 3 ]] && check "[11a] 3 snapshots produce 3 sidecar pairs" pass || check "[11a] 3 snapshots produce 3 sidecar pairs (got ${#META_BEFORE[@]})" fail
 
-# Capture the OLDEST sidecar's path BEFORE first SubagentStop fires (so we can
-# assert D-08 identity-based: the oldest is the one that gets claimed first).
-# `ls -t` orders newest-first; `tail -1` gives oldest.
-OLDEST_BEFORE=$(ls -t "$CACHE/agent-leak-${SID}-"*.meta.json | tail -1)
+# WR-03 / WR-01: assert D-08 identity using the canonical FIFO key — the
+# filename's TIMESTAMP_NS suffix (nanosecond resolution from `date +%s%N`).
+# Previously this used `ls -t | tail -1` (mtime-based), which was flaky around
+# 1-second wall-clock boundaries because mtime can have second-resolution on
+# some filesystems and the indirect coupling to second-resolution `dispatched_at`
+# in production code (WR-01 fix) means a probe that disagrees with check.sh's
+# selection key produces silent false positives. The fix:
+#   - Pick "oldest" by smallest TIMESTAMP_NS suffix among the filenames.
+#   - This matches check.sh's fifo_key() semantics exactly (see WR-01 fix).
+oldest_meta_by_filename() {
+  # Reads sidecar paths from stdin (one per line); writes the path with the
+  # smallest TIMESTAMP_NS suffix (per filename `agent-leak-${SID}-${NS}.meta.json`).
+  local path best_ns="" best_path="" ns
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    ns="${path##*/}"
+    ns="${ns%.meta.json}"
+    ns="${ns##agent-leak-${SID}-}"
+    if [[ -z "$best_ns" || "$ns" < "$best_ns" ]]; then
+      best_ns="$ns"
+      best_path="$path"
+    fi
+  done
+  printf '%s' "$best_path"
+}
+
+# Capture the OLDEST sidecar's path BEFORE first SubagentStop fires.
+shopt -s nullglob
+META_GLOB=("$CACHE/agent-leak-${SID}-"*.meta.json)
+shopt -u nullglob
+OLDEST_BEFORE=$(printf '%s\n' "${META_GLOB[@]}" | oldest_meta_by_filename)
 
 post_input "$SID" "$TMP" | "$POST" >/dev/null 2>&1
 # D-08 identity-based assertion: the oldest sidecar should be GONE
 # (consumed pair removed at end of normal compare path), and the .pre half also gone.
 PAIRED_PRE_BEFORE="${OLDEST_BEFORE%.meta.json}.pre"
-[[ ! -f "$OLDEST_BEFORE" && ! -f "$PAIRED_PRE_BEFORE" ]] && check "[11b] D-08: first completion atomically claimed and consumed the oldest pair" pass || check "[11b] D-08: first completion claimed wrong pair (oldest still on disk: $OLDEST_BEFORE)" fail
+[[ ! -f "$OLDEST_BEFORE" && ! -f "$PAIRED_PRE_BEFORE" ]] && check "[11b] D-08: first completion atomically claimed and consumed the smallest-ns pair" pass || check "[11b] D-08: first completion claimed wrong pair (smallest-ns still on disk: $OLDEST_BEFORE)" fail
 
 shopt -s nullglob; META_AFTER1=("$CACHE/agent-leak-${SID}-"*.meta.json); shopt -u nullglob
 [[ ${#META_AFTER1[@]} -eq 2 ]] && check "[11c] siblings persist after first completion" pass || check "[11c] siblings persist after first completion (got ${#META_AFTER1[@]})" fail
 
-# Second completion claims the next-oldest (different timestamp from first).
-SECOND_OLDEST=$(ls -t "$CACHE/agent-leak-${SID}-"*.meta.json | tail -1)
-[[ "$SECOND_OLDEST" != "$OLDEST_BEFORE" ]] && check "[11d] D-08: second completion's pair is a different timestamp" pass || check "[11d] D-08: second completion picked same path as first (impossible without reuse)" fail
+# Second completion claims the next-smallest-ns (different timestamp from first).
+SECOND_OLDEST=$(printf '%s\n' "${META_AFTER1[@]}" | oldest_meta_by_filename)
+[[ "$SECOND_OLDEST" != "$OLDEST_BEFORE" ]] && check "[11d] D-08: second completion's pair has a different ns timestamp" pass || check "[11d] D-08: second completion picked same path as first (impossible without reuse)" fail
 
 post_input "$SID" "$TMP" | "$POST" >/dev/null 2>&1
 post_input "$SID" "$TMP" | "$POST" >/dev/null 2>&1
