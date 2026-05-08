@@ -438,6 +438,85 @@ run_schema_subcase "15a" "dispatched_at" "ts"
 run_schema_subcase "15b" "cwd" "cwd"
 run_schema_subcase "15c" "schema_version" "ver"
 
+# === [16] BL-01 regression: malformed sidecar must NOT block sibling valid pairs ===
+# Pre-fix bug: a single malformed/missing-field sidecar triggered `exit 0`
+# inside the schema-validation loop, so any sibling valid pair iterated AFTER
+# it was permanently skipped. Across repeated SubagentStop fires the malformed
+# sidecar persisted on disk (intentional, for forensics), so it kept being
+# iterated first, kept tripping the exit, and valid sibling pairs leaked
+# undetected forever (silent #36182 regression — exactly what BG-AGENT-1 was
+# supposed to close).
+#
+# This scenario exercises the BLOCKER fix: the loop must `continue` past
+# malformed sidecars (preserving them on disk) and still consume valid
+# siblings. We construct 3 sidecars with explicit, KNOWN ns suffixes:
+#   - T_MAL = NOW         (smallest ns; malformed → would trip pre-fix exit)
+#   - T_V1  = NOW + 1000  (next; valid → SHOULD be consumed first under fix)
+#   - T_V2  = NOW + 2000  (largest; valid → consumed second)
+# Ordering matters: malformed has the smallest ns so it sorts FIRST in glob
+# expansion. Under the pre-fix code, the loop would iterate T_MAL first,
+# emit DETECTION GAP, exit 0, and never even examine T_V1/T_V2. Under the
+# post-fix code, T_MAL is recorded in SCHEMA_GAPS (preserved on disk), then
+# T_V1 is selected as smallest-ns VALID and consumed.
+SID="${SESSION_TAG}-bl01"
+NOW_NS=$(date +%s%N)
+T_MAL_NS="$NOW_NS"
+T_V1_NS="$((NOW_NS + 1000))"
+T_V2_NS="$((NOW_NS + 2000))"
+
+# Valid pair 1 (V1, ns just after malformed).
+V1_PRE="$CACHE/agent-leak-${SID}-${T_V1_NS}.pre"
+V1_META="$CACHE/agent-leak-${SID}-${T_V1_NS}.meta.json"
+: > "$V1_PRE"
+jq -n --arg cwd "$TMP" --arg iso "worktree" --arg sa "exec-bl01-V1" --arg ts "2026-05-08T00:00:01Z" \
+  '{schema_version: 1, cwd: $cwd, isolation: $iso, subagent_type: $sa, dispatched_at: $ts}' > "$V1_META"
+
+# Malformed pair (MAL, smallest ns — iterated FIRST in glob alphabetic order).
+MAL_PRE="$CACHE/agent-leak-${SID}-${T_MAL_NS}.pre"
+MAL_META="$CACHE/agent-leak-${SID}-${T_MAL_NS}.meta.json"
+: > "$MAL_PRE"
+echo "not json {" > "$MAL_META"   # corrupt the meta file (jq parse failure)
+
+# Valid pair 2 (V2, largest ns).
+V2_PRE="$CACHE/agent-leak-${SID}-${T_V2_NS}.pre"
+V2_META="$CACHE/agent-leak-${SID}-${T_V2_NS}.meta.json"
+: > "$V2_PRE"
+jq -n --arg cwd "$TMP" --arg iso "worktree" --arg sa "exec-bl01-V2" --arg ts "2026-05-08T00:00:02Z" \
+  '{schema_version: 1, cwd: $cwd, isolation: $iso, subagent_type: $sa, dispatched_at: $ts}' > "$V2_META"
+
+BASELINES+=("$V1_PRE" "$V1_META" "$MAL_PRE" "$MAL_META" "$V2_PRE" "$V2_META")
+
+# Sanity: confirm the 3 sidecars exist before the fire.
+shopt -s nullglob; BL01_BEFORE=("$CACHE/agent-leak-${SID}-"*.meta.json); shopt -u nullglob
+[[ ${#BL01_BEFORE[@]} -eq 3 ]] && check "[16a] BL-01 fixture: 3 sidecars present (V1+MAL+V2)" pass || check "[16a] BL-01 fixture: 3 sidecars present (got ${#BL01_BEFORE[@]})" fail
+
+# First SubagentStop fire.
+OUT_BL01_1=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
+
+# Assertion 16b: DETECTION GAP message MUST be emitted (malformed must be reported).
+echo "$OUT_BL01_1" | grep -q "DETECTION GAP" && check "[16b] BL-01 first fire: emits DETECTION GAP for malformed sibling" pass || check "[16b] BL-01 first fire: missing DETECTION GAP for malformed sibling" fail
+
+# Assertion 16c: DETECTION GAP must name the malformed sidecar's filename
+# (parameter expansion strips directory; check substring match against the
+# basename for portability across DETECTION GAP wording variants).
+echo "$OUT_BL01_1" | grep -q "${T_MAL_NS}.meta.json" && check "[16c] BL-01 first fire: DETECTION GAP names malformed pair filename" pass || check "[16c] BL-01 first fire: DETECTION GAP did not name malformed pair (${T_MAL_NS}.meta.json)" fail
+
+# Assertion 16d: V1 (smallest-ns valid pair) was consumed — both .meta.json
+# and .pre half should be GONE from disk.
+[[ ! -f "$V1_META" && ! -f "$V1_PRE" ]] && check "[16d] BL-01 first fire: V1 (smallest-ns valid) pair consumed" pass || check "[16d] BL-01 first fire: V1 pair NOT consumed (meta=$V1_META exists=$([[ -f $V1_META ]] && echo yes || echo no))" fail
+
+# Assertion 16e: V2 (largest-ns valid) pair PERSISTS — ready for the next fire.
+[[ -f "$V2_META" && -f "$V2_PRE" ]] && check "[16e] BL-01 first fire: V2 valid sibling pair persists" pass || check "[16e] BL-01 first fire: V2 valid sibling pair was NOT preserved" fail
+
+# Assertion 16f: malformed pair PERSISTS on disk for forensic inspection.
+[[ -f "$MAL_META" && -f "$MAL_PRE" ]] && check "[16f] BL-01 first fire: malformed pair preserved on disk" pass || check "[16f] BL-01 first fire: malformed pair NOT preserved" fail
+
+# Second SubagentStop fire — V2 should now be the smallest-ns VALID, get consumed.
+OUT_BL01_2=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
+[[ ! -f "$V2_META" && ! -f "$V2_PRE" ]] && check "[16g] BL-01 second fire: V2 (remaining valid) pair consumed" pass || check "[16g] BL-01 second fire: V2 pair NOT consumed" fail
+echo "$OUT_BL01_2" | grep -q "DETECTION GAP" && check "[16h] BL-01 second fire: DETECTION GAP still surfaces malformed (preserved across fires)" pass || check "[16h] BL-01 second fire: DETECTION GAP did not re-fire for persistent malformed" fail
+[[ -f "$MAL_META" && -f "$MAL_PRE" ]] && check "[16i] BL-01 second fire: malformed pair STILL preserved on disk" pass || check "[16i] BL-01 second fire: malformed pair was cleaned up (forensics contract violated)" fail
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
