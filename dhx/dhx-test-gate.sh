@@ -190,7 +190,11 @@ if [ -n "$PHASE_SKIP_REASON" ]; then
   PHASE_DISPLAY="${PHASE_SKIP_PHASE:-the active phase}"
   SKIP_MSG="[stop-hook] Skipping test-gate: $PHASE_SKIP_REASON. Re-run /dhx:test $PHASE_DISPLAY for verification."
   log "Phase-aware skip: $PHASE_SKIP_REASON (phase=$PHASE_DISPLAY)"
-  jq -nc --arg msg "$SKIP_MSG" '{hookSpecificOutput:{hookEventName:"Stop",additionalContext:$msg}}'
+  # Stop schema rejects hookSpecificOutput (validator allows it only for
+  # Pre/PostToolUse/UserPromptSubmit/PostToolBatch). systemMessage is the
+  # universal top-level advisory channel and matches the non-blocking,
+  # exit-0 intent of this skip path.
+  jq -nc --arg msg "$SKIP_MSG" '{systemMessage:$msg}'
   rm -f "$COUNTER_FILE"
   exit 0
 fi

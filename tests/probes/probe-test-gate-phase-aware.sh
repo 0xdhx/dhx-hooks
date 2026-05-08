@@ -220,7 +220,20 @@ write_plan "$PROJ" "31.1-test-drive" "01-red" "$PLAN_BODY_RED"
 set_source_flag "s1"
 run_hook "$PROJ" "s1"
 assert_exit 0 "[1] all conditions hold → exit 0 (skip)"
-assert_stdout_contains '"hookEventName":"Stop"' "[1] stdout carries Stop hookSpecificOutput"
+assert_stdout_contains '"systemMessage"' "[1] stdout carries Stop systemMessage advisory"
+assert_stdout_not_contains '"hookSpecificOutput"' "[1] stdout MUST NOT carry hookSpecificOutput (Stop schema rejects)"
+# Schema-shape sanity: every top-level key must be in CC's Stop output allowlist.
+# Schema source: validator output captured at heat-check session JSONL
+# (`attachment.hookErrors[0]` of system event `subtype: stop_hook_summary`).
+# Allowlist below mirrors the validator's enumerated top-level keys.
+if jq -e 'keys | all(. as $k | ["continue","suppressOutput","stopReason","decision","reason","systemMessage","permissionDecision","hookSpecificOutput"] | index($k))' <<< "$HOOK_OUT" >/dev/null 2>&1; then
+  echo "OK   [1] stdout keys all in Stop schema top-level allowlist"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [1] stdout has keys outside Stop schema allowlist (Stop rejects unknown top-level keys)"
+  echo "     output: $HOOK_OUT"
+  FAIL=$((FAIL + 1))
+fi
 assert_stdout_contains "Skipping test-gate: phase contracts intentional RED" "[1] stdout names the skip reason"
 assert_stdout_contains "/dhx:test 31.1-test-drive" "[1] stdout cites phase tag from PLAN.md path"
 assert_runner_not_invoked "$PROJ" "[1] phase-aware skip prevented runner invocation"
