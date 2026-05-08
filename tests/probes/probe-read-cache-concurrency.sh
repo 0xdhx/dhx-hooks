@@ -5,12 +5,19 @@
 # READ-10). Asserts that 50 concurrent dhx-read-cache.sh writers appending
 # to the same ~/.cache/dhx/read-cache.jsonl produce 50 well-formed JSONL
 # lines with zero corruption — the foundational invariant supporting
-# REQ READ-06's "no flock for atomic appends" decision.
+# REQ READ-06's O_APPEND atomicity decision.
 #
 # INVARIANT: bash `>>` is one open(O_APPEND)+write() per invocation, atomic
 # up to PIPE_BUF=4096 on Linux/WSL2 ext4. The 20-writer × 50-line probe of
 # 2026-04-25 verified zero corruption; this probe escalates to 50 concurrent
 # writers as the formal regression gate.
+#
+# Post-D-25 (2026-05-08): writers also acquire LOCK_SH (shared) on
+# .cache.lock around the per-write `>>`. LOCK_SH is non-contending
+# writer-vs-writer (multi-holder) — REQ READ-06's O_APPEND atomicity
+# invariant remains the underlying guarantee for this probe. The LOCK_SH
+# closes a separate writer-pruner coordination gap (gated by
+# probe-read-cache-lock-sh-race.sh, NOT this probe).
 #
 # Run directly:
 #   bash tests/probes/probe-read-cache-concurrency.sh

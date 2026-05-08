@@ -8,18 +8,30 @@
 # emits {"path":<abs>,"ts":<unix>,"source":"read","partial":true?} entries.
 #
 # D-13 PRUNE BLOCK (supersedes D-02): rename-then-append-back pattern wrapped
-# in `flock -n` (non-blocking). Sequence: mv $CACHE $CACHE.prune → concurrent
-# writers' `>>` immediately land on the NEW (post-mv) empty $CACHE → awk
-# filters survivors from $CACHE.prune and APPENDS to $CACHE (O_APPEND
-# interleaves cleanly with the lock-free appenders) → rm $CACHE.prune.
-# Marker write is INSIDE the flock subshell. D-14: env var
-# DHX_READ_CACHE_TEST_PAUSE_MS forces a deterministic sleep between mv and
-# append-back for adversarial probe testing (default unset = no-op).
+# in `flock -n 200` (non-blocking exclusive). Sequence: mv $CACHE $CACHE.prune
+# → concurrent writers' `>>` immediately land on the NEW (post-mv) empty
+# $CACHE → awk filters survivors from $CACHE.prune and APPENDS to $CACHE
+# (O_APPEND interleaves cleanly) → rm $CACHE.prune. Marker write is INSIDE
+# the flock subshell. D-14: env var DHX_READ_CACHE_TEST_PAUSE_MS forces a
+# deterministic sleep between mv and append-back for adversarial probe
+# testing (default unset = no-op).
 #
-# INVARIANT: per-write `>>` appends are lock-free (REQ READ-06, O_APPEND
-# atomicity verified 2026-04-25, 20-writer × 50-line probe; this commit
-# escalates to 50-writer regression gate via probe-read-cache-concurrency.sh).
-# flock applies ONLY to the prune-rewrite block (D-13 scope).
+# D-25 (2026-05-08): per-write `>>` acquires LOCK_SH (shared) on $LOCK
+# BEFORE open(), closing the writer-pruner coordination gap. The race the
+# fix closes: a writer's `bash >>` does open(O_APPEND) BEFORE jq's exec
+# completes, so a slow jq could leave open() pre-mv while write() lands
+# post-awk-EOF — that write goes to the orphan inode that pruner's `rm -f
+# $CACHE.prune` then unlinks. Surfaced as 1-in-N flake on 2026-05-08 under
+# heavy parallel probe-suite load (V-APPEND-50 49/50). Deterministic
+# repro: probe-read-cache-lock-sh-race.sh.
+#
+# INVARIANT: per-write `>>` appends acquire LOCK_SH on $LOCK (multiple
+# shared holders run in parallel — non-contending writer-vs-writer; ~5-10µs
+# flock overhead vs. ~1-3ms jq fork). REQ READ-06's O_APPEND atomicity
+# invariant is PRESERVED (verified 2026-04-25, 20-writer × 50-line probe;
+# 50-writer regression gate at probe-read-cache-concurrency.sh). Pruner's
+# LOCK_EX (`flock -n 200`) skips when any LOCK_SH holder is active —
+# pruner re-attempts on next writer's invocation.
 #
 # D-17 INVARIANT (partial-write semantics): writers MUST NOT emit
 # `partial:true` with `source:"write"`. `partial` semantics apply only to
@@ -67,6 +79,7 @@ fi
 
 CACHE_DIR="${HOME}/.cache/dhx"
 CACHE="${CACHE_DIR}/read-cache.jsonl"
+LOCK="${CACHE_DIR}/.cache.lock"
 mkdir -p "$CACHE_DIR"
 
 RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
@@ -79,18 +92,45 @@ RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 # Schema requires `partial` field ABSENT for full reads (probe-read-cache.sh
 # V-WRITER-FULL asserts `.partial == null`), so emit it only when true.
 TS=$(date +%s)
-if [ -n "$PARTIAL_MARKER" ]; then
-  jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
-    '{path: $path, ts: $ts, source: "read", partial: true}' >> "$CACHE"
-else
-  jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
-    '{path: $path, ts: $ts, source: "read"}' >> "$CACHE"
-fi
+
+write_entry() {
+  if [ -n "$PARTIAL_MARKER" ]; then
+    jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
+      '{path: $path, ts: $ts, source: "read", partial: true}'
+  else
+    jq -cn --arg path "$RESOLVED" --argjson ts "$TS" \
+      '{path: $path, ts: $ts, source: "read"}'
+  fi
+}
+
+# D-25 (2026-05-08): per-write append acquires LOCK_SH (shared) on $LOCK.
+# Multiple LOCK_SH holders are non-contending (REQ READ-06 O_APPEND atomicity
+# preserved — writers don't contend writer-vs-writer). LOCK_SH closes the
+# writer-pruner coordination gap that D-13's `flock -n 200` was scope-disjoint
+# from: pruner's LOCK_EX skips when any LOCK_SH holder is active, so a
+# writer's open() can never land pre-mv while its write() lands post-awk-EOF
+# (orphan inode, unlinked by `rm -f $CACHE.prune`). ~5-10µs flock overhead
+# vs. ~1-3ms jq fork — negligible.
+#
+# Test-only hatch: DHX_READ_CACHE_TEST_OPEN_TO_WRITE_MS splits open() from
+# write() via `exec 9>>$CACHE; sleep; jq >&9` to deterministically widen the
+# open-to-write window for V-LOCK-SH-RACE (probe-read-cache-lock-sh-race.sh).
+# Default unset = no-op. Mirrors D-14 (DHX_READ_CACHE_TEST_PAUSE_MS).
+(
+  flock -s 201
+  if [ -n "${DHX_READ_CACHE_TEST_OPEN_TO_WRITE_MS:-}" ]; then
+    exec 9>>"$CACHE"
+    sleep "$(awk -v ms="$DHX_READ_CACHE_TEST_OPEN_TO_WRITE_MS" 'BEGIN { print ms/1000 }')"
+    write_entry >&9
+    exec 9>&-
+  else
+    write_entry >> "$CACHE"
+  fi
+) 201>"$LOCK"
 
 # Hourly TTL prune (D-13: rename-then-append-back inside flock -n subshell)
 NOW=$(date +%s)
 CLEANUP_MARKER="${CACHE_DIR}/.last-cleanup"
-LOCK="${CACHE_DIR}/.cache.lock"
 # Outer gate: cheap pre-check to avoid spawning the lock subshell unnecessarily.
 # The IN-LOCK re-check (D-13) is the authoritative one; this is just an optimization.
 LAST_CLEANUP_OUTER=$(cat "$CLEANUP_MARKER" 2>/dev/null || echo 0)

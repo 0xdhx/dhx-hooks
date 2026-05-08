@@ -52,6 +52,7 @@ asserts row count == file count.
 | `probe-read-cache-concurrency.sh` | yes | mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/` |
 | `probe-read-cache-d17-invariant.sh` | yes | read-only scan of live `~/.cache/dhx/read-cache.jsonl` (Phase 6 C3 SCHEMA-01 D-17 invariant scanner — Convention A exit 0/1/2; jq array-length counting per D-23) |
 | `probe-read-cache-cross-session.sh` | yes | mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME |
+| `probe-read-cache-lock-sh-race.sh` | yes | mktemp HOME isolation; deterministic LOCK_SH writer-pruner race reproducer (D-25); contained in $TMPHOME |
 | `probe-read-cache-prune-concurrency.sh` | yes | mktemp HOME isolation; adversarial prune contention contained in $TMPHOME |
 | `probe-read-cache.sh` | yes | mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx |
 | `probe-read-guard-strong-signal.sh` | no | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched. **Re-classified to `no` by Phase 6 CR-01 (commit `4774a73`):** read-only against live state by intent, but routed through SAFE_FOR_LIVE=no because 9-15min wallclock exceeds run-probes.sh 30s/probe budget — operator-invoked only (Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03). See "Long-runtime / auth-required probes — invocation runbook" below. |
