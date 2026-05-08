@@ -196,7 +196,14 @@ echo "$OUT" | grep -q "orphan baseline" && check "[5b-msg] orphan-detection mess
 SID="${SESSION_TAG}-ghost-nested"
 NESTED_5C="$TMP/.claude/worktrees/agent-5c"
 mkdir -p "$NESTED_5C"
-cp -r "$TMP/.git" "$NESTED_5C/" 2>/dev/null || true
+# WR-06: do NOT swallow `cp` failures. The earlier `2>/dev/null || true` masked
+# disk-full / permission errors — when cp failed, snapshot.sh exited at the
+# .git-presence check (snapshot.sh:34) instead of the nested-worktree skip
+# (snapshot.sh:38). The probe assertion "no baseline written" then passed for
+# the WRONG reason: it was actually testing the .git check, not the
+# nested-worktree skip. Fail loudly on fixture-setup failures.
+cp -r "$TMP/.git" "$NESTED_5C/"
+[[ -d "$NESTED_5C/.git" ]] || { echo "FAIL fixture: $NESTED_5C/.git not seeded"; exit 1; }
 # Snapshot will see nested cwd at line 38 and silently skip — no baseline+sidecar written.
 pre_input "$SID" "$NESTED_5C" | "$PRE" >/dev/null 2>&1
 track_session_files "$SID"
@@ -224,7 +231,10 @@ shopt -u nullglob
 SID="${SESSION_TAG}-8"
 # Seed fake worktree path under the tmp repo
 mkdir -p "$TMP/.claude/worktrees/agent-inner"
-cp -r "$TMP/.git" "$TMP/.claude/worktrees/agent-inner/" 2>/dev/null || true
+# WR-06: same rationale as [5c] — failed `cp` masquerading as nested-worktree
+# skip is testing the wrong code path. Fail loudly on fixture-setup failures.
+cp -r "$TMP/.git" "$TMP/.claude/worktrees/agent-inner/"
+[[ -d "$TMP/.claude/worktrees/agent-inner/.git" ]] || { echo "FAIL fixture: agent-inner/.git not seeded"; exit 1; }
 pre_input "$SID" "$TMP/.claude/worktrees/agent-inner" | "$PRE" >/dev/null 2>&1
 shopt -s nullglob
 NESTED_PRES=("$CACHE/agent-leak-${SID}-"*.pre)
