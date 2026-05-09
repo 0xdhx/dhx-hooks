@@ -18,6 +18,14 @@
 #   4. Run tests/probes/probe-subagent-stop-sync.sh; observe capture
 #   5. rm -rf ${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe (disarm)
 
+# WR-04: symmetric `set -uo pipefail` discipline with the probe (D-25 brief).
+# Catches unset-var typos and pipefail leakage in the jq pipelines. We do NOT
+# add `set -e` — the marker is advisory (HP-009) and must exit 0 unconditionally;
+# `set -e` would let intermediate non-fatal command failures propagate and
+# drop the silent-no-op contract. New failure paths added below are wrapped
+# in explicit `|| exit 0` where pipefail could otherwise propagate non-zero.
+set -uo pipefail
+
 INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
