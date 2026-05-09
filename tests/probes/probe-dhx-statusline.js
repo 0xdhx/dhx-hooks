@@ -163,14 +163,20 @@ try {
   execFileSync('git', ['init', '--quiet', tmp], { stdio: 'ignore' });
   fs.mkdirSync(path.join(tmp, 'reports'));
   fs.mkdirSync(path.join(tmp, 'reports', 'done'));
-  fs.mkdirSync(path.join(tmp, '.planning', 'todos'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.planning', 'todos', 'pending'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.planning', 'todos', 'done'), { recursive: true });
   fs.mkdirSync(path.join(tmp, '.planning', 'backlog'), { recursive: true });
 
   fs.writeFileSync(path.join(tmp, 'reports', 'r1.md'), '');
   fs.writeFileSync(path.join(tmp, 'reports', 'r2.md'), '');
   // done/ files don't count
   fs.writeFileSync(path.join(tmp, 'reports', 'done', 'old.md'), '');
-  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 't1.md'), '');
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'pending', 't1.md'), '');
+  // todos/done/ files MUST NOT count — convention asymmetry vs reports/
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'done', 'old1.md'), '');
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'done', 'old2.md'), '');
+  // top-level .planning/todos/*.md is NOT counted (archived sibling pattern)
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'stale-flat.md'), '');
   fs.writeFileSync(path.join(tmp, '.planning', 'backlog', 'b1.md'), '');
   fs.writeFileSync(path.join(tmp, '.planning', 'backlog', 'b2.md'), '');
   fs.writeFileSync(path.join(tmp, '.planning', 'backlog', 'b3.md'), '');

@@ -87,10 +87,13 @@ function findRepoRoot(dir) {
   return null;
 }
 
-// Count open repo signals: reports/*.md (non-done), .planning/todos/*.md,
-// .planning/backlog/*.md. Each class contributes an integer; 0 for absent
-// dirs. Zero-count classes render nothing on line 2, so empty repos pay
-// nothing for this read.
+// Count open repo signals: reports/*.md (non-done, top-level only),
+// .planning/todos/pending/*.md, .planning/backlog/*.md (top-level only).
+// Each class contributes an integer; 0 for absent dirs. Zero-count classes
+// render nothing on line 2, so empty repos pay nothing for this read.
+// Convention asymmetry: reports/ + backlog/ use flat-active with archived
+// siblings (reports/done/, backlog/shipped/ etc.); todos/ uses nested
+// pending/ for active with done/ + completed/ as archived siblings.
 function getRepoSignals(dir) {
   const counts = { reports: 0, todos: 0, backlog: 0 };
   const root = findRepoRoot(dir);
@@ -102,7 +105,7 @@ function getRepoSignals(dir) {
       counts.reports = entries.filter(e => e.isFile() && e.name.endsWith('.md')).length;
     }
   } catch { /* unreadable — leave 0 */ }
-  for (const [name, subdir] of [['todos', '.planning/todos'], ['backlog', '.planning/backlog']]) {
+  for (const [name, subdir] of [['todos', '.planning/todos/pending'], ['backlog', '.planning/backlog']]) {
     try {
       const full = path.join(root, subdir);
       if (fs.existsSync(full)) {
