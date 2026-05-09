@@ -362,7 +362,12 @@ if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
 fi
 
 write_outcome "${ARM:-unknown}" "${RUN_ID:-unknown}" "$conclusion" "$exit_code" "$OBSERVATIONS"
-PASS=$((PASS+1))
+# IN-04: skip the live-capture-completion PASS++ when the red-state
+# inversion already credited a PASS (line 274 / 279 above). Without the
+# guard, red-state runs double-count the PASS total — cosmetic only
+# (downstream consumers read conclusion / exit_code, not PASS), but the
+# summary line was misleading for red-state runs.
+[[ "${EXPECT_FAIL:-0}" -eq 1 ]] || PASS=$((PASS+1))
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL  arm=${ARM:-fixtures-only}  conclusion=$conclusion  exit_code=$exit_code"
