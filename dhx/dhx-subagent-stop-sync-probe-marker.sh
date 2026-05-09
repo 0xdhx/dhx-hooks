@@ -26,6 +26,18 @@
 # in explicit `|| exit 0` where pipefail could otherwise propagate non-zero.
 set -uo pipefail
 
+# IN-01: hoist the production no-op check BEFORE stdin read. Production
+# state is "probe dir absent" — the no-op path runs on every SubagentStop.
+# Reading + jq-validating stdin in production is wasted work per CLAUDE.md
+# "Keep hooks fast". The trade-off is losing D-17 jq-stdin validation in the
+# production path, but that's semantically correct: D-17 distinguishes
+# "fired but malformed" from "did not fire" — and production no-op IS the
+# "did not fire" case (probe is not armed, no capture is expected, no
+# distinction to draw). D-17 stdin validation still gates the arming-mode
+# capture path below, where the distinction matters.
+PROBE_DIR="${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe"
+[[ ! -d "$PROBE_DIR" ]] && exit 0
+
 INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
@@ -42,14 +54,9 @@ fi
 # sentinel works across CC's hook subprocess boundary (env vars do not reliably
 # propagate per HP-011). Probe touches $PROBE_DIR/force-red-broken-marker
 # before arming; marker checks for it and exits early without writing capture.
-[[ -f "${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe/force-red-broken-marker" ]] && exit 0
+[[ -f "$PROBE_DIR/force-red-broken-marker" ]] && exit 0
 
 # No agent_type filter (D-04 (c)) — RUN_ID propagation is the discriminator.
-
-PROBE_DIR="${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe"
-
-# Production no-op when probe dir absent
-[[ ! -d "$PROBE_DIR" ]] && exit 0
 
 FLAG_FILE="$PROBE_DIR/flag"
 [[ ! -s "$FLAG_FILE" ]] && exit 0
