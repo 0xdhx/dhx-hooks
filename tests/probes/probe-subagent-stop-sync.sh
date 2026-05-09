@@ -256,6 +256,16 @@ elif [[ "$ELAPSED" -le 300 ]]; then
   PASS=$((PASS+1))
   conclusion="pass_slow"
   exit_code=0
+else
+  # WR-03: terminal else for elapsed-out-of-range. Reachable when capture file
+  # exists, validates as JSON, but ELAPSED > 300 (e.g., wall-clock NTP jump
+  # during the 300-iteration loop, or capture appearing during the post-loop
+  # window before this stat). Without this branch, exit_code stays at the
+  # initial 2 and conclusion stays "ambiguous" with no diagnostic line —
+  # operator gets only an opaque verdict in the summary.
+  echo "FAIL elapsed-out-of-range: ${ELAPSED}s exceeds 300s ceiling but capture present (clock skew or post-loop race?)"
+  conclusion="ambiguous_elapsed_overflow"
+  exit_code=2
 fi
 
 # Invert verdict for DHX_PROBE_FORCE_RED scenarios — FAIL no-capture is the
