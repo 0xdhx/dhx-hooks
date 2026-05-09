@@ -277,6 +277,54 @@ else
   done
 fi
 
+# --- Section 9: hook funnels SILENCED-marker hash through canonical extractor ---
+#
+# Invariant: the hook's SILENCED-marker path computation MUST route through
+# silenced_marker_path_from_file (or silenced_marker_extract_block + silenced_marker_path)
+# from ~/.claude/dhx-tools/dhx-silenced-marker.sh. The earlier shape — inline
+# sed-extraction of the <deferred> block (with boundary tags captured) fed into
+# silenced_marker_path — produced a different byte sequence than the writer
+# (defer-review.md Step 4a, which uses the helper's awk extraction without
+# boundary tags). Hash divergence meant the writer's marker filename never
+# matched the hook's recomputation, breaking the 10-min suppression contract
+# end-to-end (skills-repo CR-01).
+#
+# This section is the local backing probe for the 2026-05-09 decisions row
+# documenting the migration. Sister assertion: skills-repo
+# tests/probe-deferred-silence-e2e.sh:81-83 detects the same migration via the
+# HOOK_USES_CANONICAL gate (warn-skip vs full PROBE_MODE).
+#
+# Backs: docs/decisions.md 2026-05-09 silenced-marker canonical-extractor row.
+
+SILENCED_HELPER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-silenced-marker.sh"
+if [[ ! -r "$SILENCED_HELPER" ]]; then
+  check "silenced-marker helper unreadable at $SILENCED_HELPER — symlink missing?" 0
+else
+  if grep -q "dhx-silenced-marker.sh" "$HOOK"; then
+    check "hook sources dhx-silenced-marker.sh" 1
+  else
+    check "hook missing dhx-silenced-marker.sh source — SILENCED contract bypassed" 0
+  fi
+
+  if grep -qE "silenced_marker_path_from_file|silenced_marker_extract_block" "$HOOK"; then
+    check "hook funnels through canonical extractor (silenced_marker_path_from_file or silenced_marker_extract_block)" 1
+  else
+    check "hook calls silenced_marker_path directly — bypasses canonical extractor (CR-01 drift shape)" 0
+  fi
+
+  # No inline <deferred> sed-extraction feeding the marker hash. The line 183
+  # sed extraction (DEFERRED=...) for the classification pipeline is allowed —
+  # it does NOT feed the SILENCED hash. The forbidden shape is a sed extraction
+  # captured into a variable like *BLOCK_TEXT* / *DEFERRED_BLOCK* whose result
+  # is then passed to silenced_marker_path. Static guard: assert no variable
+  # named DEFERRED_BLOCK_TEXT (the pre-migration shape) re-enters the hook.
+  if grep -qE "^[[:space:]]*DEFERRED_BLOCK_TEXT=" "$HOOK"; then
+    check "hook reintroduced inline DEFERRED_BLOCK_TEXT extraction — pre-migration drift shape" 0
+  else
+    check "hook contains no DEFERRED_BLOCK_TEXT inline extraction (pre-migration shape absent)" 1
+  fi
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]

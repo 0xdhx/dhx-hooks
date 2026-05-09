@@ -159,8 +159,9 @@ check_header_fallback() {
 #
 # HELPER-SOURCED (D-34): path computation lives in scripts/dhx-silenced-marker.sh
 # (Plan 08-08, single SoT). The defer-review write side (Plan 08-03 Step 4a)
-# sources the SAME helper and feeds the SAME inputs. Hash divergence between
-# writer and reader becomes structurally impossible.
+# and this read side BOTH funnel through the *_from_file wrappers, which feed
+# silenced_marker_extract_block (awk, no boundary tags) into silenced_marker_path.
+# Hash divergence between writer and reader becomes structurally impossible.
 #
 # Distinct from REVIEW marker (line ~163, 60-min TTL, used by dhx-assessed-guard.sh
 # to allow [assessed] writes during active review). Two markers, two consumers,
@@ -168,16 +169,27 @@ check_header_fallback() {
 # .planning/phases/08-deferred-item-discipline-patches/08-CONTEXT.md decisions
 # D-03, D-28, D-34.
 
-# Extract current <deferred> block text (input to the deferred-block hash).
-# Same awk pattern the existing line 137 sed extraction uses, captured for re-use.
-DEFERRED_BLOCK_TEXT=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
-
 # Source the helper from Plan 08-08 (single SoT for the D-28 double-hash idiom)
 # Sourced via the canonical $HOME/.claude/dhx-tools/ symlink path (mirrors
 # dhx-classify-deferred.sh sourcing convention).
 . "$HOME/.claude/dhx-tools/dhx-silenced-marker.sh"
 
-SILENCED_MARKER=$(silenced_marker_path "$CWD" "$DEFERRED_BLOCK_TEXT")
+# Path computation funnels through the helper's *_from_file wrapper, which
+# internally calls silenced_marker_extract_block (awk, NO boundary tags). The
+# defer-review write side (dhx/defer-review.md Step 4a) routes through the
+# parallel touch_from_file wrapper feeding the SAME extractor. This is the
+# only configuration where writer and reader hash identical bytes — earlier
+# inline sed-extraction here captured the boundary tags too, producing a
+# different block-hash from the writer's awk extraction (skills-repo CR-01).
+# The skills-repo e2e probe (tests/probe-deferred-silence-e2e.sh:81-83) greps
+# the hook for `silenced_marker_path_from_file` or `silenced_marker_extract_block`
+# as the drift-detection signal — adopting *_from_file here is what flips
+# PROBE_MODE from warn-skip to full and unblocks Phase 8 close (D-35 gate).
+# INVARIANT: the hook's SILENCED-marker path computation MUST funnel through
+# silenced_marker_path_from_file (or silenced_marker_extract_block + silenced_marker_path).
+# Direct silenced_marker_path callers are forbidden — they bypass the canonical
+# extractor and re-introduce CR-01 writer/reader hash drift.
+SILENCED_MARKER=$(silenced_marker_path_from_file "$CWD" "$LATEST")
 if [ -f "$SILENCED_MARKER" ] && [ "$(find "$SILENCED_MARKER" -mmin -10 2>/dev/null)" ]; then exit 0; fi
 
 DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
