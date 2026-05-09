@@ -7,12 +7,13 @@
 #
 # Marker protocol — any of these silence the hook for an item. Recognized as
 # prefix OR end-of-bullet bracketed token:
-#   [captured]  or [captured: ticket]  — captured to backlog/todo via /dhx:capture
-#   [existing]  or [existing: path]    — already has a durable home
-#   [assessed]  or [assessed: reason]  — user confirmed: intentionally not captured
-#   [tracked: REQ-ID]                  — tracked against a requirement
-#   [note]      or [note: detail]      — non-actionable decision-trail commentary
-#   ~~item~~                           — strikethrough (legacy compat)
+#   [captured]      or [captured: ticket]    — captured to backlog/todo via /dhx:capture
+#   [existing]      or [existing: path]      — already has a durable home
+#   [assessed]      or [assessed: reason]    — user confirmed: intentionally not captured
+#   [tracked: REQ-ID]                        — tracked against a requirement
+#   [note]          or [note: detail]        — non-actionable decision-trail commentary
+#   [preserved-in]  or [preserved-in: phase] — content folded into another phase/decision
+#   ~~item~~                                 — strikethrough (legacy compat)
 #
 # Filter logic is canonical at ~/.claude/dhx-tools/dhx-classify-deferred.sh —
 # this hook sources that script and calls classify_deferred_lines on the
@@ -134,6 +135,51 @@ check_header_fallback() {
   exit 0
 }
 
+# SILENCED marker check (D-03 / D-07 / D-28 / D-34).
+#
+# /dhx:defer-review writes the marker on Step 4a confirmation that all surfaced
+# markers persisted to CONTEXT.md. If the marker is fresh (< 10 min) AND its
+# filename matches the current state's double-hash (cwd-md5 + deferred-block-md5),
+# self-suppress this hook for one session-end — the user just resolved everything
+# and shouldn't be re-prompted.
+#
+# CRITICAL POSITIONING (WARNING #2 Option A from gsd-plan-checker review): this
+# check lands BEFORE the <deferred> tag extraction below, BEFORE both
+# check_header_fallback invocations (in the empty-tag and empty-classification
+# paths). Earlier positioning closes the header-fallback bypass: users with
+# `## Deferred` section but no <deferred> XML tag would otherwise hit
+# check_header_fallback's internal `exit 0` before reaching any later-positioned
+# SILENCED check.
+#
+# DOUBLE-HASH FILENAME (D-28): the marker encodes BOTH cwd-md5 AND a hash of the
+# verbatim <deferred> block text. Mid-TTL CONTEXT.md mutation produces a new
+# block-hash → new filename → no match here → hook fires on the new state.
+# Closes the codex MEDIUM "marker suppresses changed deferred content during TTL"
+# concern by construction.
+#
+# HELPER-SOURCED (D-34): path computation lives in scripts/dhx-silenced-marker.sh
+# (Plan 08-08, single SoT). The defer-review write side (Plan 08-03 Step 4a)
+# sources the SAME helper and feeds the SAME inputs. Hash divergence between
+# writer and reader becomes structurally impossible.
+#
+# Distinct from REVIEW marker (line ~163, 60-min TTL, used by dhx-assessed-guard.sh
+# to allow [assessed] writes during active review). Two markers, two consumers,
+# two TTLs — see canonical script header doc + skills-repo
+# .planning/phases/08-deferred-item-discipline-patches/08-CONTEXT.md decisions
+# D-03, D-28, D-34.
+
+# Extract current <deferred> block text (input to the deferred-block hash).
+# Same awk pattern the existing line 137 sed extraction uses, captured for re-use.
+DEFERRED_BLOCK_TEXT=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
+
+# Source the helper from Plan 08-08 (single SoT for the D-28 double-hash idiom)
+# Sourced via the canonical $HOME/.claude/dhx-tools/ symlink path (mirrors
+# dhx-classify-deferred.sh sourcing convention).
+. "$HOME/.claude/dhx-tools/dhx-silenced-marker.sh"
+
+SILENCED_MARKER=$(silenced_marker_path "$CWD" "$DEFERRED_BLOCK_TEXT")
+if [ -f "$SILENCED_MARKER" ] && [ "$(find "$SILENCED_MARKER" -mmin -10 2>/dev/null)" ]; then exit 0; fi
+
 DEFERRED=$(sed -n '/^[[:space:]]*<deferred>[[:space:]]*$/,/^[[:space:]]*<\/deferred>[[:space:]]*$/p' "$LATEST" 2>/dev/null)
 if [ -z "$DEFERRED" ]; then
   check_header_fallback "$LATEST"
@@ -169,12 +215,15 @@ touch "$REVIEW_MARKER"
 # (CLASSIFY_DEFERRED_MARKERS) and mirrored in this hook's header (lines 9-15).
 MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s) in ${LATEST}.
 
-Resolve via /dhx:defer-review ${LATEST}, OR mark inline:
-  [captured: <ref>]    item filed to backlog/todo
-  [existing: <path>]   item already tracked elsewhere
-  [assessed: <reason>] intentionally not captured (requires user approval)
-  [tracked: REQ-ID]    tracked against a requirement
-  [note: <detail>]     non-actionable decision-trail commentary"
+PRIMARY path: resolve via /dhx:defer-review ${LATEST} (interactive review with batched UAQ; touches SILENCED marker on confirmation so this hook self-suppresses for 10 min).
+
+FALLBACK (trivial cases only — single-item review where /dhx:defer-review's full flow is overkill): mark inline with one of 6 canonical markers:
+  [captured: <ref>]      item filed to backlog/todo via /dhx:capture
+  [existing: <path>]     item already tracked elsewhere
+  [assessed: <reason>]   intentionally not captured (requires user approval; PreToolUse guard enforces)
+  [tracked: REQ-ID]      tracked against a requirement
+  [note: <detail>]       non-actionable decision-trail commentary
+  [preserved-in: <phase>] content folded into another phase/decision"
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
