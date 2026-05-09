@@ -113,6 +113,28 @@ function getRepoSignals(dir) {
   return counts;
 }
 
+// Read the current session's in-progress task title. CC writes one JSON file
+// per task at <claudeDir>/tasks/<session>/<id>.json with the shape
+// {id, subject, description, activeForm, status, blocks, blockedBy}.
+// Pre-2026-05 the layout was a single array file at <claudeDir>/todos/
+// <session>-agent-<session>.json — that path is now dead and not consulted.
+// Returns the activeForm string, or '' if no task is in_progress.
+function getActiveTask(claudeDir, session) {
+  if (!session) return '';
+  const tasksDir = path.join(claudeDir, 'tasks', session);
+  if (!fs.existsSync(tasksDir)) return '';
+  try {
+    for (const f of fs.readdirSync(tasksDir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const t = JSON.parse(fs.readFileSync(path.join(tasksDir, f), 'utf8'));
+        if (t && t.status === 'in_progress') return t.activeForm || '';
+      } catch { /* malformed file — skip */ }
+    }
+  } catch { /* unreadable dir — fall through */ }
+  return '';
+}
+
 // --- GSD state reader -------------------------------------------------------
 
 /**
@@ -372,30 +394,14 @@ function runStatusline() {
       }
     }
 
-    // Current task from todos
-    let task = '';
+    // Current task from CC's per-session task store. Layout migrated 2026-05:
+    // <claudeDir>/tasks/<session>/<id>.json (one file per task), replacing the
+    // single-array <claudeDir>/todos/<session>-agent-<session>.json. The legacy
+    // path is no longer consulted — see getActiveTask() comment for details.
     const homeDir = os.homedir();
     // Respect CLAUDE_CONFIG_DIR for custom config directory setups (#870)
     const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
-    const todosDir = path.join(claudeDir, 'todos');
-    if (session && fs.existsSync(todosDir)) {
-      try {
-        const files = fs.readdirSync(todosDir)
-          .filter(f => f.startsWith(session) && f.includes('-agent-') && f.endsWith('.json'))
-          .map(f => ({ name: f, mtime: fs.statSync(path.join(todosDir, f)).mtime }))
-          .sort((a, b) => b.mtime - a.mtime);
-
-        if (files.length > 0) {
-          try {
-            const todos = JSON.parse(fs.readFileSync(path.join(todosDir, files[0].name), 'utf8'));
-            const inProgress = todos.find(t => t.status === 'in_progress');
-            if (inProgress) task = inProgress.activeForm || '';
-          } catch (e) {}
-        }
-      } catch (e) {
-        // Silently fail on file system errors - don't break statusline
-      }
-    }
+    const task = getActiveTask(claudeDir, session);
 
     // GSD state is assembled for line 2 (below). The legacy single-line
     // formatGsdState() is retained for the module export and unit tests but
@@ -479,6 +485,7 @@ module.exports = {
   renderEffort,
   EFFORT_RENDER,
   truncate, findRepoRoot, getRepoSignals,
+  getActiveTask,
   formatLine2Gsd, formatLine2Signals,
 };
 

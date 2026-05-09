@@ -200,6 +200,75 @@ try {
   fs.rmSync(nonRepo, { recursive: true, force: true });
 }
 
+// --- § 5b getActiveTask (CC tasks/ layout post-2026-05) ---------------------
+// CC migrated TodoWrite → TaskCreate/TaskUpdate, replacing the single-array
+// <claudeDir>/todos/<session>-agent-<session>.json with one file per task at
+// <claudeDir>/tasks/<session>/<id>.json. The renderer pin must read the new
+// layout — a regression here silently empties line 1's bold task segment.
+const { getActiveTask } = require(SCRIPT);
+const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-tasks-'));
+try {
+  const session = 'sess-abc';
+  const tasksDir = path.join(taskHome, 'tasks', session);
+
+  // Missing dir → ''
+  ok('getActiveTask: missing tasksDir → empty', getActiveTask(taskHome, session), '');
+  ok('getActiveTask: empty session → empty', getActiveTask(taskHome, ''), '');
+
+  fs.mkdirSync(tasksDir, { recursive: true });
+
+  // Empty dir → ''
+  ok('getActiveTask: empty tasksDir → empty', getActiveTask(taskHome, session), '');
+
+  // Pending + completed only → ''
+  fs.writeFileSync(path.join(tasksDir, '1.json'), JSON.stringify({
+    id: '1', subject: 'Plan', activeForm: 'Planning', status: 'pending',
+  }));
+  fs.writeFileSync(path.join(tasksDir, '2.json'), JSON.stringify({
+    id: '2', subject: 'Read docs', activeForm: 'Reading docs', status: 'completed',
+  }));
+  ok('getActiveTask: no in_progress → empty', getActiveTask(taskHome, session), '');
+
+  // Add an in_progress task → its activeForm
+  fs.writeFileSync(path.join(tasksDir, '3.json'), JSON.stringify({
+    id: '3', subject: 'Patch issue body', activeForm: 'Patching issue body', status: 'in_progress',
+  }));
+  ok('getActiveTask: in_progress → activeForm',
+    getActiveTask(taskHome, session), 'Patching issue body');
+
+  // Malformed JSON file is skipped, not fatal
+  fs.writeFileSync(path.join(tasksDir, '4.json'), '{not valid json');
+  ok('getActiveTask: malformed file skipped, still finds in_progress',
+    getActiveTask(taskHome, session), 'Patching issue body');
+
+  // Non-.json sibling ignored
+  fs.writeFileSync(path.join(tasksDir, 'README.txt'), 'ignore me');
+  ok('getActiveTask: non-.json ignored',
+    getActiveTask(taskHome, session), 'Patching issue body');
+
+  // activeForm absent on the in_progress task → '' (mirrors prior behavior)
+  fs.rmSync(path.join(tasksDir, '3.json'));
+  fs.writeFileSync(path.join(tasksDir, '5.json'), JSON.stringify({
+    id: '5', subject: 'No activeForm', status: 'in_progress',
+  }));
+  ok('getActiveTask: in_progress with no activeForm → empty',
+    getActiveTask(taskHome, session), '');
+
+  // Legacy todos/<session>-agent-<session>.json is NOT consulted (post-migration).
+  const legacyTodosDir = path.join(taskHome, 'todos');
+  fs.mkdirSync(legacyTodosDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(legacyTodosDir, `${session}-agent-${session}.json`),
+    JSON.stringify([{ status: 'in_progress', activeForm: 'LEGACY should not show' }]),
+  );
+  // Drop the new tasks dir entirely so the legacy path is the only source.
+  fs.rmSync(tasksDir, { recursive: true, force: true });
+  ok('getActiveTask: legacy todos/ path is dead, not consulted',
+    getActiveTask(taskHome, session), '');
+} finally {
+  fs.rmSync(taskHome, { recursive: true, force: true });
+}
+
 // --- § 6 formatLine2Gsd + formatLine2Signals --------------------------------
 
 const fullState = {
