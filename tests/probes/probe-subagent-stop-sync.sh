@@ -56,7 +56,11 @@ write_outcome() {
 
   local out_dir_base="$REPO_ROOT/tests/probes/.results/v1.3-phase-9"
   local out_dir="$out_dir_base/$cc_version"
-  mkdir -p "$out_dir"
+  # IN-03: probe declares set -uo pipefail (no -e); critical-path file ops
+  # need explicit rc-handling so an operator running the probe with a
+  # read-only repo (archived worktree, perm-denied .results dir, etc.)
+  # gets a diagnostic instead of inconsistent state.
+  mkdir -p "$out_dir" || { echo "FAIL mkdir-failed: $out_dir"; exit 2; }
 
   local out_file
   if [[ "$arm" == "fixtures-only" && "$run_id" == "baseline" ]]; then
@@ -170,7 +174,9 @@ case "${DHX_PROBE_FORCE_RED:-}" in
     # Marker hook checks for $PROBE_DIR/force-red-broken-marker and exits
     # without writing capture; probe expects FAIL no-capture as PASS.
     SENTINEL_FILE="$PROBE_DIR/force-red-broken-marker"
-    touch "$SENTINEL_FILE"
+    # IN-03: explicit rc-handling — probe runs without set -e, so a perm-denied
+    # PROBE_DIR (rare) would silently drop the sentinel and produce false PASS.
+    touch "$SENTINEL_FILE" || { echo "FAIL sentinel-create: $SENTINEL_FILE"; exit 2; }
     # Sentinel cleanup is handled by the live-capture block trap (D-09 hoist
     # in Plan 01 — single trap site, force-red-* glob covers this sentinel).
     echo "DHX_PROBE_FORCE_RED=broken-marker — sentinel file created at $SENTINEL_FILE; expecting FAIL no-capture as PASS"
@@ -183,7 +189,10 @@ case "${DHX_PROBE_FORCE_RED:-}" in
     # via $MANIFEST_BAK (set here, read by trap on EXIT).
     if [[ -f "$MANIFEST" ]]; then
       MANIFEST_BAK="$(mktemp "${MANIFEST}.dhx-probe-bak.XXXXXX")"
-      cp "$MANIFEST" "$MANIFEST_BAK"
+      # IN-03: explicit rc-handling — set -uo pipefail (no -e) wouldn't catch
+      # a cp failure here, and a missed backup would prevent the trap from
+      # restoring the manifest after the jq edit below.
+      cp "$MANIFEST" "$MANIFEST_BAK" || { echo "FAIL backup-failed: $MANIFEST -> $MANIFEST_BAK"; exit 2; }
       # WR-05: mktemp the .tmp edit path (matches D-10 backup-mktemp pattern)
       # so a jq failure does NOT leave a predictable `hooks.json.tmp` orphan
       # in the operator's plugin directory. Failure path explicitly rm's the
