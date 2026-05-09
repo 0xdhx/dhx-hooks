@@ -86,7 +86,14 @@ CAPTURE_TMP="$(mktemp "${CAPTURE_FILE}.tmp.XXXXXX")"
 
 # Wrap full stdin payload + metadata in single envelope (D-04 (b))
 # Use --argjson for marker_version (numeric); --arg for strings
-echo "$INPUT" | jq \
+# WR-02: gate the atomic mv on jq's exit status. The mv is filesystem-atomic
+# but content-atomicity (D-12's stated intent) requires jq to have succeeded.
+# If jq fails mid-stream (signal, OOM, etc.) the partial bytes already in
+# $CAPTURE_TMP would be promoted to the canonical name on an unconditional
+# mv, defeating D-12 — the probe wait-loop would then observe a non-empty
+# but malformed file and classify as ambiguous_malformed_capture (exit 2).
+# D-17 stdin-validate guards against bad input but not jq runtime failure.
+if echo "$INPUT" | jq \
   --arg captured_at "$CAPTURED_AT" \
   --argjson marker_version "$MARKER_VERSION" \
   --arg run_id "$RUN_ID" \
@@ -94,7 +101,10 @@ echo "$INPUT" | jq \
   --arg cc_version "$CC_VERSION" \
   '{payload: ., metadata: {captured_at: $captured_at, marker_version: $marker_version, run_id: $run_id, arm: $arm, cc_version: $cc_version}}' \
   > "$CAPTURE_TMP" 2>/dev/null
-
-mv "$CAPTURE_TMP" "$CAPTURE_FILE"
+then
+  mv "$CAPTURE_TMP" "$CAPTURE_FILE"
+else
+  rm -f "$CAPTURE_TMP"
+fi
 
 exit 0
