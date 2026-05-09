@@ -148,12 +148,12 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
-            "timeout": 10
+            "command": "bash \"$HOME/.claude/hooks/dhx-subagent-stop-sync-probe-marker.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-subagent-stop-sync-probe-marker.sh\""
+            "command": "bash \"$HOME/.claude/hooks/dhx-agent-leak-check.sh\"",
+            "timeout": 10
           }
         ]
       }
