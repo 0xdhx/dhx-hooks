@@ -328,6 +328,19 @@ else
 fi
 
 # JSON-time PII sanitizer (D-21 load-bearing gate)
+# WR-06: this gate is forward-looking defense-in-depth. Under the current
+# OBSERVATIONS schema, the only host-context-derived field is HOSTNAME_HASH
+# (sha256, not raw hostname); per-arm fields are numeric/boolean (`fired`,
+# `elapsed_seconds`, `marker_version`), the captured_at timestamp, and
+# `payload_top_level_keys` which is the JSON `keys` of the captured payload
+# (NAMES not VALUES). So this gate cannot fire under the current schema —
+# and that's intentional. It exists as a TRAP for future schema additions
+# (e.g., a Phase 15 `transcript_path_summary` field) so a developer who
+# extends OBSERVATIONS without sanitizing first gets a fail-closed signal at
+# this site rather than silently leaking host paths into committed baseline
+# JSON. Do not delete as dead code; do not strengthen the regex (un-anchored
+# substring match against $HOST is intentionally over-broad on hostname for
+# defense-in-depth — false positives are recoverable, leaks are not).
 HOST=$(hostname -s)
 if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
   echo "FATAL: observations contain PII; refusing write"
