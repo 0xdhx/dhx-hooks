@@ -179,8 +179,17 @@ case "${DHX_PROBE_FORCE_RED:-}" in
     if [[ -f "$MANIFEST" ]]; then
       MANIFEST_BAK="$(mktemp "${MANIFEST}.dhx-probe-bak.XXXXXX")"
       cp "$MANIFEST" "$MANIFEST_BAK"
-      jq '(.hooks.SubagentStop[].hooks) |= map(select((.command // "") | test("dhx-subagent-stop-sync-probe-marker") | not))' \
-        "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+      # WR-05: mktemp the .tmp edit path (matches D-10 backup-mktemp pattern)
+      # so a jq failure does NOT leave a predictable `hooks.json.tmp` orphan
+      # in the operator's plugin directory. Failure path explicitly rm's the
+      # mktemp file; success path mv's it to the canonical name.
+      MANIFEST_TMP="$(mktemp "${MANIFEST}.dhx-probe-edit.XXXXXX")"
+      if jq '(.hooks.SubagentStop[].hooks) |= map(select((.command // "") | test("dhx-subagent-stop-sync-probe-marker") | not))' \
+        "$MANIFEST" > "$MANIFEST_TMP"; then
+        mv "$MANIFEST_TMP" "$MANIFEST"
+      else
+        rm -f "$MANIFEST_TMP"
+      fi
       echo "DHX_PROBE_FORCE_RED=missing-from-manifest — marker entry removed from manifest; backup at $MANIFEST_BAK; expecting FAIL no-capture as PASS"
       EXPECT_FAIL=1
     else
