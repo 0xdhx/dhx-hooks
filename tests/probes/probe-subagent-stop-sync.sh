@@ -37,6 +37,13 @@ PROBE_DIR="${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe"
 PASS=0
 FAIL=0
 
+# IN-05: single source of truth for the live-capture timeout. Per D-01, 300s
+# is the load-bearing PASS_SLOW ceiling for cross-version delta corpus —
+# changing this number changes the phase's PASS criterion contract, so it
+# stays a constant rather than an env-var override (operators wanting a
+# different ceiling should fork a Phase 9.x derivative instead).
+TIMEOUT_SECS=300
+
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
 
 # --- D-18: write_outcome() shell function — DRY single source of truth ----
@@ -249,10 +256,12 @@ fi
 CAPTURE_FILE="$PROBE_DIR/capture-${ARM}-${RUN_ID}.json"
 
 echo ""
-echo "Live capture: arm=$ARM run_id=$RUN_ID — dispatch the matching agent in a fresh CC session. Waiting up to 300s..."
+echo "Live capture: arm=$ARM run_id=$RUN_ID — dispatch the matching agent in a fresh CC session. Waiting up to ${TIMEOUT_SECS}s..."
 
+# IN-05: C-style for-loop so $TIMEOUT_SECS substitutes (brace expansion
+# `{1..N}` does not support variable substitution; would expand literally).
 START=$(date +%s)
-for i in {1..300}; do
+for ((i=1; i<=TIMEOUT_SECS; i++)); do
   if [[ -s "$CAPTURE_FILE" ]]; then break; fi
   sleep 1
 done
@@ -262,7 +271,7 @@ ELAPSED=$((END - START))
 exit_code=2
 conclusion="ambiguous"
 if [[ ! -s "$CAPTURE_FILE" ]]; then
-  echo "FAIL no-capture: SubagentStop did not fire within 300s (arm=$ARM)"
+  echo "FAIL no-capture: SubagentStop did not fire within ${TIMEOUT_SECS}s (arm=$ARM)"
   conclusion="fail_no_capture"
   exit_code=1
 elif ! jq -e . "$CAPTURE_FILE" >/dev/null 2>&1; then
@@ -274,19 +283,19 @@ elif [[ "$ELAPSED" -le 60 ]]; then
   PASS=$((PASS+1))
   conclusion="pass"
   exit_code=0
-elif [[ "$ELAPSED" -le 300 ]]; then
+elif [[ "$ELAPSED" -le "$TIMEOUT_SECS" ]]; then
   echo "OK   captured in ${ELAPSED}s (PASS_SLOW — advisory: SubagentStop fires but with unexpected lag; flagged for Phase 15 cross-version delta corpus)"
   PASS=$((PASS+1))
   conclusion="pass_slow"
   exit_code=0
 else
   # WR-03: terminal else for elapsed-out-of-range. Reachable when capture file
-  # exists, validates as JSON, but ELAPSED > 300 (e.g., wall-clock NTP jump
-  # during the 300-iteration loop, or capture appearing during the post-loop
-  # window before this stat). Without this branch, exit_code stays at the
-  # initial 2 and conclusion stays "ambiguous" with no diagnostic line —
-  # operator gets only an opaque verdict in the summary.
-  echo "FAIL elapsed-out-of-range: ${ELAPSED}s exceeds 300s ceiling but capture present (clock skew or post-loop race?)"
+  # exists, validates as JSON, but ELAPSED > TIMEOUT_SECS (e.g., wall-clock NTP
+  # jump during the loop, or capture appearing during the post-loop window
+  # before this stat). Without this branch, exit_code stays at the initial 2
+  # and conclusion stays "ambiguous" with no diagnostic line — operator gets
+  # only an opaque verdict in the summary.
+  echo "FAIL elapsed-out-of-range: ${ELAPSED}s exceeds ${TIMEOUT_SECS}s ceiling but capture present (clock skew or post-loop race?)"
   conclusion="ambiguous_elapsed_overflow"
   exit_code=2
 fi
