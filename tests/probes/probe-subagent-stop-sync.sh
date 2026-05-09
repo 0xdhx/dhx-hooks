@@ -45,8 +45,13 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "
 # Deterministic baseline path: <cc_version>/fixtures-only-baseline.json (no ts field per G-02)
 write_outcome() {
   local arm="$1" run_id="$2" conclusion="$3" exit_code_arg="$4" observations="$5"
-  local cc_version
-  cc_version=$(timeout 1s claude --version 2>/dev/null | awk '{print $1}' || echo "unknown")
+  local cc_version cc_raw
+  # IN-02: two-stage rc-handling — the prior `cmd | awk || echo` shape only
+  # caught awk failures; if timeout exited 124 but produced partial stdout
+  # awk processed it and exited 0, leaving cc_version as garbage. Capture
+  # upstream rc explicitly on the assignment to cc_raw.
+  cc_raw=$(timeout 1s claude --version 2>/dev/null) || cc_raw=""
+  cc_version=$(echo "$cc_raw" | awk '{print $1}')
   [[ -n "$cc_version" ]] || cc_version="unknown"
 
   local out_dir_base="$REPO_ROOT/tests/probes/.results/v1.3-phase-9"

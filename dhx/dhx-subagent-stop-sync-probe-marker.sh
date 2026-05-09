@@ -90,7 +90,14 @@ CAPTURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 MARKER_VERSION=1
 # D-16: wrap claude --version in 1s timeout with "unknown" fallback so marker
 # never blocks SubagentStop on slow/unavailable claude binary.
-CC_VERSION=$(timeout 1s claude --version 2>/dev/null | awk '{print $1}' || echo "unknown")
+# IN-02: split into two stages so we can check the upstream rc explicitly.
+# The previous `cmd | awk || echo` shape only caught awk failures — if
+# `timeout 1s claude --version` exited 124 (timeout) but produced partial
+# stdout, awk processed that partial output and exited 0, leaving
+# CC_VERSION as garbage instead of "unknown". Two-stage capture catches the
+# upstream failure on the assignment to CC_RAW.
+CC_RAW=$(timeout 1s claude --version 2>/dev/null) || CC_RAW=""
+CC_VERSION=$(echo "$CC_RAW" | awk '{print $1}')
 [[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
 
 # D-12: atomic capture write — write to mktemp temp path, then mv to final.
