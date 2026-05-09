@@ -54,6 +54,17 @@ case "$ARM" in
   *) exit 0 ;;
 esac
 
+# D-13 symmetry (WR-01): mirror probe-side RUN_ID validation in the marker so
+# T-09-01 path-escape mitigation isn't probe-side-only. Marker fires on every
+# armed SubagentStop independently of the probe; without this check, an
+# operator-typo flag like `echo "sync ../foo" > flag` would land the capture
+# file outside the per-process scratch dir before the probe could refuse it.
+# Allowed character class matches uuidgen output and basic identifier shapes.
+if [[ ! "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "WARN: marker received malformed RUN_ID; exiting silently" >&2
+  exit 0
+fi
+
 CAPTURE_FILE="$PROBE_DIR/capture-${ARM}-${RUN_ID}.json"
 
 # Idempotency: don't overwrite existing capture (RUN_ID is one-shot per arm)
