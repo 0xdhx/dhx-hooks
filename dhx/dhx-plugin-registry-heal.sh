@@ -56,7 +56,7 @@ fi
 # Compute NEW_IL per Pattern from 10-D-05-RESULT.md (CC 2.1.140: Pattern B —
 # installLocation == source.path literally; D-03 allow-list still bounds the
 # value-side check below to marketplace-root prefixes).
-NEW_IL=$(echo "$DHX_SOURCE_JSON" | jq -r '.path // empty' 2>/dev/null)
+NEW_IL=$(jq -r '.path // empty' <<< "$DHX_SOURCE_JSON" 2>/dev/null)
 if [[ -z "$NEW_IL" ]]; then
   echo "dhx-plugin-registry-heal: REJECT: settings.extraKnownMarketplaces.dhx-local.source.path empty or null" >&2
   exit 1
@@ -110,10 +110,10 @@ if [[ ! -r "$KM_PATH" ]]; then
 else
   if ! KM_PARSED=$(jq -c . "$KM_PATH" 2>/dev/null); then
     STATE="BADJSON"
-  elif ! echo "$KM_PARSED" | jq -e '."dhx-local"' >/dev/null 2>&1; then
+  elif ! jq -e '."dhx-local"' <<< "$KM_PARSED" >/dev/null 2>&1; then
     STATE="MISSING"
   else
-    CURRENT_IL=$(echo "$KM_PARSED" | jq -r '."dhx-local".installLocation // empty' 2>/dev/null)
+    CURRENT_IL=$(jq -r '."dhx-local".installLocation // empty' <<< "$KM_PARSED" 2>/dev/null)
     if [[ -n "$CURRENT_IL" && ! -d "$CURRENT_IL" ]]; then
       STATE="STALE_INSTALLLOCATION"
     else
@@ -147,7 +147,7 @@ case "$STATE" in
     else
       BASE="$KM_PARSED"
     fi
-    if ! echo "$BASE" | jq -c --argjson e "$DHX_ENTRY" '. + {"dhx-local": $e}' > "$TMP" 2>/dev/null; then
+    if ! jq -c --argjson e "$DHX_ENTRY" '. + {"dhx-local": $e}' <<< "$BASE" > "$TMP" 2>/dev/null; then
       rm -f "$TMP"
       echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
       exit 1
@@ -166,7 +166,7 @@ case "$STATE" in
   STALE_INSTALLLOCATION)
     # D-04: rewrite ONLY .dhx-local.installLocation; preserve source.source,
     # source.path, all other keys.
-    if ! echo "$KM_PARSED" | jq -c --arg il "$NEW_IL" '."dhx-local".installLocation = $il' > "$TMP" 2>/dev/null; then
+    if ! jq -c --arg il "$NEW_IL" '."dhx-local".installLocation = $il' <<< "$KM_PARSED" > "$TMP" 2>/dev/null; then
       rm -f "$TMP"
       echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
       exit 1
