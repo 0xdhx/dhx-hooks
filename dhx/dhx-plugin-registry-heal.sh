@@ -179,6 +179,21 @@ case "$STATE" in
     ;;
 esac
 
+# WR-04 TOCTOU mitigation: re-canonicalize the parent dir IMMEDIATELY before
+# mv and re-assert the (a) prefix match. Narrows (does not fully close) the
+# window between the line-76 (a) check and the mv below; full O_NOFOLLOW-style
+# protection requires a helper binary (deferred — see HP-025 § Threat Model /
+# Residual Risks). On a real TOCTOU race (attacker swaps $CFG/plugins/ between
+# line 76 and here), this catches the swap and refuses the write. On the happy
+# path it's a no-op (parent dir state unchanged during script runtime).
+KM_PARENT_REAL=$(realpath -m "$(dirname "$KM_PATH")" 2>/dev/null || echo "")
+EXPECTED_PARENT_REAL=$(realpath -m "$CFG/plugins" 2>/dev/null || echo "")
+if [[ -z "$KM_PARENT_REAL" || "$KM_PARENT_REAL" != "$EXPECTED_PARENT_REAL" ]]; then
+  rm -f "$TMP"
+  echo "dhx-plugin-registry-heal: REJECT: parent dir prefix changed pre-mv (TOCTOU; $KM_PARENT_REAL != $EXPECTED_PARENT_REAL)" >&2
+  exit 1
+fi
+
 # Atomic mv. Capture rc OUTSIDE `if ! cmd; then` — inside that block $? is 0
 # (the negated test succeeded), not the failed cmd's rc. Per WR-01 verification:
 # `if ! mv …; then mv_rc=$?; …` always captured 0 regardless of mv's failure
