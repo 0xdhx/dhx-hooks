@@ -32,11 +32,6 @@
 # Phase 6 (2026-05-03) retired IP path; Phase 10 added km active heal — see docs/decisions.md 2026-05-03 (D-25/D-27/D-29) and HP-025 v1.3 § Remediation hook.
 set -uo pipefail
 
-# Phase 6 surgical-slim scope guard (D-25 + D-27): IP heal retired via Hn() upstream-supersession
-# evidence. km hardening is HEAL-07 follow-on (not implemented here).
-# This script intentionally retains its symlink + dispatcher mount-point so that
-# follow-on work has a known anchor without re-introducing manifest + symlink plumbing.
-
 # ============================================================================
 # Phase 10 km active heal body
 # ============================================================================
