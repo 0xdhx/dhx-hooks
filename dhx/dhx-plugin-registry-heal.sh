@@ -102,7 +102,7 @@ if (( ! matched )); then
   exit 1
 fi
 
-# 4-state detector (D-04): UNREADABLE / BADJSON / MISSING / STALE_INSTALLLOCATION / HEALTHY
+# Detector (D-04): 4 failure states (UNREADABLE, BADJSON, MISSING, STALE_INSTALLLOCATION) + HEALTHY (no-op)
 STATE=""
 KM_PARSED=""
 if [[ ! -r "$KM_PATH" ]]; then
