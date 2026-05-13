@@ -112,7 +112,7 @@ Apply before session ends:
 3. SILENT DESCOPING: Were any plan tasks dropped or partially implemented without recording the deviation?
 4. DEFERRED ITEMS: Scan for TODOs or noted limitations that need /dhx:capture.
 5. BACKLOG SYNC: Run /dhx:backlog audit to check for uncaptured items.
-6. NYQUIST: Run /dhx:nyquist to validate test coverage for this phase."
+6. NYQUIST: Run /dhx:test nyquist to validate test coverage for this phase."
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
