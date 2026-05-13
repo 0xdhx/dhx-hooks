@@ -310,7 +310,7 @@ assert_km_unchanged_with_stderr_match() {
     FAIL=$((FAIL + 1))
     return 1
   fi
-  if ! echo "$captured_stderr" | grep -qE "$stderr_regex"; then
+  if ! grep -qE "$stderr_regex" <<< "$captured_stderr"; then
     printf '  ✗ %s: captured stderr does not match REJECT regex /%s/ (got: %q)\n' \
       "$name" "$stderr_regex" "$captured_stderr"
     FAIL=$((FAIL + 1))
@@ -582,7 +582,7 @@ fi
 # Assertion 2 — stderr matches REJECT regex (allow either "target km path resolves
 # outside CONFIG_DIR" wording or the broader "REJECT: <reason>" framing). The
 # canonical wording is documented above; Plan 2 lands the literal stderr message.
-if echo "$hostile_stderr" | grep -qE '^dhx-plugin-registry-heal: REJECT: target km path resolves outside CONFIG_DIR'; then
+if grep -qE '^dhx-plugin-registry-heal: REJECT: target km path resolves outside CONFIG_DIR' <<< "$hostile_stderr"; then
   printf '  ✓ hostile-config-dir: stderr matches REJECT regex with structured prefix\n'
   PASS=$((PASS + 1))
 else
@@ -682,7 +682,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 # Assertion 3 — D-14 WARN literal substring on captured stderr.
-if echo "$badjson_stderr" | grep -qF "WARN: BADJSON recovery"; then
+if grep -qF "WARN: BADJSON recovery" <<< "$badjson_stderr"; then
   printf '  ✓ km-badjson-warn-recovery: WARN substring present on stderr (D-14)\n'
   PASS=$((PASS + 1))
 else
