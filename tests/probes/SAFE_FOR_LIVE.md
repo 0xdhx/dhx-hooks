@@ -46,6 +46,7 @@ asserts row count == file count.
 | `probe-last-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
 | `probe-migration.js` | yes | re-implemented compare core; tmp-file fixtures via os.tmpdir |
 | `probe-new-milestone-promote-reminder.sh` | yes | mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation |
+| `probe-phase-10-doc-contracts.sh` | yes | read-only token-presence grep against committed `docs/hook-patterns.md`, `docs/decisions.md`, `.planning/REQUIREMENTS.md`; no subprocesses, no writes, no env mutation (Phase 10 Nyquist gap-fill 2026-05-13 — HEAL-07-06 + HEAL-07-07 doc-contract regression probe) |
 | `probe-plugin-keys.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; live read of settings is jq -e only |
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
 | `probe-plugin-registry.sh` | yes | mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry |
