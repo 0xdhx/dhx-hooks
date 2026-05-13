@@ -34,7 +34,7 @@ A probe is a **supersession-watchdog probe** when it asserts the negative premis
 - **Re-run** on every CC version bump (manual or via future `health.sh` opt-in mode) until upstream supersession actually occurs.
 - **Retired** by a follow-up `docs/decisions.md` row when supersession is observed (move to `tests/probes/.inactive/` per HP-probe convention).
 
-**Cross-version cadence (v1.3+):** outcome JSON files land at `tests/probes/.results/v{milestone}-phase-{N}/` (e.g., `v1.2-phase-0/`). The outcome JSON `cc_version` field — populated live from `claude --version` at probe-run time, NOT a literal — is the cross-version comparison key. v1.3+ ops re-run probes and append to `tests/probes/.results/v1.3-phase-{N}/` without code edits.
+**Cross-version cadence (v1.3+):** outcome JSON files land at `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/` (e.g., `v1.3-multi-cc-ver/2.1.140/`). The outcome JSON `cc_version` field — populated live from `claude --version` at probe-run time, NOT a literal — is the cross-version comparison key. v1.3+ ops re-run probes and append to `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/` without code edits. (v1.2 baseline cells live at `tests/probes/.results/v1.2-phase-{0,6}/` per the Phase 3/Phase 6 layout that authored them.)
 
 **Header tag convention (Phase 3 onward):** supersession-watchdog probes carry two top-of-file tags as supplementary fields in the existing comment block:
 - `# SAFE_FOR_LIVE: yes|no` — `yes` if the probe is read-only against live state (e.g., file-gated wrapper edit); `no` if it requires sandbox isolation (e.g., subprocess invocation against `CLAUDE_CONFIG_DIR=$mktemp_d`).
@@ -62,6 +62,18 @@ When a supersession-watchdog probe needs to capture data from a long-running CC 
 | `probe-installed-plugins-badjson-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; needs auth (credentials_file or `ANTHROPIC_API_KEY`) |
 | `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; needs auth |
 | `probe-known-marketplaces-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 (km path) | Operator-invoked; needs auth |
+
+**Cross-version corpus state (per-probe × per-CC-version):**
+
+| Probe | CC 2.1.121 (v1.2 baseline) | CC 2.1.140 (v1.3 Phase 15) |
+|-------|---------------------------|---------------------------|
+| `probe-effort-level-stdin-absent.sh` | `supersession_found_drop_p3` (`v1.2-phase-0/`) | `supersession_found_drop_p3` (`v1.3-multi-cc-ver/2.1.140/`) |
+| `probe-installed-plugins-no-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-0/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) — **flipped** |
+| `probe-installed-plugins-badjson-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility |
+| `probe-known-marketplaces-natural-heal.sh` | `v1_2_work_warranted` (`v1.2-phase-6/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) |
+
+**Promotion threshold (HP-024 / SCHEMA-04 precedent):** at ≥3 distinct CC versions per probe, promote to full multi-cell matrix. Current corpus: 2 versions per probe after Phase 15 ships. Trigger row: `docs/decisions.md` 2026-05-13 (HP-024 promotion trigger for supersession-watchdog corpus).
 
 ## Schema-evolution probes
 

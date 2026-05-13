@@ -1,0 +1,32 @@
+{
+  "probe_id": "probe-effort-level-stdin-absent",
+  "exit_code": 1,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.140",
+  "ts": "2026-05-13T12:25:20Z",
+  "run_id": "fc1345d6-e97e-4de2-b68e-ac758bbfdb26",
+  "observations": {
+    "stdin_payload_top_level_keys": [
+      "context_window",
+      "cost",
+      "cwd",
+      "effort",
+      "exceeds_200k_tokens",
+      "fast_mode",
+      "model",
+      "output_style",
+      "rate_limits",
+      "session_id",
+      "session_name",
+      "thinking",
+      "transcript_path",
+      "version",
+      "workspace"
+    ],
+    "effortLevel_present": false,
+    "effort_present": true,
+    "workspace_current_dir_present": true,
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "supersession_found_drop_p3"
+}

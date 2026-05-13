@@ -136,4 +136,19 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   echo "---"
 done
 echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped)"
+
+# D-21 (Phase 15 MULTI-CC-VER): defensive validation of the supersession-watchdog
+# cross-version result corpus. Non-blocking on absent v1.3-multi-cc-ver/<active-cc>/ dir
+# so ad-hoc / sandbox-only sweeps (e.g., --filter SAFE_FOR_LIVE=yes) stay clean — the
+# validator is only meaningful after a real watchdog re-run has populated the dir.
+if cc_full=$(claude --version 2>/dev/null) && [[ -n "$cc_full" ]]; then
+  active_cc=$(printf '%s' "$cc_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  results_dir="$REPO/tests/probes/.results/v1.3-multi-cc-ver/$active_cc"
+  if [[ -n "$active_cc" ]] && [[ -d "$results_dir" ]] && [[ -x "$REPO/scripts/verify-multi-cc-results.sh" ]]; then
+    echo "Running multi-cc-results validator against $results_dir..."
+    bash "$REPO/scripts/verify-multi-cc-results.sh" || FAIL=$((FAIL+1))
+    echo "---"
+  fi
+fi
+
 [ "$FAIL" -eq 0 ]
