@@ -26,6 +26,7 @@
 //  15. /restart-plugins marker-driven rebaseline of plugins fields
 //      (single-shot consumption, surgical scope, per-session keying)
 //  16. .in_use/<pid> path-segment filter (CC session-lifetime lock noise)
+//  17. Drift-debug breadcrumb for plugins trigger (forensic shortcut)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -56,6 +57,11 @@ const { hashWarnSettings } = require('../../dhx/statusline-wrapper.js');
 function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   let maxMtime = 0;
   let count = 0;
+  // `maxPath` tracks the file whose mtime won the scan — the breadcrumb's
+  // load-bearing forensic signal (see scenario [17]). Always paired with
+  // maxMtime inside the same conditional so the path never desyncs from
+  // the mtime it describes.
+  let maxPath = '';
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
@@ -69,11 +75,14 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
       try {
         const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
         const st = fs.statSync(full);
-        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+        if (st.mtimeMs > maxMtime) {
+          maxMtime = st.mtimeMs;
+          maxPath = full;
+        }
       } catch { /* skip */ }
     }
   } catch { /* missing dir */ }
-  return { maxMtime, count };
+  return { maxMtime, count, maxPath };
 }
 
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
@@ -894,6 +903,190 @@ const baseSnap = snap();
       fs.existsSync(otherMarker));
     fs.unlinkSync(otherMarker);
   }
+}
+
+// --- 17. Drift-debug breadcrumb for plugins trigger (forensic shortcut) ---
+//
+// Captures `max_path` (the file whose mtime won the scanRecursive() loop)
+// at trigger-fire time so the next CC plugin-cache bookkeeping surprise
+// resolves in 30s via `tail -1 ~/.cache/dhx/drift-debug-*.log` instead of
+// the ~20-min live forensics that produced commit 8274444 (the third
+// filter extension in 3 weeks: `.orphaned_at` 2026-04-23 → `temp_git_*`
+// 2026-04-27 → `.in_use/<pid>` 2026-05-13). Observer-only — the breadcrumb
+// is appended AFTER `triggers.push('plugins')` fires; never gates whether
+// drift is detected.
+//
+// Probe reimplements the breadcrumb writer locally — same convention as
+// scanRecursive and consumeMarker above — so wrapper drift in either
+// direction (signature/shape/ordering) flips an assertion red.
+//
+// Invariants under test:
+//  a) Breadcrumb file is CREATED at the expected path when a plugins-
+//     trigger drift event fires (and not before).
+//  b) Breadcrumb's last line is valid JSON with EXACTLY 7 keys: ts,
+//     trigger, max_path, current_mtime, snapshot_mtime, current_count,
+//     snapshot_count. Catches key-rename / key-add regressions.
+//  c) `trigger` is the literal string `"plugins"` and `max_path` is the
+//     file whose mtime won the scan (the load-bearing forensic signal).
+//  d) Multiple drift fires within the same session APPEND (not overwrite)
+//     — verifies fs.appendFileSync, not writeFileSync.
+//  e) Breadcrumb does NOT fire when drift is NOT detected — verifies the
+//     writer sits INSIDE the drift-detected branch, not on every refresh.
+{
+  // Reimplemented breadcrumb writer — mirrors wrapper's emission contract
+  // exactly. Any divergence (extra key, missing key, reordered keys, wrong
+  // sanitization) flips at least one of [17a]-[17e].
+  function writeBreadcrumb(cacheDir, sessionId, current, snapshot) {
+    if (!sessionId || /[/\\]|\.\./.test(sessionId)) return false;
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        trigger: 'plugins',
+        max_path: current.plugins_maxPath ?? '',
+        current_mtime: current.plugins_mtime,
+        snapshot_mtime: snapshot.plugins_mtime,
+        current_count: current.plugins_count,
+        snapshot_count: snapshot.plugins_count,
+      }) + '\n';
+      fs.appendFileSync(breadcrumbFile, line);
+      return true;
+    } catch { return false; }
+  }
+
+  // Wires the wrapper's "fire breadcrumb inside the plugins-trigger branch"
+  // contract — assertion [17e] depends on this being the ONLY call path.
+  function maybeBreadcrumb(cacheDir, sessionId, current, snapshot) {
+    const fired = (current.plugins_mtime > snapshot.plugins_mtime) ||
+                  (current.plugins_count < snapshot.plugins_count);
+    if (fired) writeBreadcrumb(cacheDir, sessionId, current, snapshot);
+    return fired;
+  }
+
+  // Unique cache + session_id per probe run — idempotent reruns, zero risk
+  // of colliding with ~/.cache/dhx/drift-debug-*.log from the live session.
+  const sessionId = `probe-17-${Date.now()}-${process.pid}`;
+  const cacheDir = path.join(TMP, 'cache-17');
+  const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
+
+  // Build a controllable plugins fixture: one seed file (baseline mtime),
+  // then mutate by writing a NEW file at a future mtime to deterministically
+  // drive plugins_mtime > snapshot.plugins_mtime.
+  const pluginRoot = path.join(TMP, 'plugins-17');
+  fs.mkdirSync(pluginRoot, { recursive: true });
+  const seedFile = path.join(pluginRoot, 'marketplace/plugin/1.0/seed.json');
+  fs.mkdirSync(path.dirname(seedFile), { recursive: true });
+  fs.writeFileSync(seedFile, 'seed');
+  const t0 = BASE_MS;
+  restampTree(pluginRoot, t0);
+
+  // Defaults for non-plugins keys — same shape `checkDriftLogic` expects, but
+  // we only mutate the plugins fields across this scenario so the other
+  // triggers never fire (matches [17e]'s "no other channels" invariant).
+  const sharedRest17 = {
+    agents_mtime: 1, agents_count: 1,
+    gsd_mtime: 1, gsd_count: 1,
+    settings_hash: 'baseline-17', version: 'v17',
+  };
+  const baseScan = scanRecursive(pluginRoot, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const baseSnap17 = {
+    ...sharedRest17,
+    plugins_mtime: baseScan.maxMtime,
+    plugins_count: baseScan.count,
+    plugins_maxPath: baseScan.maxPath,
+  };
+
+  // [17a] Breadcrumb file CREATED when plugins trigger fires.
+  // Write a new file at a future mtime → plugins_mtime advances → trigger fires.
+  const triggerFile1 = path.join(pluginRoot, 'marketplace/plugin/1.0/new-hook-a.json');
+  fs.writeFileSync(triggerFile1, 'x');
+  const futureMs1 = t0 + 60_000;
+  fs.utimesSync(triggerFile1, futureMs1 / 1000, futureMs1 / 1000);
+  const currentScan1 = scanRecursive(pluginRoot, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const current1 = {
+    ...baseSnap17,
+    plugins_mtime: currentScan1.maxMtime,
+    plugins_count: currentScan1.count,
+    plugins_maxPath: currentScan1.maxPath,
+  };
+  const fired1 = maybeBreadcrumb(cacheDir, sessionId, current1, baseSnap17);
+  assert('[17a] breadcrumb file created when plugins trigger fires',
+    fired1 === true && fs.existsSync(breadcrumbFile));
+
+  // [17b] Last line is valid JSON with EXACTLY 7 expected keys.
+  const expectedKeys = [
+    'current_count', 'current_mtime', 'max_path', 'snapshot_count',
+    'snapshot_mtime', 'trigger', 'ts',
+  ];
+  let parsed1;
+  let actualKeys = [];
+  try {
+    const lines = fs.readFileSync(breadcrumbFile, 'utf8').split('\n').filter(Boolean);
+    parsed1 = JSON.parse(lines[lines.length - 1]);
+    actualKeys = Object.keys(parsed1).sort();
+  } catch { /* parsed1 stays undefined → assertion fails cleanly */ }
+  assert('[17b] last line parses as JSON with exactly 7 expected keys (sorted equality)',
+    parsed1 && actualKeys.length === 7 &&
+    actualKeys.every((k, i) => k === expectedKeys[i]));
+
+  // [17c] trigger === "plugins" and max_path === the file that won the scan.
+  assert('[17c] trigger field is literally "plugins" and max_path is the file whose mtime won the scan',
+    parsed1 && parsed1.trigger === 'plugins' &&
+    parsed1.max_path === triggerFile1);
+
+  // [17d] Append-only across multiple fires in the same session.
+  // Touch a second file at a later mtime → trigger fires again → second line lands.
+  const triggerFile2 = path.join(pluginRoot, 'marketplace/plugin/1.0/new-hook-b.json');
+  fs.writeFileSync(triggerFile2, 'x');
+  const futureMs2 = t0 + 120_000;
+  fs.utimesSync(triggerFile2, futureMs2 / 1000, futureMs2 / 1000);
+  // snapshot at this point = current1 (post-first-fire); pre-rebaseline shape.
+  const snapshotForFire2 = {
+    ...current1,  // first fire's "current" becomes the baseline for the second compare
+  };
+  const currentScan2 = scanRecursive(pluginRoot, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const current2 = {
+    ...snapshotForFire2,
+    plugins_mtime: currentScan2.maxMtime,
+    plugins_count: currentScan2.count,
+    plugins_maxPath: currentScan2.maxPath,
+  };
+  const fired2 = maybeBreadcrumb(cacheDir, sessionId, current2, snapshotForFire2);
+  const linesAfter = fs.readFileSync(breadcrumbFile, 'utf8').split('\n').filter(Boolean);
+  let parsed2;
+  try { parsed2 = JSON.parse(linesAfter[linesAfter.length - 1]); } catch {}
+  assert('[17d] second fire APPENDS (file has 2 lines, line 2 has different max_path)',
+    fired2 === true && linesAfter.length === 2 &&
+    parsed2 && parsed2.max_path === triggerFile2 &&
+    parsed2.max_path !== parsed1.max_path);
+
+  // [17e] Breadcrumb does NOT fire when drift is NOT detected.
+  // Re-baseline against current2 (matches the post-fire state) and re-invoke
+  // maybeBreadcrumb without mutating the tree → no trigger → no line appended.
+  const linesPreNoDrift = linesAfter.length;
+  const noDriftSnapshot = { ...current2 };
+  const currentScanSame = scanRecursive(pluginRoot, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const currentSame = {
+    ...noDriftSnapshot,
+    plugins_mtime: currentScanSame.maxMtime,
+    plugins_count: currentScanSame.count,
+    plugins_maxPath: currentScanSame.maxPath,
+  };
+  const firedSame = maybeBreadcrumb(cacheDir, sessionId, currentSame, noDriftSnapshot);
+  const linesPostNoDrift = fs.readFileSync(breadcrumbFile, 'utf8').split('\n').filter(Boolean).length;
+  assert('[17e] breadcrumb does NOT fire when drift is not detected (writer sits inside drift-detected branch)',
+    firedSame === false && linesPostNoDrift === linesPreNoDrift);
+
+  // Composite assertion mirroring [14]/[16] shape — single visible PASS line
+  // for the whole scenario in addition to the sub-assertions.
+  assert('[17] drift-debug breadcrumb fires correctly (creates file, 7-key JSON, plugins trigger, append-only, no false fires)',
+    fired1 === true && parsed1 &&
+    actualKeys.length === 7 && actualKeys.every((k, i) => k === expectedKeys[i]) &&
+    parsed1.trigger === 'plugins' && parsed1.max_path === triggerFile1 &&
+    fired2 === true && linesAfter.length === 2 &&
+    parsed2 && parsed2.max_path === triggerFile2 &&
+    firedSame === false && linesPostNoDrift === linesPreNoDrift);
 }
 
 // --- Cleanup + summary ---

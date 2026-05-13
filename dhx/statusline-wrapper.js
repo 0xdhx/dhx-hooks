@@ -783,6 +783,13 @@ function hashWarnSettings(settingsReal) {
 function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   let maxMtime = 0;
   let count = 0;
+  // `maxPath` is the file path whose mtime won the scan — additive forensic
+  // signal for the drift-debug breadcrumb (plugins trigger only; see
+  // checkDrift() and docs/statusline-wrapper.md § "Debug breadcrumb").
+  // Always paired with maxMtime inside the same conditional so the path
+  // never desyncs from the mtime it describes. Callers that don't read
+  // `.maxPath` are unaffected (agents/gsd consumers).
+  let maxPath = '';
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
@@ -810,11 +817,14 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
       try {
         const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
         const st = fs.statSync(full);
-        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+        if (st.mtimeMs > maxMtime) {
+          maxMtime = st.mtimeMs;
+          maxPath = full;
+        }
       } catch { /* skip */ }
     }
   } catch { /* missing dir */ }
-  return { maxMtime, count };
+  return { maxMtime, count, maxPath };
 }
 
 // Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
@@ -879,6 +889,12 @@ function collectSnapshot(data) {
     gsd_count: gsd.count,
     plugins_mtime: plugins.maxMtime,
     plugins_count: plugins.count,
+    // `plugins_maxPath` is observer-only: emitted in the breadcrumb when the
+    // plugins trigger fires (see checkDrift). Pre-breadcrumb snapshot files on
+    // disk lack this key; readers default it via `?? ''` at the JSON.stringify
+    // site so old snapshots are forward-compatible (one-round grace, same
+    // pattern as the 2026-04-18 *_count fields' schema migration).
+    plugins_maxPath: plugins.maxPath,
     version: data.version || '',
   };
 
@@ -1044,7 +1060,37 @@ function checkDrift(data) {
     }
 
     if (current.plugins_mtime > snapshot.plugins_mtime ||
-        current.plugins_count < snapshot.plugins_count) triggers.push('plugins');
+        current.plugins_count < snapshot.plugins_count) {
+      triggers.push('plugins');
+      // Forensic breadcrumb — plugins trigger only (YAGNI: not extended to
+      // other triggers). Fires INSIDE the drift-detected branch; not on every
+      // refresh. The signal is `max_path`: which file's mtime won the scan
+      // (the data point that took ~20 minutes to recover in the 2026-05-13
+      // .in_use/<pid> forensics). See docs/statusline-wrapper.md § "Debug
+      // breadcrumb" and docs/decisions.md 2026-05-13 row for the filter-
+      // extension lineage (.orphaned_at → temp_git_* → .in_use/<pid>) that
+      // motivated this. Sanitize session_id mirroring dhx-restart-plugins-
+      // stop.sh:43-48 — reject path separators / `..` so a malicious id can't
+      // escape ~/.cache/dhx via the log basename. Cache-write failures are
+      // silent: drift detection takes priority over breadcrumb.
+      try {
+        const sessionId = data.session_id;
+        if (sessionId && !/[/\\]|\.\./.test(sessionId)) {
+          fs.mkdirSync(cacheDir, { recursive: true });
+          const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
+          const line = JSON.stringify({
+            ts: new Date().toISOString(),
+            trigger: 'plugins',
+            max_path: current.plugins_maxPath ?? '',
+            current_mtime: current.plugins_mtime,
+            snapshot_mtime: snapshot.plugins_mtime,
+            current_count: current.plugins_count,
+            snapshot_count: snapshot.plugins_count,
+          }) + '\n';
+          fs.appendFileSync(breadcrumbFile, line);
+        }
+      } catch { /* breadcrumb failure must not affect drift detection */ }
+    }
     if (current.version !== snapshot.version) triggers.push('version');
 
     if (triggers.length === 0) {
