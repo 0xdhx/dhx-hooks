@@ -25,6 +25,7 @@
 //  14. temp_git_* path-segment filter (CC install-cycle clone noise)
 //  15. /restart-plugins marker-driven rebaseline of plugins fields
 //      (single-shot consumption, surgical scope, per-session keying)
+//  16. .in_use/<pid> path-segment filter (CC session-lifetime lock noise)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -76,7 +77,7 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
 }
 
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
-const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)temp_git_\d+_[a-z0-9]+(\/|$)/;
+const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/;
 
 function scanShallow(dir) {
   // Legacy shallow scan — retained for scenario [5] regression-sentinel only.
@@ -667,6 +668,102 @@ const baseSnap = snap();
   const afterLookalike = scanRecursive(tgTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
   assert('[14f] non-CC `temp_git/` (no epoch suffix) is NOT filtered — anchor on _<digits>_<token>',
     afterLookalike.maxMtime > withRealWrite.maxMtime);
+}
+
+// --- 16. Plugin cache: .in_use/<pid> path-segment filter suppresses CC lock-marker noise ---
+//
+// CC writes `.in_use/<pid>` lock markers into each plugin cache subtree as
+// session-lifetime bookkeeping — `<pid>` basenames are arbitrary process ids
+// (e.g. `16780`, `32372`), the marker is never reaped during the running
+// session's lifetime. Because `~/.ccs/shared/plugins/cache` symlinks across
+// all CCS instances, any sibling session's `.in_use/<new_pid>` write trips
+// drift in every other live session's snapshot (mtime advances despite no
+// plugin code change) — same architectural class as the 2026-04-23
+// `.orphaned_at` filter and the 2026-04-27 `temp_git_*` filter.
+//
+// Path-segment filtering (not basename Set) is required because the `<pid>`
+// leaves carry arbitrary digit basenames — a Set entry for `.in_use` would
+// filter only the directory entry itself, leaving every `<pid>` descendant
+// counted and contributing mtime. The constant is now a combined alternation
+// covering both `temp_git_*` and `.in_use` so the call-site signature stays
+// single-regex.
+//
+// Invariants under test:
+//  a) Files inside an `.in_use/` subtree do NOT bump mtime.
+//  b) Files inside an `.in_use/` subtree do NOT bump count.
+//  c) Real plugin file writes are still caught when `.in_use/<pid>` markers
+//     exist as siblings.
+//  d) Regression sentinel: unfiltered scan (no PATH_IGNORE) WOULD see the
+//     `.in_use/<pid>` contents — protects the call-site wiring from a future
+//     refactor silently dropping the third argument or the `.in_use`
+//     alternation arm from the regex.
+//
+// Anchor discipline is NOT a separate sub-assertion here: the combined regex
+// is shared with `temp_git_*`, and scenario [14f] already pins the
+// `_<digits>_<token>` anchor against the same constant. If the regex shape
+// regresses structurally, [16d] flips; if the `temp_git_*` anchor regresses,
+// [14f] flips. Two anchor sub-assertions against one constant is redundant.
+{
+  const inUseTree = path.join(TMP, 'in-use-tree');
+  fs.mkdirSync(inUseTree);
+  const real = path.join(inUseTree, 'marketplace/plugin/1.0/hooks.json');
+  fs.mkdirSync(path.dirname(real), { recursive: true });
+  fs.writeFileSync(real, 'x');
+  const t0 = BASE_MS;
+  restampTree(inUseTree, t0);
+
+  const baseline = scanRecursive(inUseTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+
+  // [16a/b] Add an `.in_use/` dir with two PID lock markers at future mtimes.
+  const inUseDir = path.join(inUseTree, 'marketplace/plugin/1.0/.in_use');
+  fs.mkdirSync(inUseDir);
+  const pidPaths = [
+    path.join(inUseDir, '16780'),
+    path.join(inUseDir, '32372'),
+  ];
+  const cloneFutureMs = t0 + 60_000;
+  for (const p of pidPaths) {
+    fs.writeFileSync(p, '');
+    fs.utimesSync(p, cloneFutureMs / 1000, cloneFutureMs / 1000);
+  }
+  fs.utimesSync(inUseDir, cloneFutureMs / 1000, cloneFutureMs / 1000);
+
+  const afterInUse = scanRecursive(inUseTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const triggers16ab = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: afterInUse.maxMtime, plugins_count: afterInUse.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[16a] .in_use descendants do NOT bump mtime (path-prefix filter active)',
+    afterInUse.maxMtime === baseline.maxMtime);
+  assert('[16b] .in_use descendants do NOT bump count (path-prefix filter active)',
+    afterInUse.count === baseline.count);
+  assert('[16] .in_use/<pid> markers produce zero plugins trigger',
+    !triggers16ab.includes('plugins'));
+
+  // [16c] Real plugin file write while `.in_use/<pid>` markers exist — trigger fires.
+  const realNew = path.join(inUseTree, 'marketplace/plugin/1.0/new-hook.json');
+  fs.writeFileSync(realNew, 'x');
+  const realFutureMs = t0 + 90_000;
+  fs.utimesSync(realNew, realFutureMs / 1000, realFutureMs / 1000);
+  const withRealWrite = scanRecursive(inUseTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  const triggers16c = checkDriftLogic(
+    { ...baseSnap, plugins_mtime: withRealWrite.maxMtime, plugins_count: withRealWrite.count },
+    { ...baseSnap, plugins_mtime: baseline.maxMtime, plugins_count: baseline.count },
+  );
+  assert('[16c] real plugin file write still caught despite .in_use/<pid> sibling',
+    triggers16c.length === 1 && triggers16c[0] === 'plugins');
+
+  // [16d] Regression sentinel: unfiltered scan WOULD see `.in_use/<pid>` contents.
+  // Protects against a future refactor silently dropping the PATH_IGNORE arg
+  // OR dropping the `.in_use` alternation arm from the regex. Stamp one PID
+  // file ABOVE the real-write mtime so the unfiltered scan's max strictly
+  // exceeds the filtered scan's max in addition to the count delta.
+  const sentinelMs = realFutureMs + 30_000;
+  fs.utimesSync(pidPaths[0], sentinelMs / 1000, sentinelMs / 1000);
+  const unfiltered = scanRecursive(inUseTree, PLUGIN_CACHE_IGNORE);  // no PATH_IGNORE
+  const filtered = scanRecursive(inUseTree, PLUGIN_CACHE_IGNORE, PLUGIN_CACHE_PATH_IGNORE);
+  assert('[16d] unfiltered scan sees .in_use/<pid> contents (regression sentinel: PATH_IGNORE call-site must stay wired)',
+    unfiltered.count > filtered.count);
 }
 
 // --- 15. /restart-plugins marker-driven rebaseline ---
