@@ -820,15 +820,31 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
 // Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
 const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
 
-// Path-segment filter for CC's install-cycle extraction directories. CC clones
-// marketplace sources into `temp_git_<epoch_ms>_<token>/` siblings under
-// `plugins/cache/` while resolving plugin installs (e.g. retry attempts for a
-// declared-but-uninstalled plugin), then the dir lingers post-extraction with
-// no GC. A clone races snapshot capture (snapshot at T, clone finishes at T+~500ms),
-// so every refresh after sees plugins_mtime advance and fires `triggers.push('plugins')`
-// → spurious `⚠ restart plugins`. Same architectural class as `.orphaned_at`
-// (CC-internal bookkeeping, drift-irrelevant). See decisions.md 2026-04-27 row.
-const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)temp_git_\d+_[a-z0-9]+(\/|$)/;
+// Path-segment filter for two classes of CC-internal bookkeeping that leak
+// through the plugin-cache scan via the `~/.ccs/shared/plugins/cache` symlink
+// topology (any one CCS instance's write trips drift in every live session).
+// Combined alternation keeps the call-site signature single-regex.
+//
+// (1) `temp_git_<epoch_ms>_<token>/` — CC's install-cycle clones. CC clones
+// marketplace sources into these siblings under `plugins/cache/` while
+// resolving plugin installs (e.g. retry attempts for a declared-but-uninstalled
+// plugin), then the dir lingers post-extraction with no GC. A clone races
+// snapshot capture (snapshot at T, clone finishes at T+~500ms), so every
+// refresh after sees plugins_mtime advance and fires `triggers.push('plugins')`
+// → spurious `⚠ restart plugins`. See decisions.md 2026-04-27 row.
+//
+// (2) `.in_use/<pid>` — CC session-lifetime lock markers. CC writes a
+// `<pid>` basename file under `.in_use/` in each plugin cache subtree when a
+// session opens; the marker is never reaped during that session's lifetime.
+// Because the cache is shared cross-instance, a sibling CCS session's
+// `.in_use/<new_pid>` write trips drift on every running session's snapshot
+// (mtime advances even though no plugin code changed). Same architectural
+// class as `.orphaned_at` (2026-04-23 decisions row) and `temp_git_*`
+// (2026-04-27 decisions row) — CC-internal bookkeeping, drift-irrelevant.
+// Path-segment filtering (not basename Set) is required because the `<pid>`
+// leaves carry arbitrary digit basenames; `.in_use` only appears as an
+// intermediate path component in `entry.path`. See decisions.md 2026-05-13 row.
+const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/;
 
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
