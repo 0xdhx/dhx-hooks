@@ -184,9 +184,13 @@ case "$STATE" in
     ;;
 esac
 
-# Atomic mv.
-if ! mv "$TMP" "$KM_PATH"; then
-  mv_rc=$?
+# Atomic mv. Capture rc OUTSIDE `if ! cmd; then` — inside that block $? is 0
+# (the negated test succeeded), not the failed cmd's rc. Per WR-01 verification:
+# `if ! mv …; then mv_rc=$?; …` always captured 0 regardless of mv's failure
+# mode, defeating the diagnostic. Capture mv_rc directly off `mv`'s exit.
+mv "$TMP" "$KM_PATH"
+mv_rc=$?
+if (( mv_rc != 0 )); then
   rm -f "$TMP"
   echo "dhx-plugin-registry-heal: REJECT: mv failed for $KM_PATH (rc=$mv_rc)" >&2
   exit 1
