@@ -392,7 +392,7 @@ assert_km_installlocation_only_rewritten() {
   fi
 }
 
-echo "=== dhx-plugin-registry-heal.sh — 12 scenarios (8 IP no-op regression + 4 km active heal; scenario 13 reserved for Plan 2 Pattern-B append) ==="
+echo "=== dhx-plugin-registry-heal.sh — 13 scenarios (8 IP no-op regression + 5 km active heal including scenario 13 bad-installlocation-rejected under Pattern B) ==="
 
 # ---- 1. healthy: valid v2 file with dhx entry → no-op (was no-op pre-Phase-6 too) ----
 HEALTHY_JSON='{"version":2,"plugins":{"dhx@dhx-local":[{"scope":"user","installPath":"/fake/path","version":"0.1.0","installedAt":"2026-04-24T00:00:00.000Z","lastUpdated":"2026-04-24T00:00:00.000Z"}]}}'
@@ -548,9 +548,8 @@ assert_km_installlocation_only_rewritten \
 #  (2) stderr matches REJECT regex with structured prefix
 #  (3) live victim km bytes-identical sha256 pre→post (no symlink-chain write)
 #
-# RED state under stub (line 39 `exit 0`): (1) FAIL (rc=0), (2) FAIL (empty
-# stderr), (3) accidentally PASS (stub didn't write so bytes are unchanged).
-# GREEN state under Plan 2 heal: all three pass.
+# Phase 10 active heal: (1) heal refused (rc=1), (2) structured REJECT stderr,
+# (3) live victim km bytes-identical pre→post sha256 invariant (no write).
 echo "EXPECT: REJECT-symlink-crossing"
 HOSTILE_HOME="$TMPROOT/hostile-cfg-test/home"
 HOSTILE_CFG="$TMPROOT/hostile-cfg-test/cfg"
@@ -650,13 +649,71 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# ---- 13. RESERVED for Plan 2 conditional append (Blocker-B Option 3, revision 2026-05-09) ----
-# Scenario `bad-installlocation-rejected` (D-02 (b) value-side REJECT) is NOT seeded by Plan 1.
-# Plan 2 reads the Plan 1 D-05 verification finding from 10-D-05-RESULT.md (per D-12) and
-# appends scenario 13 ONLY IF Pattern B was observed (NEW_IL == source.path literal).
-# Under Pattern A (NEW_IL == $CFG/plugins/marketplaces/<name>), the (b) check is structurally
-# inert (NEW_IL bounded inside allow-list by construction) — scenario 13 would pass
-# tautologically and is therefore omitted with a Plan 2 explanatory comment.
+# ---- 12.5 km-badjson-warn-recovery (Phase 10 D-14 — minimal-km + WARN stderr substring) ----
+# Fixture: settings declares dhx-local; km is intentionally corrupt JSON. Heal MUST
+# (1) exit 0 (BADJSON recovery is not a refusal), (2) overwrite with a minimal km
+# containing a parseable dhx-local entry, (3) emit the literal D-14 WARN substring
+# on stderr signalling other-marketplace loss. Asserts the WARN substring is present
+# via direct grep against captured stderr.
+echo "EXPECT: HEAL-badjson-warn-recovery"
+KM_BADJSON='not json {{{'
+cfg=$(make_case "km-badjson-warn" "NONE" 1 0.1.0 "$KM_BADJSON")
+home_for_case=$(dirname "$cfg")
+cat > "$cfg/settings.json" <<JSON
+{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"$home_for_case/.ccs/instances/probe/plugins/marketplaces/dhx-local"}}}}
+JSON
+km_path="$cfg/plugins/known_marketplaces.json"
+badjson_stderr=$(HOME="$home_for_case" CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" < /dev/null 2>&1 >/dev/null)
+badjson_rc=$?
+# Assertion 1 — rc 0 (BADJSON recovery is not a refusal).
+if [[ "$badjson_rc" == "0" ]]; then
+  printf '  ✓ km-badjson-warn-recovery: heal returned 0 (BADJSON recovery non-refusal)\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ km-badjson-warn-recovery: heal returned rc=%s (expected 0)\n' "$badjson_rc"
+  FAIL=$((FAIL + 1))
+fi
+# Assertion 2 — post-heal km parses + has dhx-local entry.
+if jq -e '."dhx-local"' "$km_path" >/dev/null 2>&1; then
+  printf '  ✓ km-badjson-warn-recovery: post-heal km parses + dhx-local entry present\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ km-badjson-warn-recovery: post-heal km unparseable or missing dhx-local\n'
+  FAIL=$((FAIL + 1))
+fi
+# Assertion 3 — D-14 WARN literal substring on captured stderr.
+if echo "$badjson_stderr" | grep -qF "WARN: BADJSON recovery"; then
+  printf '  ✓ km-badjson-warn-recovery: WARN substring present on stderr (D-14)\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ km-badjson-warn-recovery: WARN substring missing from stderr (got: %q)\n' "$badjson_stderr"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---- 13. bad-installlocation-rejected (Pattern B — D-02 (b) value-side REJECT exercised) ----
+# Pattern B branch (per .planning/phases/10-heal-hook-km-path-hardening-heal-07/10-D-05-RESULT.md):
+# CC 2.1.140's directory-source resolver writes installLocation == source.path
+# LITERALLY. Heal re-derives NEW_IL as source.path verbatim. Settings poison
+# fixture: source.path points to /tmp/poisoned-source which resolves OUTSIDE
+# the D-03 allow-list ($HOME/.claude/plugins/marketplaces + $HOME/.ccs/instances/
+# */plugins/marketplaces). Heal MUST refuse with structured REJECT stderr.
+# Closes Blocker-B Option 3 (revision 2026-05-09): under Pattern A this scenario
+# is omitted (NEW_IL bounded by construction inside allow-list); under Pattern B
+# the (b) value-side check fires meaningfully on this fixture.
+echo "EXPECT: REJECT-allow-list"
+SETTINGS_BAD='{"enabledPlugins":{"dhx@dhx-local":true},"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"/tmp/poisoned-source"}}}}'
+# Pre-existing km with other-marketplace entries — heal must REFUSE before writing.
+KM_BAD_PRE='{"anthropic-agent-skills":{"source":{"source":"github","repo":"anthropics/agent-skills"},"installLocation":"/fake/aas","lastUpdated":"2026-01-01T00:00:00.000Z"}}'
+cfg=$(make_case "bad-il" "NONE" 1 0.1.0 "$KM_BAD_PRE")
+home_for_case=$(dirname "$cfg")
+# Settings INSIDE $CONFIG_DIR (settings-derived poison; NOT $HOME/.claude).
+printf '%s' "$SETTINGS_BAD" > "$cfg/settings.json"
+expected_pre=$(cat "$cfg/plugins/known_marketplaces.json")
+stderr_captured=$(run_hook_capture_stderr "$cfg")
+assert_km_unchanged_with_stderr_match \
+  "bad-il: settings poison resolves outside allow-list — REJECT (Pattern B)" \
+  "$cfg/plugins/known_marketplaces.json" "$expected_pre" "$stderr_captured" \
+  '^dhx-plugin-registry-heal: REJECT:'
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"
