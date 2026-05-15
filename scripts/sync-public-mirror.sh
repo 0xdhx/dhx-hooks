@@ -61,8 +61,12 @@ git filter-repo \
 # but are private to this private→public flow (and the script self-references
 # "forgefinder" in its own scrub patterns, which would false-positive the
 # Class D verification below). This matches the live public mirror's existing
-# scripts/ inventory.
+# scripts/ inventory. The skill-overrides sync/unsync pair references the
+# skills monorepo by design — they're cross-repo operator tooling that has
+# no place on the public mirror; dropping them avoids the cross-repo scrub
+# pass having to chase same-repo path constants through working code.
 rm -f scripts/sync-public-mirror.sh scripts/public-paths.txt
+rm -f scripts/sync-skill-overrides.sh scripts/unsync-skill-overrides.sh
 
 # --- 3. Scrub pass ---------------------------------------------------------
 echo "[sync] scrubbing cross-references..."
@@ -192,6 +196,26 @@ sed -i 's|2\. Which `docs/decisions\.md` row or architectural invariant it backs
 
 # probe-worktree-write-guard.sh: hardcoded local-user path in test JSON fixtures
 sed -i 's|/home/dhx/repos/hooks/\.claude|/tmp/test-repo/.claude|g' tests/probes/probe-worktree-write-guard.sh
+
+# Class F: cross-repo skills/ references in incidental working files. The
+# sync-skill-overrides pair was dropped wholesale via the operator-tooling
+# rm above; these scrubs handle places where a single skills-repo path
+# appears in otherwise-public content (plugin manifest description text
+# and a probe's design-note comment).
+#
+# dhx-plugin/plugins/dhx/.claude-plugin/plugin.json — description text has
+# two `~/repos/skills/dhx/` references in prose explaining the symlink
+# topology. Replace with `<skills-monorepo>/dhx/` so the manifest still
+# self-documents but doesn't leak the local-disk layout.
+sed -i 's|~/repos/skills/dhx/|<skills-monorepo>/dhx/|g' dhx-plugin/plugins/dhx/.claude-plugin/plugin.json
+
+# tests/probes/probe-plugin-cache-staleness.sh:275 — single-line comment
+# citing the skills-repo's dhx-sym.sh dispatch pattern. Narrow path-only
+# rewrite preserves the 2-line genitive grammar (line 275 ends in "'s",
+# line 276 starts with "cmd_* case-dispatch precedent).") — replace only
+# the absolute path, keeping the "'s cmd_* ... precedent" continuation
+# intact.
+sed -i 's|~/repos/skills/scripts/dhx-sym\.sh|the skills-monorepo dhx-sym.sh|' tests/probes/probe-plugin-cache-staleness.sh
 
 # --- 3b. Scrub verification ------------------------------------------------
 echo "[sync] verifying scrubs..."
