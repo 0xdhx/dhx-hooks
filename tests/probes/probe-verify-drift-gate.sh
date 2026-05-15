@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# probe-verify-drift-gate.sh
+#
+# Regression probe for dhx/dhx-verify-drift-gate.sh — the Phase 12 VERIFY-DRIFT
+# UserPromptSubmit gate. The hook detects a missing {phase}-VERIFICATION.md when
+# an operator types `/dhx:test {N}` (full-pipeline shape only) and emits a
+# top-level {"decision":"block","reason":...} JSON whose `reason` names the
+# three exit lanes (A wave-slice / B /dhx:execute wrapper early-exit / C
+# operator-bypass closure). Subcommands (`nyquist`/`run`/`sweep`) bypass the
+# gate; a dispensation row in docs/decisions.md overrides it; STATE.md parse
+# faults fail-open with an exact stderr warning.
+#
+# Exit-A detection is PHASE-SCOPED: an unfinished `- [ ]` checkbox in any phase
+# PLAN.md, OR a phase PLAN.md with no matching SUMMARY.md (#SUMMARY < #PLAN).
+# It deliberately ignores STATE.md `progress.*` — those counts are
+# milestone-cumulative, not phase-scoped. Scenario 10 is the regression test
+# for that distinction (the D-06 design flaw the Task 5.5 live-fire surfaced).
+#
+# Each scenario builds a synthetic UserPromptSubmit payload, runs the hook
+# inside a mktemp HOME sandbox (cd $TMP so .planning/-relative resolution
+# targets the sandbox, never the live repo), and asserts the outcome.
+#
+# Backs:
+#   - docs/decisions.md — 2026-05-15 Phase 12 VERIFY-DRIFT ship row
+#   - docs/hook-patterns.md — HP-008 (UserPromptSubmit .prompt field),
+#     HP-009 (block-JSON shape), HP-017 (plugin-manifest rewriter-immunity)
+#
+# Run: bash tests/probes/probe-verify-drift-gate.sh
+#
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; no live .planning/, decisions.md,
+#                       or manifest writes — scenario 6 reads the manifest only)
+
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+HOOK="$REPO_ROOT/dhx/dhx-verify-drift-gate.sh"
+MANIFEST="$REPO_ROOT/dhx-plugin/plugins/dhx/hooks/hooks.json"
+
+if [ ! -r "$HOOK" ]; then echo "FAIL hook not readable: $HOOK"; exit 1; fi
+if ! command -v jq >/dev/null 2>&1; then echo "FAIL jq required but not installed"; exit 1; fi
+if [ ! -r "$MANIFEST" ]; then echo "FAIL manifest not readable: $MANIFEST"; exit 1; fi
+
+TMP=$(mktemp -d /tmp/probe-verify-drift-gate.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+
+PASS=0
+FAIL=0
+
+# --- Helpers ---
+
+# Build a full empirical UserPromptSubmit stdin payload (6 fields per the
+# 2026-05-15 live spike schema).
+build_payload() {
+  local prompt="$1"
+  jq -n --arg p "$prompt" --arg c "$TMP" \
+    '{session_id:"probe", transcript_path:"", cwd:$c,
+      permission_mode:"default", hook_event_name:"UserPromptSubmit", prompt:$p}'
+}
+
+# Run the hook in the sandbox. cd "$TMP" is load-bearing — the hook resolves
+# .planning/ and docs/decisions.md relative to its CWD. The subshell parens
+# keep the cd local. stderr is discarded for assertion-clean stdout capture.
+run_hook() {
+  local payload="$1"
+  (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< "$payload") 2>/dev/null
+}
+
+# Strict block predicate — decision == "block" with a non-empty reason.
+assert_blocks() {
+  local label="$1" output="$2"
+  if jq -e '.decision == "block" and (.reason | length > 0)' <<< "$output" >/dev/null 2>&1; then
+    echo "OK   $label"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL $label — expected block, got: $(printf '%s' "$output" | head -c 200)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Block predicate requiring all three lane substrings in the reason text.
+assert_blocks_three_lanes() {
+  local label="$1" output="$2"
+  if jq -e '.decision == "block"
+            and (.reason | contains("Lane A"))
+            and (.reason | contains("Lane B"))
+            and (.reason | contains("Lane C"))' <<< "$output" >/dev/null 2>&1; then
+    echo "OK   $label"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL $label — expected block w/ Lane A/B/C, got: $(printf '%s' "$output" | head -c 200)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Block predicate requiring an arbitrary substring in the reason text.
+assert_blocks_contains() {
+  local label="$1" output="$2" substring="$3"
+  if jq -e --arg s "$substring" \
+       '.decision == "block" and (.reason | contains($s))' <<< "$output" >/dev/null 2>&1; then
+    echo "OK   $label"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL $label — expected block containing '$substring', got: $(printf '%s' "$output" | head -c 200)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Silent-allow predicate — empty stdout.
+assert_silent() {
+  local label="$1" output="$2"
+  if [ -z "$output" ]; then
+    echo "OK   $label"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL $label — expected no output, got: $(printf '%s' "$output" | head -c 200)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# Build sandbox fixtures.
+#   $1 = phase dir base (e.g. "12-test" or "10.1-test")
+#   $2 = verification_present (true|false)
+#   $3 = phase_incomplete (true|false) — "incomplete" means the phase dir holds
+#        a *-PLAN.md with NO matching *-SUMMARY.md (the phase-scoped Exit-A
+#        signal). "complete" means the phase dir holds a *-PLAN.md AND a
+#        *-SUMMARY.md. Either way a *-PLAN.md always exists so the phase dir is
+#        scaffolded — the hook's Step 5 phase-dir check passes.
+#   $4 = dispensation_present (true|false)
+#   $5 = state_md_absent (true|false, optional; default false — when true,
+#        STATE.md is NOT written, exercising the D-17 fail-open path)
+#
+# NOTE: the fixed hook (Step 6) ignores STATE.md `progress.*` entirely for
+# Exit-A — those counts are milestone-cumulative, not phase-scoped. Exit-A is
+# driven purely by phase-dir contents (`- [ ]` checkbox scan + #PLAN-vs-#SUMMARY
+# count). The STATE.md written here only feeds Step 3 phase resolution (and the
+# D-17 fail-open path when $5=true). Scenario 10 overrides this STATE.md shape
+# to assert the milestone-cumulative counts do NOT mis-fire Exit-A.
+refresh_fixtures() {
+  local phase_dir="$1" verification="$2" phase_incomplete="$3" dispensation="$4"
+  local state_absent="${5:-false}"
+  local phase="${phase_dir%-test}"
+
+  rm -rf "$TMP/.planning" "$TMP/docs"
+  mkdir -p "$TMP/.planning/phases/$phase_dir"
+
+  if [ "$state_absent" != "true" ]; then
+    cat > "$TMP/.planning/STATE.md" <<EOF
+---
+stopped_at: Phase $phase context gathered
+progress:
+  total_plans: 1
+  completed_plans: 1
+---
+EOF
+  fi
+
+  if [ "$verification" = "true" ]; then
+    touch "$TMP/.planning/phases/$phase_dir/${phase}-VERIFICATION.md"
+  fi
+
+  # A *-PLAN.md always exists (phase dir is scaffolded). When the phase is
+  # "complete" a matching *-SUMMARY.md is written alongside it; when
+  # "incomplete" the *-SUMMARY.md is omitted → #SUMMARY < #PLAN → Exit-A.
+  cat > "$TMP/.planning/phases/$phase_dir/${phase}-01-PLAN.md" <<EOF
+# Plan
+some task
+EOF
+  if [ "$phase_incomplete" != "true" ]; then
+    cat > "$TMP/.planning/phases/$phase_dir/${phase}-01-SUMMARY.md" <<EOF
+# Summary
+plan complete
+EOF
+  fi
+
+  if [ "$dispensation" = "true" ]; then
+    mkdir -p "$TMP/docs"
+    cat > "$TMP/docs/decisions.md" <<EOF
+| 2026-05-15 | files | Phase $phase VERIFICATION.md drift dispensation — operator override | mechanism | refs |
+EOF
+  fi
+}
+
+# --- Scenario [1]: VERIFICATION.md present → silent allow (happy path) ---
+refresh_fixtures 12-test true false false
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[1] VERIFICATION.md present → silent allow" "$OUTPUT"
+
+# --- Scenario [2]: VERIFICATION.md absent, phase complete (PLAN+SUMMARY) →
+#     block w/ three lanes A/B/C, no-incomplete (collapsed B/C) wording (D-06) ---
+# Phase dir holds a *-PLAN.md AND a matching *-SUMMARY.md → #SUMMARY == #PLAN →
+# Exit-A does NOT fire → the collapsed B/C three-lane reason (else-branch) emits.
+refresh_fixtures 12-test false false false
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_three_lanes "[2] VERIFICATION.md absent, phase complete → block w/ three lanes A/B/C" "$OUTPUT"
+if jq -e '(.reason | contains("Phase has incomplete plans")) | not' <<< "$OUTPUT" >/dev/null 2>&1; then
+  echo "OK   [2b] complete phase → no-incomplete wording (reason omits 'Phase has incomplete plans')"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [2b] complete phase emitted Exit-A wording — expected no-incomplete (collapsed B/C) reason"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- Scenario [3]: subcommand (/dhx:test nyquist|run|sweep) → silent allow (D-05) ---
+refresh_fixtures 12-test false false false
+PAYLOAD=$(build_payload "/dhx:test nyquist 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[3] /dhx:test nyquist subcommand → silent allow (D-05)" "$OUTPUT"
+PAYLOAD=$(build_payload "/dhx:test run 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[3b] /dhx:test run subcommand → silent allow (D-05)" "$OUTPUT"
+PAYLOAD=$(build_payload "/dhx:test sweep")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[3c] /dhx:test sweep subcommand → silent allow (D-05)" "$OUTPUT"
+
+# --- Scenario [4]: dispensation row present → silent allow (D-12) ---
+refresh_fixtures 12-test false false true
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[4] dispensation row present → silent allow (D-12)" "$OUTPUT"
+
+# --- Scenario [5]: incomplete phase (PLAN with no matching SUMMARY) →
+#     block w/ Exit-A wording (D-06, phase-scoped #PLAN-vs-#SUMMARY count) ---
+# Phase dir holds a *-PLAN.md but NO *-SUMMARY.md → #SUMMARY < #PLAN → Exit-A.
+refresh_fixtures 12-test false true false
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[5] incomplete phase (PLAN, no SUMMARY) → block w/ Exit-A wording (D-06)" \
+  "$OUTPUT" "Phase has incomplete plans"
+
+echo "# --- Scenario [6]: manifest registration assertion (D-21 presence-based form) ---"
+HOOK_REGISTERED=$(jq '[.hooks.UserPromptSubmit[0].hooks[].command
+                       | select(contains("dhx-verify-drift-gate"))] | length' "$MANIFEST")
+if [[ "$HOOK_REGISTERED" -eq 1 ]]; then
+  echo "OK   [6] manifest registration — UserPromptSubmit array contains dhx-verify-drift-gate (presence-based, D-21)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [6] manifest missing dhx-verify-drift-gate entry (expected exactly 1, got $HOOK_REGISTERED)"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- Scenario [7]: .prompt field extraction (Pitfall 1) ---
+# Full empirical 6-field schema; if the hook read .user_prompt instead of
+# .prompt, jq returns empty, the hook silent-exits, and this scenario fails.
+refresh_fixtures 12-test false false false
+PAYLOAD=$(jq -n --arg c "$TMP" \
+  '{session_id:"probe", transcript_path:"", cwd:$c, permission_mode:"default",
+    hook_event_name:"UserPromptSubmit", prompt:"/dhx:test 12"}')
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks "[7] .prompt field extraction works (Pitfall 1)" "$OUTPUT"
+
+# --- Scenario [8]: dot-phase 10.1 resolution (Pitfall 3 + D-13) ---
+refresh_fixtures 10.1-test false false false
+PAYLOAD=$(build_payload "/dhx:test 10.1")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[8] dot-phase 10.1 resolves correctly (Pitfall 3 + D-13)" \
+  "$OUTPUT" "phase 10.1"
+
+echo "# --- Scenario [9]: D-17 fail-open path (STATE.md missing + bare /dhx:test) ---"
+refresh_fixtures 12-test false false false true   # 5th arg = state_md_absent
+PAYLOAD=$(build_payload "/dhx:test")              # bare, no args — forces fallback
+# Capture stdout and stderr to separate vars to assert both halves of the contract.
+OUT=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< "$PAYLOAD") 2>/dev/null )
+ERR=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< "$PAYLOAD") 2>&1 >/dev/null )
+EXPECTED_STDERR="dhx-verify-drift-gate: STATE.md unreadable; gate skipped"
+if [ -z "$OUT" ] && [[ "$ERR" == *"$EXPECTED_STDERR"* ]]; then
+  echo "OK   [9] D-17 fail-open: empty stdout + exact stderr warning (D-19 path coverage)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [9] D-17 fail-open expected empty stdout + stderr containing '$EXPECTED_STDERR'; got stdout='$(printf '%s' "$OUT" | head -c 100)' stderr='$(printf '%s' "$ERR" | head -c 200)'"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- Scenario [10]: milestone-cumulative STATE.md must NOT mis-fire Exit-A ---
+# Regression test for the D-06 design flaw surfaced by the Task 5.5 live-fire.
+# The phase dir is COMPLETE (a *-PLAN.md AND a matching *-SUMMARY.md, no `- [ ]`
+# checkbox, VERIFICATION.md absent). The STATE.md carries the REAL
+# milestone-cumulative `progress` shape — total_plans/completed_plans span the
+# whole milestone (9 of 12 done), NOT this phase. The original hook parsed those
+# counts as the Exit-A fallback, so `9 < 12` forced "Phase has incomplete plans"
+# for every in-progress milestone. The fixed hook is phase-scoped: it ignores
+# `progress.*` entirely and counts #PLAN vs #SUMMARY in the phase dir → #SUMMARY
+# == #PLAN → Exit-A does NOT fire → no-incomplete (collapsed B/C) wording.
+refresh_fixtures 12-test false false false   # complete phase (PLAN+SUMMARY)
+cat > "$TMP/.planning/STATE.md" <<'EOF'
+---
+current_phase: 12
+stopped_at: Phase 12 context gathered
+progress:
+  total_phases: 9
+  completed_phases: 5
+  total_plans: 12
+  completed_plans: 9
+---
+EOF
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+if jq -e '.decision == "block"
+          and (.reason | contains("Lane A"))
+          and (.reason | contains("Lane B"))
+          and (.reason | contains("Lane C"))
+          and ((.reason | contains("Phase has incomplete plans")) | not)' \
+     <<< "$OUTPUT" >/dev/null 2>&1; then
+  echo "OK   [10] milestone-cumulative STATE.md (9<12) does NOT mis-fire Exit-A — phase-scoped count holds"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [10] milestone-cumulative STATE.md mis-fired Exit-A — phase-scoped count regressed; got: $(printf '%s' "$OUTPUT" | head -c 200)"
+  FAIL=$((FAIL + 1))
+fi
+
+echo
+echo "$PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
