@@ -20,6 +20,12 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
 # so the heal establishes a valid baseline before downstream checks touch state.
 # No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
 bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
+# Detect plugin cache hooks.json staleness (HP-025 § Cache-staleness detection;
+# HP-020 read-path finding under empirical test). Runs AFTER registry-heal so
+# heal-side baseline is established before staleness comparison fires.
+# Detector is filesystem-only via `stat -c %Y` (no content parse); < /dev/null
+# mirrors heal-hook (no stdin parsing).
+bash /home/dhx/.claude/hooks/dhx-plugin-cache-staleness-detector.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 
