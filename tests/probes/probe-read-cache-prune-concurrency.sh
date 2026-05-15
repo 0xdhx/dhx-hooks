@@ -104,9 +104,6 @@ done
 wait "$PRUNE_PID" 2>/dev/null || true
 wait
 
-# Allow any in-flight mv/awk to settle
-sync >/dev/null 2>&1 || true
-
 # === Assertion phase ===
 
 # Assertion 1 (V-PRUNE-NO-LOSS / D-14): mid-pause appends survive.
