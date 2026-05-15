@@ -94,7 +94,7 @@ B_PID=$!
 
 wait "$A_PID" 2>/dev/null || true
 wait "$B_PID" 2>/dev/null || true
-sync 2>/dev/null || true
+sync >/dev/null 2>&1 || true
 
 # === Assertions ===
 

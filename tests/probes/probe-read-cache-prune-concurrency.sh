@@ -105,7 +105,7 @@ wait "$PRUNE_PID" 2>/dev/null || true
 wait
 
 # Allow any in-flight mv/awk to settle
-sync 2>/dev/null || true
+sync >/dev/null 2>&1 || true
 
 # === Assertion phase ===
 
