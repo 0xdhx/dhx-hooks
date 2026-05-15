@@ -11,13 +11,7 @@
 # vs prefix-or-end-of-bullet on the skill, with no static check to catch the
 # drift. This probe is the static check.
 #
-# Sister probe: ~/repos/skills/tests/probe-classifier-cross-repo.sh runs the
-# same kind of structural assertion from the skills-repo side. Either probe
-# alone would catch reintroduction of inline filters; the pair makes the
-# invariant visible from both repos' test suites.
 #
-# Backs: docs/decisions.md 2026-04-27 cross-repo classifier sync row.
-# Parent report: reports/done/2026-04-27-cross-repo-classifier-sync-handoff.md
 #
 # Run: bash tests/probes/probe-deferred-check-canonical-classifier.sh
 
@@ -261,8 +255,6 @@ fi
 # Section 3; scoping this check to the runtime message body makes the two
 # assertions complementary rather than redundant.
 #
-# Backs: docs/decisions.md 2026-05-02 block-message marker-syntax row.
-# Parent report: reports/done/2026-04-27-defer-hook-misses-already-captured-items.md
 #   Fix 2 — block-message marker exposure.
 MSG_BLOCK=$(awk '/^MSG="/{f=1} f{print} f && /"$/ && !/^MSG="/{f=0}' "$HOOK")
 if [[ -z "$MSG_BLOCK" ]]; then
@@ -294,7 +286,6 @@ fi
 # tests/probe-deferred-silence-e2e.sh:81-83 detects the same migration via the
 # HOOK_USES_CANONICAL gate (warn-skip vs full PROBE_MODE).
 #
-# Backs: docs/decisions.md 2026-05-09 silenced-marker canonical-extractor row.
 
 SILENCED_HELPER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-silenced-marker.sh"
 if [[ ! -r "$SILENCED_HELPER" ]]; then

@@ -2,7 +2,7 @@
 # Exercises the fork-aware suppression filter on the gsd drift trigger
 # (isGsdDriftFromForkSync in dhx/statusline-wrapper.js).
 #
-# Backs quick task 260425-oeg — fork-aware gsd drift suppression. The
+# Asserts fork-aware gsd drift suppression. The
 # helper sits between the gsd mtime branch firing in checkDrift() and the
 # trigger being pushed onto `triggers[]`: when every newer-than-snapshot
 # live file is byte-equal to its canonical at

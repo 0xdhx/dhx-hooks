@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # probe-write-cache.sh — verify dhx-write-cache.sh appends correctly.
 #
-# Backs the 2026-04-19 decisions.md row "dhx-write-cache.sh: PostToolUse
+# Asserts dhx-write-cache.sh PostToolUse
 # cache populator for read-guard false-positive fix" + the v1.1 Phase 1
 # Option B atomic-commit row (D-08 source field, D-11 in-place modify).
 # Asserts that the hook emits {"path":<abs>,"ts":<unix>,"source":"write"}

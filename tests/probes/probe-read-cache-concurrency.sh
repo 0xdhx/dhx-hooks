@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # probe-read-cache-concurrency.sh — verify O_APPEND atomicity under 50-writer load.
 #
-# Backs the v1.1 Phase 1 atomic-commit decisions.md row (REQ READ-06,
+# Asserts (REQ READ-06,
 # READ-10). Asserts that 50 concurrent dhx-read-cache.sh writers appending
 # to the same ~/.cache/dhx/read-cache.jsonl produce 50 well-formed JSONL
 # lines with zero corruption — the foundational invariant supporting

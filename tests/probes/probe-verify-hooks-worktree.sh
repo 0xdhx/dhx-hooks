@@ -3,7 +3,6 @@
 # `git rev-parse --git-common-dir` so worktree invocation matches main-repo
 # invocation.
 #
-# Backs: docs/decisions.md 2026-05-08 verify-hooks-worktree-resolver row.
 #
 # Invariant exercised:
 #   1. From main repo root: bash scripts/verify-hooks.sh exits 0 when the

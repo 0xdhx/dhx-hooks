@@ -2,7 +2,7 @@
 // Probe: exercises checkDrift()/collectSnapshot() behavior in
 // dhx/statusline-wrapper.js across all known failure modes and the
 // 2026-04-18 drift-bundle invariants (recursive plugins scan + count-decrease
-// branch). Backs the drift-detection audit rows in docs/decisions.md.
+// branch).
 //
 // Scope:
 //   1. Baseline comparison (no drift)
@@ -30,13 +30,6 @@
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
-// Backs:
-//   - docs/decisions.md — 2026-04-18 drift bundle (recursive+deletion)
-//   - docs/decisions.md — 2026-04-16 snapshot-comparison refactor
-//   - docs/decisions.md — 2026-04-16 settings_hash cutover
-//   - docs/backlog.md — ~~drift-plugins-recursive-scan~~ (closed 2026-04-19)
-//   - docs/backlog.md — ~~drift-deletion-only-regression~~ (closed 2026-04-19)
-//   - docs/hook-patterns.md — HP-004 (find -mmin unreliability), HP-016 (CC start-ticks)
 //
 // Companion: tests/probes/probe-migration.js — schema-migration in isolation.
 // Companion: /tmp/drift-smoke-test.md (ephemeral) — end-to-end display path.

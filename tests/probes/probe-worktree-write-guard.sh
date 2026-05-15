@@ -9,7 +9,6 @@
 #   (c) file_path is outside the enclosing worktree prefix.
 # All other paths exit 0 (allow).
 #
-# Backs: docs/decisions.md 2026-04-19 worktree-write-guard row.
 # Companion: probe-agent-leak-check.sh covers the subagent-side detector.
 #
 # Run: bash tests/probes/probe-worktree-write-guard.sh
@@ -49,27 +48,27 @@ run "[1] cwd=main-repo, file=main-repo → allow" \
 
 # [2] In worktree, file inside same worktree → allow
 run "[2] cwd=worktree, file=worktree → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/dhx/x.sh"}}' \
   0
 
 # [3] In worktree, file in main repo → BLOCK (primary leak signature)
 run "[3] cwd=worktree, file=main-repo → BLOCK" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/dhx/x.sh"}}' \
   2
 
 # [4] In worktree, relative file_path → allow (CC resolves against cwd)
 run "[4] cwd=worktree, file=relative → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"dhx/x.sh"}}' \
   0
 
 # [5] cwd is worktree subdir, file is in worktree's docs dir → allow
 run "[5] cwd=worktree/subdir, file=worktree root → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/dhx","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/docs/x.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa/dhx","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/docs/x.md"}}' \
   0
 
 # [6] Two different worktrees → BLOCK (cross-worktree write)
 run "[6] cwd=worktree-A, file=worktree-B → BLOCK" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-bbb/x.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-bbb/x.md"}}' \
   2
 
 # [7] Malformed JSON → allow (defensive, never crash)
@@ -79,7 +78,7 @@ run "[7] malformed JSON → allow" \
 
 # [8] Missing file_path key → allow
 run "[8] missing file_path → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{}}' \
   0
 
 # [9] Empty cwd → allow
@@ -89,12 +88,12 @@ run "[9] empty cwd → allow" \
 
 # [10] Writing to /tmp from worktree → BLOCK (out-of-tree, probably unintentional)
 run "[10] cwd=worktree, file=/tmp → BLOCK" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/scratch.txt"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/scratch.txt"}}' \
   2
 
 # [11] Nested worktree directory with trailing slash variation
 run "[11] cwd=worktree no trailing slash, file=worktree nested → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/deep/nested/file.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/deep/nested/file.md"}}' \
   0
 
 echo ""

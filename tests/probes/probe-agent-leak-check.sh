@@ -26,7 +26,6 @@
 #   - exactly one present → DETECTION GAP
 #   - malformed .meta.json (or missing required field per D-10) → DETECTION GAP
 #
-# Backs: docs/decisions.md 2026-04-19 agent-leak-check row + 2026-04-20
 #        detection-gap invariant row + 2026-05-08 BG-AGENT-1 migration row.
 # Companion: probe-worktree-write-guard.sh covers the top-level/Skill detector.
 #

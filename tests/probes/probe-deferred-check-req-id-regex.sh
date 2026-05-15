@@ -20,9 +20,7 @@
 # the regex from the canonical source rather than the hook so the
 # invariant tracks the live definition.
 #
-# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row,
 # extended by the 2026-05-02 auto-silence-extraction row.
-# Parent report: ~/repos/skills/reports/2026-04-20-defer-hook-decision-label-false-positive.md
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 

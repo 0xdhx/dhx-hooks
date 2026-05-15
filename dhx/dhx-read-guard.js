@@ -9,7 +9,7 @@
 // within the last 2 hours count as "read". Pure global TTL eliminates
 // session-scoping false positives caused by CCS instance swaps changing
 // session_id (load-bearing citation:
-// reports/done/2026-04-15-read-guard-session-scoping-false-positives.md).
+// session-scoping false positives observed 2026-04-15.
 //
 // Cache path read:
 //   - ~/.cache/dhx/read-cache.jsonl (XDG, dhx-owned, D-04)
