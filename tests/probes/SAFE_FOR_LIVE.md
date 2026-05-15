@@ -49,6 +49,7 @@ asserts row count == file count.
 | `probe-phase-10-doc-contracts.sh` | yes | read-only token-presence grep against committed `docs/hook-patterns.md`, `docs/decisions.md`, `.planning/REQUIREMENTS.md`; no subprocesses, no writes, no env mutation (Phase 10 Nyquist gap-fill 2026-05-13 — HEAL-07-06 + HEAL-07-07 doc-contract regression probe) |
 | `probe-plugin-keys.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; live read of settings is jq -e only |
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
+| `probe-plugin-cache-staleness.sh` | yes | mktemp + fake HOME + env-var override (DHX_CACHE_STALENESS_LIVE_MANIFEST, DHX_CACHE_STALENESS_CACHE_ROOT); never touches live `~/.claude/plugins/cache/dhx-local` or live `dhx-plugin/` manifest |
 | `probe-plugin-registry.sh` | yes | mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry |
 | `probe-read-cache-concurrency.sh` | yes | mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/` |
 | `probe-read-cache-d17-invariant.sh` | yes | read-only scan of live `~/.cache/dhx/read-cache.jsonl` (Phase 6 C3 SCHEMA-01 D-17 invariant scanner — Convention A exit 0/1/2; jq array-length counting per D-23) |
