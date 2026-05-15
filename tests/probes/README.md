@@ -15,6 +15,18 @@ Top-of-file comment should state:
 
 Output: one line per assertion with `OK ` / `FAIL` prefix, ending with a `N passed, M failed` summary. Exit non-zero on any failure so CI can gate on the run.
 
+## Stdout-detachment for D-state-capable syscalls
+
+Any probe invoking `sync`, `fsync`, `dd`, or a syscall that can enter uninterruptible kernel sleep (D state) **MUST redirect stdout, not just stderr**: `>/dev/null 2>&1`, never `2>/dev/null` alone.
+
+**Failure mode** (observed 2026-05-15 — see `docs/decisions.md` 2026-05-15 sync-fd-leak row and commits `16b129d` / `cc932a6`): two probes ran `sync 2>/dev/null` inside a pre-commit hook whose stdout was piped to `tail -20` via the `git commit … | tail -20` wrapper. Under multi-CC-session I/O pressure, `sync` entered D state. The probe's `timeout 30` killed the probe process, but the orphaned `sync` (PPID=1, **unkillable** — D state ignores SIGKILL) survived holding fd 1 on the inherited pipe. `tail` blocked forever waiting for EOF; each commit retry seeded another orphan; 4 accumulated before diagnosis.
+
+**Rule:**
+
+- Don't use `sync` / `fsync` in probes unless you can prove it's load-bearing. `wait $PID` ensures writer subprocesses exited; POSIX read-after-write within the same OS makes subsequent reads see those writes regardless of disk flush.
+- If a D-state-capable syscall IS load-bearing: `cmd >/dev/null 2>&1` minimum. **`timeout` does NOT bound wall time on D-state processes** — SIGTERM is queued but ignored; `timeout`'s `wait` blocks on actual exit, not signal dispatch.
+- Diagnostic recipe when `git commit … | tail -N` hangs without output: `readlink /proc/<tail_pid>/fd/0` reveals the pipe inode; iterating `/proc/*/fd/*` for that inode lists every writer-side holder.
+
 ## Integration probes
 
 A probe is an **integration probe** when it exercises the composition of multiple code paths that are architecturally independent but share a runtime invariant. These surface UX/timing issues that per-chunk probes can't.
