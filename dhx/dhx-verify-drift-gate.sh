@@ -121,6 +121,91 @@ fi
 VERIFICATION="$PHASE_DIR/${PHASE}-VERIFICATION.md"
 if [[ -r "$VERIFICATION" ]]; then exit 0; fi   # gate passes — silent allow
 
+# Step 5.5: Exit-D awaiting-upstream lane (2026-05-17)
+# Closure class: phases that closed `awaiting-upstream` (D-08 contingency on a
+# tractability NO outcome). Operator review surface is {phase}-UAT.md (not
+# {phase}-VERIFICATION.md) because some plans intentionally do not execute, so
+# the count-based Exit-A signal mis-fires ("Phase has incomplete plans" is
+# misleading when the missing SUMMARY.md is by design). Recognized structurally
+# via UAT.md status:complete + an upstream-routing marker (CONTEXT.md
+# phase_status OR ROADMAP.md closure line). Phase-scoped — no STATE.md
+# milestone-cumulative reads (mirrors the Exit-A invariant). Fail-open on all
+# error paths (D-17 stance): unparseable UAT.md / unreadable marker source /
+# missing marker → fall through to Step 6 Exit-A. Step 4 dispensation row
+# (Lane C escape valve) still runs first; this lane backstops it structurally.
+UAT="$PHASE_DIR/${PHASE}-UAT.md"
+if [[ -r "$UAT" ]]; then
+  # Parse UAT.md frontmatter for `status: complete`. Bash-native idiom mirrors
+  # Step 3 STATE.md parse at L58-77 — same `while read` + `[[ =~ ]]` +
+  # BASH_REMATCH template; bounded by an `^---` counter so prose body lines
+  # containing "status:" cannot match.
+  UAT_STATUS=""
+  _in_fm=0
+  _fm_seen=0
+  while IFS= read -r _line; do
+    if [[ "$_line" =~ ^---[[:space:]]*$ ]]; then
+      if [[ "$_in_fm" -eq 0 && "$_fm_seen" -eq 0 ]]; then
+        _in_fm=1
+        _fm_seen=1
+        continue
+      elif [[ "$_in_fm" -eq 1 ]]; then
+        _in_fm=0
+        break
+      fi
+    fi
+    if [[ "$_in_fm" -eq 1 && "$_line" =~ ^status:[[:space:]]*([a-zA-Z]+) ]]; then
+      UAT_STATUS="${BASH_REMATCH[1]}"
+      break
+    fi
+  done < "$UAT"
+  if [[ "$UAT_STATUS" == "complete" ]]; then
+    # Upstream-routing marker check (OR of two arms; first success wins).
+    UPSTREAM_MARKER=0
+    # Arm (a): CONTEXT.md frontmatter `phase_status: awaiting-upstream`.
+    CONTEXT="$PHASE_DIR/${PHASE}-CONTEXT.md"
+    if [[ -r "$CONTEXT" ]]; then
+      _in_fm=0
+      _fm_seen=0
+      while IFS= read -r _line; do
+        if [[ "$_line" =~ ^---[[:space:]]*$ ]]; then
+          if [[ "$_in_fm" -eq 0 && "$_fm_seen" -eq 0 ]]; then
+            _in_fm=1
+            _fm_seen=1
+            continue
+          elif [[ "$_in_fm" -eq 1 ]]; then
+            _in_fm=0
+            break
+          fi
+        fi
+        if [[ "$_in_fm" -eq 1 && "$_line" =~ ^phase_status:[[:space:]]*awaiting-upstream ]]; then
+          UPSTREAM_MARKER=1
+          break
+        fi
+      done < "$CONTEXT"
+    fi
+    # Arm (b): ROADMAP.md body line containing `Phase $PHASE` AND `Closed
+    # `awaiting-upstream``. Case-glob style matches $PHASE literally (decimal-
+    # safe like Step 4 at L91). Backticks inside double-quoted glob patterns
+    # are literal characters. while-read is bounded single-pass — no slurp.
+    if [[ "$UPSTREAM_MARKER" -eq 0 ]]; then
+      ROADMAP=".planning/ROADMAP.md"
+      if [[ -r "$ROADMAP" ]]; then
+        while IFS= read -r _line; do
+          case "$_line" in
+            *"Phase $PHASE"*"Closed \`awaiting-upstream\`"*)
+              UPSTREAM_MARKER=1
+              break
+              ;;
+          esac
+        done < "$ROADMAP"
+      fi
+    fi
+    if [[ "$UPSTREAM_MARKER" -eq 1 ]]; then
+      exit 0   # Exit-D: awaiting-upstream closure recognized; silent allow
+    fi
+  fi
+fi
+
 # Step 6: Exit-A detection (D-06 — refine message based on incomplete plans).
 # Phase-scoped only: an unfinished `- [ ]` checkbox in any phase PLAN.md, OR a
 # phase PLAN.md with no matching SUMMARY.md. STATE.md `progress.*` is NOT used —
@@ -156,9 +241,9 @@ fi
 
 # Step 7: Emit block-JSON (D-03 + D-07 three-lane message)
 if [[ "$EXIT_A_DETECTED" -eq 1 ]]; then
-  REASON="VERIFICATION.md missing for phase $PHASE AND incomplete plans detected. Phase has incomplete plans — run /gsd-execute-phase $PHASE (no --wave) first to complete remaining work, then /dhx:test $PHASE will fire gsd-verifier per the verifier-spawn step (Lane A wave-slice — typical when wave-slicing; the same step covers Lane B /dhx:execute wrapper early-exit and Lane C operator-bypass closure). If wave-slicing is intentionally complete and verification was operator-bypassed, add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\")."
+  REASON="VERIFICATION.md missing for phase $PHASE AND incomplete plans detected. Phase has incomplete plans — run /gsd-execute-phase $PHASE (no --wave) first to complete remaining work, then /dhx:test $PHASE will fire gsd-verifier per the verifier-spawn step (Lane A wave-slice — typical when wave-slicing; the same step covers Lane B /dhx:execute wrapper early-exit and Lane C operator-bypass closure). If wave-slicing is intentionally complete and verification was operator-bypassed, add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"). OR (iv) phase closed \`awaiting-upstream\` with completed {phase}-UAT.md, in which case Exit-D fires silently without operator intervention."
 else
-  REASON="VERIFICATION.md missing for phase $PHASE. No verifier ran. Either (i) dispatch \`gsd-verifier\` via Task tool for inline verification (Lane A wave-slice / Lane B /dhx:execute wrapper early-exit / Lane C operator-bypass closure), OR (ii) operator-bypass closures must add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\")."
+  REASON="VERIFICATION.md missing for phase $PHASE. No verifier ran. Either (i) dispatch \`gsd-verifier\` via Task tool for inline verification (Lane A wave-slice / Lane B /dhx:execute wrapper early-exit / Lane C operator-bypass closure), OR (ii) operator-bypass closures must add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"), OR (iv) phase closed \`awaiting-upstream\` with completed {phase}-UAT.md, in which case Exit-D fires silently without operator intervention."
 fi
 
 jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
