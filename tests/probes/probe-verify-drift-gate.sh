@@ -378,6 +378,171 @@ assert_silent "[15] garbage non-JSON stdin → graceful silent exit 0" "$OUTPUT"
 OUTPUT=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< '') 2>/dev/null )
 assert_silent "[15b] empty stdin → graceful silent exit 0" "$OUTPUT"
 
+# --- Scenario [16]: Exit-D awaiting-upstream lane — recognized → silent allow ---
+# Closure class: {phase}-UAT.md status:complete + upstream-routing marker
+# (CONTEXT.md phase_status OR ROADMAP.md `Closed `awaiting-upstream`` line) →
+# Exit-D fires silently without operator intervention. Fixture mirrors Phase 11
+# shape: 3 *-PLAN.md files + 1 *-SUMMARY.md → #SUMMARY (1) < #PLAN (3) so
+# without Exit-D, Exit-A would fire with "Phase has incomplete plans".
+#
+# [16] = ROADMAP.md marker route (the live Phase 11 shape on this repo).
+
+refresh_fixtures 99-test false true false   # PLAN+no-SUMMARY for plan 99-01
+# Add the extra by-design non-executing plans (no matching SUMMARY) — gets
+# #SUMMARY (1) < #PLAN (3) shape the bare Exit-A signal trips on.
+cat > "$TMP/.planning/phases/99-test/99-02-PLAN.md" <<EOF
+# Plan
+non-executing per D-08 contingency
+EOF
+cat > "$TMP/.planning/phases/99-test/99-03-PLAN.md" <<EOF
+# Plan
+non-executing per D-08 contingency
+EOF
+cat > "$TMP/.planning/phases/99-test/99-UAT.md" <<EOF
+---
+phase: 99
+type: uat
+status: complete
+created: 2026-05-17
+verifier: /dhx:test 99
+scope: plan-1-only-spot-check
+---
+# Phase 99 UAT
+EOF
+cat > "$TMP/.planning/ROADMAP.md" <<'EOF'
+# Roadmap
+- [x] **Phase 99: Foo (FOO-99)** — Closed `awaiting-upstream` 2026-05-17
+EOF
+PAYLOAD=$(build_payload "/dhx:test 99")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[16] Exit-D via ROADMAP.md marker → silent allow (UAT.md status:complete + Closed awaiting-upstream)" "$OUTPUT"
+
+# [16b] = CONTEXT.md marker route — drop ROADMAP.md, add CONTEXT.md frontmatter
+refresh_fixtures 99-test false true false
+cat > "$TMP/.planning/phases/99-test/99-02-PLAN.md" <<EOF
+# Plan
+non-executing
+EOF
+cat > "$TMP/.planning/phases/99-test/99-03-PLAN.md" <<EOF
+# Plan
+non-executing
+EOF
+cat > "$TMP/.planning/phases/99-test/99-UAT.md" <<EOF
+---
+phase: 99
+type: uat
+status: complete
+---
+EOF
+cat > "$TMP/.planning/phases/99-test/99-CONTEXT.md" <<EOF
+---
+phase: 99
+phase_status: awaiting-upstream
+---
+# Phase 99 CONTEXT
+EOF
+PAYLOAD=$(build_payload "/dhx:test 99")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[16b] Exit-D via CONTEXT.md phase_status marker → silent allow" "$OUTPUT"
+
+# [16c] = real-world Phase 11 shape — phase 11 + line text verbatim from
+# .planning/ROADMAP.md:54 (single-quoted HEREDOC keeps the backticks literal).
+refresh_fixtures 11-test false true false
+cat > "$TMP/.planning/phases/11-test/11-02-PLAN.md" <<EOF
+# Plan
+non-executing per D-08
+EOF
+cat > "$TMP/.planning/phases/11-test/11-03-PLAN.md" <<EOF
+# Plan
+non-executing per D-08
+EOF
+cat > "$TMP/.planning/phases/11-test/11-UAT.md" <<EOF
+---
+phase: 11
+type: uat
+status: complete
+created: 2026-05-15
+verifier: /dhx:test 11
+scope: plan-1-only-spot-check
+---
+EOF
+cat > "$TMP/.planning/ROADMAP.md" <<'EOF'
+# Roadmap
+- [x] **Phase 11: Sandboxed-CC harness library + SCHEMA-02 main matrix (SCHEMA-02)** — Closed `awaiting-upstream` 2026-05-15. Plan 11-01 tractability spike returned **NO** on CC 2.1.142.
+EOF
+PAYLOAD=$(build_payload "/dhx:test 11")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[16c] Exit-D real-world Phase 11 shape → silent allow (verbatim ROADMAP.md L54 marker)" "$OUTPUT"
+
+# --- Scenario [17]: Exit-D fall-through paths → Exit-A wave-slice block ---
+# Locks the fail-open invariant: missing UAT.md, status:incomplete, OR missing
+# routing marker → Exit-D does NOT fire; falls through to Exit-A which sees
+# #SUMMARY (1) < #PLAN (3) and emits "Phase has incomplete plans" block-JSON.
+
+# [17] = UAT.md status:incomplete (with valid marker) → fall through to Exit-A
+refresh_fixtures 99-test false true false
+cat > "$TMP/.planning/phases/99-test/99-02-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/phases/99-test/99-03-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/phases/99-test/99-UAT.md" <<EOF
+---
+phase: 99
+type: uat
+status: incomplete
+---
+EOF
+cat > "$TMP/.planning/ROADMAP.md" <<'EOF'
+# Roadmap
+- [x] **Phase 99: Foo (FOO-99)** — Closed `awaiting-upstream` 2026-05-17
+EOF
+PAYLOAD=$(build_payload "/dhx:test 99")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[17] UAT.md status:incomplete → fall through to Exit-A (fail-open)" \
+  "$OUTPUT" "Phase has incomplete plans"
+
+# [17b] = UAT.md missing entirely → fall through to Exit-A
+refresh_fixtures 99-test false true false
+cat > "$TMP/.planning/phases/99-test/99-02-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/phases/99-test/99-03-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/ROADMAP.md" <<'EOF'
+# Roadmap
+- [x] **Phase 99: Foo (FOO-99)** — Closed `awaiting-upstream` 2026-05-17
+EOF
+PAYLOAD=$(build_payload "/dhx:test 99")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[17b] UAT.md missing → fall through to Exit-A (fail-open)" \
+  "$OUTPUT" "Phase has incomplete plans"
+
+# [17c] = UAT.md status:complete BUT no routing marker (no ROADMAP line, no
+# CONTEXT.md phase_status) → structural marker required, not optional.
+refresh_fixtures 99-test false true false
+cat > "$TMP/.planning/phases/99-test/99-02-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/phases/99-test/99-03-PLAN.md" <<EOF
+# Plan
+EOF
+cat > "$TMP/.planning/phases/99-test/99-UAT.md" <<EOF
+---
+phase: 99
+type: uat
+status: complete
+---
+EOF
+# Intentionally NO ROADMAP.md and NO CONTEXT.md with phase_status — Exit-D
+# must NOT fire on UAT alone.
+PAYLOAD=$(build_payload "/dhx:test 99")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[17c] UAT.md complete but no routing marker → fall through to Exit-A (structural marker required)" \
+  "$OUTPUT" "Phase has incomplete plans"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
