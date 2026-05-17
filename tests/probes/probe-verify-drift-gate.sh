@@ -309,6 +309,75 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# --- Scenario [11]: WR-01 — /dhx:test-prefixed but NOT /dhx:test → silent allow ---
+# The prefix filter is word-boundary anchored: `/dhx:test` must be followed by
+# whitespace or end-of-string. /dhx:testify and /dhx:test-harness start with the
+# literal `/dhx:test` but are different commands — the gate must NOT fire.
+refresh_fixtures 12-test false false false
+PAYLOAD=$(build_payload "/dhx:testify 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[11] /dhx:testify 12 → silent allow (WR-01 prefix-glob anchor)" "$OUTPUT"
+PAYLOAD=$(build_payload "/dhx:test-harness 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_silent "[11b] /dhx:test-harness 12 → silent allow (WR-01 prefix-glob anchor)" "$OUTPUT"
+
+# --- Scenario [12]: WR-02 — run-prefixed but NOT the `run` subcommand → BLOCK ---
+# The subcommand filter is word-boundary anchored too. `/dhx:test runner` is NOT
+# the `run` subcommand — with no resolvable phase arg and a STATE.md current_phase
+# the hook must proceed to the gate and BLOCK, not bypass as a subcommand.
+refresh_fixtures 12-test false false false
+cat > "$TMP/.planning/STATE.md" <<'EOF'
+---
+current_phase: 12
+---
+EOF
+PAYLOAD=$(build_payload "/dhx:test runner")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks "[12] /dhx:test runner → BLOCK, not run-subcommand bypass (WR-02)" "$OUTPUT"
+
+# --- Scenario [13]: CR-01 — annotated current_phase must resolve to bare phase ---
+# `current_phase: 12 (wave 3 in progress)` must parse as phase 12. The earlier
+# `awk gsub(/[^0-9.]/,"")` corrupted this to `123` (no 123-* dir → silent skip).
+# The fixed bash-native [[ =~ ]] extraction takes the leading N token → block 12.
+refresh_fixtures 12-test false false false
+cat > "$TMP/.planning/STATE.md" <<'EOF'
+---
+current_phase: 12 (wave 3 in progress)
+stopped_at: Phase 12 context gathered
+---
+EOF
+PAYLOAD=$(build_payload "/dhx:test")   # bare — forces STATE.md resolution
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[13] annotated current_phase '12 (wave 3 in progress)' → block phase 12 (CR-01)" \
+  "$OUTPUT" "phase 12"
+
+# --- Scenario [14]: WR-03 — two dirs matching ${PHASE}-* → fail-open ---
+# A renamed-but-not-removed stale phase dir leaves two ${PHASE}-* matches. The
+# fixed hook collects all matches, detects ambiguity, and fails open with a
+# one-line stderr warning (D-17 stance) rather than silently picking one.
+refresh_fixtures 12-test false false false
+mkdir -p "$TMP/.planning/phases/12-alpha" "$TMP/.planning/phases/12-beta"
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUT=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< "$PAYLOAD") 2> "$TMP/err14" )
+ERR=$(cat "$TMP/err14")
+EXPECTED_AMBIG="dhx-verify-drift-gate: phase 12 matches"
+if [ -z "$OUT" ] && [[ "$ERR" == *"$EXPECTED_AMBIG"* ]]; then
+  echo "OK   [14] ambiguous phase-dir glob → fail-open: empty stdout + stderr warning (WR-03)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [14] ambiguous phase-dir expected empty stdout + stderr containing '$EXPECTED_AMBIG'; got stdout='$(printf '%s' "$OUT" | head -c 100)' stderr='$(printf '%s' "$ERR" | head -c 200)'"
+  FAIL=$((FAIL + 1))
+fi
+
+# --- Scenario [15]: garbage / non-JSON stdin → graceful exit 0 (silent) ---
+# The hook reads stdin via `jq -r '.prompt // empty'`; non-JSON input makes jq
+# fail, the `2>/dev/null` swallows the diagnostic, PROMPT is empty → silent exit.
+refresh_fixtures 12-test false false false
+OUTPUT=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< 'this is not json at all {{{') 2>/dev/null )
+assert_silent "[15] garbage non-JSON stdin → graceful silent exit 0" "$OUTPUT"
+OUTPUT=$( (cd "$TMP" && HOME="$TMP" bash "$HOOK" <<< '') 2>/dev/null )
+assert_silent "[15b] empty stdin → graceful silent exit 0" "$OUTPUT"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
