@@ -46,6 +46,7 @@ asserts row count == file count.
 | `probe-last-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
 | `probe-migration.js` | yes | re-implemented compare core; tmp-file fixtures via os.tmpdir |
 | `probe-milestone-close-blocker-check.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live `~/.cache/dhx`, `~/.claude`, or git state touched (mirrors `probe-execute-stop-review.sh` precedent) |
+| `probe-milestone-close-blocker-pretooluse.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP + PreToolUse:Skill stdin payload (tool_input.skill=gsd-complete-milestone); no live `~/.cache/dhx`, `~/.claude`, or git state touched (Plan 13-03 Shape B regression probe; mirrors Plan 13-01 probe shape adapted for HP-009 PreToolUse exit-2 semantics) |
 | `probe-milestone-close-vocab-parity.sh` | yes | static grep + awk against in-repo hook + canonical `~/.claude/dhx-tools/backlog-regen.cjs`; soft-skips with WARN if dhx-tools absent; no writes, no subprocess invocation of CC |
 | `probe-new-milestone-promote-reminder.sh` | yes | mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation |
 | `probe-phase-10-doc-contracts.sh` | yes | read-only token-presence grep against committed `docs/hook-patterns.md`, `docs/decisions.md`, `.planning/REQUIREMENTS.md`; no subprocesses, no writes, no env mutation (Phase 10 Nyquist gap-fill 2026-05-13 — HEAL-07-06 + HEAL-07-07 doc-contract regression probe) |

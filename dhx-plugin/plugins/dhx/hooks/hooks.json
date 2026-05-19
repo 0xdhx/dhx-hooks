@@ -97,6 +97,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-milestone-close-blocker-pretooluse.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
