@@ -98,6 +98,101 @@ SNAP=$(($(date +%s%3N) - 60000))
 run_case "[6] fire: mixed (one good + one upstream-only)" \
   "$TMPDIR/c6/live" "$TMPDIR/c6/fork" "$SNAP" "false"
 
+echo
+echo "=== gsd diverging-files collector (tmpdir-isolated) ==="
+
+# collector returns array of {path,kind} entries — exercise the same scenario
+# space as the suppression helper but assert the structured result, not bool.
+# Backs the Problem 2 implementation in dhx/statusline-wrapper.js: visible
+# `⚠ restart gsd:<basename>` detail + forensic breadcrumb to ~/.cache/dhx/.
+
+run_collector() {
+  local name="$1" live="$2" fork="$3" snap_mtime="$4" want="$5"
+  local got
+  got=$(node -e "
+    const m = require('$WRAPPER');
+    const r = m.collectGsdDriftDivergingFiles({gsd_mtime: $snap_mtime}, '$live', '$fork');
+    process.stdout.write(JSON.stringify(r));
+  " 2>/dev/null || echo "<error>")
+  if [ "$got" = "$want" ]; then
+    echo "OK   $name"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL $name (got=$got want=$want)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---- [7] Empty: live byte-equal to canonical → empty diverging list ----
+# Scenario [1] mirror: suppression returns true, collector returns [].
+mkdir -p "$TMPDIR/c7/live/workflows" "$TMPDIR/c7/fork/workflows"
+echo "patched content" > "$TMPDIR/c7/live/workflows/execute-phase.md"
+echo "patched content" > "$TMPDIR/c7/fork/workflows/execute-phase.md"
+SNAP=$(($(date +%s%3N) - 60000))
+run_collector "[7] empty: live==canonical → []" \
+  "$TMPDIR/c7/live" "$TMPDIR/c7/fork" "$SNAP" "[]"
+
+# ---- [8] Single mismatch: canonical bytes differ ----
+# Scenario [3] mirror: collector reports exactly one mismatch entry.
+mkdir -p "$TMPDIR/c8/live/workflows" "$TMPDIR/c8/fork/workflows"
+echo "live content A" > "$TMPDIR/c8/live/workflows/execute-phase.md"
+echo "canonical content B" > "$TMPDIR/c8/fork/workflows/execute-phase.md"
+SNAP=$(($(date +%s%3N) - 60000))
+run_collector "[8] single mismatch: bytes differ" \
+  "$TMPDIR/c8/live" "$TMPDIR/c8/fork" "$SNAP" \
+  '[{"path":"workflows/execute-phase.md","kind":"mismatch"}]'
+
+# ---- [9] No-canonical: live file has no counterpart ----
+# Scenario [2] mirror: collector reports the file with kind=no-canonical.
+mkdir -p "$TMPDIR/c9/live/workflows" "$TMPDIR/c9/fork/workflows"
+echo "real upstream" > "$TMPDIR/c9/live/workflows/upstream-only.md"
+SNAP=$(($(date +%s%3N) - 60000))
+run_collector "[9] no-canonical: live without counterpart" \
+  "$TMPDIR/c9/live" "$TMPDIR/c9/fork" "$SNAP" \
+  '[{"path":"workflows/upstream-only.md","kind":"no-canonical"}]'
+
+# ---- [10] Fork-tree-missing: canonical root absent → single-entry sentinel ----
+# Scenario [4] mirror: collector returns one entry with no path field.
+mkdir -p "$TMPDIR/c10/live/workflows"
+echo "modified" > "$TMPDIR/c10/live/workflows/execute-phase.md"
+SNAP=$(($(date +%s%3N) - 60000))
+run_collector "[10] fork-tree-missing → sentinel entry" \
+  "$TMPDIR/c10/live" "$TMPDIR/c10/fork-does-not-exist" "$SNAP" \
+  '[{"kind":"fork-tree-missing"}]'
+
+# ---- [11] Mixed: one mismatch + one no-canonical → both reported ----
+# Scenario [6] mirror: collector includes BOTH divergent files (helper's
+# early-return contrasts; collector walks the full tree).
+mkdir -p "$TMPDIR/c11/live/workflows" "$TMPDIR/c11/fork/workflows"
+echo "live differs" > "$TMPDIR/c11/live/workflows/execute-phase.md"
+echo "canonical differs" > "$TMPDIR/c11/fork/workflows/execute-phase.md"
+echo "no canonical" > "$TMPDIR/c11/live/workflows/upstream-only.md"
+SNAP=$(($(date +%s%3N) - 60000))
+# Order from readdirSync recursive walk is filesystem-dependent — accept either
+# permutation. Two probes: assert each entry's presence independently.
+got=$(node -e "
+  const m = require('$WRAPPER');
+  const r = m.collectGsdDriftDivergingFiles({gsd_mtime: $SNAP}, '$TMPDIR/c11/live', '$TMPDIR/c11/fork');
+  process.stdout.write(JSON.stringify(r));
+" 2>/dev/null || echo "<error>")
+if echo "$got" | grep -q '"workflows/execute-phase.md","kind":"mismatch"' && \
+   echo "$got" | grep -q '"workflows/upstream-only.md","kind":"no-canonical"' && \
+   [ "$(echo "$got" | jq 'length' 2>/dev/null)" = "2" ]; then
+  echo "OK   [11] mixed: both divergent files reported"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [11] mixed (got=$got)"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---- [12] Vacuous: no files newer than snapshot → empty list ----
+# Scenario [5] mirror: collector walks but accumulates nothing.
+mkdir -p "$TMPDIR/c12/live/workflows" "$TMPDIR/c12/fork"
+echo "old" > "$TMPDIR/c12/live/workflows/execute-phase.md"
+SNAP=$(($(date +%s%3N) + 60000))
+run_collector "[12] vacuous: no files newer than snapshot → []" \
+  "$TMPDIR/c12/live" "$TMPDIR/c12/fork" "$SNAP" "[]"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 exit $((FAIL > 0 ? 1 : 0))
