@@ -4,13 +4,16 @@
 #
 # Detects missing {phase}-VERIFICATION.md when operator types /dhx:test {N}
 # (full-pipeline shape only — subcommands skip the gate). Emits block-JSON
-# whose `reason` names three exit lanes (A wave-slice / B /dhx:execute
-# early-exit / C operator-bypass). Operator dispensation row in
-# docs/decisions.md overrides the gate (D-12). Silent on happy path;
-# fail-open on STATE.md errors (D-17).
+# whose `reason` LEADS with the actionable fix (dispatch `gsd-verifier` via
+# Task tool) and still names the three exit lanes (A wave-slice / B
+# /dhx:execute early-exit / C operator-bypass) so all closure paths remain
+# audit-traceable. Operator dispensation row in docs/decisions.md overrides
+# the gate (D-12). Silent on happy path; fail-open on STATE.md errors (D-17).
 #
 # CONTEXT.md decisions implemented: D-01..D-17 (locked 2026-05-15;
-# D-01 pivoted to UserPromptSubmit on 2026-05-15; D-11 obsolete).
+# D-01 pivoted to UserPromptSubmit on 2026-05-15; D-11 obsolete;
+# D-23 reason-text wording revised 2026-05-18 per first field-signal —
+# leads with dispatch verb + phase-prefixed VERIFICATION.md naming hint).
 
 set -uo pipefail
 
@@ -241,9 +244,9 @@ fi
 
 # Step 7: Emit block-JSON (D-03 + D-07 three-lane message)
 if [[ "$EXIT_A_DETECTED" -eq 1 ]]; then
-  REASON="VERIFICATION.md missing for phase $PHASE AND incomplete plans detected. Phase has incomplete plans — run /gsd-execute-phase $PHASE (no --wave) first to complete remaining work, then /dhx:test $PHASE will fire gsd-verifier per the verifier-spawn step (Lane A wave-slice — typical when wave-slicing; the same step covers Lane B /dhx:execute wrapper early-exit and Lane C operator-bypass closure). If wave-slicing is intentionally complete and verification was operator-bypassed, add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"). OR (iv) phase closed \`awaiting-upstream\` with completed {phase}-UAT.md, in which case Exit-D fires silently without operator intervention."
+  REASON="VERIFICATION.md missing for phase $PHASE AND incomplete plans detected (Phase has incomplete plans). Fix in order: (1) run \`/gsd-execute-phase $PHASE\` (no --wave) to finish remaining plan work, (2) dispatch the \`gsd-verifier\` agent via Task tool to produce \`.planning/phases/{phase_dir}/$PHASE-VERIFICATION.md\` (phase-prefixed — agent occasionally drops the prefix; rename if so), (3) re-run \`/dhx:test $PHASE\`. Step (2) covers Lane A wave-slice / Lane B /dhx:execute wrapper early-exit / Lane C operator-bypass closure. Dispensation path: add row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"). Exit-D: awaiting-upstream closure with completed $PHASE-UAT.md fires silently without operator intervention."
 else
-  REASON="VERIFICATION.md missing for phase $PHASE. No verifier ran. Either (i) dispatch \`gsd-verifier\` via Task tool for inline verification (Lane A wave-slice / Lane B /dhx:execute wrapper early-exit / Lane C operator-bypass closure), OR (ii) operator-bypass closures must add dispensation row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"), OR (iv) phase closed \`awaiting-upstream\` with completed {phase}-UAT.md, in which case Exit-D fires silently without operator intervention."
+  REASON="VERIFICATION.md missing for phase $PHASE. Fix: dispatch the \`gsd-verifier\` agent via Task tool (phase $PHASE) — it writes \`.planning/phases/{phase_dir}/$PHASE-VERIFICATION.md\` (phase-prefixed — agent occasionally drops the prefix; rename if so). Re-run \`/dhx:test $PHASE\` after. Same dispatch covers Lane A wave-slice / Lane B /dhx:execute wrapper early-exit / Lane C operator-bypass closure. Dispensation path: add row to docs/decisions.md (prefix: \"Phase $PHASE VERIFICATION.md drift dispensation\"). Exit-D: awaiting-upstream closure with completed $PHASE-UAT.md fires silently without operator intervention."
 fi
 
 jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
