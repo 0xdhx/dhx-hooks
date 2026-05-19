@@ -963,6 +963,63 @@ function isGsdDriftFromForkSync(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = G
   }
 }
 
+// Sibling to isGsdDriftFromForkSync — when the boolean says "fire", this walks the
+// same tree and accumulates the list of newer-than-snapshot files that broke
+// byte-equality. Used by checkDrift() to (a) inject diverging-file detail into
+// the visible `⚠ restart gsd:<basename>` trigger label and (b) write a forensic
+// breadcrumb to ~/.cache/dhx/drift-debug-<session>.log mirroring the plugins
+// pattern. Backs Problem 2 in reports/2026-05-18-canonical-mirror-drift-from-
+// unmirrored-edit.md.
+//
+// Returns an array of `{ path, kind }` entries (path relative to liveRoot).
+// `kind` values:
+//   'mismatch'           — canonical exists but bytes differ from live
+//   'no-canonical'       — canonical counterpart missing (genuine upstream addition)
+//   'unreadable'         — live or canonical read/stat threw
+//   'fork-tree-missing'  — canonical fork root absent; single entry with no path
+//
+// Never throws — partial list on inner failure, empty list on outer failure.
+// Performance: invoked at most once per refresh, only when checkDrift has
+// already confirmed gsd drift fired (rare event); cost matches isGsdDriftFromForkSync.
+function collectGsdDriftDivergingFiles(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = GSD_FORK_ROOT) {
+  const diverging = [];
+  try {
+    try {
+      const st = fs.statSync(forkRoot);
+      if (!st.isDirectory()) return [{ kind: 'fork-tree-missing' }];
+    } catch { return [{ kind: 'fork-tree-missing' }]; }
+
+    const entries = fs.readdirSync(liveRoot, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (entry.isDirectory && entry.isDirectory()) continue;
+      const full = entry.path ? path.join(entry.path, entry.name) : path.join(liveRoot, entry.name);
+      let liveStat;
+      try { liveStat = fs.statSync(full); } catch {
+        diverging.push({ path: path.relative(liveRoot, full), kind: 'unreadable' });
+        continue;
+      }
+      if (liveStat.mtimeMs <= snapshot.gsd_mtime) continue;
+
+      const rel = path.relative(liveRoot, full);
+      const canonical = path.join(forkRoot, rel);
+      let canonicalBytes;
+      try { canonicalBytes = fs.readFileSync(canonical); } catch {
+        diverging.push({ path: rel, kind: 'no-canonical' });
+        continue;
+      }
+      let liveBytes;
+      try { liveBytes = fs.readFileSync(full); } catch {
+        diverging.push({ path: rel, kind: 'unreadable' });
+        continue;
+      }
+      if (!liveBytes.equals(canonicalBytes)) {
+        diverging.push({ path: rel, kind: 'mismatch' });
+      }
+    }
+  } catch { /* fail-silent — partial list is fine */ }
+  return diverging;
+}
+
 // Drift detection (D-02 through D-05): snapshot comparison.
 // First invocation: snapshots all 5 path mtimes + version into a single cache file.
 // Subsequent invocations: compares current state against snapshot, warns on change.
@@ -1126,7 +1183,49 @@ function checkDrift(data) {
       ageStr = `${h}h ${m}m`;
     }
 
-    resolve(`\x1b[38;5;208m⚠ restart ${triggers.join('+')} (${ageStr})\x1b[0m`);
+    // Gsd-trigger detail injection (Problem 2 in reports/2026-05-18-canonical-
+    // mirror-drift-from-unmirrored-edit.md). Only meaningful when the gsd mtime
+    // branch fired alone — count branch is a deletion, no diverging-file list
+    // applies. Render `gsd:execute-phase.md` for single-file drift, `gsd:3files`
+    // for multi-file. Empty suffix when no detail is computable (fork-tree-
+    // missing or zero-length list).
+    let gsdDetail = '';
+    let gsdDiverging = null;
+    if (triggers.includes('gsd') && gsdMtimeFired && !gsdCountFired) {
+      gsdDiverging = collectGsdDriftDivergingFiles(snapshot);
+      const named = gsdDiverging.filter(d => d.path);
+      if (named.length === 1) {
+        gsdDetail = `:${path.basename(named[0].path)}`;
+      } else if (named.length > 1) {
+        gsdDetail = `:${named.length}files`;
+      }
+    }
+
+    // Forensic breadcrumb — mirrors the plugins-trigger pattern (above). Writes
+    // the full diverging-file list to ~/.cache/dhx/drift-debug-<session>.log
+    // so the next /dhx:statusline debug session can read it without re-walking
+    // the live tree. Silent on cache-write failure: drift detection takes
+    // priority over breadcrumb (same discipline as plugins branch).
+    if (gsdDiverging) {
+      try {
+        const sessionId = data.session_id;
+        if (sessionId && !/[/\\]|\.\./.test(sessionId)) {
+          fs.mkdirSync(cacheDir, { recursive: true });
+          const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
+          const line = JSON.stringify({
+            ts: new Date().toISOString(),
+            trigger: 'gsd',
+            diverging: gsdDiverging,
+            current_mtime: current.gsd_mtime,
+            snapshot_mtime: snapshot.gsd_mtime,
+          }) + '\n';
+          fs.appendFileSync(breadcrumbFile, line);
+        }
+      } catch { /* breadcrumb failure must not affect drift detection */ }
+    }
+
+    const triggersStr = triggers.map(t => t === 'gsd' ? `gsd${gsdDetail}` : t).join('+');
+    resolve(`\x1b[38;5;208m⚠ restart ${triggersStr} (${ageStr})\x1b[0m`);
   });
 }
 
@@ -1352,6 +1451,7 @@ module.exports = {
   canonicalize,
   checkPluginRegistry,
   isGsdDriftFromForkSync,
+  collectGsdDriftDivergingFiles,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
