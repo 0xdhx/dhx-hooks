@@ -176,6 +176,10 @@
           },
           {
             "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-milestone-close-blocker-check.sh\""
+          },
+          {
+            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-test-gate.sh\"",
             "timeout": 300
           },
