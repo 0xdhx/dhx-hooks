@@ -207,10 +207,27 @@ assert_no_argv_log() {
 }
 
 # Skip cgroup-dependent scenarios if host preconditions are missing.
+#
+# D-10 (Phase 14): align HOST_HAS_CGROUP to the canonical capability surface
+# (`cgroup.controllers` for the literal token `memory`) per
+# systemd/docs/CGROUP_DELEGATION.md. Replaces the prior 2-check shape
+# (systemd-run on PATH + user-manager active-target); both signals are
+# subsumed by the canonical read (memory controller delegated => systemd-run
+# will succeed on the user-manager bus). Both probes (cgroup +
+# host-preconditions) now share the canonical surface, eliminating the
+# cross-probe drift gemini flagged at MEDIUM.
 HOST_HAS_CGROUP=0
-if command -v systemd-run >/dev/null 2>&1 && \
-   systemctl --user is-active default.target >/dev/null 2>&1; then
+CONTROLLERS="/sys/fs/cgroup/user.slice/user-${UID}.slice/user@${UID}.service/cgroup.controllers"
+if [ -r "$CONTROLLERS" ] && grep -qw memory "$CONTROLLERS" 2>/dev/null; then
   HOST_HAS_CGROUP=1
+else
+  # D-02 (Phase 14): make the silent-skip operator-visible. Emit diagnostic
+  # + pointer to the canonical fail-fast probe. Does NOT change exit semantics
+  # — cgroup scenarios still soft-skip via HOST_HAS_CGROUP guards downstream;
+  # this is breadcrumb-only.
+  echo "INFO host-precondition gap (cgroup scenarios will soft-skip):" >&2
+  echo "     - memory controller not delegated to user manager (path: $CONTROLLERS)" >&2
+  echo "     → see tests/probes/probe-test-gate-host-preconditions.sh for canonical capability probe" >&2
 fi
 
 # ----------------------------------------------------------------------------
