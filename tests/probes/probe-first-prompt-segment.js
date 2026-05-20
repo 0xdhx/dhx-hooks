@@ -48,7 +48,9 @@ function readFirstUserPromptText(transcriptPath) {
       }
       if (typeof raw !== 'string' || raw.length === 0) continue;
       if (raw.startsWith('<local-command-caveat>')) continue;
-      if (!clearSkipped && /^<command-name>\/clear<\/command-name>/.test(raw)) {
+      const cmdName = raw.match(/<command-name>([^<]+)<\/command-name>/);
+      if (cmdName) raw = cmdName[1];
+      if (!clearSkipped && raw === '/clear') {
         clearSkipped = true;
         continue;
       }
@@ -234,17 +236,17 @@ ok('18. /clear as first user entry single-skipped, returns next prompt',
 
 // --- 19. two /clear entries in a row: single-skip allows second through ---
 // Single-skip is bounded — only one /clear is skipped; if the user submitted
-// /clear twice in a row, the second one is the intended freeze anchor.
+// /clear twice in a row, the second one is the intended freeze anchor. After
+// <command-name> extraction, the returned form is the canonical "/clear" (not
+// the opaque truncated wrapper tag).
 const clearText = '<command-name>/clear</command-name>';
 const p19 = writeJsonl('19-two-clears.jsonl', [
   userString(clearText,  '2026-05-20T10:00:00.000Z'),
   userString(clearText,  '2026-05-20T10:00:01.000Z'),
 ]);
 const got19 = readFirstUserPromptText(p19);
-// '<command-name>/clear</command-name>' is 35 chars → truncated to 19 + …
-// First 19 chars: '<command-name>/clea' then '…'.
-ok('19. two consecutive /clear entries: second /clear returned (truncated)',
-   got19 === '<command-name>/clea' + '…');
+ok('19. two consecutive /clear entries: second /clear returned as "/clear"',
+   got19 === '/clear');
 
 // --- 20. <local-command-caveat> synthetic entry filtered, returns real next prompt ---
 // CC injects `<local-command-caveat>...` synthetic user messages around local
@@ -259,6 +261,34 @@ const p20 = writeJsonl('20-local-command-caveat.jsonl', [
 ]);
 ok('20. <local-command-caveat> filtered, returns real next prompt',
    readFirstUserPromptText(p20) === 'real prompt');
+
+// --- 21. slash-command <command-name> extraction surfaces canonical /foo form ---
+// CC writes CLI slash invocations as a multi-tag block:
+//   <command-message>foo</command-message>
+//   <command-name>/foo</command-name>
+//   <command-args>...</command-args>
+// The raw string starts with <command-message>, which would truncate as
+// "<command-message>f…" — opaque. Extraction pulls /foo out of <command-name>
+// so the segment renders as "/foo" (or a clean truncation thereof).
+const slashWrapped =
+  '<command-message>dhx:statusline</command-message>\n' +
+  '<command-name>/dhx:statusline</command-name>\n' +
+  '<command-args>some args text that should not appear in the segment</command-args>';
+const p21 = writeJsonl('21-slash-extract.jsonl', [userString(slashWrapped)]);
+ok('21a. slash-command <command-name> extraction yields canonical /foo form',
+   readFirstUserPromptText(p21) === '/dhx:statusline');
+// Length-boundary: a 21+ char slash command still truncates the EXTRACTED form,
+// not the raw wrapped text (assert truncation applies to /foo, not to the tag).
+const longSlashWrapped =
+  '<command-message>long-command-name-that-overflows</command-message>\n' +
+  '<command-name>/long-command-name-that-overflows</command-name>\n' +
+  '<command-args></command-args>';
+const p21b = writeJsonl('21b-slash-long.jsonl', [userString(longSlashWrapped)]);
+const got21b = readFirstUserPromptText(p21b);
+// '/long-command-name-that-overflows' is 33 chars → slice(0,19) + …
+// slice(0,19) yields '/long-command-name-' (19 chars including trailing -).
+ok('21b. long slash command truncates the extracted /foo, not the wrapper tag',
+   got21b === '/long-command-name-' + '…');
 
 // --- cleanup ---
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* nothing */ }

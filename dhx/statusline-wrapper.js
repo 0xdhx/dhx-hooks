@@ -1351,15 +1351,23 @@ function readCacheAnchor(transcriptPath) {
 //     stable across refreshes.
 // (b) Forward-scan stops at the first non-synthetic match; if file > 64KB,
 //     the last line in the head slice is dropped (potentially truncated).
-// (c) `<command-name>/clear</command-name>` SINGLE-SKIP exception: a leading
-//     /clear is skipped so the segment reflects the user's real opening
-//     prompt; two consecutive /clear entries return the second (single skip,
-//     not unbounded). Matches the intent "if you /cleared to start fresh,
-//     freeze on what you actually came here to do".
-// (d) `<local-command-caveat>` prefix filter: CC-injected synthetic user
+// (c) `<command-name>/foo</command-name>` extraction: CC wraps CLI slash
+//     commands in a multi-tag XML-ish block — `<command-message>foo</...>` +
+//     `<command-name>/foo</...>` + `<command-args>...</...>`. The canonical
+//     `/foo` form lives in <command-name>; surfacing it (and dropping the
+//     wrapper tags + args) makes the segment render as `/foo` instead of the
+//     opaque truncated `<command-message>f…`. Extraction runs AFTER the
+//     local-command-caveat filter, BEFORE the /clear check, so the /clear
+//     comparison can be a plain string equality on the extracted form.
+// (d) `/clear` SINGLE-SKIP exception: a leading /clear is skipped so the
+//     segment reflects the user's real opening prompt; two consecutive /clear
+//     entries return the second (single skip, not unbounded). Matches the
+//     intent "if you /cleared to start fresh, freeze on what you actually
+//     came here to do".
+// (e) `<local-command-caveat>` prefix filter: CC-injected synthetic user
 //     entries (string content prefix-matching this tag) are NOT real prompts
 //     and are skipped wholesale.
-// (e) Depends on JSONL transcript schema (HP-019). type=user entries carry
+// (f) Depends on JSONL transcript schema (HP-019). type=user entries carry
 //     .message.content as either a string OR an array of content blocks
 //     (text/tool_result/tool_use). Filtering to text+string is the contract
 //     that keeps tool_result responses out of the segment.
@@ -1398,13 +1406,19 @@ function readFirstUserPromptText(transcriptPath) {
       // Filter CC-injected synthetic user entries (system caveats, not real
       // prompts). String-prefix check on the raw extracted text.
       if (raw.startsWith('<local-command-caveat>')) continue;
+      // Slash-command extraction: when CC writes a CLI slash invocation, the
+      // raw text is a multi-tag block; pull the canonical `/foo` form out of
+      // <command-name> so the segment renders as "/foo" rather than the
+      // opaque truncated "<command-message>f…". No-op for plain prompts that
+      // don't carry the tag (regex misses → raw unchanged).
+      const cmdName = raw.match(/<command-name>([^<]+)<\/command-name>/);
+      if (cmdName) raw = cmdName[1];
       // /clear single-skip exception: first matching /clear is skipped so the
       // following prompt becomes the freeze anchor; if /clear matches AND
       // clearSkipped is already true (two /clear in a row), fall through and
-      // return that candidate. Anchor pattern mirrors
-      // dhx-restart-plugins-stop.sh — `<command-name>/X</command-name>` is
-      // how CC records CLI slash invocations.
-      if (!clearSkipped && /^<command-name>\/clear<\/command-name>/.test(raw)) {
+      // return that candidate. After extraction above, the comparison is a
+      // plain string equality on the canonical form.
+      if (!clearSkipped && raw === '/clear') {
         clearSkipped = true;
         continue;
       }
