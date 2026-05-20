@@ -134,6 +134,11 @@ sed -i 's|^# script and consumers is caught by ~/repos/skills/tests/probe-classi
 sed -i 's|^# deferred block\. Drift between this hook and the skills-repo consumers$|# deferred block.|' dhx/dhx-deferred-check.sh
 sed -i '/^# (\/dhx:defer-review, \/dhx:backlog audit, \/dhx:capture) is enforced by$/d' dhx/dhx-deferred-check.sh
 sed -i '/^# ~\/repos\/skills\/tests\/probe-classifier-cross-repo\.sh\.$/d' dhx/dhx-deferred-check.sh
+#
+# probe-milestone-close-vocab-parity.sh:21: single-line "Mirrors `~/repos/skills/..."
+# reference at the head of the probe's design memo block. Rewrite to drop the
+# cross-repo path while preserving the parity-intent documentation.
+sed -i 's|^# Mirrors `~/repos/skills/tests/probe-classifier-cross-repo\.sh` discovery +$|# Mirrors the sister classifier-cross-repo probe discovery +|' tests/probes/probe-milestone-close-vocab-parity.sh
 
 # Fixture: forgefinder pattern reference
 sed -i 's|original forgefinder 22\.1 pattern|real-world 22.1 pattern|' tests/fixtures/backtick-collision.md
