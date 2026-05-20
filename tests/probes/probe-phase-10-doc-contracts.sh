@@ -36,7 +36,8 @@ FAIL=0
 # ----------------------------------------------------------------------------
 # Pre-flight: every probed file must exist (catches accidental relocations).
 # ----------------------------------------------------------------------------
-for f in "$HP_FILE" "$DEC_FILE" "$REQ_FILE"; do
+# HP_FILE and DEC_FILE are permanent project docs — must exist.
+for f in "$HP_FILE" "$DEC_FILE"; do
   if [[ -f "$f" ]]; then
     echo "OK   file-exists: $f"
     PASS=$((PASS+1))
@@ -45,6 +46,17 @@ for f in "$HP_FILE" "$DEC_FILE" "$REQ_FILE"; do
     FAIL=$((FAIL+1))
   fi
 done
+
+# REQ_FILE is a milestone artifact (archived at v1.3 close, cfa5997).
+# If present, exercise the regression sentinel below; if absent, skip cleanly.
+REQ_FILE_PRESENT=false
+if [[ -f "$REQ_FILE" ]]; then
+  REQ_FILE_PRESENT=true
+  echo "OK   file-exists: $REQ_FILE"
+  PASS=$((PASS+1))
+else
+  echo "SKIP file-exists: $REQ_FILE absent (archived at v1.3 milestone close, cfa5997)"
+fi
 
 # ============================================================================
 # HEAL-07-06 — HP-025 § Remediation hook rewrite (docs/hook-patterns.md)
@@ -126,13 +138,19 @@ fi
 # Negative invariant: pre-km-rescope text drift fix (REQUIREMENTS.md must NOT
 # reference 'expected cache roots' — the canonical phrasing is 'expected
 # marketplace roots' per the 2026-05-03 km rescope anchor).
-req_drift=$(grep -cF 'expected cache roots' "$REQ_FILE")
-if [[ "$req_drift" -eq 0 ]]; then
-  echo "OK   HEAL-07-06 req-no-pre-rescope-drift: 'expected cache roots' absent from REQUIREMENTS.md (count=0)"
-  PASS=$((PASS+1))
+# Guarded by REQ_FILE_PRESENT — sentinel auto-rearms if a future milestone
+# reintroduces REQUIREMENTS.md; skips cleanly while archived.
+if [[ "$REQ_FILE_PRESENT" == "true" ]]; then
+  req_drift=$(grep -cF 'expected cache roots' "$REQ_FILE")
+  if [[ "$req_drift" -eq 0 ]]; then
+    echo "OK   HEAL-07-06 req-no-pre-rescope-drift: 'expected cache roots' absent from REQUIREMENTS.md (count=0)"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL HEAL-07-06 req-no-pre-rescope-drift: 'expected cache roots' present in REQUIREMENTS.md (count=$req_drift) — km-rescope text drift fix regressed"
+    FAIL=$((FAIL+1))
+  fi
 else
-  echo "FAIL HEAL-07-06 req-no-pre-rescope-drift: 'expected cache roots' present in REQUIREMENTS.md (count=$req_drift) — km-rescope text drift fix regressed"
-  FAIL=$((FAIL+1))
+  echo "SKIP HEAL-07-06 req-no-pre-rescope-drift: REQUIREMENTS.md absent (no regression surface; sentinel re-arms if/when file returns)"
 fi
 
 # ============================================================================
