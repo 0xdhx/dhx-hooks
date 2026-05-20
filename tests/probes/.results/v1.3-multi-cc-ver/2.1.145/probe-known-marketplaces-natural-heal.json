@@ -1,0 +1,23 @@
+{
+  "probe_id": "probe-known-marketplaces-natural-heal",
+  "exit_code": 0,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.145",
+  "cc_version_match": true,
+  "confidence": "HIGH",
+  "ts": "2026-05-20T04:32:39Z",
+  "run_id": "c3a888a5-a7ef-4fd9-b3f7-5f9872181e55",
+  "observations": {
+    "pre_size": 21,
+    "post_size": 21,
+    "json_validity_post": false,
+    "dhx_marketplace_present_post": false,
+    "known_marketplace_present_post": false,
+    "cell1_auth_method": "credentials_file",
+    "cell1_rc": 0,
+    "inode_isolated": true,
+    "cell_outcome": "km_no_heal",
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "v1_2_work_warranted"
+}

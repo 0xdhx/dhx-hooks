@@ -35,16 +35,18 @@
 # before the ambiguous outcome JSON is written.
 #
 # D-22 (cross-AI review 2026-05-03; allow-list extension 2026-05-13 per Phase 10
-# precheck FORK-CLEAR): asserts live `claude --version` matches one entry in the
-# cross-version allow-list. Mismatch rewrites .conclusion to "ambiguous"
-# (gate-halting) and emits confidence=LOW so C2 D-15 gate halts on silent CC
-# upgrade. Allow-list grows by intentional probe re-run per new CC version
-# (deliberate friction; each entry backed by a `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/`
+# precheck FORK-CLEAR; 2.1.145 extension 2026-05-19 per IP-* twin-lift symmetry
+# closure — see docs/decisions.md "Twin probe-anchor lift" row): asserts live
+# `claude --version` matches one entry in the cross-version allow-list.
+# Mismatch rewrites .conclusion to "ambiguous" (gate-halting) and emits
+# confidence=LOW so C2 D-15 gate halts on silent CC upgrade. Allow-list grows
+# by intentional probe re-run per new CC version (deliberate friction; each
+# entry backed by a `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/`
 # evidence cell). RETIREMENT GATE: at N≥3 entries, promote to HP-024-style
 # multi-cell matrix per Phase 15 SC 5 (SCHEMA-04 precedent) and retire this
 # allow-list — matrix cells become the source of truth.
 set -uo pipefail
-EXPECTED_CC_VERSIONS=("2.1.121" "2.1.140")
+EXPECTED_CC_VERSIONS=("2.1.121" "2.1.140" "2.1.145")
 
 # ----------------------------------------------------------------------------
 # State (D-22 per-cell rc + failure-class enums; D-23 per-cell auth_method;
