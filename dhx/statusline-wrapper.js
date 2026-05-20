@@ -62,10 +62,10 @@ process.stdin.on('end', () => {
     withSegmentDiag('git',        getGitInfo(cwd)),
     withSegmentDiag('cacheAge',   getCacheAge(data)),
     withSegmentDiag('ccburn',     runCcburn(input)),
-    withSegmentDiag('lastPrompt', getLastUserPrompt(data)),
+    withSegmentDiag('firstPrompt', getFirstUserPrompt(data)),
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, lastPromptR, healthR, driftR]) => {
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -84,12 +84,12 @@ process.stdin.on('end', () => {
     const gitInfo        = unwrap(gitInfoR,    name => sigil(name));
     const cacheAge       = unwrap(cacheAgeR,   name => sigil(name));
     const burnOutput     = unwrap(burnOutputR, name => sigil(name));
-    const lastPrompt     = unwrap(lastPromptR, name => sigil(name));
+    const firstPrompt    = unwrap(firstPromptR, name => sigil(name));
     const health         = unwrap(healthR,     name => ({ front: sigil(name), tail: '' }));
     const driftWarning   = unwrap(driftR,      name => sigil(name));
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
-    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, lastPromptR, healthR, driftR]
+    const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
       .filter(r => r.error).length;
     // The renderer may emit one or two lines. Line 1 carries identity +
     // runtime telemetry (model, ctx bar, dir, repo signals); line 2, when
@@ -133,15 +133,16 @@ process.stdin.on('end', () => {
     line1 = metaGlyph + ' ' + line1;
 
     // ccburn (2026-04-27 quick task 260427-u89): moves to line 2 head — the
-    // budget/context row groups with GSD state. lastPrompt (2026-04-27 item 1
-    // of statusline session) slots between ccburn and the GSD block — read-only
-    // context next to budget signals, before live GSD state. Gate semantics
-    // preserved: line 2 emits when ANY of {burnOutput, lastPrompt, rendererLine2,
+    // budget/context row groups with GSD state. firstPrompt (2026-05-20 quick
+    // task 260520-34p, replaces 2026-04-27 lastPrompt) slots between ccburn and
+    // the GSD block — frozen session anchor (first non-synthetic user prompt)
+    // next to budget signals, before live GSD state. Gate semantics preserved:
+    // line 2 emits when ANY of {burnOutput, firstPrompt, rendererLine2,
     // health.tail} is present. The filter+join idiom keeps an empty piece from
     // leaving a stray dim pipe in front of the next.
     const line2Pieces = [];
     if (burnOutput)    line2Pieces.push(burnOutput);
-    if (lastPrompt)    line2Pieces.push(lastPrompt);
+    if (firstPrompt)   line2Pieces.push(firstPrompt);
     if (rendererLine2) line2Pieces.push(rendererLine2);
     let line2 = line2Pieces.join(' \x1b[2m│\x1b[0m ');
 
@@ -1317,34 +1318,53 @@ function readCacheAnchor(transcriptPath) {
   }
 }
 
-// Last user prompt segment (L2). Tail-reads the 64KB window of the JSONL
-// transcript and reverse-scans for the most recent type=user entry whose
-// message.content is either a string OR an array starting with a {type:text}
-// block. tool_result entries (array starting with {type:tool_result}) are
-// skipped — those are harness-injected responses to assistant tool calls,
+// First user prompt segment (L2). Head-reads the 64KB window of the JSONL
+// transcript and forward-scans for the FIRST non-synthetic type=user entry
+// whose message.content is either a string OR an array starting with a
+// {type:text} block. tool_result entries (array starting with {type:tool_result})
+// are skipped — those are harness-injected responses to assistant tool calls,
 // not user-authored prompts. Empty / control-only / parse-fail entries are
 // skipped and the scan continues. Slash commands ARE user prompts.
 //
-// Updates after submission, not while typing — the JSONL only gains a user
-// entry once Enter is pressed. Acceptable: segment semantic is "last
-// submitted prompt," not "current draft."
+// Freezes after first match — once the first non-synthetic user prompt of
+// the session is found, the segment shows that text for the entire session's
+// duration. The session's opening prompt is a more useful anchor than its
+// most-recent prompt — it tells the user what they came here to do, rather
+// than restating what they just typed. Also removes the segment's turn-by-turn
+// flicker (previous semantics, 2026-04-27 → 2026-05-20).
 //
 // Returns the cleaned + truncated raw text (no ANSI), or null if no usable
-// entry exists in the window. getLastUserPrompt wraps in dim gray for L2.
+// entry exists in the window. getFirstUserPrompt wraps in dim gray for L2.
 //
-// Architecturally mirrors readCacheAnchor (same 64KB tail-read shape) but
-// kept as a separate helper rather than consolidating both into a shared
-// readTranscriptTail — the reverse-scan predicates differ entirely, and the
-// I/O surface is small enough that the shared layer would add indirection
-// without saving substantial code. The OS page cache absorbs back-to-back
-// reads of the same path within a single Promise.all cycle.
+// Architecturally analogous to readCacheAnchor (same 64KB I/O shape) but
+// inverted direction: this helper reads from offset 0 (head), readCacheAnchor
+// reads from offset (size - 64KB) (tail). Kept as a separate helper rather
+// than consolidating into a shared readTranscriptWindow — the predicates
+// differ entirely, and the I/O surface is small enough that the shared layer
+// would add indirection without saving substantial code. The OS page cache
+// absorbs back-to-back reads of the same path within a single Promise.all
+// cycle.
 //
-// INVARIANT: depends on JSONL transcript schema (HP-019). type=user entries
-// carry .message.content as either a string OR an array of content blocks
-// (text/tool_result/tool_use). Filtering to text+string is the contract that
-// keeps tool_result responses out of the segment. Probe:
-// tests/probes/probe-last-prompt-segment.js.
-function readLastUserPromptText(transcriptPath) {
+// INVARIANT:
+// (a) HEAD-read 64KB from offset 0 (NOT tail-read) and forward-scan — freezes
+//     after the first non-synthetic user prompt of the session and stays
+//     stable across refreshes.
+// (b) Forward-scan stops at the first non-synthetic match; if file > 64KB,
+//     the last line in the head slice is dropped (potentially truncated).
+// (c) `<command-name>/clear</command-name>` SINGLE-SKIP exception: a leading
+//     /clear is skipped so the segment reflects the user's real opening
+//     prompt; two consecutive /clear entries return the second (single skip,
+//     not unbounded). Matches the intent "if you /cleared to start fresh,
+//     freeze on what you actually came here to do".
+// (d) `<local-command-caveat>` prefix filter: CC-injected synthetic user
+//     entries (string content prefix-matching this tag) are NOT real prompts
+//     and are skipped wholesale.
+// (e) Depends on JSONL transcript schema (HP-019). type=user entries carry
+//     .message.content as either a string OR an array of content blocks
+//     (text/tool_result/tool_use). Filtering to text+string is the contract
+//     that keeps tool_result responses out of the segment.
+// Probe: tests/probes/probe-first-prompt-segment.js.
+function readFirstUserPromptText(transcriptPath) {
   const WINDOW = 65536;
   const MAX_CHARS = 20;
   let fd;
@@ -1354,10 +1374,13 @@ function readLastUserPromptText(transcriptPath) {
     if (size === 0) return null;
     const len = Math.min(WINDOW, size);
     const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
+    fs.readSync(fd, buf, 0, len, 0);
     const lines = buf.toString('utf8').split('\n');
-    const startIdx = size > WINDOW ? 1 : 0;
-    for (let i = lines.length - 1; i >= startIdx; i--) {
+    // If file fits in window, every line is complete; else the last line
+    // in the head slice may be truncated mid-record, so drop it.
+    const endIdx = size > WINDOW ? lines.length - 1 : lines.length;
+    let clearSkipped = false;
+    for (let i = 0; i < endIdx; i++) {
       const line = lines[i];
       if (!line) continue;
       let entry;
@@ -1372,6 +1395,19 @@ function readLastUserPromptText(transcriptPath) {
         raw = content[0].text;
       }
       if (typeof raw !== 'string' || raw.length === 0) continue;
+      // Filter CC-injected synthetic user entries (system caveats, not real
+      // prompts). String-prefix check on the raw extracted text.
+      if (raw.startsWith('<local-command-caveat>')) continue;
+      // /clear single-skip exception: first matching /clear is skipped so the
+      // following prompt becomes the freeze anchor; if /clear matches AND
+      // clearSkipped is already true (two /clear in a row), fall through and
+      // return that candidate. Anchor pattern mirrors
+      // dhx-restart-plugins-stop.sh — `<command-name>/X</command-name>` is
+      // how CC records CLI slash invocations.
+      if (!clearSkipped && /^<command-name>\/clear<\/command-name>/.test(raw)) {
+        clearSkipped = true;
+        continue;
+      }
       // Defensive: strip control chars (incl. ANSI ESC \x1b), collapse \s runs.
       // 20-char preview makes terminal-injection moot, but stripping ESC
       // explicitly defends against pasted ANSI surviving the truncation.
@@ -1391,15 +1427,15 @@ function readLastUserPromptText(transcriptPath) {
   }
 }
 
-// Format the last-user-prompt text in dim gray for L2 display, or '' to hide.
+// Format the first-user-prompt text in dim gray for L2 display, or '' to hide.
 // Dim gray matches "static identity / de-emphasized" semantics in the color
 // table — the prompt is read-only context, not a live signal, and must NOT
 // compete with the L1 live cluster (cache → git → signals).
-function getLastUserPrompt(data) {
+function getFirstUserPrompt(data) {
   return new Promise((resolve) => {
     const transcriptPath = data && data.transcript_path;
     if (!transcriptPath) return resolve('');
-    const text = readLastUserPromptText(transcriptPath);
+    const text = readFirstUserPromptText(transcriptPath);
     if (!text) return resolve('');
     resolve(`\x1b[2m${text}\x1b[0m`);
   });
