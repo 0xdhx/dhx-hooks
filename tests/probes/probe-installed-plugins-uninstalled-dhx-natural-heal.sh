@@ -34,11 +34,18 @@
 # code regardless of `errexit`, so an early jq/stat exit-1 cannot abort
 # before the ambiguous outcome JSON is written.
 #
-# D-22 (cross-AI review 2026-05-03): asserts live `claude --version` matches
-# baseline 2.1.121; mismatch rewrites .conclusion to "ambiguous" (gate-halting)
-# and emits confidence=LOW so C2 D-15 gate halts on silent CC upgrade.
+# D-22 (cross-AI review 2026-05-03; allow-list extension 2026-05-19 per twin
+# fragility-lift quick task 260519-w6k mirroring km probe template commit
+# e93a600): asserts live `claude --version` matches one entry in the
+# cross-version allow-list. Mismatch rewrites .conclusion to "ambiguous"
+# (gate-halting) and emits confidence=LOW so C2 D-15 gate halts on silent CC
+# upgrade. Allow-list grows by intentional probe re-run per new CC version
+# (deliberate friction; each entry backed by a `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/`
+# evidence cell). RETIREMENT GATE: at N≥3 entries, promote to HP-024-style
+# multi-cell matrix per Phase 15 SC 5 (SCHEMA-04 precedent) and retire this
+# allow-list — matrix cells become the source of truth.
 set -uo pipefail
-EXPECTED_CC_VERSION="2.1.121"
+EXPECTED_CC_VERSIONS=("2.1.121" "2.1.140" "2.1.145")
 
 # ----------------------------------------------------------------------------
 # State (D-22 per-cell rc + failure-class enums; D-23 per-cell auth_method;
@@ -325,19 +332,26 @@ fi
 # would otherwise produce false-confident PASS in C2's D-15 pre-flight gate.
 # ----------------------------------------------------------------------------
 cc_version_full=$(claude --version 2>/dev/null | head -1)
-if printf '%s' "$cc_version_full" | grep -qF "$EXPECTED_CC_VERSION"; then
-  cc_version_match=true
+cc_version_match=false
+matched_version=""
+for expected in "${EXPECTED_CC_VERSIONS[@]}"; do
+  if printf '%s' "$cc_version_full" | grep -qF "$expected"; then
+    cc_version_match=true
+    matched_version="$expected"
+    break
+  fi
+done
+if $cc_version_match; then
   confidence="HIGH"
-  echo "OK   cc_version_match: live='$cc_version_full' contains expected '$EXPECTED_CC_VERSION'"
+  echo "OK   cc_version_match: live='$cc_version_full' matches allow-list entry '$matched_version' (corpus: ${EXPECTED_CC_VERSIONS[*]})"
   PASS=$((PASS+1))
 else
-  cc_version_match=false
   confidence="LOW"
   # Override conclusion to halt C2 D-15 gate on version drift — review concern:
   # a silent CC upgrade between authoring + execution would otherwise produce false-confident PASS.
   conclusion="ambiguous"
   exit_code=2
-  echo "FAIL cc_version_match: live='$cc_version_full' lacks expected '$EXPECTED_CC_VERSION' — confidence=LOW; conclusion=ambiguous"
+  echo "FAIL cc_version_match: live='$cc_version_full' not in allow-list (${EXPECTED_CC_VERSIONS[*]}) — confidence=LOW; conclusion=ambiguous"
   FAIL=$((FAIL+1))
 fi
 
