@@ -43,7 +43,7 @@ asserts row count == file count.
 | `probe-installed-plugins-no-natural-heal.sh` | no | requires `ANTHROPIC_API_KEY`; runs real `claude` subprocess (supersession-watchdog) |
 | `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 UNINSTALLED:dhx@dhx-local branch supersession probe — D-07b) |
 | `probe-known-marketplaces-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 km mini-probe — D-11 HEAL-07) |
-| `probe-last-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
+| `probe-first-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
 | `probe-migration.js` | yes | re-implemented compare core; tmp-file fixtures via os.tmpdir |
 | `probe-milestone-close-blocker-check.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live `~/.cache/dhx`, `~/.claude`, or git state touched (mirrors `probe-execute-stop-review.sh` precedent) |
 | `probe-milestone-close-blocker-pretooluse.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP + PreToolUse:Skill stdin payload (tool_input.skill=gsd-complete-milestone); no live `~/.cache/dhx`, `~/.claude`, or git state touched (Plan 13-03 Shape B regression probe; mirrors Plan 13-01 probe shape adapted for HP-009 PreToolUse exit-2 semantics) |
