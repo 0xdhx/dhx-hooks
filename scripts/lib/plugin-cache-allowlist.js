@@ -91,12 +91,17 @@ const legitContentSegments = new Set([
 // Matches a `<git-hash>` directory segment (8-12 lowercase hex chars, e.g.
 // `690f15cac7f7`) OR a dotted-semver directory INCLUDING prerelease/canary
 // suffixes (D-16) — so `2.1.146-canary.2` and `1.0.0-beta.1` are allowlisted,
-// not flagged novel. The semver branch is the D-16 mandate:
-//   /^v?\d+\.\d+(\.\d+)?(-[0-9A-Za-z.-]+)?$/
-// The two shapes are expressed as one combined alternation, anchored as a
-// full path segment.
+// not flagged novel. The semver branch refines the D-16 mandate:
+//   /^v?\d+\.\d+(\.\d+)?(-[0-9A-Za-z][0-9A-Za-z.-]*)?$/
+// The prerelease suffix must START with an alphanumeric (IN-04 hardening): a
+// pure dot/dash suffix (`1.0.0--`, `1.0.0-...`) is not a real version and now
+// surfaces as novel instead of being silently allowlisted. Every legit
+// semver/canary suffix (`-beta.1`, `-canary.2`) starts alphanumeric, so this
+// only narrows the allowlist toward "miss a novel hit less often" — the safe
+// direction under the module's WIDEN-ON-FALSE-POSITIVE posture. The two shapes
+// are expressed as one combined alternation, anchored as a full path segment.
 const versionDirPattern =
-  /^(?:[0-9a-f]{8,12}|v?\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)$/;
+  /^(?:[0-9a-f]{8,12}|v?\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$/;
 
 // --- marketplaceTopLevel ----------------------------------------------------
 // The three current top-level marketplace dirs (live survey 2026-05-21). This
