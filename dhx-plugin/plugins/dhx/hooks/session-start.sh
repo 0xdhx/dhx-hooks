@@ -30,5 +30,8 @@ bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
 bash /home/dhx/.claude/hooks/dhx-plugin-cache-staleness-detector.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+# RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
+# detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
+node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
 
 exit 0
