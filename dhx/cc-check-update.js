@@ -58,10 +58,12 @@ try {
 
 // Cache is stale, missing, or malformed — ensure the cache dir exists, then
 // spawn the worker. Placed AFTER the TTL early-return so a fresh-cache run
-// creates no directory.
-if (!fs.existsSync(cacheDir)) {
-  fs.mkdirSync(cacheDir, { recursive: true });
-}
+// creates no directory. mkdirSync({recursive:true}) is already idempotent on
+// an existing directory, so no existsSync pre-check is needed. Dropping the
+// guard also means a path collision (a *file* sitting at cacheDir) throws
+// ENOTDIR here and surfaces the bad state, instead of an existsSync==true skip
+// that silently defers the failure to a swallowed worker write (WR-04).
+fs.mkdirSync(cacheDir, { recursive: true });
 
 // Spawn the detached worker. CC_CACHE_FILE carries the resolved cacheFile to
 // the worker as its OUTPUT path — this is the only role of CC_CACHE_FILE
