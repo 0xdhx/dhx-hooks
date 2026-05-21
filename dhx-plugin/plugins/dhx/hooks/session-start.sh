@@ -16,6 +16,8 @@ echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-pro
 # Run all four even if one fails — each is independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
+# Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || true
 # Heal plugin registry drift (HP-025 companion) — runs BEFORE stale-worktree-sweep
 # so the heal establishes a valid baseline before downstream checks touch state.
 # No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
