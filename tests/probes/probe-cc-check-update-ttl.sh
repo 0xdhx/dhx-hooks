@@ -4,8 +4,9 @@
 # Exercises the NET-NEW TTL freshness gate in dhx/cc-check-update.js (RAT-06,
 # STATUSLINE-RAT-06). gsd-check-update.js has NO TTL — it spawns the worker on
 # every SessionStart; the RAT-06 parent must skip the spawn when the cache's
-# checked_at is fresh (< ~6h). This probe asserts that gate across three
-# scenarios: fresh -> skip, stale -> spawn, missing/malformed -> spawn.
+# checked_at is fresh (< ~6h). This probe asserts that gate across four
+# scenarios: fresh -> skip, stale -> spawn, missing/malformed -> spawn,
+# future checked_at -> spawn (WR-01 negative-age / clock-skew guard).
 #
 # Backs Plan 17-02 Task 3 + decision D-11 (SAFE_FOR_LIVE + env-override path
 # injection) and D-17 (the parent ships a dedicated CC_CHECK_UPDATE_CACHE
@@ -140,6 +141,24 @@ if [ "$S3_MISSING_SPAWN" = "yes" ] && [ "$S3_MALFORMED_SPAWN" = "yes" ]; then
 else
   check "[3] missing + malformed-JSON cache -> worker spawned (falls through, no crash)" \
     "fail (missing=$S3_MISSING_SPAWN malformed=$S3_MALFORMED_SPAWN)"
+fi
+
+# ---- Scenario 4: future checked_at -> worker spawned (WR-01) ----------------
+# A checked_at in the FUTURE (clock skew, hand-edited cache, or a write made
+# while the clock was wrong) yields a negative age. Without the `age >= 0`
+# guard the gate reads negative-age as `< TTL_MS` == "fresh" and the parent
+# exits before the spawn on every subsequent SessionStart, so the worker never
+# re-runs to overwrite the bad stamp. The fix treats negative age as stale.
+S4_CACHE="$TMPDIR/s4-cc-update-check.json"
+S4_SENTINEL="$TMPDIR/s4-sentinel"
+# checked_at 12h in the FUTURE — explicit ISO-8601 string, no sleep (D-21).
+FUTURE_ISO=$(node -e 'process.stdout.write(new Date(Date.now() + 12*60*60*1000).toISOString())')
+printf '{"latest":"2.1.146","checked_at":"%s"}' "$FUTURE_ISO" > "$S4_CACHE"
+invoke_parent "$S4_CACHE" "$S4_SENTINEL"
+if [ -f "$S4_SENTINEL" ]; then
+  check "[4] future checked_at (clock skew) -> worker spawned (WR-01)" ok
+else
+  check "[4] future checked_at (clock skew) -> worker spawned (WR-01)" "fail (no sentinel)"
 fi
 
 echo "---"

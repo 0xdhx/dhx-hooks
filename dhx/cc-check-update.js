@@ -38,12 +38,20 @@ const cacheDir = path.dirname(cacheFile);
 const TTL_MS = 6 * 60 * 60 * 1000;  // ~6h per RAT-06 brief (D-07 Claude's Discretion)
 try {
   const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-  if (c.checked_at && (Date.now() - Date.parse(c.checked_at)) < TTL_MS) {
+  // `age` can be three things: >=0 (normal), <0 (a FUTURE checked_at — clock
+  // skew, a hand-edited cache, or a write made while the clock was wrong), or
+  // NaN (malformed checked_at → Date.parse returns NaN). Only a non-negative
+  // age under the TTL counts as fresh. The `age >= 0` guard is load-bearing:
+  // without it a future stamp reads as permanently fresh (negative < TTL_MS)
+  // and the parent process.exit(0)s before the spawn on EVERY subsequent
+  // SessionStart, so the worker never re-runs to correct the bad stamp (WR-01,
+  // stuck state). Both the future-stamp and NaN cases fall through to spawn,
+  // which overwrites checked_at — treating a non-fresh cache as stale is safe.
+  const age = Date.now() - Date.parse(c.checked_at);
+  if (c.checked_at && age >= 0 && age < TTL_MS) {
     // Cache fresh — skip the worker spawn AND the mkdir.
     process.exit(0);
   }
-  // A malformed checked_at makes Date.parse return NaN; (Date.now() - NaN)
-  // < TTL_MS is false → falls through to spawn (malformed cache == stale).
 } catch {
   // missing / malformed JSON — fall through to spawn (HP-015 silent-rebuild).
 }
