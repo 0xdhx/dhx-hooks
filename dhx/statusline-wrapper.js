@@ -1113,7 +1113,12 @@ function checkDrift(data) {
         const tmp = snapshotFile + '.tmp.' + process.pid;
         fs.writeFileSync(tmp, JSON.stringify(current));
         fs.renameSync(tmp, snapshotFile);
-      } catch { /* write failed — skip drift this invocation */ }
+      } catch {
+        // write failed — skip drift this invocation. If renameSync threw after
+        // a successful write, unlink the leaked tmp (WR-03 shape; path
+        // reconstructed since the try-scoped const is out of scope here).
+        try { fs.unlinkSync(snapshotFile + '.tmp.' + process.pid); } catch { /* may not exist */ }
+      }
       return resolve('');
     };
 
@@ -1152,7 +1157,12 @@ function checkDrift(data) {
         const tmp = snapshotFile + '.tmp.' + process.pid;
         fs.writeFileSync(tmp, JSON.stringify(snapshot));
         fs.renameSync(tmp, snapshotFile);
-      } catch { /* best-effort persistence; in-memory snapshot still rebaselined */ }
+      } catch {
+        // best-effort persistence; in-memory snapshot still rebaselined. If
+        // renameSync threw after a successful write, unlink the leaked tmp
+        // (WR-03 shape; path reconstructed — try-scoped const is out of scope).
+        try { fs.unlinkSync(snapshotFile + '.tmp.' + process.pid); } catch { /* may not exist */ }
+      }
       try { fs.unlinkSync(markerFile); } catch { /* concurrent refresh consumed it first; harmless */ }
     } catch { /* marker absent or unreadable — no-op, normal drift compare follows */ }
 
