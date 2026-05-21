@@ -20,15 +20,31 @@
 // 100× iteration (plan-check 2026-05-02 Dimension 10 BLOCKER). D-12
 // single-render benchmark below verifies spawnSync overhead empirically.
 //
+// Phase 17 (RAT-04 + RAT-06) extension — 2026-05-21:
+// The renderer gained three line-1 segments — `⚠ cc-novel` (RAT-04),
+// `⬆ cc` / `⚠ cc dev install` (RAT-06), `⚠ cc-autoupd` (RAT-06). This probe
+// now also covers: malformed-cache tolerance for both new cache files
+// (D-13a — renderer never throws), the RAT-06 segment matrix
+// (update / dev-install / equal / canary / suppression), and the D-14
+// render-time re-filter (an all-allowlisted cc-novel-patterns.json clears
+// the warning; a genuinely-novel entry shows it). Fixtures are injected via
+// a HOME override in the renderer child-spawn env (D-18) — os.homedir()
+// honors $HOME on POSIX, so fixture caches land under $HOME/.cache/cc/ and
+// $HOME/.cache/dhx/ with ZERO renderer code change. The live ~/.cache/cc
+// and ~/.cache/dhx are never written — SAFE_FOR_LIVE stays true.
+//
 // Run: node tests/probes/probe-statusline-load.js
 // (D-13 fix: NOT `bash ...` — this is a Node script.)
 // SAFE_FOR_LIVE: yes  (read-only renderer invocation via child-spawn; child
 // stdout captured via stdio:'pipe'; renderer's bridge-file write lands at
 // /tmp/claude-ctx-probe-load.json — predictable path, conventional fixture
-// per SAFE_FOR_LIVE.md heuristic note on probe-settings-hash.js)
+// per SAFE_FOR_LIVE.md heuristic note on probe-settings-hash.js. Phase 17:
+// fixture caches written ONLY under per-test mktemp HOME overrides — the
+// live ~/.cache is never touched.)
 
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
@@ -64,8 +80,11 @@ const baseFixture = {
 // --- Render harness via child-spawn -----------------------------------------
 // Fresh child Node per render with the no-subprocess shim preloaded.
 // status = 0 → no subprocess attempt; non-0 → shim's process.exit fired.
+//
+// opts.env  — extra env vars merged into the child env (e.g. HOME override
+//             for D-18 fixture injection, DISABLE_AUTOUPDATER for RAT-06).
 function renderOnce(fixture, opts = {}) {
-  const env = { ...process.env, DHX_DISABLE_HOOKS: '1' }; // defensive
+  const env = { ...process.env, DHX_DISABLE_HOOKS: '1', ...(opts.env || {}) }; // defensive
   const result = spawnSync(process.execPath, ['--require', SHIM, SCRIPT], {
     input: JSON.stringify(fixture),
     encoding: 'utf8',
@@ -80,6 +99,73 @@ function renderOnce(fixture, opts = {}) {
     error: result.error,
   };
 }
+
+// --- D-18 HOME-override fixture harness -------------------------------------
+// Build a throwaway HOME dir, write fixture caches under its .cache tree, and
+// hand the override back so renderOnce can point the child's os.homedir() at
+// it. The live ~/.cache is never written. Each call gets its own mktemp dir.
+//
+//   novelPatterns : array | string | undefined — written verbatim as the
+//                   cc-novel-patterns.json `novel_patterns` value when an
+//                   array; a string is written as raw (malformed-JSON) file
+//                   content; undefined → no cc-novel-patterns.json file.
+//   updateCheck   : object | string | undefined — written as cc-update-check
+//                   .json; a string is written raw (malformed); undefined →
+//                   no file.
+function makeFixtureHome({ novelPatterns, updateCheck } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-probe-home-'));
+  if (novelPatterns !== undefined) {
+    const dhxCache = path.join(home, '.cache', 'dhx');
+    fs.mkdirSync(dhxCache, { recursive: true });
+    const file = path.join(dhxCache, 'cc-novel-patterns.json');
+    if (typeof novelPatterns === 'string') {
+      fs.writeFileSync(file, novelPatterns);
+    } else {
+      fs.writeFileSync(file, JSON.stringify({
+        detected_at: '2026-05-21T00:00:00Z',
+        cc_version: '2.1.146',
+        novel_patterns: novelPatterns,
+      }));
+    }
+  }
+  if (updateCheck !== undefined) {
+    const ccCache = path.join(home, '.cache', 'cc');
+    fs.mkdirSync(ccCache, { recursive: true });
+    const file = path.join(ccCache, 'cc-update-check.json');
+    fs.writeFileSync(file,
+      typeof updateCheck === 'string' ? updateCheck : JSON.stringify(updateCheck));
+  }
+  return home;
+}
+
+// Track every fixture HOME so the EXIT trap can clean them all up.
+const fixtureHomes = [];
+function fixtureHome(spec) {
+  const h = makeFixtureHome(spec);
+  fixtureHomes.push(h);
+  return h;
+}
+process.on('exit', () => {
+  for (const h of fixtureHomes) {
+    try { fs.rmSync(h, { recursive: true, force: true }); } catch (e) {}
+  }
+});
+
+// Allowlisted novel-pattern entry — passes isAllowlisted (segment 0 is a
+// seeded marketplace, every later segment recognized). A stale cache full of
+// these must NOT render the warning after the D-14 render-time re-filter.
+const ALLOWLISTED_ENTRY = {
+  path: 'anthropic-agent-skills/document-skills/690f15cac7f7/skills/SKILL.md',
+  basename: 'SKILL.md',
+  first_seen_mtime: 1779000000000,
+};
+// Genuinely-novel entry — segment 0 is an unknown marketplace, so
+// isAllowlisted returns false; the warning MUST render.
+const NOVEL_ENTRY = {
+  path: 'rogue-marketplace/evil-plugin/deadbeef/payload.sh',
+  basename: 'payload.sh',
+  first_seen_mtime: 1779000000000,
+};
 
 // --- D-12 single-render benchmark (due-diligence; added 2026-05-02 review) ---
 // One child render before the 100× loop; fail fast if wall-time >100ms.
@@ -148,6 +234,110 @@ for (const c of malformedCases) {
   const hasGlyph = /[⡀⣀⣤⣶⣿]/.test(strip(r.stdout));
   // Combined assertion: child exits 0 AND no glyph rendered
   ok(`malformed ${c.name} → exit 0, no glyph`, r.status === 0 && !hasGlyph, true);
+}
+
+// --- Phase 17: RAT-04 + RAT-06 renderer-segment scenarios -------------------
+// Every scenario below injects fixture caches via a HOME override (D-18) and
+// asserts on the stripped (ANSI-free) line-1 text. The no-subprocess shim is
+// still active for each render — any spawn from the new segments flips the
+// child to exit 2, which `status === 0` catches.
+
+// Scenario 1 — malformed cc-novel-patterns.json → renderer tolerates it.
+{
+  const home = fixtureHome({ novelPatterns: '{ this is not valid json' });
+  const r = renderOnce(baseFixture, { env: { HOME: home } });
+  ok('RAT-04 malformed cc-novel-patterns.json → exit 0, line-1 non-empty',
+    r.status === 0 && strip(r.stdout).trim().length > 0, true);
+}
+
+// Scenario 2 — malformed cc-update-check.json → renderer tolerates it.
+{
+  const home = fixtureHome({ updateCheck: '}{ broken' });
+  const r = renderOnce(baseFixture, { env: { HOME: home } });
+  ok('RAT-06 malformed cc-update-check.json → exit 0, line-1 non-empty',
+    r.status === 0 && strip(r.stdout).trim().length > 0, true);
+}
+
+// Scenario 3 — latest ahead of data.version → `⬆ cc` segment present.
+{
+  const home = fixtureHome({ updateCheck: { latest: '2.1.150', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06 latest>installed → `⬆ cc` present', r.status === 0 && /⬆ cc(\b|[^-])/.test(l1), true);
+  ok('RAT-06 latest>installed → no dev-install marker', /cc dev install/.test(l1), false);
+}
+
+// Scenario 4 — data.version ahead of latest → dev-install marker, NOT `⬆ cc`.
+{
+  const home = fixtureHome({ updateCheck: { latest: '2.1.140', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06 installed>latest → dev-install marker present', r.status === 0 && /cc dev install/.test(l1), true);
+  ok('RAT-06 installed>latest → `⬆ cc` absent', /⬆ cc(\b|[^-])/.test(l1), false);
+}
+
+// Scenario 5 — latest === data.version → neither cc marker.
+{
+  const home = fixtureHome({ updateCheck: { latest: '2.1.146', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06 latest===installed → no `⬆ cc`, no dev-install',
+    r.status === 0 && !/⬆ cc(\b|[^-])/.test(l1) && !/cc dev install/.test(l1), true);
+}
+
+// Scenario 6 — DISABLE_AUTOUPDATER=1 → suppression marker present; unset → absent.
+{
+  const r1 = renderOnce(baseFixture, { env: { DISABLE_AUTOUPDATER: '1' } });
+  ok('RAT-06 DISABLE_AUTOUPDATER=1 → `cc-autoupd` marker present',
+    r1.status === 0 && strip(r1.stdout).includes('cc-autoupd'), true);
+  const r2 = renderOnce(baseFixture);
+  ok('RAT-06 DISABLE_AUTOUPDATER unset → `cc-autoupd` marker absent',
+    !strip(r2.stdout).includes('cc-autoupd'), true);
+}
+
+// Scenario 7 — D-14 render-time re-filter.
+// 7a: cc-novel-patterns.json whose entries ALL pass the CURRENT allowlist
+//     (operator widened the allowlist mid-cohort; cache is stale) →
+//     the renderer re-filters → `⚠ cc-novel` marker ABSENT.
+{
+  const home = fixtureHome({ novelPatterns: [ALLOWLISTED_ENTRY, ALLOWLISTED_ENTRY] });
+  const r = renderOnce(baseFixture, { env: { HOME: home } });
+  ok('RAT-04 D-14: all-allowlisted stale cache → `cc-novel` marker ABSENT (re-filter cleared it)',
+    r.status === 0 && !strip(r.stdout).includes('cc-novel'), true);
+}
+// 7b: at least one genuinely-novel entry survives the re-filter →
+//     `⚠ cc-novel` marker PRESENT.
+{
+  const home = fixtureHome({ novelPatterns: [ALLOWLISTED_ENTRY, NOVEL_ENTRY] });
+  const r = renderOnce(baseFixture, { env: { HOME: home } });
+  ok('RAT-04 D-14: a surviving novel entry → `cc-novel` marker PRESENT',
+    r.status === 0 && strip(r.stdout).includes('cc-novel'), true);
+}
+// 7c: empty novel_patterns array → marker absent.
+{
+  const home = fixtureHome({ novelPatterns: [] });
+  const r = renderOnce(baseFixture, { env: { HOME: home } });
+  ok('RAT-04 empty novel_patterns → `cc-novel` marker absent',
+    r.status === 0 && !strip(r.stdout).includes('cc-novel'), true);
+}
+
+// Scenario 8 — canary `latest` vs base `data.version` (D-16).
+// `2.1.146-canary.2` strips to base `2.1.146`; equal-base → neither marker.
+{
+  const home = fixtureHome({ updateCheck: { latest: '2.1.146-canary.2', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06 D-16: canary latest strips to equal base → no `⬆ cc`, no dev-install',
+    r.status === 0 && !/⬆ cc(\b|[^-])/.test(l1) && !/cc dev install/.test(l1), true);
+}
+
+// Scenario 9 — cache.latest === 'unknown' (npm view failed) → neither marker.
+{
+  const home = fixtureHome({ updateCheck: { latest: 'unknown', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06 latest==="unknown" → no cc marker',
+    r.status === 0 && !/⬆ cc(\b|[^-])/.test(l1) && !/cc dev install/.test(l1), true);
 }
 
 // 4. Wall-time emission (informational only — D-03/D-06 lock; NO hard threshold)
