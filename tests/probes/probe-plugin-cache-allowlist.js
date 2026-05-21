@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SAFE_FOR_LIVE: yes   (pure-unit: require()s the shared module + asserts; no fs, no subprocess, no live mutation)
 // Probe: exercises the shared plugin-cache allowlist module
 // (scripts/lib/plugin-cache-allowlist.js) — the D-06 + D-14 consolidation.
 //
@@ -75,10 +76,18 @@ for (const leaf of ['plugin.json', 'README.md', 'THIRD_PARTY_NOTICES.md', 'LICEN
 }
 
 // ---- known directory segments allowlisted ----
+// The leaf basename inside the segment is itself a known legit leaf (SKILL.md)
+// — `legitContentSegments` recognizes the DIRECTORY segment; the leaf is still
+// checked against `legitContentBasenames`. An arbitrary unknown leaf inside a
+// legit segment is intentionally NOT allowlisted (it would be a novel hit).
 for (const seg of ['skills', 'spec', 'template', 'templates', 'canvas-fonts', '.claude-plugin']) {
-  ok(`[segment] ${seg}/ is allowlisted`,
-    isAllowlisted(`dhx-local/dhx/1.0.0/${seg}/inner.md`, 'inner.md'));
+  ok(`[segment] ${seg}/ directory segment is recognized`,
+    isAllowlisted(`dhx-local/dhx/1.0.0/${seg}/SKILL.md`, 'SKILL.md'));
 }
+
+// ---- unknown leaf inside a legit segment still surfaces as novel ----
+ok('[novel leaf in legit segment] skills/mystery.bin is NOT allowlisted',
+  isAllowlisted('dhx-local/dhx/1.0.0/skills/mystery.bin', 'mystery.bin') === false);
 
 // ---- the three seeded marketplaces allowlisted ----
 for (const mp of ['anthropic-agent-skills', 'claude-plugins-official', 'dhx-local']) {

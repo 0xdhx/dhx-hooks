@@ -55,6 +55,7 @@ asserts row count == file count.
 | `probe-milestone-close-vocab-parity.sh` | yes | static grep + awk against in-repo hook + canonical `~/.claude/dhx-tools/backlog-regen.cjs`; soft-skips with WARN if dhx-tools absent; no writes, no subprocess invocation of CC |
 | `probe-new-milestone-promote-reminder.sh` | yes | mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation |
 | `probe-phase-10-doc-contracts.sh` | yes | read-only token-presence grep against committed `docs/hook-patterns.md`, `docs/decisions.md`, `.planning/REQUIREMENTS.md`; no subprocesses, no writes, no env mutation (Phase 10 Nyquist gap-fill 2026-05-13 — HEAL-07-06 + HEAL-07-07 doc-contract regression probe) |
+| `probe-plugin-cache-allowlist.js` | yes | pure-unit: `require()`s `scripts/lib/plugin-cache-allowlist.js` + asserts the predicate/structure; no fs, no subprocess, no live mutation (Phase 17 RAT-04 D-06/D-14 allowlist probe) |
 | `probe-plugin-keys.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; live read of settings is jq -e only |
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
 | `probe-plugin-cache-staleness.sh` | yes | mktemp + fake HOME + env-var override (DHX_CACHE_STALENESS_LIVE_MANIFEST, DHX_CACHE_STALENESS_CACHE_ROOT); never touches live `~/.claude/plugins/cache/dhx-local` or live `dhx-plugin/` manifest |

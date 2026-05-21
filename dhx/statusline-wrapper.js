@@ -828,34 +828,35 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   return { maxMtime, count, maxPath };
 }
 
-// Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
-const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
-
-// Path-segment filter for two classes of CC-internal bookkeeping that leak
-// through the plugin-cache scan via the `~/.ccs/shared/plugins/cache` symlink
-// topology (any one CCS instance's write trips drift in every live session).
-// Combined alternation keeps the call-site signature single-regex.
-//
-// (1) `temp_git_<epoch_ms>_<token>/` — CC's install-cycle clones. CC clones
-// marketplace sources into these siblings under `plugins/cache/` while
-// resolving plugin installs (e.g. retry attempts for a declared-but-uninstalled
-// plugin), then the dir lingers post-extraction with no GC. A clone races
-// snapshot capture (snapshot at T, clone finishes at T+~500ms), so every
-// refresh after sees plugins_mtime advance and fires `triggers.push('plugins')`
-// → spurious `⚠ restart plugins`. See decisions.md 2026-04-27 row.
-//
-// (2) `.in_use/<pid>` — CC session-lifetime lock markers. CC writes a
-// `<pid>` basename file under `.in_use/` in each plugin cache subtree when a
-// session opens; the marker is never reaped during that session's lifetime.
-// Because the cache is shared cross-instance, a sibling CCS session's
-// `.in_use/<new_pid>` write trips drift on every running session's snapshot
-// (mtime advances even though no plugin code changed). Same architectural
-// class as `.orphaned_at` (2026-04-23 decisions row) and `temp_git_*`
-// (2026-04-27 decisions row) — CC-internal bookkeeping, drift-irrelevant.
-// Path-segment filtering (not basename Set) is required because the `<pid>`
-// leaves carry arbitrary digit basenames; `.in_use` only appears as an
-// intermediate path component in `entry.path`. See decisions.md 2026-05-13 row.
-const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/;
+// Shared plugins/cache allowlist module (RAT-04, D-06 + D-14). Consolidates
+// the former inline `PLUGIN_CACHE_IGNORE` (bookkeeping basename Set) and
+// `PLUGIN_CACHE_PATH_IGNORE` (bookkeeping path-segment RegExp) constants into
+// one documented in-code allowlist that is ALSO consumed by the renderer
+// (dhx-statusline.js, Plan 03's render-time re-filter) — it cannot stay inline.
+// `scripts/lib/` is the established shared-code home (tiers.json `require` at
+// :641). Wrapped in the same try/catch-fallback discipline as tiers.json: a
+// missing/unparseable module falls back to the historical bookkeeping
+// constants so the `plugins` drift trigger keeps filtering — the UI hot path
+// stays alive. `PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames` /
+// `.bookkeepingPathPattern` drive `scanRecursive`'s `ignoreBasenames` /
+// `ignorePathPattern` filter (the dual-use members; the rest of the allowlist
+// — legitContentBasenames/Segments, versionDirPattern, marketplaceTopLevel,
+// the isAllowlisted predicate — backs RAT-04 novel-pattern enumeration).
+// See docs/decisions.md 2026-04-23 (.orphaned_at), 2026-04-27 (temp_git_*),
+// 2026-05-13 (.in_use/<pid>) rows for the filter lineage this consolidates.
+let PLUGIN_CACHE_ALLOWLIST = {
+  bookkeepingBasenames: new Set(['.orphaned_at']),
+  bookkeepingPathPattern: /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/,
+};
+try {
+  ({ PLUGIN_CACHE_ALLOWLIST } = require('../scripts/lib/plugin-cache-allowlist.js'));
+} catch (e) {
+  // Fall back gracefully if the shared module is missing or unparseable. The
+  // inline default above keeps the `plugins` drift filter behaving exactly as
+  // the pre-consolidation constants did — drift detection never regresses on
+  // a bad module load. RAT-04 enumeration degrades to "no allowlist module"
+  // and is itself try/catch-guarded at its call site.
+}
 
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
@@ -878,8 +879,8 @@ function collectSnapshot(data) {
   const gsd = scanRecursive(GSD_LIVE_ROOT);
   const plugins = scanRecursive(
     path.join(configDir, 'plugins', 'cache'),
-    PLUGIN_CACHE_IGNORE,
-    PLUGIN_CACHE_PATH_IGNORE,
+    PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames,
+    PLUGIN_CACHE_ALLOWLIST.bookkeepingPathPattern,
   );
 
   const snapshot = {
