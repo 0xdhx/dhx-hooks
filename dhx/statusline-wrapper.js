@@ -848,14 +848,77 @@ let PLUGIN_CACHE_ALLOWLIST = {
   bookkeepingBasenames: new Set(['.orphaned_at']),
   bookkeepingPathPattern: /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/,
 };
+// Default predicate when the shared module is unavailable: treat everything as
+// novel-candidate-free (return true) so a missing module never produces a
+// flood of false `⚠ cc-novel` hits — RAT-04 degrades to "detector inert", not
+// "detector noisy". The bookkeeping fallback above still drives the drift
+// filter. Replaced by the real predicate on a successful require.
+let isAllowlistedPattern = () => true;
 try {
-  ({ PLUGIN_CACHE_ALLOWLIST } = require('../scripts/lib/plugin-cache-allowlist.js'));
+  const allowlistMod = require('../scripts/lib/plugin-cache-allowlist.js');
+  PLUGIN_CACHE_ALLOWLIST = allowlistMod.PLUGIN_CACHE_ALLOWLIST;
+  isAllowlistedPattern = allowlistMod.isAllowlisted;
 } catch (e) {
   // Fall back gracefully if the shared module is missing or unparseable. The
   // inline default above keeps the `plugins` drift filter behaving exactly as
   // the pre-consolidation constants did — drift detection never regresses on
   // a bad module load. RAT-04 enumeration degrades to "no allowlist module"
-  // and is itself try/catch-guarded at its call site.
+  // (isAllowlistedPattern returns true → zero novel hits) and is itself
+  // try/catch-guarded at its call site.
+}
+
+// RAT-04 novel-pattern enumeration (D-02 / D-13a / D-14). Walks the
+// `plugins/cache` tree once and returns the leaf entries whose path + basename
+// match NO member of the shared allowlist — "novel" file classes that appeared
+// under `plugins/cache` and warrant operator attention after a CC upgrade.
+//
+// fs-ONLY (D-12) — no subprocess. Reuses the same
+// `fs.readdirSync(dir, {withFileTypes:true, recursive:true})` walk shape as
+// `scanRecursive` (deliberately not a hand-rolled recursion). For each
+// non-directory entry, the relative path (forward-slash joined, relative to
+// `pluginsCacheRoot`) + the leaf basename are tested against
+// `isAllowlistedPattern`; an entry that is NOT allowlisted is collected as
+// `{ path, basename, first_seen_mtime }` (mtime in ms).
+//
+// `pluginsCacheRoot` is an optional fixture-root arg (D-11) — defaults to the
+// live `plugins/cache` path the `plugins` drift trigger derives
+// (`$CLAUDE_CONFIG_DIR/plugins/cache`). The whole walk is wrapped in
+// `try { } catch { return []; }` so an unreadable / poisoned `plugins/cache`
+// yields no novel signal rather than throwing out of `checkDrift` (T-17-02).
+//
+// CRITICAL: this is invoked ONLY from `checkDrift`'s `version`-change branch
+// (once per CC version transition — Pattern 4 / Pitfall 2). It is NOT called
+// from `collectSnapshot` (which runs every refresh — calling it there would
+// re-walk the tree ~1Hz and defeat the once-per-cohort contract). It also does
+// NOT reuse `collectSnapshot`'s `scanRecursive` result — that call produces
+// the snapshot's mtime/count for the `plugins` trigger; enumeration needs
+// per-entry path + basename, so it does its own scan inside the version branch.
+function enumerateNovelPatterns(pluginsCacheRoot) {
+  const root = pluginsCacheRoot || path.join(
+    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+    'plugins', 'cache',
+  );
+  const novel = [];
+  try {
+    const entries = fs.readdirSync(root, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (entry.isDirectory && entry.isDirectory()) continue;
+      // `entry.path` is the absolute parent dir (Node ≥ 20); fall back to the
+      // scan root for top-level entries.
+      const absParent = entry.path || root;
+      const absFull = path.join(absParent, entry.name);
+      // Relative-to-cache-root path, forward-slash normalized — the shape the
+      // allowlist predicate's per-segment logic expects.
+      const rel = path.relative(root, absFull).split(path.sep).join('/');
+      if (isAllowlistedPattern(rel, entry.name)) continue;
+      let mtime = 0;
+      try { mtime = fs.statSync(absFull).mtimeMs; } catch { /* unreadable — keep 0 */ }
+      novel.push({ path: rel, basename: entry.name, first_seen_mtime: mtime });
+    }
+  } catch {
+    return []; // unreadable plugins/cache → no novel signal (T-17-02 graceful path)
+  }
+  return novel;
 }
 
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
@@ -1150,7 +1213,32 @@ function checkDrift(data) {
         }
       } catch { /* breadcrumb failure must not affect drift detection */ }
     }
-    if (current.version !== snapshot.version) triggers.push('version');
+    if (current.version !== snapshot.version) {
+      triggers.push('version');
+      // RAT-04 (D-02 / D-13a) — post-CC-upgrade novel-pattern enumeration.
+      // Gated on the version-change branch so it runs exactly once per CC
+      // version transition (Pattern 4 / Pitfall 2): the snapshot rebaselines
+      // on this same drift-detected refresh, so the next refresh's
+      // `current.version === snapshot.version` and enumeration does not
+      // re-fire. Writes the novel hits to ~/.cache/dhx/cc-novel-patterns.json
+      // via the atomic temp+rename pattern (the gsd-drift-first-seen.json
+      // writer precedent). The whole side-effect is try/catch-wrapped — a
+      // cache or walk failure must never affect drift detection (T-17-02);
+      // same discipline as the breadcrumb writer above.
+      try {
+        const novelPatterns = enumerateNovelPatterns();
+        const ccNovelCache = {
+          detected_at: new Date().toISOString(),
+          cc_version: current.version,
+          novel_patterns: novelPatterns,
+        };
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const ccNovelFile = path.join(cacheDir, 'cc-novel-patterns.json');
+        const tmp = ccNovelFile + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(ccNovelCache));
+        fs.renameSync(tmp, ccNovelFile);
+      } catch { /* cache failure must not affect drift detection */ }
+    }
 
     // GSD-specific first-seen cache clearance (Phase 16, D-22 — HP-031).
     // The cross-session cache ~/.cache/dhx/gsd-drift-first-seen.json is keyed on
@@ -1553,6 +1641,11 @@ module.exports = {
   checkPluginRegistry,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
+  // RAT-04 novel-pattern detector (Phase 17 Plan 01)
+  enumerateNovelPatterns,
+  // scanRecursive export (D-20) — required by Plan 04's residual-signal probe;
+  // not previously exported despite being the wrapper's core recursive walk.
+  scanRecursive,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
