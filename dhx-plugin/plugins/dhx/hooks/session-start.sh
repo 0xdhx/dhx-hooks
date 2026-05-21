@@ -13,7 +13,7 @@ SRC=$(echo "$INPUT" | jq -r '.source // "unknown"' 2>/dev/null || echo unknown)
 echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-probe.log
 
 # Dispatch to canonical scripts. Hand each its own stdin copy.
-# Run all four even if one fails — each is independent.
+# Run each even if one fails — they are independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
