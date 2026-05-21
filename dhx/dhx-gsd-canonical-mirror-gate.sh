@@ -63,10 +63,18 @@ FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$FILE" ] && exit 0
 
-# Session-id sanitization (T-16-06 marker-path-injection defense) — mirrors the
-# statusline-wrapper.js:1136 JS guard `!/[/\\]|\.\./.test(sessionId)` in bash.
+# Session-id sanitization (T-16-06 marker-path-injection defense). This guard
+# INTENTIONALLY diverges from the statusline-wrapper.js:1136 JS guard
+# `!/[/\\]|\.\./.test(sessionId)`: the JS guard is reached only inside an
+# `if (sessionId && ...)` truthiness pre-check, so the empty/missing case never
+# reaches it. Bash has no such short-circuit here, so the empty case is folded
+# in explicitly below. An empty/missing id cannot key a marker file — normalize
+# it (and any traversal-bearing id) to "" so it is treated as un-annotatable:
+# the gate still fires its tier (fail-safe), it just can never present a valid
+# marker. The downstream `[ -n "$SESSION_ID" ]` at the marker check then skips
+# the marker lookup entirely for the normalized-empty case.
 case "$SESSION_ID" in
-  *[/\\]*|*..*) exit 0 ;;
+  ''|*[/\\]*|*..*) SESSION_ID="" ;;   # normalize: no valid marker possible
 esac
 
 # D-07 happy path — case-statement path-prefix check; sub-millisecond, no fork,
