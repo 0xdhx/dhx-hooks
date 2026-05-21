@@ -1237,7 +1237,15 @@ function checkDrift(data) {
         const tmp = ccNovelFile + '.tmp.' + process.pid;
         fs.writeFileSync(tmp, JSON.stringify(ccNovelCache));
         fs.renameSync(tmp, ccNovelFile);
-      } catch { /* cache failure must not affect drift detection */ }
+      } catch {
+        // cache failure must not affect drift detection. If writeFileSync
+        // landed but renameSync threw, the .tmp.<pid> file would leak; unlink
+        // it best-effort (WR-03). The path is reconstructed (the try-scoped
+        // `tmp` const is out of scope here) — deterministic from cacheDir+pid.
+        try {
+          fs.unlinkSync(path.join(cacheDir, 'cc-novel-patterns.json') + '.tmp.' + process.pid);
+        } catch { /* tmp may not exist */ }
+      }
     }
 
     // GSD-specific first-seen cache clearance (Phase 16, D-22 — HP-031).

@@ -54,6 +54,9 @@ const result = {
 };
 
 if (cacheFile) {
+  // `tmp` is declared outside the try so the catch can unlink it on a
+  // renameSync failure (WR-03); the value is deterministic (cacheFile + pid).
+  const tmp = cacheFile + '.tmp.' + process.pid;
   try {
     // Defensive mkdir (D-19) — guards the detached-worker ENOENT race: if
     // ~/.cache/cc is cleared between the parent's run and this worker's
@@ -65,11 +68,14 @@ if (cacheFile) {
     // writing while a statusline refresh may concurrently read
     // cc-update-check.json. A torn read is a real race (T-17-06); writing to
     // a temp path then renaming makes the cache update atomic.
-    const tmp = cacheFile + '.tmp.' + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(result));
     fs.renameSync(tmp, cacheFile);
   } catch (e) {
     // Best-effort cache write — a failure here is non-fatal (the renderer
-    // hides the segment when the cache is absent).
+    // hides the segment when the cache is absent). If writeFileSync succeeded
+    // but renameSync threw (cross-device link, permission change, read-only
+    // target), the .tmp.<pid> file would leak — this is a detached background
+    // process, so nothing else sweeps it; unlink it best-effort (WR-03).
+    try { fs.unlinkSync(tmp); } catch (_) { /* tmp may not exist */ }
   }
 }
