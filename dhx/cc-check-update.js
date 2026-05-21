@@ -13,6 +13,8 @@
 //
 // No stdin parsing — dispatched with `< /dev/null`. Fire-and-forget: always
 // exits 0, never blocks SessionStart.
+//
+// Patterns: HP-033
 
 const fs = require('fs');
 const path = require('path');

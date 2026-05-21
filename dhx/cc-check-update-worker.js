@@ -12,6 +12,8 @@
 // Using a separate file (rather than node -e '<inline code>') avoids the
 // template-literal regex-escaping problem and makes the worker independently
 // testable.
+//
+// Patterns: HP-033
 
 'use strict';
 
