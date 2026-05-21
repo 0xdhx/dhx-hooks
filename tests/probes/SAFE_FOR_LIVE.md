@@ -29,6 +29,8 @@ asserts row count == file count.
 | `probe-dhx-statusline.js` | yes | re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths |
 | `probe-drift-cleanup.sh` | no | sets `$TMPHOME/.cache/dhx` and runs `dhx-health-check.sh` under HOME=$TMPHOME (sandboxed); but uses HOME override and live `/proc` reads — sandbox confines writes |
 | `probe-drift-detection.js` | yes | mkdtempSync + tmp-file fixtures; reimplemented compare core; no live writes |
+| `probe-drift-multi-anchor-distinct-surfacing.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; invokes dhx-gsd-drift-surface.sh against fixture caches; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 positive probe) |
+| `probe-drift-single-anchor-no-overcount.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; single-entry fixture cache; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 negative probe) |
 | `probe-effort-level-stdin-absent.sh` | yes | read-only via file-gated wrapper edit; no live mutation (Phase 3 D-14 supersession-watchdog tag preserved per Task 2 idempotency) |
 | `probe-execute-hooks-subagent-stop.sh` | yes | per-test mktemp HOME / TMPDIR; cwd passed via stdin payload (HP-001 cwd field) so hooks read `.planning` fixtures from the sandbox dir; no live `~/.cache/dhx`, `~/.claude`, or git state touched (2026-05-07 SubagentStop migration probe) |
 | `probe-execute-stop-review.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live writes |
