@@ -122,11 +122,26 @@ if [ ! -f "$SESSION_FILE" ]; then
   exit 1
 fi
 
-SESSION_ID=$(head -1 "$SESSION_FILE" | cut -f1)
+# WR-04: strip whitespace/CR from TSV field 1 before use. `cut -f1` returns the
+# whole line (including any trailing `\r`) when the writer emits a CRLF-
+# terminated or space-separated line (Windows-origin edit, or a future writer
+# change). An unstripped `\r` lands in the marker filename
+# (draft-buffer-<sid>\r.json) — a name the gate at
+# dhx-gsd-canonical-mirror-gate.sh:89 can never reconstruct, so a valid
+# annotation silently fails to suppress the gate. `tr -d '[:space:]'` removes
+# the CR and any stray whitespace. The path-metacharacter guard then matches
+# the gate's own session-id sanitization.
+SESSION_ID=$(head -1 "$SESSION_FILE" | cut -f1 | tr -d '[:space:]')
 if [ -z "$SESSION_ID" ]; then
   echo "ERROR: $SESSION_FILE has no session_id (TSV field 1 empty)." >&2
   exit 1
 fi
+case "$SESSION_ID" in
+  *[/\\]*|*..*)
+    echo "ERROR: session_id contains path metacharacters: $SESSION_ID" >&2
+    exit 1
+    ;;
+esac
 
 MARKER="$HOME/.cache/dhx/draft-buffer-${SESSION_ID}.json"
 
