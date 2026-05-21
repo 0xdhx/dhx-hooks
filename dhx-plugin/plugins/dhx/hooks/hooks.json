@@ -47,6 +47,11 @@
             "type": "command",
             "command": "node \"$HOME/.claude/hooks/dhx-read-guard.js\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-gsd-canonical-mirror-gate.sh\"",
+            "timeout": 5
           }
         ]
       },
