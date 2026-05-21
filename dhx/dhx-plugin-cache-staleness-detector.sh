@@ -40,7 +40,7 @@ live_mtime=$(stat -c %Y "$LIVE_MANIFEST" 2>/dev/null) || exit 0
 
 # Resolved at install time via sed (D-02 with D-21 `|` delimiter):
 #   WARN  → REJECT | WARN | WARN_INCONCLUSIVE
-#   2.1.142 (Claude Code)   → literal CC version captured from 10.1-D-01-RESULT.md
+#   2.1.146 (Claude Code)   → literal CC version captured from 10.1-D-01-RESULT.md
 emit_advisory() {
   local cache_path=$1
   local cache_mtime=$2
@@ -50,7 +50,7 @@ emit_advisory() {
       echo "dhx-plugin-cache-staleness: REJECT: $cache_path mtime=$cache_mtime older than live mtime=$live_mtime" >&2
       ;;
     WARN)
-      echo "dhx-plugin-cache-staleness: WARN: $cache_path mtime=$cache_mtime older than live mtime=$live_mtime (informational on CC 2.1.142 (Claude Code) per empirical probe; run \`claude plugin install\` to refresh)" >&2
+      echo "dhx-plugin-cache-staleness: WARN: $cache_path mtime=$cache_mtime older than live mtime=$live_mtime (informational on CC 2.1.146 (Claude Code) per empirical probe; run \`claude plugin install\` to refresh)" >&2
       ;;
     WARN_INCONCLUSIVE)
       echo "dhx-plugin-cache-staleness: WARN: $cache_path mtime=$cache_mtime older than live mtime=$live_mtime (probe inconclusive; safe default)" >&2
