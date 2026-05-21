@@ -93,13 +93,25 @@ NOW_S=$(date -u +%s)
     [ "$i" -ge 5 ] && break
     REL="${ROW%%$'\t'*}"
     ISO="${ROW#*$'\t'}"
+    ISO_DATE="${ISO%%T*}"
     # Uses GNU date -d; portable across WSL2/Linux (project requirement);
     # not POSIX-portable.
-    THEN_S=$(date -u -d "$ISO" +%s 2>/dev/null || echo "$NOW_S")
-    DIFF_D=$(( (NOW_S - THEN_S) / 86400 ))
-    [ "$DIFF_D" -lt 0 ] && DIFF_D=0
-    ISO_DATE="${ISO%%T*}"
-    printf '  %-40s  first seen %s (%dd unresolved)\n' "$REL" "$ISO_DATE" "$DIFF_D"
+    #
+    # WR-03 fail-safe: an unparseable cached timestamp must NOT fabricate a
+    # `0d unresolved` age. Substituting NOW_S on `date` failure renders a
+    # brand-new label for a divergence that may be weeks old — itself a mask,
+    # which directly undermines this phase's anti-mask purpose. Mirror the
+    # safer dhx-gsd-triad.sh:91 precedent (`... || return 0` suppresses the
+    # suffix entirely): when the timestamp is unparseable, render an explicit
+    # unknown rather than a misleading 0d.
+    if THEN_S=$(date -u -d "$ISO" +%s 2>/dev/null); then
+      DIFF_D=$(( (NOW_S - THEN_S) / 86400 ))
+      [ "$DIFF_D" -lt 0 ] && DIFF_D=0
+      AGE_LABEL="${DIFF_D}d unresolved"
+    else
+      AGE_LABEL="age unknown — cached timestamp unparseable"
+    fi
+    printf '  %-40s  first seen %s (%s)\n' "$REL" "$ISO_DATE" "$AGE_LABEL"
     i=$((i + 1))
   done
   # Truncation footer for 6+ files (D-04) — literal pointer to the Phase 17 triad.
