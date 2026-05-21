@@ -55,11 +55,14 @@ invoke_parent() {
   rm -f "$sentinel"
   CC_CHECK_UPDATE_CACHE="$cache" CC_PROBE_SENTINEL="$sentinel" \
     node "$HOOKDIR/cc-check-update.js" < /dev/null >/dev/null 2>&1
-  # The worker is detached; give it a deterministic, bounded settle window.
-  # No `sleep`-as-timing-control of fixture state (D-21) — this is only a
-  # poll for an async child, not mtime control.
+  # The worker is detached; give it a deterministic, bounded settle window of
+  # 150 × 20ms = 3s (IN-05) — matched to the probe-suite per-probe budget so a
+  # slow CI box where the detached node child takes >1s to start and write its
+  # sentinel does not false-FAIL Scenarios 2/3/4. No `sleep`-as-timing-control
+  # of fixture state (D-21) — this is only a poll for an async child, not mtime
+  # control.
   local i=0
-  while [ $i -lt 50 ]; do
+  while [ $i -lt 150 ]; do
     [ -f "$sentinel" ] && return 0
     i=$((i + 1))
     sleep 0.02
