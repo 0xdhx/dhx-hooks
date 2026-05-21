@@ -76,6 +76,14 @@ const child = spawn(process.execPath, [workerPath], {
   detached: true,  // Required on Windows for proper process detachment
   env: { ...process.env, CC_CACHE_FILE: cacheFile },
 });
+// spawn reports a failed launch asynchronously via the child's 'error' event —
+// e.g. ENOENT if the worker is missing (a fragile install-time coupling: the
+// parent and worker must BOTH be symlinked into ~/.claude/hooks/ and resolve
+// into the same dhx/ dir). With no listener, that 'error' becomes an unhandled
+// event that crashes the otherwise fire-and-forget parent. Swallow it — the
+// renderer hides the segment when the cache is absent (IN-02). The worker's
+// symlink is also checked at install time by scripts/verify-hooks.sh.
+child.on('error', () => {});
 child.unref();
 
 process.exit(0);
