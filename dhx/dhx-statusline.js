@@ -14,6 +14,17 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// Shared plugins/cache allowlist (D-14) — the RAT-04 `⚠ cc-novel` segment
+// re-applies isAllowlisted to cc-novel-patterns.json entries AT RENDER TIME so
+// a widened allowlist clears the warning on the next ~1Hz refresh without a
+// re-enumeration. The require is try/catch-wrapped: a missing module degrades
+// the segment to inert (it hides) rather than throwing. The module is pure JS
+// — no fs, no subprocess — so the render-time re-filter keeps STATUS-06 (D-12).
+let pluginCacheAllowlist = null;
+try {
+  pluginCacheAllowlist = require('../scripts/lib/plugin-cache-allowlist.js');
+} catch (e) { /* module absent → cc-novel segment stays inert */ }
+
 // --- Model + CCS identity ----------------------------------------------------
 
 // Compact display_name to "<lowercase-letter><version>[+]".
@@ -446,6 +457,87 @@ function runStatusline() {
       } catch (e) {}
     }
 
+    // --- RAT-04: cc-novel novel-pattern segment (render-time re-filter) ------
+    // Reads ~/.cache/dhx/cc-novel-patterns.json (written once per CC version
+    // cohort by statusline-wrapper.js's enumeration — Plan 01) and re-applies
+    // the shared isAllowlisted predicate to every novel_patterns entry AT
+    // RENDER TIME (D-14). Two filters stack: enumeration writes the post-
+    // allowlist novel set to the cache; the renderer re-filters against the
+    // CURRENT allowlist on top. This is what makes D-13a's contract real —
+    // when the operator widens the allowlist mid-cohort, the stale cache
+    // survives, but the next ~1Hz refresh re-filters it and the `⚠ cc-novel`
+    // warning clears with no re-enumeration. The segment renders iff the
+    // post-re-filter surviving count > 0. The re-filter is PURE ARRAY WORK
+    // (no fs, no subprocess) so STATUS-06 / D-12 hold. Malformed/missing
+    // cache → segment hides (D-13a — mirrors the gsdUpdate block).
+    let ccNovel = '';
+    const novelFile = path.join(homeDir, '.cache', 'dhx', 'cc-novel-patterns.json');
+    if (fs.existsSync(novelFile)) {
+      try {
+        const c = JSON.parse(fs.readFileSync(novelFile, 'utf8'));
+        if (Array.isArray(c.novel_patterns)) {
+          let surviving = c.novel_patterns.length;
+          // Re-filter against the CURRENT allowlist (D-14) when the shared
+          // module loaded. If the module is absent, fall back to the bare
+          // cache count — detector degrades to "shows the cohort warning",
+          // never to a crash.
+          if (pluginCacheAllowlist && typeof pluginCacheAllowlist.isAllowlisted === 'function') {
+            surviving = c.novel_patterns.filter(
+              (e) => e && !pluginCacheAllowlist.isAllowlisted(e.path, e.basename)
+            ).length;
+          }
+          if (surviving > 0) {
+            ccNovel = '\x1b[33m⚠ cc-novel\x1b[0m \x1b[2m│\x1b[0m ';
+          }
+        }
+      } catch (e) {}
+    }
+
+    // --- RAT-06: cc-update segment + dev-install branch ---------------------
+    // Reads ~/.cache/cc/cc-update-check.json ({latest, checked_at} — Plan 02)
+    // and COMPUTES update_available renderer-side (D-08): the cache carries
+    // only `latest`; the installed version is the stdin `data.version` the
+    // renderer already has free. parseV strips a prerelease/build suffix
+    // (`.split('-')[0]`) before the numeric compare (D-16) so a canary
+    // `latest` does not produce NaN — the dev-install compare degrades to a
+    // base-version compare on canary builds (documented, acceptable).
+    //   latest base > installed base → `⬆ cc`
+    //   installed base > latest base → `⚠ cc dev install`
+    //   equal / 'unknown' / null      → neither
+    // Malformed/missing cache → segment hides (D-13a).
+    let ccUpdate = '';
+    const ccUpdateFile = path.join(homeDir, '.cache', 'cc', 'cc-update-check.json');
+    if (fs.existsSync(ccUpdateFile)) {
+      try {
+        const cache = JSON.parse(fs.readFileSync(ccUpdateFile, 'utf8'));
+        const installed = data.version;
+        if (installed && cache.latest && cache.latest !== 'unknown') {
+          // D-16: strip the prerelease/build suffix before the numeric split.
+          const parseV = (v) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+          const [ai, bi, ci] = parseV(installed);
+          const [an, bn, cn] = parseV(cache.latest);
+          const latestNewer =
+            an > ai || (an === ai && bn > bi) || (an === ai && bn === bi && cn > ci);
+          const installedNewer =
+            ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
+          if (latestNewer) {
+            ccUpdate = '\x1b[33m⬆ cc\x1b[0m \x1b[2m│\x1b[0m ';
+          } else if (installedNewer) {
+            ccUpdate = '\x1b[33m⚠ cc dev install\x1b[0m \x1b[2m│\x1b[0m ';
+          }
+        }
+      } catch (e) {}
+    }
+
+    // --- RAT-06: cc-autoupd auto-update-suppression segment (D-09) -----------
+    // A single process.env read — zero subprocess, no cache, no hook. Glyph is
+    // `⚠` (U+26A0, BMP single-width) — NOT the U+1F6AB no-entry sign, which is
+    // a double-width SMP emoji (RESEARCH Pitfall 3: width bug + status-symbol-
+    // set inconsistency — the repo's warning vocabulary is `⚠`/`⬆`).
+    const ccAutoupd = process.env.DISABLE_AUTOUPDATER === '1'
+      ? '\x1b[33m⚠ cc-autoupd\x1b[0m \x1b[2m│\x1b[0m '
+      : '';
+
     // --- Line 1: model + CCS + [task |] dir + ctx ---
     // The wrapper appends cache, git, and repo signals (R/T/B) after this
     // base — see statusline-wrapper.js for the L1 tail order. Renderer
@@ -463,7 +555,9 @@ function runStatusline() {
     // effortLevel (e.g. CCS instance swap before first /effort).
     const effortSeg = effort ? ` ${effort}` : '';
 
-    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
+    // RAT-04/RAT-06 segments sit adjacent to gsdUpdate at the line-1 head
+    // (cache/env signals cluster together where the operator's eye lands).
+    const line1 = `${gsdUpdate}${ccUpdate}${ccAutoupd}${ccNovel}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
     // --- Line 2: GSD state (conditional) ---
     // Gate: any of milestone/phase/status present. ccburn prepends to this

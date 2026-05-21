@@ -23,6 +23,7 @@ asserts row count == file count.
 | `probe-agent-leak-check.sh` | no | writes baselines under live `$HOME/.cache/dhx/` (session-tag prefixed + trap cleanup, but writes hit the live cache directory) |
 | `probe-bashrc-wrapper-heal.sh` | yes | grep-only against live `~/.bashrc` and in-repo files; no writes |
 | `probe-cache-age-anchor.js` | yes | re-implements function locally; tmp-file fixtures only |
+| `probe-cc-check-update-ttl.sh` | yes | mktemp cache dir + `CC_CHECK_UPDATE_CACHE` env-override injects a fixture cache; never reads or writes live `~/.cache/cc` (Phase 17 RAT-06 TTL-gate regression probe) |
 | `probe-cc-novel-patterns.sh` | yes | mktemp fixture trees + `node -e require` of the live wrapper with explicit fixture-root arg; scenario 5 drives `checkDrift` under HOME + CLAUDE_CONFIG_DIR overrides; never reads live `~/.claude` or `~/.cache/dhx` (Phase 17 RAT-04 D-13a/D-15/D-22 enumeration regression probe) |
 | `probe-deferred-check-canonical-classifier.sh` | yes | static grep + sourcing test against in-repo classifier; mktemp fixture for source-test |
 | `probe-deferred-check-header-fallback.sh` | yes | static sed-pattern equality + read-only repo-file inspection |
