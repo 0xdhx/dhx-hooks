@@ -444,7 +444,14 @@ function runStatusline() {
           // Running /gsd-update would downgrade — show a contextual warning instead.
           const isDevInstall = (() => {
             if (!cache.installed || !cache.latest || cache.latest === 'unknown') return false;
-            const parseV = v => v.replace(/^v/, '').split('.').map(Number);
+            // Normalize missing segments to 0 (WR-02 shape): without this a
+            // 2-segment version destructures its third segment to undefined and
+            // the tie-break `ci > cn` (undefined > n) is false — a real patch
+            // difference would misreport. Mirrors the cc-update comparator fix.
+            const parseV = v => {
+              const p = v.replace(/^v/, '').split('.').map(Number);
+              return [p[0] || 0, p[1] || 0, p[2] || 0];
+            };
             const [ai, bi, ci] = parseV(cache.installed);
             const [an, bn, cn] = parseV(cache.latest);
             return ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
