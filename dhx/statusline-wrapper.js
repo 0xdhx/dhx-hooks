@@ -1646,6 +1646,13 @@ module.exports = {
   // scanRecursive export (D-20) — required by Plan 04's residual-signal probe;
   // not previously exported despite being the wrapper's core recursive walk.
   scanRecursive,
+  // checkDrift export — lets probe-cc-novel-patterns.sh drive the version
+  // branch directly with an injected `data` object for the D-22 behavioral
+  // assertion ("version-unchanged → no enumeration → cc-novel-patterns.json
+  // NOT written"). checkDrift is a pure function of `data` + filesystem;
+  // sandbox via HOME + CLAUDE_CONFIG_DIR overrides. Mirrors the
+  // fixture-injection rationale behind the isGsdDriftFromForkSync export.
+  checkDrift,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
