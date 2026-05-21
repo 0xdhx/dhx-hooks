@@ -34,6 +34,8 @@ asserts row count == file count.
 | `probe-effort-level-stdin-absent.sh` | yes | read-only via file-gated wrapper edit; no live mutation (Phase 3 D-14 supersession-watchdog tag preserved per Task 2 idempotency) |
 | `probe-execute-hooks-subagent-stop.sh` | yes | per-test mktemp HOME / TMPDIR; cwd passed via stdin payload (HP-001 cwd field) so hooks read `.planning` fixtures from the sandbox dir; no live `~/.cache/dhx`, `~/.claude`, or git state touched (2026-05-07 SubagentStop migration probe) |
 | `probe-execute-stop-review.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live writes |
+| `probe-gate-6-canonical-mirror-discipline.sh` | yes | read-only `diff -q` against live `~/.claude/get-shit-done/` + `~/.claude/gsd-local-patches/` trees; derives file set from backup-meta.json; never writes (Phase 16 REQ-DRIFT-ACTION-04 byte-equality probe) |
+| `probe-gate-6-cross-repo-parity.sh` | yes | read-only sha256 of the Gate 6 doc section across hooks-side + `~/repos/cross-repo/`; never modifies cross-repo (Phase 16 REQ-DRIFT-ACTION-04 verify-only parity probe; D-21/D-24) |
 | `probe-gsd-fork-aware-drift.sh` | yes | mktemp + node -e require with explicit liveRoot/forkRoot args; never reads live `~/.claude` |
 | `probe-health-sh-no-side-effects.sh` | no | mktemp + fake HOME; full env-var isolation (Wave 2 tag preserved) |
 | `probe-health-sh-tiering.sh` | no | mktemp + fake HOME; uses stub-leaf-tool fixtures (Wave 2 tag preserved) |
