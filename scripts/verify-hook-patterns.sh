@@ -218,7 +218,19 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     echo "Skipping probe suite — DHX_RED_COMMIT=1 (TDD-RED commit; pair with GREEN to close)."
   else
     echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
-    bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
+    # DHX_PROBE_ALLOW_CROSS_REPO_DIVERGENCE=1: probe-gate-6-cross-repo-parity.sh
+    # declares `EXPECTED_DIVERGENCE_UNTIL: Phase 25 CROSS-REPO` — the hooks-side
+    # and cross-repo `### Gate 6` doc sections are intentionally different
+    # repo-specific instantiations, not drifted copies (see analysis in
+    # reports/2026-05-20-probe-gate-6-cross-repo-parity-false-premise.md and
+    # the tracking brief .planning/backlog/2026-05-20-cross-repo-gate-6-doc-
+    # reconciliation.md). Without this override the probe's by-design WARN
+    # escalates to a commit-blocking FAIL, blocking any commit that stages a
+    # tests/probes/* path. The override flips that one probe's exit 2 -> exit 0
+    # with a still-visible WARN; every other probe assertion still gates.
+    # Phase 25 CROSS-REPO MUST delete this override when it closes the
+    # reconciliation.
+    DHX_PROBE_ALLOW_CROSS_REPO_DIVERGENCE=1 bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
   fi
 fi
 
