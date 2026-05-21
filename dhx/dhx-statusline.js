@@ -514,7 +514,17 @@ function runStatusline() {
         const installed = data.version;
         if (installed && cache.latest && cache.latest !== 'unknown') {
           // D-16: strip the prerelease/build suffix before the numeric split.
-          const parseV = (v) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+          // Normalize missing segments to 0 (WR-02): a 2-segment version
+          // ("2.1") would otherwise destructure its third segment to
+          // `undefined`, and the tie-break `cn > ci` (e.g. `1 > undefined`)
+          // is false — so installed "2.1" vs latest "2.1.1" would report NO
+          // `⬆ cc` even though an update exists. CC versions are consistently
+          // 3-segment so this is latent, but the comparator is written to be
+          // defensive against arbitrary `latest` strings from `npm view`.
+          const parseV = (v) => {
+            const p = v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+            return [p[0] || 0, p[1] || 0, p[2] || 0];
+          };
           const [ai, bi, ci] = parseV(installed);
           const [an, bn, cn] = parseV(cache.latest);
           const latestNewer =
