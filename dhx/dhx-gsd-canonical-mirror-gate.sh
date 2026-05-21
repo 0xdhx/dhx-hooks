@@ -117,11 +117,24 @@ fi
 
 # D-09 backup-meta tier selection — jq-read once. DHX_BACKUP_META override lets
 # Plan 5 Task 5.3 inject a fixture backup-meta for SAFE_FOR_LIVE: yes posture.
+#
+# WR-02 fail-safe: "backup-meta absent" and "backup-meta present-but-unreadable"
+# are DISTINCT states and must NOT both collapse to the WARN tier.
+#   - absent  → legitimate (fresh install, fork mirror not yet installed) → WARN
+#   - present but jq yields zero files[] → anomaly (truncated/corrupt file, or
+#     a non-atomic /gsd:update rewrite caught mid-flight) → fail safe to BLOCK.
+# Silently downgrading an unreadable backup-meta to WARN is exactly how the
+# 2026-05-15 unmirrored-edit incident slips through; treat it as BLOCK.
 BACKUP_META="${DHX_BACKUP_META:-$HOME/.claude/gsd-local-patches/backup-meta.json}"
 TIER="WARN"
 EXIT_CODE=1
 if [ -f "$BACKUP_META" ]; then
-  if jq -r '.files[]' "$BACKUP_META" 2>/dev/null | grep -Fxq "$REL_PATH"; then
+  META_FILES=$(jq -r '.files[]' "$BACKUP_META" 2>/dev/null)
+  if [ -z "$META_FILES" ]; then
+    # present but unreadable/empty/truncated — fail safe, do NOT downgrade to WARN
+    TIER="BLOCKED"
+    EXIT_CODE=2
+  elif printf '%s\n' "$META_FILES" | grep -Fxq "$REL_PATH"; then
     TIER="BLOCKED"
     EXIT_CODE=2
   fi
