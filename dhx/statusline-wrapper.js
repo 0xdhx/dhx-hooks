@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.41.2
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -1151,6 +1151,25 @@ function checkDrift(data) {
     }
     if (current.version !== snapshot.version) triggers.push('version');
 
+    // GSD-specific first-seen cache clearance (Phase 16, D-22 — HP-031).
+    // The cross-session cache ~/.cache/dhx/gsd-drift-first-seen.json is keyed on
+    // GSD-trigger state, NOT the global trigger count. When the gsd trigger is
+    // absent from the union, GSD drift has resolved — atomically truncate the
+    // cache to {}. This MUST run before the `triggers.length === 0` early-return
+    // so it fires both when no triggers exist at all AND when only non-gsd
+    // triggers (agents/plugins/version) are present. Replaces the prior
+    // global-union-keyed clearance shape (per D-22).
+    if (!triggers.includes('gsd')) {
+      try {
+        const cacheFile = path.join(cacheDir, 'gsd-drift-first-seen.json');
+        if (fs.existsSync(cacheFile)) {
+          const tmp = cacheFile + '.tmp.' + process.pid;
+          fs.writeFileSync(tmp, JSON.stringify({}));
+          fs.renameSync(tmp, cacheFile);
+        }
+      } catch { /* cleanup failure non-fatal */ }
+    }
+
     if (triggers.length === 0) {
       // Re-baseline if a suppression occurred so we don't repeat the byte-compare
       // every refresh. Without this, the post-fork-sync newer-than-snapshot files
@@ -1223,6 +1242,37 @@ function checkDrift(data) {
           fs.appendFileSync(breadcrumbFile, line);
         }
       } catch { /* breadcrumb failure must not affect drift detection */ }
+
+      // Cross-session first-seen cache writer (Phase 16, D-16/D-17/D-22/D-25 —
+      // HP-031). gsdDiverging is the AUTHORITATIVE drift state: build the new
+      // cache object purely from the current diverging set, so any entry that
+      // is no longer diverging is dropped by construction (this IS resolution
+      // semantics — no separate per-key removal pass needed). Subsequent fires
+      // for the same path preserve the original first-seen timestamp; a path
+      // not yet cached gets a fresh ISO 8601 stamp. Filter is `d => d.path`
+      // (D-25) — covers the path-bearing kinds 'mismatch', 'no-canonical',
+      // 'unreadable'; 'fork-tree-missing' carries no path and is excluded
+      // naturally. Atomic temp+rename mirrors the snapshot writer precedent.
+      try {
+        const cacheFile = path.join(cacheDir, 'gsd-drift-first-seen.json');
+        let existingCache = {};
+        try {
+          existingCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+          if (!existingCache || typeof existingCache !== 'object') existingCache = {};
+        } catch { existingCache = {}; }   // silent rebuild on parse failure (A1 / HP-015 discipline)
+
+        const now = new Date().toISOString();
+        const currentPaths = new Set(gsdDiverging.filter(d => d.path).map(d => d.path));
+        const newCache = {};
+        for (const p of currentPaths) {
+          newCache[p] = existingCache[p] || now;   // preserve first-seen; stamp on first detection
+        }
+
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const tmp = cacheFile + '.tmp.' + process.pid;
+        fs.writeFileSync(tmp, JSON.stringify(newCache));
+        fs.renameSync(tmp, cacheFile);
+      } catch { /* cache failure must not affect drift detection */ }
     }
 
     const triggersStr = triggers.map(t => t === 'gsd' ? `gsd${gsdDetail}` : t).join('+');
