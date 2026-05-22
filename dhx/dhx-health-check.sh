@@ -265,4 +265,11 @@ fi
 # orchestration.
 find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
 
+# --- Prune stale PARTIAL-READ NOTE seen-sets (CAL-POLISH-02, D-05) ---
+# Per-session seen-set JSONLs keyed on (session_id, CC-process-start-ticks) gate
+# the dhx-read-guard.js PARTIAL-READ NOTE to once-per-(session,file). They are
+# ephemeral — a /resume rotates the ticks suffix and abandons the old file — so a
+# 1-day TTL is intentional (much tighter than the 30d drift-snapshot catchall).
+find "$CACHE_DIR" -name 'partial-read-seen-*.jsonl' -mtime +1 -delete 2>/dev/null
+
 exit 0
