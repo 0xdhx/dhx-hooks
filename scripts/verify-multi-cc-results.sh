@@ -154,10 +154,25 @@ validate_dir() {
 
     # Assertion 5 (D-08 A1 single-pass per-row grep idiom): if this JSON
     # has conclusion=="ambiguous", no docs/decisions.md row may simultaneously
-    # cite the probe basename AND contain "Validated stable" verdict text.
+    # cite THIS version's cell AND contain "Validated stable" verdict text.
+    #
+    # Version-scoped (Phase 19 fix): the row must cite this cell's
+    # version-scoped path ("v1.3-multi-cc-ver/<cc>/<pid>") on the same line as
+    # the "Validated stable" verdict — NOT merely the bare probe basename.
+    # A bare-basename grep cross-contaminated versions: a fresh 2.1.148
+    # `ambiguous` cell falsely matched the 2.1.140 "Validated stable" row
+    # (which legitimately validates the SEPARATE 2.1.140 cell). Validated-stable
+    # rows always cite the full versioned path, so the version-scoped match is
+    # exact: an ambiguous cell can only trip on a row claiming THAT SAME cell
+    # is stable — the real corpus-integrity hazard.
     if [[ "$conc" == "ambiguous" ]] && [[ -n "${pid:-}" ]] && [[ -f "$REPO/docs/decisions.md" ]]; then
-      if grep -E "${pid}.*Validated stable" "$REPO/docs/decisions.md" >/dev/null 2>&1; then
-        echo "verify-multi-cc-results: $pid has conclusion=ambiguous but is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
+      # Order-independent same-line match: the row must reference BOTH this
+      # cell's version-scoped path AND the "Validated stable" verdict (grep the
+      # path first, then re-grep that row for the verdict — robust to whichever
+      # table column each token lands in).
+      if grep -E "v1\.3-multi-cc-ver/${cc}/${pid}" "$REPO/docs/decisions.md" 2>/dev/null \
+           | grep -F "Validated stable" >/dev/null 2>&1; then
+        echo "verify-multi-cc-results: $pid (cc $cc) has conclusion=ambiguous but its $cc cell is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
         fails=$((fails+1))
       fi
     fi

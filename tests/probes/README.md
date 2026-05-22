@@ -77,15 +77,17 @@ When a supersession-watchdog probe needs to capture data from a long-running CC 
 
 **Cross-version corpus state (per-probe × per-CC-version):**
 
-| Probe | CC 2.1.121 (v1.2 baseline) | CC 2.1.140 (v1.3 Phase 15) |
-|-------|---------------------------|---------------------------|
-| `probe-effort-level-stdin-absent.sh` | `supersession_found_drop_p3` (`v1.2-phase-0/`) | `supersession_found_drop_p3` (`v1.3-multi-cc-ver/2.1.140/`) |
-| `probe-installed-plugins-no-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-0/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) — **flipped** |
-| `probe-installed-plugins-badjson-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility |
-| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility |
-| `probe-known-marketplaces-natural-heal.sh` | `v1_2_work_warranted` (`v1.2-phase-6/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) |
+| Probe | CC 2.1.121 (v1.2 baseline) | CC 2.1.140 (v1.3 Phase 15) | CC 2.1.145 (v1.3 Phase 18) | CC 2.1.148 (v1.4 Phase 19) |
+|-------|---------------------------|---------------------------|---------------------------|---------------------------|
+| `probe-effort-level-stdin-absent.sh` | `supersession_found_drop_p3` (`v1.2-phase-0/`) | `supersession_found_drop_p3` (`v1.3-multi-cc-ver/2.1.140/`) | — (not re-run) | — (not re-run) |
+| `probe-installed-plugins-no-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-0/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) — **flipped** | — (not re-run) | `ambiguous` — `cell_outcome=auth_failure`; Cell 2 needs `ANTHROPIC_API_KEY` (unset) (`v1.3-multi-cc-ver/2.1.148/`) |
+| `probe-installed-plugins-badjson-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility | `v1_2_work_warranted` — `cell_outcome=badjson_no_heal` (`v1.3-multi-cc-ver/2.1.145/`) | `ambiguous` — substantive `cell_outcome=badjson_no_heal` (work warranted); conclusion `ambiguous` only because 2.1.148 not in the probe's stale `cc_version` allow-list (`v1.3-multi-cc-ver/2.1.148/`) |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | `supersession_found_drop_heal` (`v1.2-phase-6/`) | `ambiguous` (`v1.3-multi-cc-ver/2.1.140/`) — stale-anchor probe-fragility | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.145/`) | `ambiguous` — substantive `cell_outcome=uninstalled_hn_heals` (Hn() rehydrated dhx + preserved fakes — a HEAL signal); conclusion `ambiguous` only because 2.1.148 not in the probe's stale `cc_version` allow-list (`v1.3-multi-cc-ver/2.1.148/`) |
+| `probe-known-marketplaces-natural-heal.sh` | `v1_2_work_warranted` (`v1.2-phase-6/`) | `v1_2_work_warranted` (`v1.3-multi-cc-ver/2.1.140/`) | `v1_2_work_warranted` — `cell_outcome=km_no_heal` (`v1.3-multi-cc-ver/2.1.145/`) | `ambiguous` — substantive `cell_outcome=km_no_heal` (work warranted — km path NOT healed); conclusion `ambiguous` only because 2.1.148 not in the probe's stale `cc_version` allow-list (`v1.3-multi-cc-ver/2.1.148/`) |
 
-**Promotion threshold (HP-024 / SCHEMA-04 precedent):** at ≥3 distinct CC versions per probe, promote to full multi-cell matrix. Current corpus: 2 versions per probe after Phase 15 ships. Trigger row: `docs/decisions.md` 2026-05-13 (HP-024 promotion trigger for supersession-watchdog corpus).
+> **Note on the 2.1.148 `ambiguous` conclusions (Phase 19 re-run):** for the three IP-/km-path probes the probe-level `conclusion` is `ambiguous` *only* because each probe hardcodes a `cc_version` allow-list (`2.1.121 2.1.140 2.1.145`) that was never lifted to include `2.1.148` (`cc_version_match=false` → `confidence=LOW`). The **substantive observation** (`cell_outcome`) ran cleanly against a real `claude -p` subprocess and is the load-bearing evidence: `badjson_no_heal` + `km_no_heal` (work warranted) and `uninstalled_hn_heals` (a natural-heal signal). The allow-list lift is the out-of-scope relocation refactor (BACKLOG-INTEGRATION brief `2026-05-13-watchdog-probe-out-dir-cc-version-aware.md`, plus a sibling allow-list lift) — NOT this plan's `files_modified`. The `no-natural-heal` cell is `auth_failure`/`ambiguous` (D-18c) because its still-active two-cell design strictly requires `ANTHROPIC_API_KEY` for Cell 2 and the run shell had only a `credentials_file`.
+
+**Promotion threshold (HP-024 / SCHEMA-04 precedent):** at ≥3 distinct CC versions per probe, promote to full multi-cell matrix. **Current corpus: 3+ versions per IP-path probe after Phase 19 — HP-024 N≥3 promotion threshold MET** (`probe-installed-plugins-badjson-natural-heal.sh` + `-uninstalled-dhx-natural-heal.sh` + the km control each now span 2.1.121 / 2.1.140 / 2.1.145 / 2.1.148; `-no-natural-heal.sh` spans 2.1.121 / 2.1.140 / 2.1.148). Trigger row: `docs/decisions.md` 2026-05-13 (HP-024 promotion trigger for supersession-watchdog corpus).
 
 ## Schema-evolution probes
 
