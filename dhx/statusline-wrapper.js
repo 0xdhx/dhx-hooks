@@ -854,17 +854,50 @@ let PLUGIN_CACHE_ALLOWLIST = {
 // "detector noisy". The bookkeeping fallback above still drives the drift
 // filter. Replaced by the real predicate on a successful require.
 let isAllowlistedPattern = () => true;
+// Default classifier when the shared module is unavailable (D-08 / D-23). The
+// `plugins` drift trigger's keepPredicate (collectSnapshot, Site 2) tests
+// `classifyEntryFn(rel,b) === 'content'`, so a missing/bad module MUST still
+// have a working 2-state classifier — otherwise the predicate would crash or
+// silence drift entirely. This inline fallback degrades to TODAY'S DENYLIST
+// behavior: it returns 'bookkeeping' for the inline bookkeeping constants
+// (`.orphaned_at` basename; `temp_git_*` / `.in_use` path segments) and
+// 'content' for everything else. It NEVER returns 'novel' (D-08: a missing
+// module must never manufacture novel hits — the inverse of the
+// `isAllowlistedPattern = () => true` "detector inert, never noisy" posture for
+// enumeration) and NEVER throws (D-23 / ASVS V5: same `typeof` input guards as
+// the real classifyEntry, so a non-string / null / empty filePath or basename
+// returns a string instead of crashing `.test()` / `.has()`). Replaced by the
+// real classifyEntry on a successful, complete require (the typeof gate below).
+let classifyEntryFn = function (filePath, basename) {
+  if (typeof basename === 'string') {
+    if (PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames.has(basename)) return 'bookkeeping';
+  }
+  if (typeof filePath === 'string') {
+    if (PLUGIN_CACHE_ALLOWLIST.bookkeepingPathPattern.test(filePath)) return 'bookkeeping';
+  }
+  // Everything else is content — denylist-equivalent degradation; the fallback
+  // never manufactures a novel hit (D-08).
+  return 'content';
+};
 try {
   const allowlistMod = require('../scripts/lib/plugin-cache-allowlist.js');
   PLUGIN_CACHE_ALLOWLIST = allowlistMod.PLUGIN_CACHE_ALLOWLIST;
   isAllowlistedPattern = allowlistMod.isAllowlisted;
+  // D-23 typeof gate: adopt the real classifier ONLY when it is actually a
+  // function. A partial / bad module load (export missing or non-function)
+  // RETAINS the inline fallback above rather than setting classifyEntryFn =
+  // undefined, which would crash the keepPredicate path in collectSnapshot.
+  if (typeof allowlistMod.classifyEntry === 'function') {
+    classifyEntryFn = allowlistMod.classifyEntry;
+  }
 } catch (e) {
   // Fall back gracefully if the shared module is missing or unparseable. The
   // inline default above keeps the `plugins` drift filter behaving exactly as
   // the pre-consolidation constants did — drift detection never regresses on
   // a bad module load. RAT-04 enumeration degrades to "no allowlist module"
   // (isAllowlistedPattern returns true → zero novel hits) and is itself
-  // try/catch-guarded at its call site.
+  // try/catch-guarded at its call site. classifyEntryFn keeps the inline
+  // denylist-equivalent fallback (D-08 — never 'novel', never throws).
 }
 
 // RAT-04 novel-pattern enumeration (D-02 / D-13a / D-14). Walks the
