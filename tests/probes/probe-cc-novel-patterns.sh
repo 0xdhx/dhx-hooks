@@ -58,17 +58,20 @@ else
   fail "[1] allowlisted-only tree → 0 novel" "(got=$got)"
 fi
 
-# ---- [2] Novel basename → surfaces, with utimesSync mtime control ----------
+# ---- [2] Novel hit → surfaces, with utimesSync mtime control ---------------
 # D-21: the first_seen_mtime assertion uses fs.utimesSync with an explicit
 # FUTURE timestamp — never sleep — so the recorded mtime is deterministic.
+# Phase 18 D-24d: a novel hit now requires an UNRECOGNIZED INTERMEDIATE segment
+# (`weird-intermediate/`). A bare unknown leaf basename directly under a
+# recognized version dir classifies `content`, not novel (the 39.1%-gap fix).
 C2="$TMPDIR_ROOT/c2"
-mkdir -p "$C2/anthropic-agent-skills/document-skills/690f15cac7f7"
+mkdir -p "$C2/anthropic-agent-skills/document-skills/690f15cac7f7/weird-intermediate"
 echo x > "$C2/anthropic-agent-skills/document-skills/690f15cac7f7/README.md"
-echo x > "$C2/anthropic-agent-skills/document-skills/690f15cac7f7/mystery-manifest.bin"
+echo x > "$C2/anthropic-agent-skills/document-skills/690f15cac7f7/weird-intermediate/mystery-manifest.bin"
 got=$(node -e "
   const fs = require('fs');
   const m = require('$WRAPPER');
-  const novelFile = '$C2/anthropic-agent-skills/document-skills/690f15cac7f7/mystery-manifest.bin';
+  const novelFile = '$C2/anthropic-agent-skills/document-skills/690f15cac7f7/weird-intermediate/mystery-manifest.bin';
   // D-21: explicit future timestamp (now + 1 day) for deterministic mtime.
   const futureSec = Math.floor(Date.now() / 1000) + 86400;
   fs.utimesSync(novelFile, futureSec, futureSec);
@@ -83,9 +86,9 @@ got=$(node -e "
   process.stdout.write(okHit ? 'ok' : 'bad:' + JSON.stringify(hit));
 " 2>/dev/null || echo "<error>")
 if [ "$got" = "ok" ]; then
-  pass "[2] novel basename surfaces with path + utimesSync-controlled mtime"
+  pass "[2] novel hit (leaf under unrecognized intermediate) surfaces with path + utimesSync-controlled mtime"
 else
-  fail "[2] novel basename surfaces with path + utimesSync-controlled mtime" "(got=$got)"
+  fail "[2] novel hit (leaf under unrecognized intermediate) surfaces with path + utimesSync-controlled mtime" "(got=$got)"
 fi
 
 # ---- [3] Novel path segment → surfaces -------------------------------------
@@ -103,10 +106,14 @@ else
   fail "[3] novel path segment (weird-new-dir/) surfaces ≥1 novel" "(got=$got)"
 fi
 
-# ---- [4] Both novel basename + novel segment → both -------------------------
+# ---- [4] Two distinct novel intermediate segments → ≥2 novel ----------------
+# Phase 18 D-24d: novel fires on UNRECOGNIZED INTERMEDIATE segments, not on bare
+# leaf basenames under recognized ancestry. Seed two distinct unrecognized
+# intermediate segments so ≥2 novel hits surface.
 C4="$TMPDIR_ROOT/c4"
 mkdir -p "$C4/anthropic-agent-skills/document-skills/690f15cac7f7/weird-new-dir"
-echo x > "$C4/anthropic-agent-skills/document-skills/690f15cac7f7/mystery-manifest.bin"
+mkdir -p "$C4/anthropic-agent-skills/document-skills/690f15cac7f7/another-weird-dir"
+echo x > "$C4/anthropic-agent-skills/document-skills/690f15cac7f7/another-weird-dir/manifest.bin"
 echo x > "$C4/anthropic-agent-skills/document-skills/690f15cac7f7/weird-new-dir/inner.md"
 got=$(node -e "
   const m = require('$WRAPPER');
@@ -114,9 +121,9 @@ got=$(node -e "
   process.stdout.write(r.length >= 2 ? 'ok' : 'count:' + r.length);
 " 2>/dev/null || echo "<error>")
 if [ "$got" = "ok" ]; then
-  pass "[4] novel basename + novel segment → ≥2 novel"
+  pass "[4] two distinct novel intermediate segments → ≥2 novel"
 else
-  fail "[4] novel basename + novel segment → ≥2 novel" "(got=$got)"
+  fail "[4] two distinct novel intermediate segments → ≥2 novel" "(got=$got)"
 fi
 
 # ---- [5] Version unchanged → no scan (D-22 — BEHAVIORAL) -------------------

@@ -54,18 +54,38 @@ function mkTree(spec) {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
-// ---- novel basename → surfaces with path + basename ----
+// ---- novel hit → surfaces with path + basename + mtime ----
+// Phase 18 D-24d note: a novel hit now requires an UNRECOGNIZED INTERMEDIATE
+// segment, not merely an unknown leaf basename. Under the D-24d leaf rule a
+// leaf with an arbitrary basename (mystery-manifest.bin) directly under a
+// recognized version dir (690f15cac7f7) classifies `content`, NOT novel — that
+// is the intended 39.1%-gap fix. So this structural assertion (a novel hit
+// carries {path, basename, first_seen_mtime}) is exercised via an unrecognized
+// intermediate segment `weird-intermediate/`, which still surfaces as novel.
 {
   const root = mkTree([
     'anthropic-agent-skills/document-skills/690f15cac7f7/README.md',
-    'anthropic-agent-skills/document-skills/690f15cac7f7/mystery-manifest.bin',
+    'anthropic-agent-skills/document-skills/690f15cac7f7/weird-intermediate/mystery-manifest.bin',
   ]);
   const res = m.enumerateNovelPatterns(root);
   const hit = res.find(r => r.basename === 'mystery-manifest.bin');
-  ok('[novel basename] mystery-manifest.bin surfaces', !!hit);
-  ok('[novel basename] hit carries a path', !!hit && typeof hit.path === 'string' && hit.path.length > 0);
-  ok('[novel basename] hit carries first_seen_mtime (number)',
+  ok('[novel hit] leaf under unrecognized intermediate surfaces', !!hit);
+  ok('[novel hit] hit carries a path', !!hit && typeof hit.path === 'string' && hit.path.length > 0);
+  ok('[novel hit] hit carries first_seen_mtime (number)',
     !!hit && typeof hit.first_seen_mtime === 'number');
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ---- D-24d leaf rule → an arbitrary leaf under recognized ancestry is NOT
+//      novel (it is content; the 39.1%-gap fix) ----
+{
+  const root = mkTree([
+    'anthropic-agent-skills/document-skills/690f15cac7f7/office/index.js',
+    'anthropic-agent-skills/document-skills/690f15cac7f7/schemas/docx/a.xsd',
+  ]);
+  const res = m.enumerateNovelPatterns(root);
+  ok('[D-24d] arbitrary leaves under recognized ancestry do NOT surface as novel',
+    Array.isArray(res) && res.length === 0);
   fs.rmSync(root, { recursive: true, force: true });
 }
 
