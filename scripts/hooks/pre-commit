@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# scripts/hooks/pre-commit — tracked pre-commit dispatcher for cross-repo [XR].
+#
+# Ported near-verbatim from ~/repos/skills/scripts/hooks/pre-commit (D-10/D-16).
+#
+# Runs every executable check under scripts/hooks/pre-commit.d/ in glob order.
+# The first non-zero check blocks the commit; its exit code propagates.
+#
+# This file is the single source of truth. .git/hooks/pre-commit is a symlink
+# to it (installed by scripts/install-hooks.sh) — edits here, or to any check,
+# are live with no reinstall. Add a check by dropping an executable script into
+# pre-commit.d/; this dispatcher needs no edit.
+#
+# The check-path scripts/hooks/pre-commit.d/10-backlog-frontmatter.sh is the
+# D-16 canonical convention path — identical across skills + cross-repo so the
+# fleet scan (Phase 06 Plan 03) detects it uniformly. Content differs (skills
+# delegates to its engine; cross-repo is self-contained over the repo-local
+# parse-frontmatter.cjs per D-02), but the detected path matches.
+#
+# Escape hatch: `git commit --no-verify` skips all checks (standard git).
+
+set -uo pipefail
+
+# Resolve this script's real location. It is invoked via the .git/hooks
+# symlink, and in a worktree (or the isolated mktemp probe fixture) that symlink
+# may resolve through a further scripts/ symlink — readlink -f collapses the
+# whole chain so CHECK_DIR points at the real pre-commit.d/ (D-11 probe relies
+# on this double-symlink resolution).
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+CHECK_DIR="$(dirname "$SELF")/pre-commit.d"
+
+[ -d "$CHECK_DIR" ] || exit 0
+
+for check in "$CHECK_DIR"/*; do
+  [ -f "$check" ] && [ -x "$check" ] || continue
+  "$check"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pre-commit: blocked by $(basename "$check") (exit $rc)" >&2
+    exit "$rc"
+  fi
+done
+exit 0
