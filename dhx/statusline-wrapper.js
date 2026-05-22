@@ -781,7 +781,7 @@ function hashWarnSettings(settingsReal) {
 // every running session's drift signal. Filtering affects both mtime and count,
 // so an orphan sweep is invisible to checkDrift while real plugin writes are still
 // caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
-function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
+function scanRecursive(dir, keepPredicate) {
   let maxMtime = 0;
   let count = 0;
   // `maxPath` is the file path whose mtime won the scan — additive forensic
@@ -794,17 +794,24 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
-      if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
-      // Path-prefix filter: skip entries whose ancestry includes a CC bookkeeping
-      // segment (e.g. `temp_git_<digits>_<token>/` install-cycle extraction dirs).
-      // Basename-only matching is insufficient because `readdirSync({recursive:true})`
-      // returns leaf files by their OWN basename — `temp_git_*` only appears as
-      // an intermediate path component, never as an entry.name for the leaves
-      // inside it. We test the full constructed path so both the dir entry
-      // itself AND every descendant are dropped from mtime + count.
-      if (ignorePathPattern) {
-        const full = entry.path ? path.join(entry.path, entry.name) : entry.name;
-        if (ignorePathPattern.test(full)) continue;
+      // Allowlist inversion (D-04): a single optional `keepPredicate(rel, basename)
+      // -> bool` replaces the former two denylist params (ignoreBasenames /
+      // ignorePathPattern). The agents/gsd callers pass nothing → undefined →
+      // every entry is kept (unchanged behavior). The `plugins` caller passes
+      // (rel,b) => classifyEntryFn(rel,b) === 'content', so only content-
+      // classified entries advance the drift mtime/count (D-03).
+      //
+      // D-20 (LOAD-BEARING): keepPredicate MUST receive a CACHE-ROOT-RELATIVE,
+      // forward-slash-normalized path — NOT the absolute `full`. classifyEntry
+      // checks segment 0 against marketplaceTopLevel; feeding the absolute path
+      // makes segment 0 = `home`/`.ccs` → marketplaceTopLevel never matches →
+      // every entry classifies `novel` → `=== 'content'` never true → the
+      // `plugins` trigger silently never fires (total drift false-negative).
+      // This mirrors enumerateNovelPatterns' rel-normalization at :911-912.
+      if (keepPredicate) {
+        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const rel = path.relative(dir, full).split(path.sep).join('/');
+        if (!keepPredicate(rel, entry.name)) continue;
       }
       count++;
       // Skip directory mtimes: POSIX bumps a dir's mtime on any direct-child
@@ -973,10 +980,16 @@ function collectSnapshot(data) {
 
   const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
   const gsd = scanRecursive(GSD_LIVE_ROOT);
+  // Allowlist inversion (D-03 / D-04): count only `content`-classified entries.
+  // keepPredicate receives the cache-root-relative normalized `rel` (D-20) that
+  // scanRecursive computes per entry. `bookkeeping` (silent) and `novel`
+  // (routed to the ⚠ cc-novel detector) entries are excluded from the plugins
+  // drift mtime/count. classifyEntryFn is the fallback-aware reference (D-08 /
+  // D-23) — the real classifyEntry when the module loads, an inline denylist-
+  // equivalent fallback otherwise. agents/gsd pass no predicate (scan all).
   const plugins = scanRecursive(
     path.join(configDir, 'plugins', 'cache'),
-    PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames,
-    PLUGIN_CACHE_ALLOWLIST.bookkeepingPathPattern,
+    (rel, b) => classifyEntryFn(rel, b) === 'content',
   );
 
   const snapshot = {
