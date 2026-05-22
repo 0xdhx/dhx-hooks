@@ -260,28 +260,56 @@ else
   check "smoke: 'find … -print -quit' false-positive on absent basename: $MISS" 0
 fi
 
-# --- Section 8: block-message exposes the marker contract ---
+# --- Section 8: block-message drops the inline marker legend (SC#3 / D-06) ---
 #
-# Anchored against the MSG= heredoc body specifically — protects against
-# accidental drift back to the one-line "/dhx:defer-review only" shape that
-# hides the inline marker path. Header comments are already covered by
-# Section 3; scoping this check to the runtime message body makes the two
-# assertions complementary rather than redundant.
+# REVERSAL of e2bd3df (2026-05-02): the 6-marker inline legend was removed
+# from the Stop block message (Phase 20, D-06) — it re-printed ~565 chars on
+# every Stop block (~127K effective tok/7d) for operators who already know the
+# markers. Section 8 was inverted from "asserts each marker is PRESENT" to:
+#   (a) NO inline marker enumeration survives in the MSG body,
+#   (b) the one-line pointer replacement IS present, and
+#   (c) HP-009 survives — the hook still emits the decision:block JSON AND the
+#       uncaptured-items count line (legend removal must not collaterally drop
+#       the blocking path; that would silently stop blocking session-end).
+# Marker syntax stays discoverable at /dhx:defer-review or /dhx:capture.
 #
-# Backs: docs/decisions.md 2026-05-02 block-message marker-syntax row.
-# Parent report: reports/done/2026-04-27-defer-hook-misses-already-captured-items.md
-#   Fix 2 — block-message marker exposure.
+# Backs: docs/decisions.md Phase 20 block-message legend-removal row
+#        (cites e2bd3df reversal + exact old/new char + approx token counts).
 MSG_BLOCK=$(awk '/^MSG="/{f=1} f{print} f && /"$/ && !/^MSG="/{f=0}' "$HOOK")
 if [[ -z "$MSG_BLOCK" ]]; then
   check "could not extract MSG= block from hook — assertion shape changed" 0
 else
-  for marker in captured existing assessed tracked note; do
-    if echo "$MSG_BLOCK" | grep -qE "\[${marker}[]:]"; then
-      check "MSG block exposes [${marker}…] marker" 1
-    else
-      check "MSG block missing [${marker}…] marker — drift to skill-only flow" 0
-    fi
-  done
+  # 8a. The inline marker legend is gone — no [<marker>…] enumeration in MSG.
+  legend_count=$(echo "$MSG_BLOCK" | grep -cE '\[(captured|existing|assessed|tracked|note|preserved-in)[]:]' || true)
+  if [[ "$legend_count" == "0" ]]; then
+    check "MSG block no longer enumerates the inline marker legend (0 markers)" 1
+  else
+    check "MSG block still enumerates $legend_count marker(s) — legend not removed" 0
+  fi
+
+  # 8b. The one-line pointer replacement is present.
+  if echo "$MSG_BLOCK" | grep -qF 'See /dhx:defer-review or /dhx:capture for marker syntax.'; then
+    check "MSG block carries the one-line marker-syntax pointer (replacement landed)" 1
+  else
+    check "MSG block missing the 'See /dhx:defer-review or /dhx:capture' pointer" 0
+  fi
+
+  # 8c. HP-009 survives — the uncaptured-items count line is intact.
+  if echo "$MSG_BLOCK" | grep -qF 'DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s)'; then
+    check "MSG block retains the uncaptured-items count line (HP-009 listing)" 1
+  else
+    check "MSG block dropped the count line — HP-009 uncaptured listing lost" 0
+  fi
+fi
+
+# 8d. HP-009 survives — the hook still emits the decision:block JSON. This is
+#     the safety-critical assertion: a legend-removal edit must NOT collaterally
+#     drop the blocking path. The hook blocks via {"decision":"block"} JSON +
+#     exit 0 (NOT exit 2) per HP-009 — assert the JSON literal, never exit 2.
+if grep -qF '{"decision": "block", "reason": $msg}' "$HOOK"; then
+  check "hook still emits decision:block JSON (HP-009 blocking path survives)" 1
+else
+  check "hook dropped decision:block JSON — Stop blocking silently broken" 0
 fi
 
 # --- Section 9: hook funnels SILENCED-marker hash through canonical extractor ---

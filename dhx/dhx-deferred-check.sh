@@ -228,21 +228,18 @@ COUNT=$(printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true)
 REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"
 touch "$REVIEW_MARKER"
 
-# Multi-line block message exposes the inline marker contract so trivial
-# cases can resolve via Edit without invoking /dhx:defer-review. Marker
-# syntax is canonical at ~/.claude/dhx-tools/dhx-classify-deferred.sh
-# (CLASSIFY_DEFERRED_MARKERS) and mirrored in this hook's header (lines 9-15).
+# Block message: count line + PRIMARY path + a one-line pointer to where the
+# inline marker syntax is canonically documented. D-06 (Phase 20) dropped the
+# 6-marker inline legend (reverses e2bd3df 2026-05-02) — the legend re-printed
+# ~565 chars (~141 tok) on every Stop block (~127K effective tok/7d) for an
+# operator who already knows the markers; marker syntax stays discoverable at
+# /dhx:defer-review or /dhx:capture. HP-009 decision:block + the uncaptured-
+# items count line are preserved verbatim.
 MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s) in ${LATEST}.
 
 PRIMARY path: resolve via /dhx:defer-review ${LATEST} (interactive review with batched UAQ; touches SILENCED marker on confirmation so this hook self-suppresses for 10 min).
 
-FALLBACK (trivial cases only — single-item review where /dhx:defer-review's full flow is overkill): mark inline with one of 6 canonical markers:
-  [captured: <ref>]      item filed to backlog/todo via /dhx:capture
-  [existing: <path>]     item already tracked elsewhere
-  [assessed: <reason>]   intentionally not captured (requires user approval; PreToolUse guard enforces)
-  [tracked: REQ-ID]      tracked against a requirement
-  [note: <detail>]       non-actionable decision-trail commentary
-  [preserved-in: <phase>] content folded into another phase/decision"
+See /dhx:defer-review or /dhx:capture for marker syntax."
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'
