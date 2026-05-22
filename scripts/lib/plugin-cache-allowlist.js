@@ -233,76 +233,122 @@ const PLUGIN_CACHE_ALLOWLIST = {
   marketplaceTopLevel,
 };
 
-// --- isAllowlisted(filePath, basename) --------------------------------------
-// The D-14 predicate. Given a path RELATIVE to `plugins/cache` (forward-slash,
-// segment-joined) and a leaf `basename`, return `true` iff the entry is a
-// known-safe pattern, `false` iff it is novel.
+// --- classifyEntry(filePath, basename) --------------------------------------
+// The D-02 classification PRIMITIVE. Given a path RELATIVE to `plugins/cache`
+// (forward-slash, segment-joined) and a leaf `basename`, return EXACTLY ONE of:
+//
+//   'bookkeeping' — CC-internal churn that does NOT reflect user-actionable
+//                   state (silent: excluded from the `⚠ restart plugins`
+//                   drift mtime/count). The SC2 "known-good → silent pass".
+//   'content'     — a real plugin code/content file (a change here drives the
+//                   `⚠ restart plugins` drift signal — "bad" = ACTIONABLE, not
+//                   malicious). The SC2 "known-bad → fires drift".
+//   'novel'       — an unrecognized structural class (excluded from drift,
+//                   routed to the Phase 17 novel-pattern detector `⚠ cc-novel`).
+//                   The SC2 "novel → routes to novel-pattern detector".
 //
 // PATH SHAPE (live survey 2026-05-21):
 //   <marketplace>/<plugin>/<git-hash-or-version>/<...content...>
-// Segment 0 is the marketplace dir, segment 1 is the plugin name, segment 2
-// is a git-hash / version dir, segments 3+ are plugin content.
+// Segment 0 is the marketplace dir, segment 1 is the plugin name, segment 2 is
+// a git-hash / version dir, segments 3+ are plugin content; the LAST segment is
+// the leaf basename.
 //
-// Allowlisted (true) when ANY of:
-//   - basename ∈ bookkeepingBasenames
-//   - basename ∈ legitContentBasenames
-//   - filePath matches bookkeepingPathPattern
-//   - EVERY path segment is recognized, where:
-//       * segment 0 (the marketplace dir) is checked ONLY against
-//         marketplaceTopLevel — seeded, NO wildcard (D-15: an unknown 4th
-//         marketplace surfaces as novel)
-//       * segment 1 (the plugin name) under an allowlisted marketplace is
-//         accepted — a plugin name is operator-installed content reached via
-//         an already-vetted marketplace, not a novel-pattern signal; D-15's
-//         "do not wildcard the FIRST segment" constrains the marketplace dir
-//         only, and RESEARCH.md scenario 6 requires `<marketplace>/
-//         document-skills/<git-hash>/...` to report 0 novel
-//       * every later segment matches legitContentSegments OR
-//         versionDirPattern OR legitContentBasenames (the leaf basename) OR
-//         bookkeepingBasenames
+// TOTALITY (T-18-01 / ASVS V5): classifyEntry is a TOTAL function over
+// (string, string). It never throws on null/undefined/non-string/empty input —
+// the `typeof` guards mirror the pre-Phase-18 isAllowlisted (:158/:162/:166).
+// Unclassifiable input returns 'novel' (matches the old `return false`).
 //
-// Novel (false) otherwise.
-function isAllowlisted(filePath, basename) {
-  // Fast bookkeeping checks — these short-circuit before per-segment work.
+// PURITY (T-18-02 / D-12 / STATUS-06): string logic ONLY — no `fs`, no
+// subprocess, no network. A poisoned cache cannot make classifyEntry crash.
+//
+// D-24d LEAF RULE (the 39.1%-gap fix): the per-segment loop NO LONGER requires
+// the LEAF basename to be in legitContentBasenames. When segment 0 ∈
+// marketplaceTopLevel, segment 1 is the plugin name, and every INTERMEDIATE
+// segment (indices 2..length-2) is recognized, the leaf basename classifies
+// 'content' (it is not bookkeeping — bookkeeping was already handled in the
+// fast checks). `novel` then fires ONLY on an unrecognized INTERMEDIATE segment
+// (a new structural class) or an unknown marketplace — the intended signal.
+// This is scoped by recognized ANCESTRY, not a bare-hex basename wildcard
+// (D-13 shape-aware constraint); bare-hex `.git/` object hashes are caught as
+// 'bookkeeping' by gitInternalsPathPattern BELOW, before the leaf rule.
+function classifyEntry(filePath, basename) {
+  // Fast bookkeeping checks — short-circuit before per-segment work. Checked
+  // FIRST so `.git/` internals (incl. bare-hex object hashes) and temp/lock
+  // paths classify 'bookkeeping' and never reach the D-24d leaf rule.
   if (typeof basename === 'string') {
-    if (bookkeepingBasenames.has(basename)) return true;
-    if (legitContentBasenames.has(basename)) return true;
+    if (bookkeepingBasenames.has(basename)) return 'bookkeeping';
   }
-  if (typeof filePath === 'string' && bookkeepingPathPattern.test(filePath)) {
-    return true;
+  if (typeof filePath === 'string') {
+    if (bookkeepingPathPattern.test(filePath)) return 'bookkeeping';
+    if (gitInternalsPathPattern.test(filePath)) return 'bookkeeping';
   }
 
-  if (typeof filePath !== 'string' || filePath === '') return false;
+  // Fast content check — a known legit leaf basename is content regardless of
+  // ancestry (covers ROOT-level config files reached with no recognized
+  // intermediate segment, e.g. <marketplace>/<plugin>/<version>/package.json).
+  if (typeof basename === 'string' && legitContentBasenames.has(basename)) {
+    return 'content';
+  }
+
+  // Unclassifiable input (non-string / empty filePath with no bookkeeping or
+  // content basename match) → novel (matches the pre-Phase-18 `return false`).
+  if (typeof filePath !== 'string' || filePath === '') return 'novel';
 
   // Per-segment evaluation. Normalize separators, drop empties (leading/
   // trailing/double slashes).
   const segments = filePath.split(/[/\\]+/).filter(Boolean);
-  if (segments.length === 0) return false;
+  if (segments.length === 0) return 'novel';
 
+  const lastIdx = segments.length - 1;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (i === 0) {
-      // Segment 0 is the marketplace dir — seeded set ONLY (D-15). An
-      // unknown 4th marketplace is intended RAT-04 signal.
-      if (!marketplaceTopLevel.has(seg)) return false;
+      // Segment 0 is the marketplace dir — seeded set ONLY (D-15). An unknown
+      // 4th marketplace is intended novel signal, never wildcarded.
+      if (!marketplaceTopLevel.has(seg)) return 'novel';
       continue;
     }
     if (i === 1) {
-      // Segment 1 is the plugin name under an already-vetted marketplace.
-      // Any plugin name here is operator-installed content, not a novel
-      // pattern — accept it. (A novel pattern would surface in segments 2+
-      // or via an unrecognized leaf basename.)
+      // Segment 1 is the plugin name under an already-vetted marketplace —
+      // operator-installed content reached via a vetted marketplace, accepted.
       continue;
     }
-    // Segment 2+ : a legit directory segment, a version/git-hash dir, a
-    // known leaf basename (the final segment is the leaf), or bookkeeping.
+    if (i === lastIdx) {
+      // D-24d LEAF RULE: the LAST segment (the leaf) is NOT required to match a
+      // content class. All intermediate segments above it were recognized (the
+      // loop would have returned 'novel' otherwise) and the leaf is not
+      // bookkeeping (handled in the fast checks), so the leaf is content. This
+      // is the mechanism that closes the 39.1% gap — arbitrary content
+      // filenames (index.js / helper.py / foo.xsd) under recognized ancestry
+      // are 'content', not 'novel'.
+      continue;
+    }
+    // INTERMEDIATE segment (index 2..length-2): a recognized directory class.
+    // An unrecognized intermediate segment is a NEW STRUCTURAL CLASS → novel
+    // (the intended signal). legitContentBasenames / bookkeepingBasenames are
+    // retained here for behavioral equivalence with the pre-Phase-18 loop
+    // (e.g. `.claude-plugin` appears both as a segment and a basename).
     if (legitContentSegments.has(seg)) continue;
     if (versionDirPattern.test(seg)) continue;
     if (legitContentBasenames.has(seg)) continue;
     if (bookkeepingBasenames.has(seg)) continue;
-    return false; // a segment matched nothing → novel
+    return 'novel'; // an intermediate segment matched nothing → novel
   }
-  return true;
+  // Every segment recognized (marketplace + plugin + intermediates) and the
+  // leaf accepted by the leaf rule → content.
+  return 'content';
 }
 
-module.exports = { PLUGIN_CACHE_ALLOWLIST, isAllowlisted };
+// --- isAllowlisted(filePath, basename) --------------------------------------
+// The D-14 predicate, REDEFINED (D-02) as a thin DERIVED wrapper over
+// classifyEntry: an entry is "allowlisted" (known-safe, not a novel hit) iff it
+// does NOT classify 'novel'. This is the structural anti-divergence guarantee —
+// Phase 17's two isAllowlisted consumers (`enumerateNovelPatterns` in the
+// wrapper, the `⚠ cc-novel` render-time re-filter in dhx-statusline.js) cannot
+// drift from the new classifier because they DERIVE from it. Signature and
+// return type (boolean) are unchanged for those consumers.
+function isAllowlisted(filePath, basename) {
+  return classifyEntry(filePath, basename) !== 'novel';
+}
+
+module.exports = { PLUGIN_CACHE_ALLOWLIST, isAllowlisted, classifyEntry };
