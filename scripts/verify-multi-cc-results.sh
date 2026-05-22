@@ -79,7 +79,10 @@ in_allowlist() {
 
 # validate_dir <cc-version>
 # Runs all 6 assertions against $RESULTS_ROOT/<cc-version>/*.json.
-# Returns 0 if all pass, non-zero if any FAIL.
+# Echoes the FAIL count on stdout (0 if all pass); per-assertion diagnostics go
+# to stderr. Callers capture the count via command substitution — NOT the exit
+# status, which is taken mod 256 and would wrap a 256-failure dir to "clean"
+# (IN-04). validate_dir is stdout-silent otherwise, so stdout carries only the count.
 validate_dir() {
   local cc="$1"
   local dir="$RESULTS_ROOT/$cc"
@@ -89,6 +92,7 @@ validate_dir() {
   if [[ ! -d "$dir" ]]; then
     # Bare mode (active CC) treats this as non-blocking (D-21 wording);
     # explicit-version mode handles the absent case as exit 2 at top level.
+    printf '%s\n' 0
     return 0
   fi
 
@@ -170,7 +174,10 @@ validate_dir() {
       # cell's version-scoped path AND the "Validated stable" verdict (grep the
       # path first, then re-grep that row for the verdict — robust to whichever
       # table column each token lands in).
-      if grep -E "v1\.3-multi-cc-ver/${cc}/${pid}" "$REPO/docs/decisions.md" 2>/dev/null \
+      # grep -F (IN-03): the cell path is a literal substring, not a regex. -F
+      # treats ERE metacharacters in the operator-supplied $cc (and $pid) as
+      # literal, so a version like '2.1.*' cannot over-match decisions.md rows.
+      if grep -F "v1.3-multi-cc-ver/${cc}/${pid}" "$REPO/docs/decisions.md" 2>/dev/null \
            | grep -F "Validated stable" >/dev/null 2>&1; then
         echo "verify-multi-cc-results: $pid (cc $cc) has conclusion=ambiguous but its $cc cell is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
         fails=$((fails+1))
@@ -179,7 +186,7 @@ validate_dir() {
   done
   shopt -u nullglob
 
-  return "$fails"
+  printf '%s\n' "$fails"
 }
 
 # --- Arg parsing (D-24) ---
@@ -216,16 +223,14 @@ case "$MODE" in
     if [[ ! -d "$RESULTS_ROOT/$cc" ]]; then
       exit 0
     fi
-    validate_dir "$cc"
-    GLOBAL_FAILS=$?
+    GLOBAL_FAILS=$(validate_dir "$cc")
     ;;
   explicit)
     if [[ ! -d "$RESULTS_ROOT/$TARGET_VERSION" ]]; then
       echo "verify-multi-cc-results: requested version dir does not exist: $RESULTS_ROOT/$TARGET_VERSION" >&2
       exit 2
     fi
-    validate_dir "$TARGET_VERSION"
-    GLOBAL_FAILS=$?
+    GLOBAL_FAILS=$(validate_dir "$TARGET_VERSION")
     ;;
   all)
     shopt -s nullglob
@@ -235,8 +240,7 @@ case "$MODE" in
       ver=$(basename "$verdir")
       found_any=1
       echo "verify-multi-cc-results: scanning $ver" >&2
-      validate_dir "$ver"
-      rc=$?
+      rc=$(validate_dir "$ver")
       if (( rc > 0 )); then
         GLOBAL_FAILS=$((GLOBAL_FAILS + rc))
         echo "verify-multi-cc-results: $ver failed ($rc assertion(s))" >&2
