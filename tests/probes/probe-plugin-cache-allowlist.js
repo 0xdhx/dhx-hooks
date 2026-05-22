@@ -197,6 +197,19 @@ ok('[leaf] helper.py under recognized python/ segment -> content',
 ok('[leaf] unrecognized intermediate segment -> novel (boundary holds)',
   classifyEntry('claude-plugins-official/p/1.0.0/weird-intermediate/x.bin', 'x.bin') === 'novel');
 
+// ---- [WR-01] generic plugin sub-tree segments classify content (260521-tj5) --
+// A leaf under each newly-widened generic segment classifies `content`, not
+// `novel` — so a real plugin file changed under one of these during a no-version-
+// change session fires `⚠ restart plugins` (closes the WR-01 drift false-negative).
+for (const seg of ['src', 'lib', 'dist', 'bin', 'config']) {
+  ok(`[WR-01] leaf under widened ${seg}/ segment -> content`,
+    classifyEntry(`claude-plugins-official/superpowers/5.0.7/${seg}/foo.js`, 'foo.js') === 'content');
+}
+// node_modules is DELIBERATELY EXCLUDED (deps churn would flood drift) — a leaf
+// under it stays `novel` and surfaces via `⚠ cc-novel` for triage.
+ok('[WR-01] node_modules leaf stays novel (deliberately excluded)',
+  classifyEntry('claude-plugins-official/superpowers/5.0.7/node_modules/lodash/index.js', 'index.js') === 'novel');
+
 // ---- [V5] totality — classifyEntry never throws, always returns a state ----
 for (const [p, b] of [[null, null], ['', ''], [undefined, undefined], [123, 456], ['/', '/']]) {
   let state, threw = false;

@@ -193,6 +193,28 @@ const legitContentSegments = new Set([
   'themes',               // standard plugin sub-tree dir
   'python',               // standard plugin sub-tree dir
   'typescript',           // standard plugin sub-tree dir
+
+  // --- WR-01 post-Phase-18 widening (260521-tj5) -------------------------
+  // High-frequency GENERIC plugin sub-tree segments. 18-REVIEW.md WR-01: post-
+  // inversion a real plugin file changed under an unrecognized intermediate
+  // segment during a no-version-change session produces NO signal at all (it
+  // classifies `novel` → excluded from drift, AND enumeration runs only on a CC
+  // version bump). `src`/`lib`/`dist`/`bin`/`config` are extremely common in
+  // JS/TS plugins yet were absent, so a change there was a drift false-negative
+  // until the next CC version bump. SHAPE-AWARE constraint (same as the survey
+  // widening above, RESEARCH.md § Anti-Patterns): path-scoped SEGMENT names ONLY
+  // — NEVER bare-hex object-hash basenames. `node_modules` is DELIBERATELY
+  // EXCLUDED: a deps change is technically a real plugin change, but a
+  // node_modules churn would flood the drift signal (a single `npm install`
+  // touches thousands of leaves); deps changes already surface via the plugin's
+  // own version-dir bump, so excluding it keeps the `⚠ restart plugins` signal
+  // meaningful. A node_modules leaf classifies `novel` and surfaces via
+  // `⚠ cc-novel` for triage if a maintainer ever needs it.
+  'src',                  // WR-01 — generic source dir (JS/TS plugins)
+  'lib',                  // WR-01 — generic library dir
+  'dist',                 // WR-01 — generic build-output dir
+  'bin',                  // WR-01 — generic executable dir
+  'config',               // WR-01 — generic config dir
 ]);
 
 // --- versionDirPattern ------------------------------------------------------
