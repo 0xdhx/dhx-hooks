@@ -73,7 +73,7 @@ run_helper() {
   local state_arg=${2:-}
   local home
   home=$(dirname "$cfg")
-  HOME="$home" CLAUDE_CONFIG_DIR="$cfg" bash "$HELPER" $state_arg < /dev/null >/dev/null 2>&1
+  HOME="$home" CLAUDE_CONFIG_DIR="$cfg" bash "$HELPER" "$state_arg" < /dev/null >/dev/null 2>&1
   printf '%s' "$?"
 }
 
@@ -85,7 +85,7 @@ run_helper_capture_stderr() {
   local state_arg=${2:-}
   local home
   home=$(dirname "$cfg")
-  HOME="$home" CLAUDE_CONFIG_DIR="$cfg" bash "$HELPER" $state_arg < /dev/null 2>&1 >/dev/null
+  HOME="$home" CLAUDE_CONFIG_DIR="$cfg" bash "$HELPER" "$state_arg" < /dev/null 2>&1 >/dev/null
 }
 
 pass() { printf '  ✓ %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -296,6 +296,57 @@ if [[ "$dispatch_rc" == "0" ]] && jq -e '.plugins["dhx@dhx-local"]' "$ip" >/dev/
   pass "dispatch-seam-shape smoke: [ -x ] && bash \"\$HELPER\" \"\$STATE\" reached the helper and repaired the fixture"
 else
   fail "dispatch-seam-shape smoke: dispatch shape did not repair the fixture (rc=$dispatch_rc)"
+fi
+
+# ---- 8. WR-01: absent registry (NONE) → graceful structured REFUSE, no seed, no .bak ----
+# MISSING is LOCKED out-of-scope (19-CONTEXT <domain>, D-14). An absent installed_plugins.json must
+# REFUSE cleanly — NOT seed a fresh registry (that is the out-of-scope option-b MISSING repair the
+# 170fc61 port did) and NOT abort with a raw `cp: cannot stat` under set -e (the WR-01 regression).
+# Exercises the previously-unused NONE fixture in make_case.
+echo "EXPECT: WR-01-absent-registry-graceful-refuse"
+cfg=$(make_case "absent-none" NONE)
+ip="$cfg/plugins/installed_plugins.json"
+none_rc=$(run_helper "$cfg")
+none_stderr=$(run_helper_capture_stderr "$cfg")
+if [[ "$none_rc" != "0" ]]; then
+  pass "WR-01 absent-registry: helper REFUSEd (rc=$none_rc)"
+else
+  fail "WR-01 absent-registry: helper returned rc=0 (expected non-zero REFUSE)"
+fi
+if grep -qE '^repair-installed-plugins: REFUSE: installed_plugins.json absent' <<< "$none_stderr"; then
+  pass "WR-01 absent-registry: structured REFUSE with absent-registry message (no raw cp: cannot stat)"
+else
+  fail "WR-01 absent-registry: REFUSE message missing/unstructured (got: $none_stderr)"
+fi
+if [[ ! -f "$ip" ]]; then
+  pass "WR-01 absent-registry: no fresh registry seeded (MISSING stays out-of-scope; not option-b)"
+else
+  fail "WR-01 absent-registry: a registry was seeded (option-b leak into out-of-scope MISSING)"
+fi
+shopt -s nullglob
+none_baks=( "$ip".bak.* )
+shopt -u nullglob
+if (( ${#none_baks[@]} == 0 )); then
+  pass "WR-01 absent-registry: no .bak created (nothing to back up)"
+else
+  fail "WR-01 absent-registry: unexpected .bak created (${none_baks[*]##*/})"
+fi
+
+# ---- 9. WR-02: BADJSON .bak filename carries sub-second + PID disambiguation ----
+# Two BADJSON repairs in the same wall-clock second must resolve to distinct .bak names. Structural
+# assertion (timing-independent): the name must carry milliseconds (.NNN before Z) AND a trailing
+# .PID — mirroring the $$-scoped TMP idiom — so the second cp cannot clobber the first backup.
+echo "EXPECT: WR-02-bak-name-disambiguation"
+cfg=$(make_case "wr02-baknames" '{ corrupt')
+ip="$cfg/plugins/installed_plugins.json"
+run_helper "$cfg" >/dev/null
+shopt -s nullglob
+wr02_baks=( "$ip".bak.* )
+shopt -u nullglob
+if (( ${#wr02_baks[@]} >= 1 )) && [[ "${wr02_baks[0]}" =~ \.bak\.[0-9]{8}T[0-9]{6}\.[0-9]{3}Z\.[0-9]+$ ]]; then
+  pass "WR-02: .bak name carries sub-second+PID suffix (${wr02_baks[0]##*/})"
+else
+  fail "WR-02: .bak name lacks sub-second+PID disambiguation (got: ${wr02_baks[*]##*/})"
 fi
 
 echo "---"

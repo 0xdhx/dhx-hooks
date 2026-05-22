@@ -101,6 +101,19 @@ case "$IP_REAL" in
     ;;
 esac
 
+# --- Absent-registry guard (WR-01): MISSING is LOCKED out-of-scope (19-CONTEXT <domain>, D-14) ---
+# A non-existent installed_plugins.json is the MISSING state — NOT BADJSON/UNINSTALLED. Without this
+# guard, self-detect misclassifies an absent file as BADJSON (jq -e . fails on a missing path) and the
+# BADJSON branch's `cp "$IP_PATH" …` aborts under set -e with a raw `cp: cannot stat` (no structured
+# REFUSE); an explicit UNINSTALLED arg dead-ends the same way at `cat "$IP_PATH"`. Refuse cleanly for
+# ALL entry paths here. Seeding a fresh registry on absent is the OUT-OF-SCOPE MISSING repair — the
+# 170fc61 port source did seed, but Phase 19 D-14 locks MISSING out (CONTEXT <domain>), so do NOT
+# seed; CC rehydrates the registry on the next plugin operation.
+if [[ ! -f "$IP_PATH" ]]; then
+  echo "repair-installed-plugins: REFUSE: installed_plugins.json absent ($IP_PATH) — MISSING is out of scope (CC rehydrates on the next plugin operation; for broader drift see the manual recovery procedure in docs/troubleshooting.md)." >&2
+  exit 1
+fi
+
 # --- Cache source-of-truth probe (D-08/T-19-06) ---
 # Without the plugin cache directory we cannot synthesize truthful metadata
 # (installPath, version). Refuse rather than fabricate — a repair that invents
@@ -230,7 +243,13 @@ case "$STATE" in
     # Input is invalid-by-definition JSON. Back up the corrupt original to .bak FIRST, then
     # write a minimal dhx-only v2 seed + WARN that other marketplaces may be lost. No partial-
     # parse salvage of malformed JSON (D-08).
-    cp "$IP_PATH" "$IP_PATH.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+    # WR-02: sub-second (%3N) + per-pid ($$) suffix so two BADJSON repairs in the same wall-clock
+    # second cannot clobber each other's backup (mirrors the $$-scoped TMP idiom below). The absent-
+    # registry guard above guarantees $IP_PATH exists here, so the cp source is always present; the
+    # `|| REFUSE` covers permission/IO failure (never a raw `cp: cannot stat` abort under set -e).
+    BAK="$IP_PATH.bak.$(date -u +%Y%m%dT%H%M%S.%3NZ).$$"
+    cp "$IP_PATH" "$BAK" \
+      || { echo "repair-installed-plugins: REFUSE: failed to back up corrupt original to $BAK" >&2; exit 1; }
     NEW_JSON=$(jq -n \
       --arg k "$PLUGIN_KEY" \
       --argjson entry "$DHX_ENTRY" \
