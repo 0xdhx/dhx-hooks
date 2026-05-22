@@ -8,6 +8,10 @@
 #   - Guard 3-state branching against full/partial/no-read entries
 #   - Guard treats absent `source` field as "read" (D-07 null-safety)
 #   - TTL expiry: entries with ts < NOW-7200 produce READ-BEFORE-EDIT (D-15, V-TTL-EXPIRY)
+#   - PARTIAL-READ NOTE once-per-(session,file) gate (CAL-POLISH-02; D-02/D-04/D-11):
+#     1st Edit fires (incl. the D-11 fail-safe first-read ENOENT path) / 2nd same-
+#     (session,ticks,file) Edit silent / different file fires / rotated-ticks process
+#     re-arms / invalid session_id disables (always-fire) / malformed JSONL line skipped
 #
 # INVARIANT: writer is the SOLE PreToolUse:Read writer post-Phase 1
 # (D-05 collapses Boucle hook.sh + dhx-read-partial-cache.sh into one).
@@ -26,7 +30,8 @@ set -uo pipefail
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"
 TMPHOME=$(mktemp -d)
 TMPFILE=$(mktemp)
-trap 'rm -rf "$TMPHOME" "$TMPFILE"' EXIT
+TMPFILE2=$(mktemp)   # second fixture file for the per-file-granularity seen-set assertion
+trap 'rm -rf "$TMPHOME" "$TMPFILE" "$TMPFILE2"' EXIT
 
 cleanup_fail() {
   echo "[FAIL] $1" >&2
@@ -147,5 +152,91 @@ OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
 echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("READ-BEFORE-EDIT")' >/dev/null \
   || cleanup_fail "V-TTL-EXPIRY (D-15): past-TTL entry (ts=NOW-8000) should NOT suppress; expected READ-BEFORE-EDIT, got: $OUTPUT"
 
-echo "[PASS] dhx-read-cache.sh: 13/13 assertions (writer 7 + guard 5 + V-TTL-EXPIRY 1)"
+# ====== PARTIAL-READ NOTE once-per-(session,file) CONTRACT (CAL-POLISH-02; D-02/D-04/D-11) ======
+# Behavioral contract — invokes the guard, asserts the NOTE fires/suppresses by
+# (session_id, CC-ticks, file). The probe CANNOT drive findCCTicks directly (it
+# reads /proc for the LIVE ticks), so:
+#   - cases that need the gate to HIT pre-seed nothing; the FIRST invocation creates
+#     the seen-set under the hook's live {session_id}-{ticks}, the SECOND invocation
+#     hits it.
+#   - the ticks-varying re-arm relocates the populated seen-set to a DIFFERENT ticks
+#     suffix (and clears the live-ticks file), proving suppression is ticks-keyed,
+#     not session-only — a static filename grep cannot catch the shell-ticks regression.
+# All writes stay under $TMPHOME/.cache/dhx/ (SAFE_FOR_LIVE: yes — no escape to real ~/.cache/dhx).
+> "$CACHE"
+echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"read\",\"partial\":true}" >> "$CACHE"
+SEEN_SID="probe-seen-001"
+SEEN_INPUT=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID" "$TMPFILE")
+
+# Test 15 (V-SEEN-FAILSAFE-FIRST-READ / D-11): NO pre-existing seen-set → the
+# readFileSync throws ENOENT → fail-safe treats it as a cache-miss → the NOTE FIRES,
+# then the file is created on append. This is the regression net for the D-11
+# swallow-on-ENOENT bug both reviewers flagged. (Note: NO seen-set is pre-seeded here.)
+find "$TMPHOME/.cache/dhx" -name 'partial-read-seen-*.jsonl' -delete 2>/dev/null
+OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
+echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
+  || cleanup_fail "V-SEEN-FAILSAFE-FIRST-READ (D-11): first Edit with NO seen-set should FIRE (ENOENT fail-safe), got: $OUTPUT"
+SEEN_FILE=$(find "$TMPHOME/.cache/dhx" -name "partial-read-seen-${SEEN_SID}-*.jsonl" | head -1)
+[ -n "$SEEN_FILE" ] || cleanup_fail "V-SEEN-FAILSAFE-FIRST-READ (D-11): cache-miss did not append a partial-read-seen-*.jsonl"
+
+# Test 16 (V-SEEN-2ND-EDIT-SILENT / D-02): 2nd Edit, SAME session_id + SAME live ticks
+# + SAME file → seen-set HIT → silent (the happy-path once-per-file dedup). Behavioral
+# (invokes the hook twice), not a static filename grep.
+OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
+[ -z "$OUTPUT" ] || cleanup_fail "V-SEEN-2ND-EDIT-SILENT (D-02): 2nd same-(session,ticks,file) Edit should be silent, got: $OUTPUT"
+
+# Test 17 (V-SEEN-DIFFERENT-FILE-FIRES / D-02): a DIFFERENT file in the same session
+# → fires (per-file granularity, not per-session).
+echo "{\"path\":\"$TMPFILE2\",\"ts\":$NOW,\"source\":\"read\",\"partial\":true}" >> "$CACHE"
+SEEN_INPUT2=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID" "$TMPFILE2")
+OUTPUT=$(echo "$SEEN_INPUT2" | HOME="$TMPHOME" node "$GUARD")
+echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
+  || cleanup_fail "V-SEEN-DIFFERENT-FILE-FIRES (D-02): different file in same session should FIRE, got: $OUTPUT"
+
+# Test 18 (V-SEEN-TICKS-REARM / D-04): a rotated-ticks process (e.g. /resume) re-arms.
+# The seen-set is keyed on (session_id, CC-ticks) — relocate the populated seen-set to a
+# DIFFERENT ticks suffix and CLEAR the live-ticks file, so the hook's live-ticks lookup
+# misses → fires again. This varies the {ticks} component (not just {session_id}); a
+# session_id-only test would NOT catch a regression that drops ticks from the key.
+LIVE_TICKS=$(basename "$SEEN_FILE" | sed -nE "s/^partial-read-seen-${SEEN_SID}-(.+)\.jsonl$/\1/p")
+[ -n "$LIVE_TICKS" ] || cleanup_fail "V-SEEN-TICKS-REARM (D-04): could not parse live ticks from $SEEN_FILE"
+OTHER_TICKS="${LIVE_TICKS}9999"   # a distinct, non-live ticks value
+cp "$SEEN_FILE" "$TMPHOME/.cache/dhx/partial-read-seen-${SEEN_SID}-${OTHER_TICKS}.jsonl"
+> "$SEEN_FILE"   # clear the live-ticks seen-set → rotated-ticks process sees a fresh state
+OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
+echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
+  || cleanup_fail "V-SEEN-TICKS-REARM (D-04): rotated-ticks process should re-arm (fire), got: $OUTPUT"
+
+# Test 19 (V-SEEN-INVALID-SID-DISABLES / D-11 constraint 3): an unsafe session_id
+# (contains / or ..) DISABLES the optimization → always-fire (no dedup), and writes
+# NO seen-set file (reject-and-disable, not strip-and-continue → no key collision).
+BAD_INPUT=$(printf '{"tool_name":"Edit","session_id":"a/b","tool_input":{"file_path":"%s"}}' "$TMPFILE")
+OUT1=$(echo "$BAD_INPUT" | HOME="$TMPHOME" node "$GUARD")
+OUT2=$(echo "$BAD_INPUT" | HOME="$TMPHOME" node "$GUARD")
+echo "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
+  || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id 1st Edit should FIRE, got: $OUT1"
+echo "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
+  || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id 2nd Edit should ALSO FIRE (disable, not dedup), got: $OUT2"
+BAD_SEEN=$(find "$TMPHOME/.cache/dhx" -path '*partial-read-seen-a*' 2>/dev/null | wc -l)
+[ "$BAD_SEEN" -eq 0 ] || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id wrote a seen-set file (should reject-and-disable)"
+
+# Test 20 (V-SEEN-MALFORMED-LINE-SKIP / D-11 constraint 2): a malformed JSONL line in the
+# seen-set is skipped INDIVIDUALLY; dedup still works on the well-formed record.
+SEEN_SID3="probe-seen-003"
+SEEN_INPUT3=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID3" "$TMPFILE")
+# Prime the seen-set under the live ticks by firing once (creates the file), then inject garbage.
+echo "$SEEN_INPUT3" | HOME="$TMPHOME" node "$GUARD" >/dev/null
+SEEN_FILE3=$(find "$TMPHOME/.cache/dhx" -name "partial-read-seen-${SEEN_SID3}-*.jsonl" | head -1)
+[ -n "$SEEN_FILE3" ] || cleanup_fail "V-SEEN-MALFORMED-LINE-SKIP (D-11): priming Edit did not create the seen-set"
+# Prepend a malformed line; the well-formed record (written by the prime) must still dedup.
+printf 'this is not valid json\n%s' "$(cat "$SEEN_FILE3")" > "$SEEN_FILE3.tmp" && mv "$SEEN_FILE3.tmp" "$SEEN_FILE3"
+OUTPUT=$(echo "$SEEN_INPUT3" | HOME="$TMPHOME" node "$GUARD")
+[ -z "$OUTPUT" ] || cleanup_fail "V-SEEN-MALFORMED-LINE-SKIP (D-11): malformed line should be skipped and the good record still dedup (silent), got: $OUTPUT"
+
+# Test 21 (V-SEEN-NO-LIVE-ESCAPE / SAFE_FOR_LIVE): the seen-set work never escaped to the
+# real ~/.cache/dhx — assert all partial-read-seen-* files live under $TMPHOME only.
+ESCAPED=$(find "$HOME/.cache/dhx" -maxdepth 1 -name "partial-read-seen-probe-seen-*.jsonl" 2>/dev/null | wc -l)
+[ "$ESCAPED" -eq 0 ] || cleanup_fail "V-SEEN-NO-LIVE-ESCAPE: probe wrote a partial-read-seen file to the REAL ~/.cache/dhx (SAFE_FOR_LIVE violation)"
+
+echo "[PASS] dhx-read-cache.sh: 20/20 assertions (writer 7 + guard 5 + V-TTL-EXPIRY 1 + seen-set 7)"
 exit 0
