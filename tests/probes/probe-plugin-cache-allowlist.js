@@ -156,6 +156,31 @@ ok('[classify] unknown 4th marketplace -> novel (D-15)',
 ok('[classify] unrecognized INTERMEDIATE segment -> novel',
   classifyEntry('claude-plugins-official/p/1.0.0/weird-intermediate/x.bin', 'x.bin') === 'novel');
 
+// ---- [CR-01 / WR-02] D-15 marketplace gate must NOT be bypassed by the
+//      legitContentBasenames fast-path (260521-tj5) -------------------------
+// WR-02 surfaced that the prior D-15 assertions only used non-allowlisted leaf
+// basenames (x.md), so they exercised the segment-0 gate via leaves that never
+// hit the fast-content short-circuit — passing even though CR-01 was present. A
+// brand-new marketplace's plugin.json (the realistic case — every plugin ships
+// one) was never tested. These assertions FAIL on the pre-CR-01 code (legit
+// basename under an unknown marketplace returned 'content') and PASS after the
+// SEG0-GATED guard. plugin.json / README.md / LICENSE under an unknown
+// marketplace are the D-15 novel signal, not 'content'.
+ok('[CR-01] plugin.json under UNKNOWN marketplace -> novel (gate not bypassed)',
+  classifyEntry('mystery-marketplace/foo/1.0.0/plugin.json', 'plugin.json') === 'novel');
+ok('[CR-01] README.md under UNKNOWN marketplace -> novel (gate not bypassed)',
+  classifyEntry('mystery-marketplace/foo/1.0.0/README.md', 'README.md') === 'novel');
+ok('[CR-01] LICENSE under UNKNOWN marketplace -> novel (gate not bypassed)',
+  classifyEntry('totally-fake-mp/x/y/z/q/LICENSE', 'LICENSE') === 'novel');
+// CR-01 REGRESSION GUARD: a legit basename under a KNOWN marketplace (even with
+// an unrecognized intermediate ancestor) must still classify 'content' — the
+// SEG0-GATED guard only fires the gate on an unrecognized segment 0, it does NOT
+// re-open the 39.1%-gap fix. This is the single most important check.
+ok('[CR-01 guard] package.json under KNOWN mp + weird intermediate stays content',
+  classifyEntry('claude-plugins-official/superpowers/5.0.7/weird-intermediate/package.json', 'package.json') === 'content');
+ok('[CR-01 guard] plugin.json under KNOWN marketplace stays content',
+  classifyEntry('dhx-local/dhx/1.0.0/plugin.json', 'plugin.json') === 'content');
+
 // ---- [leaf] the D-24d leaf rule — the test-time proof the 39.1% gap closes --
 // An arbitrary leaf basename under FULLY-RECOGNIZED intermediate ancestry
 // classifies `content` (NOT requiring the basename in legitContentBasenames).

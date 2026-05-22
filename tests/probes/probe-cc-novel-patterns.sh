@@ -215,6 +215,33 @@ else
   fail "[7] unknown 4th marketplace surfaces as novel (D-15)" "(got=$got)"
 fi
 
+# ---- [8] CR-01 / WR-02 — unknown marketplace whose ONLY files are
+#          allowlisted leaf basenames (plugin.json + README.md) → ≥1 novel ----
+# WR-02: scenario [7] uses a NON-allowlisted leaf (x.md), so it exercised the
+# segment-0 gate via a leaf that never hit the legitContentBasenames fast-path —
+# it passed even with CR-01 present. The realistic case is a brand-new
+# marketplace whose files ARE allowlisted basenames (every plugin ships a
+# plugin.json + README.md). Pre-CR-01 the fast-path returned 'content' for those,
+# so enumerateNovelPatterns saw 0 novel hits — the new marketplace was INVISIBLE.
+# This scenario seeds ONLY plugin.json + README.md under a new marketplace and
+# asserts ≥1 novel hit. FAILS on pre-CR-01 code, PASSES after the SEG0-GATED guard.
+C8="$TMPDIR_ROOT/c8"
+mkdir -p "$C8/brand-new-marketplace/some-plugin/1.0.0"
+echo x > "$C8/brand-new-marketplace/some-plugin/1.0.0/plugin.json"
+echo x > "$C8/brand-new-marketplace/some-plugin/1.0.0/README.md"
+got=$(node -e "
+  const m = require('$WRAPPER');
+  const r = m.enumerateNovelPatterns('$C8');
+  // the new marketplace's allowlisted-basename files must surface as novel
+  const unknownHits = r.filter(x => x.path.split('/')[0] === 'brand-new-marketplace');
+  process.stdout.write(unknownHits.length >= 1 ? 'ok' : 'count:' + r.length);
+" 2>/dev/null || echo "<error>")
+if [ "$got" = "ok" ]; then
+  pass "[8] unknown marketplace with ONLY allowlisted leaves (plugin.json+README.md) → ≥1 novel (CR-01/WR-02)"
+else
+  fail "[8] unknown marketplace with ONLY allowlisted leaves → ≥1 novel (CR-01/WR-02)" "(got=$got)"
+fi
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 exit $((FAIL > 0 ? 1 : 0))

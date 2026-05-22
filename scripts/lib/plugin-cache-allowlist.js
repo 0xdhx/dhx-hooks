@@ -283,11 +283,23 @@ function classifyEntry(filePath, basename) {
     if (gitInternalsPathPattern.test(filePath)) return 'bookkeeping';
   }
 
-  // Fast content check — a known legit leaf basename is content regardless of
-  // ancestry (covers ROOT-level config files reached with no recognized
-  // intermediate segment, e.g. <marketplace>/<plugin>/<version>/package.json).
+  // Fast content check — a known legit leaf basename is content, but ONLY under
+  // a recognized marketplace (or as a true root-level file). CR-01 fix
+  // (post-Phase-18, 260521-tj5): the original fast-path returned 'content' for a
+  // legit basename REGARDLESS of segment 0, which short-circuited the D-15
+  // segment-0 marketplace gate below — so a brand-new marketplace's plugin.json /
+  // README.md / LICENSE classified 'content' instead of 'novel'. Since every real
+  // plugin directory ships a plugin.json, an unknown marketplace was effectively
+  // invisible to the RAT-04 novel detector. The SEG0-GATED guard preserves the
+  // root-config-leaf behavior (seg0 === undefined → a leaf with no path segments)
+  // while letting an unrecognized segment 0 fall through to the D-15 gate, where
+  // it correctly classifies 'novel'. This is NOT a plain reorder: covers ROOT-
+  // level config files (e.g. <marketplace>/<plugin>/<version>/package.json reached
+  // via the loop's leaf rule, OR a bare root file) without re-opening the gate.
   if (typeof basename === 'string' && legitContentBasenames.has(basename)) {
-    return 'content';
+    const seg0 = (typeof filePath === 'string' ? filePath : '')
+      .split(/[/\\]+/).filter(Boolean)[0];
+    if (seg0 === undefined || marketplaceTopLevel.has(seg0)) return 'content';
   }
 
   // Unclassifiable input (non-string / empty filePath with no bookkeeping or
