@@ -61,8 +61,10 @@ cd "$GIT_TOPLEVEL"
 # tests/test-probe-set-flag-lint.sh can source this script and drive the lint
 # against fixture-staged content directly (the script's `cd "$GIT_TOPLEVEL"`
 # above makes running the whole gate against a mktemp fixture brittle, and risks
-# recursion). The function increments the shared FAIL accumulator and returns
-# nonzero when it finds a violation. The source-time guard below
+# recursion). The function increments the shared FAIL accumulator (so the gate's
+# consolidated `exit 1` blocks the commit) AND returns its OWN result — a prior
+# check that set FAIL=1 must not make this lint claim a set+e violation it never
+# found (WR-02, Phase 20 code-review follow-up). The source-time guard below
 # (DHX_SKIP_SET_FLAG_LINT_TESTS) keeps sourcing from running the gate body.
 lint_probe_set_flags() {
   # D-10: `|| true` so a no-candidate (docs-only) commit doesn't abort the host.
@@ -71,6 +73,7 @@ lint_probe_set_flags() {
   [ -z "$candidates" ] && return 0
 
   local file added_set_plus_e full_content
+  local found=0
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     # D-10: per-file newly-added `set +e` detection; `|| true` — an empty diff
@@ -99,9 +102,14 @@ This lint reads the FULL staged content (git show :$file), not just the diff,
 so a legitimate 'set -e' + 'set +e' save/restore pair is exempt — only files
 that never enable errexit are flagged.
 EOF
-    FAIL=1
+    FAIL=1    # contribute to the shared gate accumulator (the gate's exit 1 blocks)
+    found=1   # WR-02: track THIS function's own finding, independent of FAIL
   done <<< "$candidates"
-  [ "$FAIL" -eq 0 ]
+  # WR-02 (Phase 20 code-review follow-up): return our OWN result, not the global
+  # FAIL — so the test harness (and any future caller) gets an honest verdict even
+  # when an unrelated earlier check already set FAIL=1. The shared FAIL above is
+  # what actually gates the commit; this return is the function's local contract.
+  [ "$found" -eq 0 ]
 }
 
 # D-12 source-time guard: when tests/test-probe-set-flag-lint.sh sources this

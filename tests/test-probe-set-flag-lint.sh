@@ -79,6 +79,33 @@ run_lint_in_fixture() {
   fi
 }
 
+# WR-02 honest-return runner (Phase 20 code-review follow-up): POISON the shared
+# FAIL accumulator BEFORE the call, run the function over a NO-VIOLATION fixture,
+# and echo the function's OWN return code ($?), not global FAIL. With the WR-02
+# fix the function returns 0 (it found nothing) even though FAIL was already 1;
+# the pre-fix code returned nonzero because it read the global FAIL for its verdict.
+run_lint_rc_poisoned_fail() {
+  local setup_fn="$1"; shift
+  local repo rc
+  repo=$(mktemp -d)
+  (
+    cd "$repo" || exit 99
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "test"
+    mkdir -p tests/probes docs
+    "$setup_fn" "$@"
+    FAIL=1                              # poison: unrelated earlier check failed
+    lint_probe_set_flags >/dev/null 2>&1
+    echo "$?"                           # the function's OWN return, not global FAIL
+  )
+  rc=$?
+  rm -rf "$repo"
+  if [ "$rc" -ne 0 ]; then
+    echo "FIXTURE-ERROR-rc-$rc"
+  fi
+}
+
 # A probe body that DOES enable errexit (legitimate save/restore pair).
 ERREXIT_BODY='#!/bin/bash
 set -euo pipefail
@@ -262,6 +289,25 @@ test_case7_setue_pair_passes() {
 }
 
 # ---------------------------------------------------------------------------
+# Case 8: WR-02 honest return — with the shared FAIL accumulator already poisoned
+#         to 1 (an unrelated earlier check failed) and a NO-VIOLATION fixture,
+#         the function must RETURN 0 (its own verdict). The pre-WR-02 code read
+#         global FAIL for its return and would report a set+e violation it never
+#         found — a false contract masked only by the `|| true` at the call site.
+# ---------------------------------------------------------------------------
+
+test_case8_honest_return() {
+  echo "Case 8: WR-02 — poisoned FAIL=1 + no-violation fixture → function RETURNS 0 (own result)"
+  local out
+  out=$(run_lint_rc_poisoned_fail setup_case4_errexit_pair)
+  if [ "$out" = "0" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: 8: lint returns its own clean verdict despite pre-set FAIL=1"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL: 8: expected rc 0 (honest return), got '$out' (false contract — WR-02 regressed)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all cases
 # ---------------------------------------------------------------------------
 
@@ -281,6 +327,8 @@ echo ""
 test_case6_red_commit_fires
 echo ""
 test_case7_setue_pair_passes
+echo ""
+test_case8_honest_return
 echo ""
 
 print_results

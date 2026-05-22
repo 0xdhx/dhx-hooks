@@ -127,7 +127,14 @@ check_header_fallback() {
   MD_DEFERRED=$(sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
     | classify_deferred_lines)
   if [ -n "$MD_DEFERRED" ]; then
-    COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
+    # WR-03 (Phase 20 code-review follow-up): mirror the main-path D-01/D-10 fix.
+    # The prior echo|wc-l count returned 1 for empty/whitespace-only classifier
+    # output (the `-n` guard above passes on whitespace), producing a phantom
+    # "1 deferred item(s)" header-fallback warning. Count classifier bullets with
+    # the same errexit-safe formula as the main UNCAPTURED path, and guard on a
+    # positive count before emitting the warning.
+    COUNT=$(printf '%s\n' "$MD_DEFERRED" | grep -c '^- ' || true)
+    [ "${COUNT:-0}" -le 0 ] && exit 0
     jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
       '{"decision": "block", "reason": $msg}'
     exit 0

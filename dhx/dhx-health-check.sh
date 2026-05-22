@@ -223,7 +223,16 @@ mv -f "$tmp" "$CACHE_FILE"
 # unchanged but the user wants a fresh drift baseline. Glob matches both the
 # process-stamped format (`-p<ticks>.json`) and the legacy session-id-only
 # format (for macOS fallback + migration). Other sessions' snapshots intact.
-if [[ -n "$SESSION_ID" ]]; then
+# WR-01 (Phase 20 code-review follow-up): SESSION_ID is untrusted (read from
+# stdin JSON). The second rm arg interpolates it UNQUOTED into a glob, so a
+# session_id of `*` would expand to `drift-snapshot-*-*.json` and delete EVERY
+# session's snapshots — the same untrusted-input-as-filename class the read-guard
+# hardened against (D-11). Allowlist the UUID shape (hex + hyphens + underscore)
+# before the rm; a non-conforming id skips the targeted prune (the -mtime +30
+# catchall below still reclaims it). Allowlist, not denylist: one check rejects
+# /, \, .. and every glob metachar (*, ?, [), while the intentional trailing `-*`
+# glob stays outside the variable.
+if [[ -n "$SESSION_ID" && "$SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
   rm -f "$CACHE_DIR/drift-snapshot-${SESSION_ID}.json" "$CACHE_DIR"/drift-snapshot-${SESSION_ID}-*.json
 fi
 

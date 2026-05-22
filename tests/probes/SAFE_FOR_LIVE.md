@@ -44,6 +44,7 @@ asserts row count == file count.
 | `probe-gate-6-cross-repo-parity.sh` | yes | read-only sha256 of the Gate 6 doc section across hooks-side + `~/repos/cross-repo/`; never modifies cross-repo (Phase 16 REQ-DRIFT-ACTION-04 verify-only parity probe; D-21/D-24) |
 | `probe-gsd-canonical-mirror-gate-tiered-outcome.sh` | yes | mktemp + env-overrides DHX_DRAFT_BUFFER_DIR + DHX_BACKUP_META; fixture marker dir + backup-meta; never touches the live dhx cache or live gsd-local-patches (Phase 16 REQ-DRIFT-ACTION-03 tiered-outcome probe) |
 | `probe-gsd-fork-aware-drift.sh` | yes | mktemp + node -e require with explicit liveRoot/forkRoot args; never reads live `~/.claude` |
+| `probe-health-check-session-id-rm-safety.sh` | yes | static grep of in-repo `dhx/dhx-health-check.sh` + allowlist-regex primitive + integration over a mktemp cache dir; never touches `$HOME` or the live cache (Phase 20 WR-01 session_id rm-glob safety) |
 | `probe-health-sh-no-side-effects.sh` | no | mktemp + fake HOME; full env-var isolation (Wave 2 tag preserved) |
 | `probe-health-sh-tiering.sh` | no | mktemp + fake HOME; uses stub-leaf-tool fixtures (Wave 2 tag preserved) |
 | `probe-health-suffix.js` | yes | uses `_make-fake-home` (mktemp + HOME override per spawn); fully sandboxed |

@@ -430,6 +430,41 @@ else
   check "behavioral: 2 real bullets → count $REAL_COUNT (expected 2)" 0
 fi
 
+# --- Section 11: header-fallback count is empty/whitespace-safe (WR-03) ---
+#
+# Phase 20 code-review follow-up (20-REVIEW.md WR-03): check_header_fallback()
+# retained the same `echo "$MD_DEFERRED" | wc -l` formula the main UNCAPTURED path
+# fixed in D-01 — a sibling code path with the identical phantom-count bug. A
+# whitespace-only classifier result passes the `-n "$MD_DEFERRED"` guard and
+# `echo|wc -l` returns 1, producing a phantom "1 deferred item(s) found under
+# markdown headers" warning. The fix mirrors D-01: bullet-shape-aware errexit-safe
+# count + a positive-count guard before emitting. The whitespace→0 behavioral
+# primitive is already proven in 10d/10e (same formula); 11a-c lock the fallback.
+#
+# Backs: docs/decisions.md Phase 20 code-review-follow-up row (WR-03).
+
+# 11a. Static: header-fallback uses the safe printf|grep -c formula.
+if grep -qF "printf '%s\n' \"\$MD_DEFERRED\" | grep -c '^- ' || true" "$HOOK"; then
+  check "header-fallback count formula is errexit-safe (printf|grep -c '^- '|| true)" 1
+else
+  check "header-fallback count formula missing safe form — WR-03 not fixed" 0
+fi
+
+# 11b. Static: the old buggy echo|wc -l formula is gone from the header-fallback.
+if grep -qF 'echo "$MD_DEFERRED" | wc -l' "$HOOK"; then
+  check "old buggy 'echo \$MD_DEFERRED | wc -l' header-fallback formula still present" 0
+else
+  check "old buggy 'echo \$MD_DEFERRED | wc -l' header-fallback formula removed" 1
+fi
+
+# 11c. Static: a positive-count guard now exists in BOTH paths (main + fallback).
+GUARD_COUNT=$(grep -cE '\[ "\$\{COUNT:-0\}" -le 0 \] && exit 0' "$HOOK" || true)
+if [[ "${GUARD_COUNT:-0}" -ge 2 ]]; then
+  check "positive-count guard present in both main + header-fallback paths (>=2)" 1
+else
+  check "header-fallback missing positive-count guard (found $GUARD_COUNT, expected >=2)" 0
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]
