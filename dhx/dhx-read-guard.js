@@ -82,6 +82,36 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// --- PARTIAL-READ NOTE once-per-(session,file) seen-set keying (CAL-POLISH-02) ---
+// D-04: the PARTIAL-READ NOTE seen-set is keyed on (session_id, CC-process-start-ticks)
+// so /resume (a NEW CC process — HP-016 field 22 rotates) re-arms the note while
+// repeated Edits within ONE process stay deduped. read-guard.js is registered
+// `node "$HOME/.claude/hooks/dhx-read-guard.js"`: the literal $HOME forces CC to
+// shell-wrap the command, so process.ppid is an EPHEMERAL SHELL whose start-ticks
+// rotate per Edit. A naive getProcessStartTicks(process.ppid) keys the seen-set on
+// that shell → the lookup ALWAYS misses → the note fires every time and the bug
+// persists silently. Mirror statusline-wrapper.js's findCCTicks() ancestry-walk
+// past shells to the first non-shell ancestor (the CC process). Returns null on
+// non-Linux / unreadable /proc / all-shell-ancestry → caller degrades to always-fire
+// (NEVER crashes — same degrade-safely principle as the cache scan below).
+const SHELL_COMMS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'tcsh', 'ksh']);
+function findCCTicks(startPpid) {
+  const MAX_HOPS = 5;
+  let pid = startPpid;
+  for (let i = 0; i < MAX_HOPS && pid > 1; i++) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const comm = stat.substring(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const after = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+      if (!SHELL_COMMS.has(comm)) {
+        return after[19] || null; // starttime = field 22 (HP-016)
+      }
+      pid = parseInt(after[1]); // ppid — walk up past the ephemeral shell
+    } catch { return null; }
+  }
+  return null;
+}
+
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
 process.stdin.setEncoding('utf8');
@@ -91,6 +121,7 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
     const toolName = data.tool_name;
+    const sessionId = data.session_id; // untrusted — validated before use as a filename component (D-11)
 
     // Only intercept Write and Edit tool calls
     if (toolName !== 'Write' && toolName !== 'Edit') {
@@ -198,7 +229,89 @@ process.stdin.on('end', () => {
     const fileName = path.basename(filePath);
 
     if (hasPartialRead) {
-      // Partial read found — targeted advisory
+      // PARTIAL-READ NOTE once-per-(session,file) gate (CAL-POLISH-02, D-02/D-04/D-11).
+      //
+      // D-11 FAIL-SAFE (load-bearing): ALL seen-set ops (existsSync / readFileSync /
+      // JSON.parse-per-line / mkdir / appendFileSync) live inside a TARGETED try/catch
+      // whose catch FALLS THROUGH TO FIRE the note — it does NOT process.exit and does
+      // NOT re-throw. The canonical case is the EXPECTED first-read ENOENT (the
+      // partial-read-seen-*.jsonl does not exist on the first partial read of a
+      // (session,ticks)): that error is treated as a cache-miss → the note FIRES, then
+      // the file is created on append. Any seen-set error degrades to FIRING, never to
+      // silence — mirrors the existing degrade-safely principle at lines 44 and 120-121.
+      // The ONLY legitimate suppression is the happy-path cache HIT (process.exit(0)).
+      //
+      // D-11 constraint (3): session_id is untrusted. If it is empty OR contains a path
+      // separator (/ or \) OR `..`, DISABLE the optimization entirely (always-fire) — do
+      // NOT strip-and-continue, because stripping risks two distinct session_ids
+      // colliding to one seen-set file (key collision). Reject-and-disable, not sanitize.
+      //
+      // findCCTicks(process.ppid) keys on the CC process (ancestry-walk past the
+      // shell-wrap, NOT a naive process.ppid read — see helper header). null ticks
+      // (non-Linux / unreadable /proc) → skip the gate → always-fire.
+      const sessionIdSafe =
+        typeof sessionId === 'string' && sessionId.length > 0 &&
+        !/[/\\]/.test(sessionId) && !sessionId.includes('..');
+      const ticks = findCCTicks(process.ppid);
+
+      if (sessionIdSafe && ticks) {
+        try {
+          // Resolve the target with the same realpath-then-resolve semantics the
+          // cache scan uses (IN-02), so the seen-set key matches the writer's path.
+          let seenTarget;
+          try {
+            seenTarget = fs.realpathSync(filePath);
+          } catch {
+            seenTarget = path.resolve(filePath);
+          }
+          const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
+          const seenPath = path.join(cacheDir, `partial-read-seen-${sessionId}-${ticks}.jsonl`);
+
+          // Scan the seen-set for a record matching the resolved target. The
+          // readFileSync throws ENOENT on the first partial read (file not yet
+          // created) — that propagates to the targeted catch below, which fires
+          // the note then this code creates the file on append.
+          const contents = fs.readFileSync(seenPath, 'utf8');
+          for (const line of contents.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const rec = JSON.parse(line);
+              if (rec && rec.path === seenTarget) {
+                // Cache HIT — happy-path once-per-(session,file) dedup.
+                // This is the ONLY legitimate suppression of the note.
+                process.exit(0);
+              }
+            } catch {
+              // skip malformed line, continue scanning (D-11 constraint 2 —
+              // mirrors scanCache's per-line resilience above)
+            }
+          }
+          // Cache MISS (no matching record) — append, then fall through to FIRE.
+          fs.mkdirSync(cacheDir, { recursive: true });
+          fs.appendFileSync(seenPath, JSON.stringify({ path: seenTarget, ts: Math.floor(Date.now() / 1000) }) + '\n');
+        } catch {
+          // D-11 fail-safe: ANY seen-set error (incl. the expected first-read
+          // ENOENT) is treated as a cache-miss → fall through to FIRE the note.
+          // Never silent suppression. Best-effort append so the next Edit can dedup;
+          // if even the append fails, the note has already fired (the safe outcome).
+          try {
+            const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
+            const seenPath = path.join(cacheDir, `partial-read-seen-${sessionId}-${ticks}.jsonl`);
+            let seenTarget;
+            try {
+              seenTarget = fs.realpathSync(filePath);
+            } catch {
+              seenTarget = path.resolve(filePath);
+            }
+            fs.mkdirSync(cacheDir, { recursive: true });
+            fs.appendFileSync(seenPath, JSON.stringify({ path: seenTarget, ts: Math.floor(Date.now() / 1000) }) + '\n');
+          } catch {
+            // append also failed — note still fires below (safe default)
+          }
+        }
+      }
+      // Partial read found — targeted advisory (fires on cache-miss, fail-safe error,
+      // null ticks, or invalid session_id; suppressed ONLY on a cache HIT above).
       const output = {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
