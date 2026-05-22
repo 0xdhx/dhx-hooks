@@ -1007,6 +1007,15 @@ function collectSnapshot(data) {
     // pattern as the 2026-04-18 *_count fields' schema migration).
     plugins_maxPath: plugins.maxPath,
     version: data.version || '',
+    // schema_version (D-07 / D-25) — explicit integer that re-baselines on
+    // mismatch. The Phase 18 inversion changed plugins_count's VALUE SEMANTICS
+    // (all-minus-denylist -> content-only) on an always-present key, which the
+    // existing presence-sniff migration guard cannot see. Injected here in the
+    // plain object construction (outside any try/catch) so it ALWAYS serializes.
+    // Both writers that serialize `current` (writeBaselineAndReturnClean and the
+    // gsdSuppressed rebaseline) get the field for free; the marker-driven
+    // rebaseline writer (which serializes the LOADED snapshot) sets it explicitly.
+    schema_version: CURRENT_SCHEMA_VERSION,
   };
 
   // Active settings.json — follow symlinks, hash WARN-set keys only
@@ -1135,6 +1144,14 @@ function collectGsdDriftDivergingFiles(snapshot, liveRoot = GSD_LIVE_ROOT, forkR
 // First invocation: snapshots all 5 path mtimes + version into a single cache file.
 // Subsequent invocations: compares current state against snapshot, warns on change.
 // Age timer uses the snapshot file's own mtime (written ≈ session start).
+// Drift-snapshot schema version (D-07 / D-25). Phase 17 baseline is implicitly
+// `1`; Phase 18 bumps to `2` because the inversion changed plugins_count's value
+// semantics (all-minus-denylist -> content-only). A snapshot whose
+// schema_version !== CURRENT_SCHEMA_VERSION re-baselines (the migration guard in
+// checkDrift), so no operator with a live session spanning the deploy gets a
+// false `⚠ restart plugins` on the first post-deploy refresh.
+const CURRENT_SCHEMA_VERSION = 2;
+
 function checkDrift(data) {
   return new Promise((resolve) => {
     if (!data.session_id) return resolve('');
@@ -1181,7 +1198,17 @@ function checkDrift(data) {
     // snapshots (2026-04-18 drift bundle) lack `agents_count`. Either absence
     // re-baselines as a first-invocation so mixed-format fields never compare.
     // Unified guard = one round of grace per upgrade, not two.
-    if (!('settings_hash' in snapshot) || !('agents_count' in snapshot)) {
+    //
+    // D-07 / D-25 schema_version clause: a pre-Phase-18 snapshot has
+    // schema_version === undefined !== CURRENT_SCHEMA_VERSION, so it re-baselines
+    // clean. This catches the plugins_count VALUE-SEMANTICS change (all-minus-
+    // denylist -> content-only) that a presence-sniff cannot see (the key was
+    // always present). This guard PRECEDES the marker-rebaseline block below
+    // (D-25 ordering invariant) — short-circuiting here means a pre-Phase-18
+    // snapshot re-baselines even when a /restart-plugins marker is present,
+    // rather than the marker writer preserving its stale schema.
+    if (!('settings_hash' in snapshot) || !('agents_count' in snapshot) ||
+        snapshot.schema_version !== CURRENT_SCHEMA_VERSION) {
       return writeBaselineAndReturnClean();
     }
 
@@ -1199,6 +1226,13 @@ function checkDrift(data) {
       fs.statSync(markerFile);  // throws ENOENT if absent
       snapshot.plugins_mtime = current.plugins_mtime;
       snapshot.plugins_count = current.plugins_count;
+      // D-25: keep schema_version current on this in-place rewrite. This writer
+      // serializes the LOADED snapshot (not `current`), so without this line a
+      // marker-rebaselined snapshot would lack the field. Placed OUTSIDE the
+      // inner try/catch (alongside the plugins-fields rewrite above) so it
+      // always assigns before serialization. Only reachable for an already-
+      // current snapshot — a pre-Phase-18 one re-baselined via the guard above.
+      snapshot.schema_version = current.schema_version;
       try {
         const tmp = snapshotFile + '.tmp.' + process.pid;
         fs.writeFileSync(tmp, JSON.stringify(snapshot));
