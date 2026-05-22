@@ -502,17 +502,32 @@ function runStatusline() {
     }
 
     // --- RAT-06: cc-update segment + dev-install branch ---------------------
-    // Reads ~/.cache/cc/cc-update-check.json ({latest, checked_at} — Plan 02)
-    // and COMPUTES update_available renderer-side (D-08): the cache carries
-    // only `latest`; the installed version is the stdin `data.version` the
-    // renderer already has free. parseV strips a prerelease/build suffix
-    // (`.split('-')[0]`) before the numeric compare (D-16) so a canary
-    // `latest` does not produce NaN — the dev-install compare degrades to a
-    // base-version compare on canary builds (documented, acceptable).
+    // Reads ~/.cache/cc/cc-update-check.json ({latest, checked_at,
+    // installed_at_check} — Plan 02 + RAT-06b) and COMPUTES update_available
+    // renderer-side (D-08): the cache carries `latest`; the installed version
+    // is the stdin `data.version` the renderer already has free. parseV strips
+    // a prerelease/build suffix (`.split('-')[0]`) before the numeric compare
+    // (D-16) so a canary `latest` does not produce NaN — the dev-install
+    // compare degrades to a base-version compare on canary builds (documented,
+    // acceptable).
     //   latest base > installed base → `⬆ cc`
-    //   installed base > latest base → `⚠ cc dev install`
+    //   installed base > latest base → `⚠ cc dev install` (RAT-06b guarded)
     //   equal / 'unknown' / null      → neither
     // Malformed/missing cache → segment hides (D-13a).
+    //
+    // RAT-06b dev-install guard: `installed base > latest base` is a FALSE
+    // POSITIVE when the CC auto-updater bumped the installed binary past the
+    // cache's `latest` WITHIN the parent's ~6h TTL window (the cache still
+    // names the OLDER latest it last checked). The fix: only fire dev-install
+    // when `cache.installed_at_check` matches the running `data.version` — i.e.
+    // npm `latest` was confirmed against THIS binary, not a since-replaced one.
+    // installed_at_check ABSENT (old cache schema / worker probe failed) → fall
+    // back to the prior unguarded fire (status-quo, backward-compatible).
+    // INVARIANT (cross-process): cc-check-update-worker.js stamps
+    // installed_at_check from `claude --version` parsed to the same bare shape
+    // as stdin `data.version`; this read assumes that shape match. Asserted by
+    // tests/probes/probe-cc-check-update-worker.sh + probe-statusline-load.js
+    // Scenarios 10-12.
     let ccUpdate = '';
     const ccUpdateFile = path.join(homeDir, '.cache', 'cc', 'cc-update-check.json');
     if (fs.existsSync(ccUpdateFile)) {
@@ -538,9 +553,18 @@ function runStatusline() {
             an > ai || (an === ai && bn > bi) || (an === ai && bn === bi && cn > ci);
           const installedNewer =
             ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
+          // RAT-06b: was npm `latest` confirmed against the binary running NOW?
+          // Absent stamp → fall back to firing (status-quo). Present → require a
+          // base-version match (parseV both sides so a canary suffix on either
+          // doesn't spuriously break the equality).
+          let confirmedAhead = true;
+          if (cache.installed_at_check) {
+            const [ka, kb, kc] = parseV(cache.installed_at_check);
+            confirmedAhead = ai === ka && bi === kb && ci === kc;
+          }
           if (latestNewer) {
             ccUpdate = '\x1b[33m⬆ cc\x1b[0m \x1b[2m│\x1b[0m ';
-          } else if (installedNewer) {
+          } else if (installedNewer && confirmedAhead) {
             ccUpdate = '\x1b[33m⚠ cc dev install\x1b[0m \x1b[2m│\x1b[0m ';
           }
         }

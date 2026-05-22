@@ -340,6 +340,50 @@ for (const c of malformedCases) {
     r.status === 0 && !/⬆ cc(\b|[^-])/.test(l1) && !/cc dev install/.test(l1), true);
 }
 
+// --- RAT-06b: dev-install guard (installed_at_check) -------------------------
+// The `⚠ cc dev install` branch fires when installed > cache.latest. That is a
+// FALSE POSITIVE when the auto-updater bumped the installed binary past the
+// cache's `latest` WITHIN the ~6h TTL window (the cache still names the older
+// `latest` it checked against). The guard: only fire when cache.installed_at_check
+// matches the running installed version — i.e. npm `latest` was confirmed
+// against THIS binary, not a since-replaced one. See decisions.md 2026-05-21
+// RAT-06b row + HP-033 invariant 7.
+
+// Scenario 10 — installed > latest BUT installed_at_check ≠ installed (the
+// auto-updater raced the TTL) → dev-install SUPPRESSED. This is the live
+// 2026-05-21 incident in miniature (checked against 2.1.140, now on 2.1.147).
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.140', installed_at_check: '2.1.140', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.147' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06b installed≠installed_at_check (auto-updater race) → dev-install SUPPRESSED',
+    r.status === 0 && !/cc dev install/.test(l1), true);
+}
+
+// Scenario 11 — installed > latest AND installed_at_check === installed (npm
+// `latest` was confirmed against the running binary) → genuine dev install,
+// marker FIRES.
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.140', installed_at_check: '2.1.147', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.147' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06b installed===installed_at_check (genuine dev install) → dev-install PRESENT',
+    r.status === 0 && /cc dev install/.test(l1), true);
+}
+
+// Scenario 12 — installed > latest, installed_at_check ABSENT (old cache schema
+// or worker probe failed) → fall back to prior unguarded behavior, marker FIRES.
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.140', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.147' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06b installed_at_check absent → fallback fires dev-install (backward-compat)',
+    r.status === 0 && /cc dev install/.test(l1), true);
+}
+
 // 4. Wall-time emission (informational only — D-03/D-06 lock; NO hard threshold)
 console.log();
 console.log(`info: median wall-time per render = ${medianMs.toFixed(2)}ms (informational; no gate)`);
