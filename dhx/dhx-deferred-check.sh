@@ -214,8 +214,15 @@ if [ -z "$CLASSIFIED" ]; then check_header_fallback "$LATEST"; fi
 UNCAPTURED=$(printf '%s\n' "$CLASSIFIED" | auto_silence_deferred_lines "$LATEST")
 if [ -z "$UNCAPTURED" ]; then exit 0; fi
 
-# Count
-COUNT=$(echo "$UNCAPTURED" | wc -l | tr -d ' ')
+# Count — Fix A (D-01/D-10): bullet-shape-aware + errexit-safe. `echo|wc -l`
+# appended a phantom newline → 1 for empty/whitespace-only input (the phantom
+# "1 unassessed item(s)" block). `printf` + `grep -c '^- '` counts only
+# classifier bullets (0 for empty/whitespace); trailing `|| true` neutralizes
+# grep's rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
+COUNT=$(printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true)
+# Fix B (D-01): defense-in-depth numeric guard — if any future regression leaks
+# past the line-215 `-z` check, exit silently before rendering a 0-item block.
+[ "${COUNT:-0}" -le 0 ] && exit 0
 
 # Signal that deferred review is active (assessed-guard checks this)
 REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"

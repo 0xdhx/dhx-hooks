@@ -332,6 +332,76 @@ else
   fi
 fi
 
+# --- Section 10: count formula is empty/whitespace-safe (SC#1 / D-01 / D-10) ---
+#
+# Bug history: line ~218 used `COUNT=$(echo "$UNCAPTURED" | wc -l | tr -d ' ')`.
+# `echo` appends a phantom newline, so empty input → 1 and whitespace-only
+# input (e.g. "   ", which passes the line-215 `-z` guard) → 1 too — a phantom
+# "1 unassessed item(s)" Stop block on a CONTEXT.md with zero real deferrals.
+# See reports/done/2026-05-12-dhx-deferred-check-fires-on-empty-uncaptured.md.
+#
+# Fix A (D-01 + D-10 errexit-safety): the count formula is bullet-shape-aware
+# AND errexit-safe — `printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true`.
+# `printf` does not append a phantom newline for empty input; `grep -c '^- '`
+# counts only classifier bullets; the trailing `|| true` neutralizes grep's
+# rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
+# Fix B (defense-in-depth): `[ "${COUNT:-0}" -le 0 ] && exit 0` numeric guard.
+#
+# Backs: docs/decisions.md Phase 20 row (count-bug fix).
+
+# 10a. Static: Fix A formula present verbatim (bullet-shape-aware + D-10 `|| true`).
+if grep -qF "printf '%s\n' \"\$UNCAPTURED\" | grep -c '^- ' || true" "$HOOK"; then
+  check "hook count formula is errexit-safe Fix A (printf|grep -c '^- '|| true)" 1
+else
+  check "hook count formula missing errexit-safe Fix A — count-bug not fixed" 0
+fi
+
+# 10b. Static: the old buggy echo|wc -l formula is gone.
+if grep -qF 'echo "$UNCAPTURED" | wc -l' "$HOOK"; then
+  check "old buggy 'echo \$UNCAPTURED | wc -l' formula still present — must be removed" 0
+else
+  check "old buggy 'echo \$UNCAPTURED | wc -l' formula removed" 1
+fi
+
+# 10c. Static: Fix B numeric guard present.
+if grep -qE '\[ "\$\{COUNT:-0\}" -le 0 \] && exit 0' "$HOOK"; then
+  check "hook has Fix B numeric guard ([ \"\${COUNT:-0}\" -le 0 ] && exit 0)" 1
+else
+  check "hook missing Fix B numeric guard — defense-in-depth absent" 0
+fi
+
+# 10d. Behavioral: EMPTY input → count 0 (the formula primitive the hook uses).
+#      `-z` already short-circuits empty at line 215, but the count must still
+#      be structurally 0 if the formula is ever reached with empty input.
+EMPTY_COUNT=$(printf '%s\n' "" | grep -c '^- ' || true)
+if [[ "${EMPTY_COUNT:-X}" == "0" ]]; then
+  check "behavioral: empty \$UNCAPTURED → count 0 (no phantom item)" 1
+else
+  check "behavioral: empty \$UNCAPTURED → count $EMPTY_COUNT (expected 0)" 0
+fi
+
+# 10e. Behavioral: WHITESPACE-ONLY input → count 0 (THE load-bearing case).
+#      A non-empty string of blanks passes the `-z` guard and reaches the count
+#      line; the old echo|wc -l returned 1 here (the phantom block). The new
+#      formula must return 0. Test both a blanks string and a lone newline.
+WS_COUNT=$(printf '%s\n' "   " | grep -c '^- ' || true)
+NL_COUNT=$(printf '%s\n' "
+" | grep -c '^- ' || true)
+if [[ "${WS_COUNT:-X}" == "0" && "${NL_COUNT:-X}" == "0" ]]; then
+  check "behavioral: whitespace-only \$UNCAPTURED → count 0 (phantom block fixed)" 1
+else
+  check "behavioral: whitespace-only \$UNCAPTURED → blanks=$WS_COUNT newline=$NL_COUNT (expected 0/0)" 0
+fi
+
+# 10f. Behavioral: real bullet input → count reflects actual bullet count.
+REAL_COUNT=$(printf '%s\n' "- first bullet
+- second bullet" | grep -c '^- ' || true)
+if [[ "${REAL_COUNT:-X}" == "2" ]]; then
+  check "behavioral: 2 real '- ' bullets → count 2 (HP-009 block still fires)" 1
+else
+  check "behavioral: 2 real bullets → count $REAL_COUNT (expected 2)" 0
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]
