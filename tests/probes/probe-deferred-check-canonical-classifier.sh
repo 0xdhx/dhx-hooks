@@ -188,11 +188,18 @@ else
   check "no 'grep -rl … .planning/backlog' pipeline remains in hook" 1
 fi
 
-# 6.3 Canonical script's backlog containment uses `grep -rq` short-circuit form.
-if grep -qE 'grep -rq[[:space:]]+"\$rid"[[:space:]]+"\$project_root/\.planning/backlog/"' "$CLASSIFIER"; then
-  check "backlog containment in canonical script uses 'grep -rq' (collapsed form)" 1
+# 6.3 Canonical script's backlog containment uses a `grep -rqE` short-circuit form.
+#     The pattern arg evolved 2026-05-22: bare-substring "$rid" → definition-
+#     anchored "$rid_def_pat" (the auto_silence_deferred_lines false-positive
+#     fix — an artifact-name fragment appearing in REQUIREMENTS.md prose must no
+#     longer bare-substring-match and silence a marker-less deferred bullet). The
+#     HP-028 invariant this section guards is unchanged: still a single
+#     short-circuiting `-q` command, no `grep -rl … | head -1` pipeline.
+#     See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+if grep -qE 'grep -rqE[[:space:]]+"\$rid_def_pat"[[:space:]]+"\$project_root/\.planning/backlog/"' "$CLASSIFIER"; then
+  check "backlog containment in canonical script uses definition-anchored 'grep -rqE \$rid_def_pat' short-circuit form" 1
 else
-  check "backlog containment in canonical script does not use 'grep -rq' — collapsed form missing" 0
+  check "backlog containment in canonical script does NOT use definition-anchored 'grep -rqE \$rid_def_pat' — form missing/regressed" 0
 fi
 
 # 6.4 Canonical script's todos basename lookup uses `find -print -quit` short-circuit form.
