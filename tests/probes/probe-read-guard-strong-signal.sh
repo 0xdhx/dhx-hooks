@@ -175,12 +175,13 @@ build_sandbox "a" "$SANDBOX"
 NEVER_READ="$SANDBOX/_control_17_never_read.txt"
 echo "control 17 baseline content" > "$NEVER_READ"
 # Do NOT unregister — guard stays PRESENT
-set +e
+# Per D-25/WR-04: the no-op errexit-disable decoration was removed — errexit is
+# never enabled (`set -uo pipefail` at top); the downstream classify_from_stream
+# parse is the gate.
 HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" timeout 60 \
   claude -p --output-format stream-json --include-hook-events --verbose \
   "Edit the file $NEVER_READ — replace 'baseline' with 'modified'" \
   > "$TMPROOT/c17.stream.jsonl" 2>"$TMPROOT/c17.stderr" < /dev/null
-set +e
 read -r v17 e17 g17 he17 ho17 < <(classify_from_stream "$TMPROOT/c17.stream.jsonl")
 case "$v17" in runtime_rejected) c17_rej=true ;; *) c17_rej=false ;; esac
 emit_verdict "control_17_guard_present" "$v17" "$c17_rej" "control: guard kept in manifest" "present" "$NEVER_READ" "$e17" "$g17" "$he17" "$ho17"
@@ -198,12 +199,11 @@ NOW=$(date +%s)
 jq -nc --arg path "$KNOWN_READ" --argjson ts "$NOW" \
   '{path:$path, source:"read", partial:false, ts:$ts}' >> "$CACHE_DIR/read-cache.jsonl"
 unregister_read_guard "$SANDBOX/dhx-plugin/plugins/dhx/hooks/hooks.json"
-set +e
+# Per D-25/WR-04: the no-op errexit-disable decoration was removed (errexit never enabled; rc not gated here).
 HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" XDG_CACHE_HOME="$TMPROOT/.cache" timeout 60 \
   claude -p --output-format stream-json --include-hook-events --verbose \
   "Edit the file $KNOWN_READ — replace 'baseline' with 'modified'" \
   > "$TMPROOT/c18.stream.jsonl" 2>"$TMPROOT/c18.stderr" < /dev/null
-set +e
 read -r v18 e18 g18 he18 ho18 < <(classify_from_stream "$TMPROOT/c18.stream.jsonl")
 case "$v18" in runtime_allowed) c18_allow=true ;; *) c18_allow=false ;; esac
 emit_verdict "control_18_known_read" "$v18" "$c18_allow" "control: cache-seeded known-Read" "absent" "$KNOWN_READ" "$e18" "$g18" "$he18" "$ho18"
@@ -260,7 +260,7 @@ for instance in "${INSTANCES[@]}"; do
       unregister_read_guard "$SANDBOX/dhx-plugin/plugins/dhx/hooks/hooks.json"
 
       # Mode-specific invocation — all use stream-json + include-hook-events + verbose per D-18a
-      set +e
+      # Per D-25/WR-04: the no-op errexit-disable decoration was removed (errexit never enabled; rc not gated here).
       case "$mode" in
         default-p)
           HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" timeout 60 \
@@ -289,7 +289,6 @@ for instance in "${INSTANCES[@]}"; do
             > "$TMPROOT/cell.stream.jsonl" 2>"$TMPROOT/cell.stderr" < /dev/null
           ;;
       esac
-      set +e
 
       read -r verdict edit_inv guard_fire hex hou < <(classify_from_stream "$TMPROOT/cell.stream.jsonl")
       case "$verdict" in runtime_rejected) rej=true ;; *) rej=false ;; esac

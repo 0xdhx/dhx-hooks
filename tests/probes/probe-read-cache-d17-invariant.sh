@@ -30,11 +30,11 @@ if [[ ! -f "$CACHE" ]]; then
 fi
 
 # D-23: single jq invocation; -s slurps all lines into an array; length returns 0 cleanly on empty.
-# jq exit captured DIRECTLY (no pipeline confusion).
-set +e
+# jq exit captured DIRECTLY (no pipeline confusion). Per D-25/WR-04: the no-op
+# errexit-disable decoration was removed — errexit is never enabled here
+# (`set -uo pipefail` at top), so the rc capture below IS the gate.
 violations=$(jq -s '[.[] | select(.partial == true and .source == "write")] | length' "$CACHE" 2>/dev/null)
 jq_rc=$?
-set +e
 
 if [[ "$jq_rc" -ne 0 ]]; then
   echo "[error] jq scan failed on $CACHE (jq_rc=$jq_rc)"
