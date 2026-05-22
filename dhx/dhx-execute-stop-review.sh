@@ -64,13 +64,13 @@ PHASE=$(basename "$RECENT_VERIF" | grep -oP '^\d+(\.\d+)?' | head -1)
 # gives historical phase files fresh mtimes that trip -mmin gates.
 #
 # Allowlist is built from:
-#   1. Frontmatter `stopped_at:` (session-end marker, free-form text)
+#   1. Frontmatter `stopped_at:` (session-end + phase-complete marker, free-form)
 #   2. Body fields **Phase:**, **Current Phase:**, **Current focus:**,
 #      **Last Activity Description:** (handles format variation across
-#      projects and gsd-tools versions)
+#      projects and GSD versions — gsd-tools CJS and gsd-sdk)
 #   3. For each Phase N found: also include N-1 to cover the case where
-#      `gsd-tools phase complete X` has already advanced Current Phase to
-#      X+1 by the time this Stop hook fires (see phase.cjs:842).
+#      `gsd-sdk query phase.complete X` has already advanced Current Phase to
+#      X+1 by the time this Stop hook fires (see HP-006).
 #
 # Fail closed (preserve old behavior) if STATE.md missing or yields no
 # phase numbers — missing STATE.md is rare and we don't want to regress
