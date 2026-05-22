@@ -32,6 +32,7 @@ asserts row count == file count.
 | `probe-deferred-check-req-id-regex.sh` | yes | regex-equality static check against hook source; no writes |
 | `probe-dhx-statusline.js` | yes | re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths |
 | `probe-drift-cleanup.sh` | no | sets `$TMPHOME/.cache/dhx` and runs `dhx-health-check.sh` under HOME=$TMPHOME (sandboxed); but uses HOME override and live `/proc` reads — sandbox confines writes |
+| `probe-drift-allowlist.sh` | yes | mktemp fixture trees + node -e require of the live wrapper (checkDrift/scanRecursive/enumerateNovelPatterns) + classifyEntry from plugin-cache-allowlist.js under HOME + CLAUDE_CONFIG_DIR overrides; mtime via fs.utimesSync; never reads live ~/.claude or ~/.cache/dhx (Phase 18 DRIFT-ALLOW-03 3-state D-21 + D-20 structural + D-24a residual-novel + glob-not-guess schema-migration D-22 probe) |
 | `probe-drift-detection.js` | yes | mkdtempSync + tmp-file fixtures; reimplemented compare core; no live writes |
 | `probe-drift-multi-anchor-distinct-surfacing.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; invokes dhx-gsd-drift-surface.sh against fixture caches; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 positive probe) |
 | `probe-drift-single-anchor-no-overcount.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; single-entry fixture cache; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 negative probe) |
