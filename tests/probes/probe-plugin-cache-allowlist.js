@@ -210,6 +210,32 @@ for (const seg of ['src', 'lib', 'dist', 'bin', 'config']) {
 ok('[WR-01] node_modules leaf stays novel (deliberately excluded)',
   classifyEntry('claude-plugins-official/superpowers/5.0.7/node_modules/lodash/index.js', 'index.js') === 'novel');
 
+// ---- [WR-03] length-2 loose file directly under a marketplace root -> novel --
+// A stray loose file with an arbitrary basename directly under a marketplace
+// (no plugin/version ancestry) classified `content` pre-fix (over-trust). The
+// `>= 3` hardening makes it `novel`. The live re-survey found ZERO length-2
+// loose files under a recognized marketplace, so this false-flags nothing.
+ok('[WR-03] length-2 loose file (arbitrary basename) -> novel',
+  classifyEntry('dhx-local/weird-loose-file.bin', 'weird-loose-file.bin') === 'novel');
+// A length-2 path whose leaf IS a legit basename is still content — caught by the
+// CR-01 fast-content check (recognized marketplace) BEFORE the length guard.
+ok('[WR-03 guard] length-2 path with legit leaf basename stays content (fast-path)',
+  classifyEntry('dhx-local/plugin.json', 'plugin.json') === 'content');
+// length>=3 content cases UNAFFECTED by the WR-03 hardening (regression).
+ok('[WR-03 guard] length-3+ content (mp/plugin/version/leaf) unaffected',
+  classifyEntry('dhx-local/dhx/1.0.0/index.js', 'index.js') === 'content');
+
+// ---- [IN-01] bookkeepingPathPattern is separator-agnostic ([/\\]) ----------
+// The pattern now matches both forward-slash and backslash separators (aligned
+// to gitInternalsPathPattern + the .split(/[/\\]+/) idiom). Forward-slash still
+// matches (Linux behavior unchanged); backslash now matches too (consistency).
+ok('[IN-01] bookkeepingPathPattern matches temp_git_* with forward slash',
+  A.bookkeepingPathPattern.test('claude-plugins-official/p/temp_git_1700000000_abc/x.bin'));
+ok('[IN-01] bookkeepingPathPattern matches .in_use with forward slash',
+  A.bookkeepingPathPattern.test('anthropic-agent-skills/p/.in_use/12345'));
+ok('[IN-01] bookkeepingPathPattern matches .in_use with backslash separator',
+  A.bookkeepingPathPattern.test('anthropic-agent-skills\\p\\.in_use\\12345'));
+
 // ---- [V5] totality — classifyEntry never throws, always returns a state ----
 for (const [p, b] of [[null, null], ['', ''], [undefined, undefined], [123, 456], ['/', '/']]) {
   let state, threw = false;

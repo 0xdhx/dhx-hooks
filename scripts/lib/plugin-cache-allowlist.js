@@ -88,7 +88,13 @@ const bookkeepingBasenames = new Set([
 // `ignorePathPattern`.
 //   (1) temp_git_<epoch_ms>_<token>/ — CC install-cycle clone dirs (no GC)
 //   (2) .in_use/<pid>                — CC session-lifetime lock markers
-const bookkeepingPathPattern = /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/;
+//
+// SEPARATOR-AGNOSTIC (IN-01, 260521-tj5): uses the `[/\\]` character class to
+// match the sibling `gitInternalsPathPattern` and the module's `.split(/[/\\]+/)`
+// idiom — was forward-slash-only (`\/`), a consistency wrinkle the two bookkeeping
+// patterns disagreed on. Linux-only repo per CLAUDE.md so behavior is unchanged
+// (D-20 forward-slash-normalizes the wrapper-fed path); this aligns the convention.
+const bookkeepingPathPattern = /(^|[/\\])(temp_git_\d+_[a-z0-9]+|\.in_use)([/\\]|$)/;
 
 // --- gitInternalsPathPattern ------------------------------------------------
 // Path-scoped bookkeeping for `.git/` internals of in-cache plugin git
@@ -332,6 +338,26 @@ function classifyEntry(filePath, basename) {
   // trailing/double slashes).
   const segments = filePath.split(/[/\\]+/).filter(Boolean);
   if (segments.length === 0) return 'novel';
+
+  // WR-03 hardening (260521-tj5): the D-24d leaf rule trusts the LEAF basename
+  // under recognized ANCESTRY (marketplace + plugin + recognized intermediates).
+  // A length-2 path `<marketplace>/<leaf>` has NO plugin/version ancestry — a
+  // stray loose file written directly under a marketplace root. Pre-fix, the
+  // `i===1` branch accepted it as the "plugin name" and the loop ended → the
+  // leaf classified `content` unconditionally (over-trust: trusted surface
+  // widened beyond `<marketplace>/<plugin>/<version>/...`). Any length-2 leaf
+  // that is a legit basename is already handled by the fast-content check above;
+  // a length-2 leaf with an ARBITRARY basename has no recognized ancestry, so it
+  // must classify `novel`. The live re-survey (260521-tj5) found ZERO length-2
+  // loose files under a recognized marketplace, so this hardening false-flags
+  // nothing in practice — it closes the over-trust without cost. (IN-02 — a
+  // length-1 path equal to a known marketplace — is DEFERRED: it is dir-filtered
+  // by isDirectory() in scanRecursive/enumerateNovelPatterns before reaching
+  // classification, so it stays as-is. The `< 3` guard is scoped to length-2 to
+  // leave length-1 untouched.)
+  if (segments.length === 2 && marketplaceTopLevel.has(segments[0])) {
+    return 'novel';
+  }
 
   const lastIdx = segments.length - 1;
   for (let i = 0; i < segments.length; i++) {
