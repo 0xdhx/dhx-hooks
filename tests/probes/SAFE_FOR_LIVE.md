@@ -21,6 +21,7 @@ asserts row count == file count.
 | Probe | SAFE_FOR_LIVE | Reason |
 |-------|---------------|--------|
 | `probe-agent-leak-check.sh` | no | writes baselines under live `$HOME/.cache/dhx/` (session-tag prefixed + trap cleanup, but writes hit the live cache directory) |
+| `probe-backlog-frontmatter-gate.sh` | yes | structural checks are read-only grep/readlink against in-repo files; behavioral block/pass cells run entirely inside a throwaway mktemp git repo (copies the dispatcher + 10- leaf + validator, installs a sandbox symlink); never mutates the live repo index, history, or `.git/hooks` (260522-ib4 backlog-frontmatter-gate convention enrollment probe) |
 | `probe-bashrc-wrapper-heal.sh` | yes | grep-only against live `~/.bashrc` and in-repo files; no writes |
 | `probe-cache-age-anchor.js` | yes | re-implements function locally; tmp-file fixtures only |
 | `probe-cc-check-update-ttl.sh` | yes | mktemp cache dir + `CC_CHECK_UPDATE_CACHE` env-override injects a fixture cache; never reads or writes live `~/.cache/cc` (Phase 17 RAT-06 TTL-gate regression probe) |

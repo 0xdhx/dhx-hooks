@@ -135,6 +135,7 @@ A probe is a **schema-evolution probe** when it answers "should we migrate this 
 | `probe-last-prompt-segment.js` | docs/statusline-wrapper.md § "Last user prompt segment" (2026-04-27 statusline session item 1) | `node tests/probes/probe-last-prompt-segment.js` |
 | `probe-execute-stop-review.sh` | decisions.md 2026-04-28 SIGPIPE+pipefail audit round-2 row (HP-028 lines 39 / 53 transcript-scan regression) | `bash tests/probes/probe-execute-stop-review.sh` |
 | `probe-sigpipe-pipefail-shapes.sh` | decisions.md 2026-04-28 SIGPIPE+pipefail static lint row (HP-028 enforced invariant — at-rest scan paired with verify-hook-patterns.sh check #5) | `bash tests/probes/probe-sigpipe-pipefail-shapes.sh` |
+| `probe-backlog-frontmatter-gate.sh` | decisions.md 2026-05-22 backlog-frontmatter-gate enrollment row + INFRA-05 (gate structure + composition with verify-hook-patterns via the run-parts dispatcher; behavioral block/pass in a throwaway mktemp repo) | `bash tests/probes/probe-backlog-frontmatter-gate.sh` |
 
 ## Running all probes
 
