@@ -45,9 +45,10 @@ function compactModel(displayName) {
 }
 
 // Effort level → colored braille-density glyph (set B from menu: both-column
-// bottom-up fill). Read from settings.json's effortLevel key; CC updates
-// this atomically on /effort so the next refresh reflects the change.
-// effortLevel is session-safe (NOT in WARN set) so changes don't trip drift.
+// bottom-up fill). Read from the statusline stdin payload (data.effort?.level);
+// CC emits effort per-session and refreshes it on /effort, so the next render
+// reflects the change. Absent/unknown level → glyph hidden. (Source pivoted
+// settings.json → tmux pane-scrape → stdin; pane-scrape retired ad9cf44.)
 //
 // States + colors track the context-bar ramp so both meters read with the
 // same "hotter = more burn" polarity. Unknown / missing → '' (hide segment).
@@ -593,8 +594,8 @@ function runStatusline() {
     // signal stays where the eye lands first. Line 2 carries GSD state only.
     const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
     // Effort glyph sits after the model, separated by a space so the two
-    // segments don't visually merge. Hidden when settings.json has no
-    // effortLevel (e.g. CCS instance swap before first /effort).
+    // segments don't visually merge. Hidden when the stdin payload omits
+    // effort.level (e.g. a CC version or session state that doesn't emit it).
     const effortSeg = effort ? ` ${effort}` : '';
 
     // RAT-04/RAT-06 segments sit adjacent to gsdUpdate at the line-1 head
