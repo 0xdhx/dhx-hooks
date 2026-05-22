@@ -1152,6 +1152,28 @@ function collectGsdDriftDivergingFiles(snapshot, liveRoot = GSD_LIVE_ROOT, forkR
 // false `⚠ restart plugins` on the first post-deploy refresh.
 const CURRENT_SCHEMA_VERSION = 2;
 
+// Atomic write: serialize `dataObj` to a per-pid tmp sibling, then rename onto
+// the target. Single source of truth for the `.tmp.<pid>` suffix + the leaked-
+// tmp cleanup (IN-03). Before this helper, the six atomic-write sites in
+// checkDrift each open-coded the tmp+rename; the three catch blocks that bothered
+// to clean up RECONSTRUCTED `target + '.tmp.' + process.pid` (one even via a
+// divergent path.join) because the try-scoped const was out of scope, and the
+// other three leaked the tmp on a post-write renameSync failure. Computing `tmp`
+// once here makes write and unlink reference the same path by construction.
+// INVARIANT: every atomic snapshot/cache write in checkDrift routes through this
+// helper — do not re-introduce open-coded tmp+rename (probe-writeatomic-leak-cleanup.js).
+function writeAtomic(targetPath, dataObj) {
+  const tmp = targetPath + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(dataObj));
+    fs.renameSync(tmp, targetPath);
+  } catch (e) {
+    // renameSync may have thrown after a successful write — unlink the leaked tmp.
+    try { fs.unlinkSync(tmp); } catch { /* may not exist */ }
+    throw e; // preserve each caller's existing skip-on-failure handling
+  }
+}
+
 function checkDrift(data) {
   return new Promise((resolve) => {
     if (!data.session_id) return resolve('');
@@ -1173,14 +1195,10 @@ function checkDrift(data) {
 
     const writeBaselineAndReturnClean = () => {
       try {
-        const tmp = snapshotFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(current));
-        fs.renameSync(tmp, snapshotFile);
+        writeAtomic(snapshotFile, current);
       } catch {
-        // write failed — skip drift this invocation. If renameSync threw after
-        // a successful write, unlink the leaked tmp (WR-03 shape; path
-        // reconstructed since the try-scoped const is out of scope here).
-        try { fs.unlinkSync(snapshotFile + '.tmp.' + process.pid); } catch { /* may not exist */ }
+        // write failed — skip drift this invocation. writeAtomic already
+        // unlinked any leaked tmp before re-throwing (WR-03 / IN-03).
       }
       return resolve('');
     };
@@ -1234,14 +1252,10 @@ function checkDrift(data) {
       // current snapshot — a pre-Phase-18 one re-baselined via the guard above.
       snapshot.schema_version = current.schema_version;
       try {
-        const tmp = snapshotFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(snapshot));
-        fs.renameSync(tmp, snapshotFile);
+        writeAtomic(snapshotFile, snapshot);
       } catch {
-        // best-effort persistence; in-memory snapshot still rebaselined. If
-        // renameSync threw after a successful write, unlink the leaked tmp
-        // (WR-03 shape; path reconstructed — try-scoped const is out of scope).
-        try { fs.unlinkSync(snapshotFile + '.tmp.' + process.pid); } catch { /* may not exist */ }
+        // best-effort persistence; in-memory snapshot still rebaselined.
+        // writeAtomic already unlinked any leaked tmp before re-throwing (WR-03 / IN-03).
       }
       try { fs.unlinkSync(markerFile); } catch { /* concurrent refresh consumed it first; harmless */ }
     } catch { /* marker absent or unreadable — no-op, normal drift compare follows */ }
@@ -1324,17 +1338,11 @@ function checkDrift(data) {
         };
         fs.mkdirSync(cacheDir, { recursive: true });
         const ccNovelFile = path.join(cacheDir, 'cc-novel-patterns.json');
-        const tmp = ccNovelFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(ccNovelCache));
-        fs.renameSync(tmp, ccNovelFile);
+        writeAtomic(ccNovelFile, ccNovelCache);
       } catch {
-        // cache failure must not affect drift detection. If writeFileSync
-        // landed but renameSync threw, the .tmp.<pid> file would leak; unlink
-        // it best-effort (WR-03). The path is reconstructed (the try-scoped
-        // `tmp` const is out of scope here) — deterministic from cacheDir+pid.
-        try {
-          fs.unlinkSync(path.join(cacheDir, 'cc-novel-patterns.json') + '.tmp.' + process.pid);
-        } catch { /* tmp may not exist */ }
+        // cache failure must not affect drift detection. writeAtomic already
+        // unlinked any leaked tmp before re-throwing (WR-03 / IN-03) — passing
+        // the real ccNovelFile var eliminates the prior path.join reconstruction.
       }
     }
 
@@ -1350,9 +1358,7 @@ function checkDrift(data) {
       try {
         const cacheFile = path.join(cacheDir, 'gsd-drift-first-seen.json');
         if (fs.existsSync(cacheFile)) {
-          const tmp = cacheFile + '.tmp.' + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify({}));
-          fs.renameSync(tmp, cacheFile);
+          writeAtomic(cacheFile, {});
         }
       } catch { /* cleanup failure non-fatal */ }
     }
@@ -1365,9 +1371,7 @@ function checkDrift(data) {
       // triggers were ever raised — the snapshot already matches current.)
       if (gsdSuppressed) {
         try {
-          const tmp = snapshotFile + '.tmp.' + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify(current));
-          fs.renameSync(tmp, snapshotFile);
+          writeAtomic(snapshotFile, current);
         } catch { /* best-effort; suppression still holds for this refresh */ }
       }
       return resolve('');
@@ -1456,9 +1460,7 @@ function checkDrift(data) {
         }
 
         fs.mkdirSync(cacheDir, { recursive: true });
-        const tmp = cacheFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(newCache));
-        fs.renameSync(tmp, cacheFile);
+        writeAtomic(cacheFile, newCache);
       } catch { /* cache failure must not affect drift detection */ }
     }
 
@@ -1751,6 +1753,10 @@ module.exports = {
   // sandbox via HOME + CLAUDE_CONFIG_DIR overrides. Mirrors the
   // fixture-injection rationale behind the isGsdDriftFromForkSync export.
   checkDrift,
+  // IN-03 atomic-write helper — exported so probe-writeatomic-leak-cleanup.js
+  // can drive the real helper (not a reimplementation) under a mocked
+  // fs.renameSync to assert the leaked-tmp cleanup invariant.
+  writeAtomic,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
