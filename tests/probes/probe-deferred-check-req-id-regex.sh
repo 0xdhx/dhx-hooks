@@ -84,6 +84,29 @@ for token in "REQ-V2-004" "REQ-FEAT-12" "DATA-F01" "STEL-02" "QUAL-01" "BACK-01"
   fi
 done
 
+# --- Acceptance cases: ALLCAPS-hyphenated artifact fragments ARE extracted ---
+# Deliberate contract, NOT a bug: extraction is permissive across naming schemes.
+# An artifact-name fragment like REVIEW-CODE (from <padded>-REVIEW-CODE-chunks.json)
+# or MILESTONE-AUDIT is a valid REQ-ID *shape*, so the extraction regex correctly
+# MATCHES it. Precision against artifact fragments lives on a different axis: the
+# resolution-layer check (auto_silence_deferred_lines in the skills-repo canonical
+# classifier) is definition-anchored, so a fragment cannot bare-substring-match
+# REQUIREMENTS.md prose and silently silence a marker-less deferred bullet.
+# Resolution-axis regression is guarded skills-side by probe-classifier-composition.sh
+# §5 — kept there rather than duplicated here. A future reader who sees extraction
+# accept REVIEW-CODE should NOT mistake it for a leak; see report:
+# ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+for token in "REVIEW-CODE" "MILESTONE-AUDIT"; do
+  match=$(echo "$token" | grep -oE "$REGEX" | head -1)
+  if [[ "$match" == "$token" ]]; then
+    echo "OK   matches $token (artifact fragment — extracted by design; resolution filters)"
+    PASS=$((PASS+1))
+  else
+    echo "FAIL $token did not match (got '$match') — extraction must accept artifact fragments"
+    FAIL=$((FAIL+1))
+  fi
+done
+
 # --- Realistic item strings ---
 # Full CONTEXT.md-style lines to catch edge cases in mixed-content extraction.
 
