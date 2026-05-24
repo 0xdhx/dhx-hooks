@@ -157,13 +157,35 @@ if [ "$CORRUPT_LINES" -gt 0 ]; then
 "
 fi
 
+# Upstream-closed drift surfacing (XR-WATCH-RECONCILE): count active watchlist items
+# whose upstream went closed/merged while still locally active. Single source: matches
+# isUpstreamClosedDrift() in cross-repo scripts/watch/dhx-watch-shared.cjs (current-state
+# 2-field predicate, NOT a digest-event join — durable, catches born-closed adds, survives
+# digest rotation per cross-repo D-1). The /dhx:watch list + driver leg already surfaces
+# this (dhx-watch-driver.cjs); this is the digest/timer leg so an idle session that only
+# sees the digest learns of the drift too. Surfacing only — never mutates the watchlist.
+DRIFT_LINE=""
+if [ -f "$WATCHLIST" ]; then
+  DRIFT_COUNT=$(jq '[.items[] | select(.status == "active" and (.last_seen_state == "closed" or .last_seen_state == "merged"))] | length' "$WATCHLIST" 2>/dev/null)
+  case "$DRIFT_COUNT" in
+    ''|*[!0-9]*) DRIFT_COUNT=0 ;;
+  esac
+  if [ "$DRIFT_COUNT" -gt 0 ]; then
+    DRIFT_LINE="⚠ ${DRIFT_COUNT} item(s) closed upstream, still active locally — enable config.auto_close_on_upstream_close to auto-close, or close manually.
+"
+  fi
+fi
+
 # BACKLOG-INTEGRATION obligation 2: silent on no deltas. EXIT EARLY before any stdout.
-if [ "$ANY_SURFACED" -eq 0 ] && [ -z "$STALE_HEADER" ] && [ -z "$CORRUPT_WARNING" ]; then
+# DRIFT_LINE is watchlist-derived (independent of ANY_SURFACED) so it MUST be in this guard,
+# or a drift-only session (no new events, fresh checker, no corrupt lines) exits silently
+# and the drift line is swallowed before the printf below.
+if [ "$ANY_SURFACED" -eq 0 ] && [ -z "$STALE_HEADER" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
   exit 0
 fi
 
-# Emit (stale + corrupt headers first, then per-event rendered block)
-printf '%s%s%s' "$STALE_HEADER" "$CORRUPT_WARNING" "$RENDER_OUT"
+# Emit (stale + drift + corrupt headers first, then per-event rendered block)
+printf '%s%s%s%s' "$STALE_HEADER" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
 
 # Spec section Surfacer logic step 4: atomic-write new pointer.
 if [ "$MAX_SURFACED" != "$PTR" ]; then
