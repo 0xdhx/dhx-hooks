@@ -65,7 +65,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('firstPrompt', getFirstUserPrompt(data)),
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]) => {
+    withSegmentDiag('fleet',      readFleetFeed()),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -87,6 +88,12 @@ process.stdin.on('end', () => {
     const firstPrompt    = unwrap(firstPromptR, name => sigil(name));
     const health         = unwrap(healthR,     name => ({ front: sigil(name), tail: '' }));
     const driftWarning   = unwrap(driftR,      name => sigil(name));
+    // fleet is fail-silent (D-03d): its own try/catch returns '' on ANY error,
+    // so the rejection arm here uses a '' fallback (NOT a sigil) as defense in
+    // depth. A `⚠ fleet?` sigil would be the OPPOSITE of silence — fleet must
+    // never reach the sigil path. Deliberately omitted from sigilCount below so
+    // a (theoretically impossible) fleet rejection can't bump the meta-glyph either.
+    const fleetWarning   = unwrap(fleetR,      () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -120,6 +127,11 @@ process.stdin.on('end', () => {
     const front = [];
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
+    // Fleet drift (SURF-02): a third orange-208 front member, additive only.
+    // Order: drift (session identity) → health (session wiring) → fleet
+    // (cross-repo convention drift). Local-session warnings precede the broader
+    // fleet signal. Silent at zero / stale / error (readFleetFeed returns '').
+    if (fleetWarning) front.push(fleetWarning);
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
@@ -681,6 +693,61 @@ function readHealthCache(sessionId) {
       resolve({ front, tail });
     });
   });
+}
+
+// --- Fleet drift front-stack segment (SURF-02 render half, phase-10) ---
+//
+// Surfaces an always-visible orange-208 token (▼N conv) when `required`-level
+// conventions went NEWLY-MISSING in the latest cross-repo fleet scan. Silent at
+// zero, silent on stale, silent on ANY error — the always-visible surface stays
+// trustworthy by showing nothing when there is nothing to act on. The pull
+// surface (/dhx:watch list) shows a clean-state line; the statusline does not.
+//
+// RESOURCE SAFETY (load-bearing — D-14). A SINGLE synchronous read of one thin
+// cache file, cloning the sym-health reader pattern above (readFileSync in a
+// try/catch). This path NEVER spawns a subprocess — no tmux, git, node-child,
+// and it NEVER invokes the scanner. The 2026-04-26 tmux capture-pane wedge
+// (reports/done/2026-04-26-statusline-capture-pane-wedge.md) was caused by a
+// subprocess spawned per-refresh across 17 concurrent sessions overwhelming the
+// single tmux server; a cache-file read is that report's recommended mitigation,
+// not the hazard. The expensive scan stays on the daily systemd cadence (Phase 9),
+// fully off this render hot path — this fn only reads a number a daily job
+// already computed.
+//
+// FAIL-SILENT (load-bearing — D-03d). The whole body is wrapped in try/catch and
+// returns '' on ANY error path: absent file / malformed JSON / NaN or non-finite
+// date / unexpected schema_version / stale / non-integer / negative / zero count.
+// A '' RETURN renders nothing. A THROW would land in withSegmentDiag's rejection
+// arm → computeSegmentSigil → a red `⚠ fleet?` sigil, the OPPOSITE of silence,
+// polluting the always-visible surface. This fn must NEVER throw; the call-site
+// unwrap also uses a '' fallback as a second line of defense.
+//
+// Feed contract (producer: cross-repo scripts/fleet/emit-statusline-feed.cjs):
+//   { schema_version: 1, required_newly_missing: <non-neg int>, computed_at: <full ISO-8601> }
+// computed_at is the emitter's own write-time (hour-resolution ISO), which is
+// what lets the ~48h freshness gate work — NOT SUMMARY.json's date-only stamp.
+// Counts required_newly_missing ONLY (D-07): the all-enforce-levels view is the
+// watch-list's job (SURF-01); the statusline stays required-only because it is
+// always-visible. Probe: tests/probes/probe-fleet-statusline-render.js (5 states).
+const FLEET_FEED_FILE = path.join(os.homedir(), '.cache', 'dhx', 'fleet-statusline.json');
+// ~48h: covers 2 daily scan cycles + RandomizedDelaySec + a sleep grace, with the
+// timer's Persistent=true self-healing on wake. newly_missing is inherently
+// per-scan, so a stale feed must not assert "newly" drift that should have aged out.
+const FLEET_STALE_MS = 48 * 3600 * 1000;
+
+function readFleetFeed() {
+  try {
+    const feed = JSON.parse(fs.readFileSync(FLEET_FEED_FILE, 'utf8'));
+    if (!feed || feed.schema_version !== 1) return '';
+    const n = feed.required_newly_missing;
+    if (!Number.isInteger(n) || n < 0) return '';
+    const ageMs = Date.now() - Date.parse(feed.computed_at);
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= FLEET_STALE_MS) return '';
+    if (n === 0) return ''; // silent at zero
+    return `\x1b[38;5;208m▼${n} conv\x1b[0m`;
+  } catch {
+    return '';
+  }
 }
 
 // Process start-time in clock ticks since boot, read from /proc/<pid>/stat field 22.
