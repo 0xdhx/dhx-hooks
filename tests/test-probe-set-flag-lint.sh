@@ -23,6 +23,24 @@
 
 set -uo pipefail
 
+# Pre-commit env-leak scrub (sibling of run-probes.sh row 190, 2026-04-28).
+# check 7c (verify-hook-patterns.sh:298-300) runs this harness from INSIDE the
+# `git commit` pre-commit hook, where git exports GIT_DIR/GIT_INDEX_FILE/
+# GIT_WORK_TREE/GIT_PREFIX. Those leak into the per-case `mktemp` fixture
+# subshells below — `git init`/`add`/`commit` then operate on the REAL repo
+# index instead of the throwaway fixture, so Cases 1/2/3/6 false-fail (clean
+# env 8/8 → leaked env 4/8) and block every `dhx/*.sh` commit. run-probes.sh's
+# prelude doesn't cover us: it globs `probe-*` only, never this `test-*` file.
+# Explicit list (not `env -i`, not dynamic `env|grep ^GIT_`) — survives HP-028
+# and documents which vars interfere; mirrors run-probes.sh verbatim. Scrubbing
+# once at process top suffices: this child can't mutate the parent commit's env,
+# and the harness itself needs no GIT_* (every git call runs inside a fixture).
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+      GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
+      GIT_PREFIX GIT_INTERNAL_GETTEXT_SH_SCHEME GIT_REFLOG_ACTION
+
 # Recursion guard (D-12): sourcing verify-hook-patterns.sh below must only
 # define the function, not execute the full gate, and the gate's own test
 # wiring is skipped when this flag is set.
