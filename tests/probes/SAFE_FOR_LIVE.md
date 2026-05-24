@@ -70,13 +70,9 @@ asserts row count == file count.
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
 | `probe-plugin-cache-staleness.sh` | yes | mktemp + fake HOME + env-var override (DHX_CACHE_STALENESS_LIVE_MANIFEST, DHX_CACHE_STALENESS_CACHE_ROOT); never touches live `~/.claude/plugins/cache/dhx-local` or live `dhx-plugin/` manifest |
 | `probe-plugin-registry.sh` | yes | mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry |
-| `probe-read-cache-concurrency.sh` | yes | mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/` |
-| `probe-read-cache-d17-invariant.sh` | yes | read-only scan of live `~/.cache/dhx/read-cache.jsonl` (Phase 6 C3 SCHEMA-01 D-17 invariant scanner — Convention A exit 0/1/2; jq array-length counting per D-23) |
-| `probe-read-cache-cross-session.sh` | yes | mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME |
-| `probe-read-cache-lock-sh-race.sh` | yes | mktemp HOME isolation; deterministic LOCK_SH writer-pruner race reproducer (D-25); contained in $TMPHOME |
-| `probe-read-cache-prune-concurrency.sh` | yes | mktemp HOME isolation; adversarial prune contention contained in $TMPHOME |
-| `probe-read-cache.sh` | yes | mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx |
-| `probe-read-guard-strong-signal.sh` | no | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched. **Re-classified to `no` by Phase 6 CR-01 (commit `4774a73`):** read-only against live state by intent, but routed through SAFE_FOR_LIVE=no because 9-15min wallclock exceeds run-probes.sh 30s/probe budget — operator-invoked only (Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03). See "Long-runtime / auth-required probes — invocation runbook" below. |
+| `probe-read-cache.sh` | yes | mktemp HOME isolation; session-scoped partial-detect store writes contained in $TMPHOME/.cache/dhx (Option C collapse — partial-detection writer) |
+| `probe-read-guard-partial-detection.sh` | yes | mktemp HOME isolation; guard reads a seeded session-scoped detect store + emits NOTE; reads/writes confined to $TMPHOME/.cache/dhx (Option C collapse) |
+| `probe-read-guard-native-enforcement-tripwire.sh` | no | spawns `claude -p` subprocesses against a sandbox CLAUDE_CONFIG_DIR + mktemp out-of-band targets; supersession-watchdog asserting CC still hard-blocks unread Edit/Write (Option C Q3); operator-invoked, needs auth |
 | `probe-repair-installed-plugins.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/`; no claude subprocess, no auth, no network; fixture-only — no live registry mutation (Phase 19 SYM-REPAIR D-10/D-15 repair-action probe; SC2 empirical anchor) |
 | `probe-restart-plugins-stop-hook.sh` | yes | mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP |
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
@@ -101,7 +97,6 @@ asserts row count == file count.
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-worktree-bash-guard.sh` | yes | hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution) |
 | `probe-worktree-write-guard.sh` | yes | hook subshell test with synthetic stdin; assertions on hook exit code only |
-| `probe-write-cache.sh` | yes | mktemp HOME isolation; cache writes contained in $TMPHOME/.cache/dhx |
 | `probe-writeatomic-leak-cleanup.js` | yes | mkdtempSync fixtures + require of live wrapper's `writeAtomic`; mocks `fs.renameSync` then restores it; no live `~/.cache/dhx` or `~/.claude` writes (IN-03 leaked-tmp cleanup invariant probe) |
 | `probe-safe-for-live-tags.sh` | yes | (D-29 reserved row) read-only grep over repo files; runtime invariant for the audit itself; lands in Task 3 of this plan |
 
@@ -158,7 +153,7 @@ exceed the 30s/probe wrapper budget.
 | `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` OR seeded `~/.claude/.credentials.json` (cell 1); `ANTHROPIC_API_KEY` only (cell 2) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
 | `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
 | `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
-| `probe-read-guard-strong-signal.sh` | ~9-15min | seed `~/.claude/.credentials.json` into sandbox `CLAUDE_CONFIG_DIR` (D-18d sandbox loses live credential reachability; current Wave 0 OQ1 INVALID state caused by `apiKeySource=none` in sandboxed subprocess) | mktemp + cp -rL dhx-plugin/ + ~/.claude/plugins/ + `CLAUDE_CONFIG_DIR=$SANDBOX` | `cp ~/.claude/.credentials.json $SANDBOX/.credentials.json && bash tests/probes/probe-read-guard-strong-signal.sh` (operator must seed credentials inside the sandbox per probe internals) |
+| `probe-read-guard-native-enforcement-tripwire.sh` | ~60-120s | `ANTHROPIC_API_KEY` OR seeded `~/.claude/.credentials.json` | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` + out-of-band `printf` targets | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-read-guard-native-enforcement-tripwire.sh` (Option C Q3 supersession-watchdog — exit 0 = CC native block holds; exit 1 = revive signal) |
 
 **Routing via `--probes-unsafe`:** `bash scripts/run-probes.sh --probes-unsafe`
 delegates to `--filter SAFE_FOR_LIVE=no` and runs all four probes (plus any

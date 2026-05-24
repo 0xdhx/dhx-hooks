@@ -1,242 +1,81 @@
 #!/usr/bin/env bash
-# probe-read-cache.sh — verify dhx-read-cache.sh + dhx-read-guard.js dual-path stack.
+# probe-read-cache.sh — verify dhx-read-cache.sh partial-detection writer.
 #
-# Backs the v1.1 Phase 1 atomic-commit decisions.md row (Option B retire
-# ~/.claude/read-once/, own the read-tracking stack). Asserts:
-#   - Writer schema: {"path":<abs>,"ts":<num>,"source":"read","partial":true?}
-#   - Cache file at $HOME/.cache/dhx/read-cache.jsonl (XDG, D-04)
-#   - Guard 3-state branching against full/partial/no-read entries
-#   - Guard treats absent `source` field as "read" (D-07 null-safety)
-#   - TTL expiry: entries with ts < NOW-7200 produce READ-BEFORE-EDIT (D-15, V-TTL-EXPIRY)
-#   - PARTIAL-READ NOTE once-per-(session,file) gate (CAL-POLISH-02; D-02/D-04/D-11):
-#     1st Edit fires (incl. the D-11 fail-safe first-read ENOENT path) / 2nd same-
-#     (session,ticks,file) Edit silent / different file fires / rotated-ticks process
-#     re-arms / invalid session_id disables (always-fire) / malformed JSONL line skipped
+# Backs the 2026-05-24 decisions.md Option C collapse row. After the collapse,
+# dhx-read-cache.sh records ONLY partial Reads, to a SESSION-SCOPED detection
+# store keyed on session_id ALONE:
+#   ~/.cache/dhx/partial-read-detect-<session_id>.jsonl   entries: {"path":<abs>}
+# Full reads, non-partial Reads, and unsafe session_ids write nothing. The old
+# global read-cache.jsonl + TTL/prune/flock are gone (retired with the global-
+# cache probe corpus — reference impl pinned in the Option C decisions.md row).
 #
-# INVARIANT: writer is the SOLE PreToolUse:Read writer post-Phase 1
-# (D-05 collapses Boucle hook.sh + dhx-read-partial-cache.sh into one).
-# Cache lives at XDG location, NOT ~/.claude/read-once/.
+# Asserts:
+#   - V-PARTIAL-OFFSET / V-PARTIAL-LIMIT: partial Read → detect entry written
+#   - V-FULL-NOOP:        full Read (no offset/limit) → nothing written
+#   - V-SESSION-KEYED:    store filename carries session_id; distinct ids → distinct files
+#   - V-INVALID-SESSION:  empty / path-separator / `..` session_id → reject-and-disable
+#   - V-REALPATH:         recorded path is symlink-resolved (IN-02)
+#   - V-NO-GLOBAL-CACHE:  the retired global read-cache.jsonl is NOT created
 #
-# D-01 dual-path (also read ~/.claude/read-once/reads.jsonl) removed in v1.1.1
-# hygiene commit (2026-05-03). V-GUARD-LEGACY-PATH assertion (Test 11) removed.
+# INVARIANT: detection keys on session_id ALONE (NOT session_id+ticks) — ticks
+# rotate every resume (HP-016/HP-036); ticks-keying would miss the NOTE on every
+# cross-session edit. The reader (dhx-read-guard.js) keys identically.
 #
-# Run directly:
-#   bash tests/probes/probe-read-cache.sh
-# Exit code 0 = pass. Nonzero with [FAIL] line = test failure.
-
-# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx)
+# Run directly: bash tests/probes/probe-read-cache.sh
+# Exit 0 = pass. Nonzero with [FAIL] line = failure.
+#
+# SAFE_FOR_LIVE: yes   (mktemp HOME isolation; all writes contained in $TMPHOME/.cache/dhx)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-cache.sh"
 TMPHOME=$(mktemp -d)
-TMPFILE=$(mktemp)
-TMPFILE2=$(mktemp)   # second fixture file for the per-file-granularity seen-set assertion
-trap 'rm -rf "$TMPHOME" "$TMPFILE" "$TMPFILE2"' EXIT
+WORK=$(mktemp -d)
+trap 'rm -rf "$TMPHOME" "$WORK"' EXIT
 
-cleanup_fail() {
-  echo "[FAIL] $1" >&2
-  exit 1
-}
+cleanup_fail() { echo "[FAIL] $1" >&2; exit 1; }
 
-CACHE="$TMPHOME/.cache/dhx/read-cache.jsonl"
+CACHE_DIR="$TMPHOME/.cache/dhx"
+TGT="$WORK/file.txt"; printf 'a\nb\nc\nd\ne\n' > "$TGT"
+RTGT=$(realpath "$TGT")
 
-# Test 1 (V-WRITER-FULL): Full Read (no offset/limit) emits source:"read", no partial
-INPUT=$(printf '{"tool_name":"Read","session_id":"probe-1","tool_input":{"file_path":"%s"}}' "$TMPFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-RC=$?
-[ "$RC" -eq 0 ] || cleanup_fail "Full Read exited nonzero ($RC)"
-[ -f "$CACHE" ] || cleanup_fail "V-XDG-CACHE-PATH: cache not created at $CACHE"
-LINE=$(tail -1 "$CACHE")
-echo "$LINE" | jq -e --arg p "$TMPFILE" '.path == $p and (.ts | type == "number") and .source == "read" and (.partial == null)' >/dev/null \
-  || cleanup_fail "V-WRITER-FULL: full Read entry malformed: $LINE"
+run() { echo "$1" | HOME="$TMPHOME" bash "$HOOK"; }
 
-# Test 2 (V-WRITER-PARTIAL-OFFSET): Read with offset:10 → partial:true
-INPUT=$(printf '{"tool_name":"Read","session_id":"probe-1","tool_input":{"file_path":"%s","offset":10,"limit":5}}' "$TMPFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-LINE=$(tail -1 "$CACHE")
-echo "$LINE" | jq -e '.source == "read" and .partial == true' >/dev/null \
-  || cleanup_fail "V-WRITER-PARTIAL-OFFSET: offset Read missing partial:true: $LINE"
+# V-PARTIAL-OFFSET: Read with offset → detect entry written, keyed on session_id.
+run "$(printf '{"session_id":"probe-A","tool_name":"Read","tool_input":{"file_path":"%s","offset":1,"limit":2}}' "$TGT")"
+DET_A="$CACHE_DIR/partial-read-detect-probe-A.jsonl"
+[ -f "$DET_A" ] || cleanup_fail "V-PARTIAL-OFFSET: detect store not created at $DET_A"
+tail -1 "$DET_A" | jq -e --arg p "$RTGT" '.path == $p' >/dev/null \
+  || cleanup_fail "V-PARTIAL-OFFSET: entry malformed: $(tail -1 "$DET_A")"
 
-# Test 3 (V-WRITER-PARTIAL-LIMIT): Read with limit:20 (no offset) → partial:true
-INPUT=$(printf '{"tool_name":"Read","session_id":"probe-1","tool_input":{"file_path":"%s","limit":20}}' "$TMPFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-LINE=$(tail -1 "$CACHE")
-echo "$LINE" | jq -e '.source == "read" and .partial == true' >/dev/null \
-  || cleanup_fail "V-WRITER-PARTIAL-LIMIT: limit-only Read missing partial:true: $LINE"
+# V-PARTIAL-LIMIT: Read with limit only (no offset) → also recorded.
+run "$(printf '{"session_id":"probe-B","tool_name":"Read","tool_input":{"file_path":"%s","limit":3}}' "$TGT")"
+[ -f "$CACHE_DIR/partial-read-detect-probe-B.jsonl" ] || cleanup_fail "V-PARTIAL-LIMIT: limit-only Read not recorded"
 
-# Test 4 (V-WRITER-NULL-FIELDS): offset:null,limit:null → treated as full
-INPUT=$(printf '{"tool_name":"Read","session_id":"probe-1","tool_input":{"file_path":"%s","offset":null,"limit":null}}' "$TMPFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-LINE=$(tail -1 "$CACHE")
-echo "$LINE" | jq -e '.source == "read" and (.partial == null)' >/dev/null \
-  || cleanup_fail "V-WRITER-NULL-FIELDS: null offset/limit not treated as full: $LINE"
+# V-FULL-NOOP: full Read (no offset/limit) → nothing written.
+run "$(printf '{"session_id":"probe-C","tool_name":"Read","tool_input":{"file_path":"%s"}}' "$TGT")"
+[ -f "$CACHE_DIR/partial-read-detect-probe-C.jsonl" ] && cleanup_fail "V-FULL-NOOP: full Read wrongly recorded a detect entry"
 
-# Test 5a (V-WRITER-MISSING-FIELDS): missing file_path → rc=0, no cache write
-PRE_COUNT=$(wc -l < "$CACHE")
-INPUT='{"tool_name":"Read","session_id":"probe-1","tool_input":{}}'
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-RC=$?
-[ "$RC" -eq 0 ] || cleanup_fail "V-WRITER-MISSING-FIELDS: missing file_path crashed (rc=$RC)"
-POST_COUNT=$(wc -l < "$CACHE")
-[ "$PRE_COUNT" -eq "$POST_COUNT" ] || cleanup_fail "V-WRITER-MISSING-FIELDS: missing file_path silently wrote"
+# V-SESSION-KEYED: distinct session_ids → distinct store files (A and B both exist, C absent).
+{ [ -f "$DET_A" ] && [ -f "$CACHE_DIR/partial-read-detect-probe-B.jsonl" ]; } \
+  || cleanup_fail "V-SESSION-KEYED: per-session store files missing"
 
-# Test 5b (V-WRITER-MISSING-FIELDS): missing session_id → rc=0, cache write OK (D-04 abandons session keying)
-INPUT=$(printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$TMPFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-RC=$?
-[ "$RC" -eq 0 ] || cleanup_fail "V-WRITER-MISSING-FIELDS: missing session_id crashed (rc=$RC)"
-POST_COUNT2=$(wc -l < "$CACHE")
-[ "$POST_COUNT2" -eq "$((POST_COUNT + 1))" ] || cleanup_fail "V-WRITER-MISSING-FIELDS: missing session_id should still write (D-04)"
+# V-INVALID-SESSION: empty / path-separator / `..` session_id → reject-and-disable (no write, no escape).
+run "$(printf '{"session_id":"","tool_name":"Read","tool_input":{"file_path":"%s","offset":1,"limit":2}}' "$TGT")"
+run "$(printf '{"session_id":"a/b","tool_name":"Read","tool_input":{"file_path":"%s","offset":1,"limit":2}}' "$TGT")"
+run "$(printf '{"session_id":"..","tool_name":"Read","tool_input":{"file_path":"%s","offset":1,"limit":2}}' "$TGT")"
+# the path-separator case must not escape the cache dir into a nested 'detect-a/b.jsonl'
+[ -e "$CACHE_DIR/partial-read-detect-a" ] && cleanup_fail "V-INVALID-SESSION: path-separator session_id escaped into the cache dir"
+# the `..` and empty cases must not create any new store file
+[ -f "$CACHE_DIR/partial-read-detect-...jsonl" ] && cleanup_fail "V-INVALID-SESSION: '..' session_id produced a store file"
 
-# Test 6 (V-WRITER-REALPATH): relative path → emitted absolute
-RELDIR=$(mktemp -d)
-RELFILE="$RELDIR/relfile.md"
-touch "$RELFILE"
-INPUT=$(printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$RELFILE")
-echo "$INPUT" | HOME="$TMPHOME" bash "$HOOK"
-LAST=$(tail -1 "$CACHE")
-EMITTED=$(echo "$LAST" | jq -r '.path')
-[ "${EMITTED:0:1}" = "/" ] || cleanup_fail "V-WRITER-REALPATH: emitted path not absolute: $EMITTED"
-rm -rf "$RELDIR"
+# V-REALPATH: symlink target is resolved to its real path (IN-02 alignment with the guard).
+LINKDIR="$WORK/link"; mkdir -p "$LINKDIR"; ln -s "$TGT" "$LINKDIR/alias.txt"
+run "$(printf '{"session_id":"probe-L","tool_name":"Read","tool_input":{"file_path":"%s","offset":1,"limit":2}}' "$LINKDIR/alias.txt")"
+tail -1 "$CACHE_DIR/partial-read-detect-probe-L.jsonl" | jq -e --arg p "$RTGT" '.path == $p' >/dev/null \
+  || cleanup_fail "V-REALPATH: symlink path not resolved to $RTGT: $(tail -1 "$CACHE_DIR/partial-read-detect-probe-L.jsonl")"
 
-# Test 7 (V-COMPACT-SCOPE-NO-REGRESSION): no session-*.jsonl created (D-04 pure global TTL)
-SESSION_FILES=$(find "$TMPHOME/.claude/read-once" -name 'session-*.jsonl' 2>/dev/null | wc -l)
-[ "$SESSION_FILES" -eq 0 ] || cleanup_fail "V-COMPACT-SCOPE-NO-REGRESSION: writer created session-*.jsonl (regression of D-04 abandonment)"
+# V-NO-GLOBAL-CACHE: the retired global read-cache.jsonl must NOT be created.
+[ -f "$CACHE_DIR/read-cache.jsonl" ] && cleanup_fail "V-NO-GLOBAL-CACHE: retired global read-cache.jsonl was created"
 
-# ====== GUARD INTEGRATION ASSERTIONS (V-GUARD-* invariants) ======
-GUARD="/home/dhx/repos/hooks/dhx/dhx-read-guard.js"
-
-# Reset cache for clean guard tests
-> "$CACHE"
-NOW=$(date +%s)
-
-# Test 8 (V-GUARD-FULL-SUPPRESS): full-read entry → guard suppresses advisory
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"read\"}" >> "$CACHE"
-GUARD_INPUT=$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$TMPFILE")
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-GUARD-FULL-SUPPRESS: full-read entry should suppress advisory (got: $OUTPUT)"
-
-# Test 9 (V-GUARD-PARTIAL-NOTE): partial:true entry → guard emits PARTIAL-READ NOTE
-> "$CACHE"
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"read\",\"partial\":true}" >> "$CACHE"
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-GUARD-PARTIAL-NOTE: partial entry did not emit PARTIAL-READ NOTE: $OUTPUT"
-
-# Test 10 (V-GUARD-NO-READ-STRONG): empty cache, file exists → READ-BEFORE-EDIT
-> "$CACHE"
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("READ-BEFORE-EDIT")' >/dev/null \
-  || cleanup_fail "V-GUARD-NO-READ-STRONG: empty cache + existing file did not emit READ-BEFORE-EDIT: $OUTPUT"
-
-# Test 12 (V-GUARD-NULL-SOURCE): primary cache entry without source field → treated as full read (D-07)
-> "$CACHE"
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW}" >> "$CACHE"  # no source field — D-07 null-safety
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-GUARD-NULL-SOURCE: D-07 null-safety regression — absent source field should = full read: $OUTPUT"
-
-# Test 13 (V-GUARD-WRITE-AS-FULL): {source:"write"} entry → treated as full read (D-08 semantics)
-> "$CACHE"
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"write\"}" >> "$CACHE"
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-GUARD-WRITE-AS-FULL: source:write entry should be treated as full read (D-08): $OUTPUT"
-
-# Test 14 (V-TTL-EXPIRY / D-15): entry with ts < NOW-7200 (past TTL) → guard emits READ-BEFORE-EDIT
-# Closes the missing middle case in REQ READ-03 coverage between fresh-read-suppress
-# and empty-cache-strong. Pre-populate with a stale-but-not-removed entry; the TTL
-# filter inside scanCache should exclude it from the accumulator.
-> "$CACHE"
-STALE_TS=$(( NOW - 8000 ))   # 8000s > 7200s TTL
-echo "{\"path\":\"$TMPFILE\",\"ts\":$STALE_TS,\"source\":\"read\"}" >> "$CACHE"
-OUTPUT=$(echo "$GUARD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("READ-BEFORE-EDIT")' >/dev/null \
-  || cleanup_fail "V-TTL-EXPIRY (D-15): past-TTL entry (ts=NOW-8000) should NOT suppress; expected READ-BEFORE-EDIT, got: $OUTPUT"
-
-# ====== PARTIAL-READ NOTE once-per-(session,file) CONTRACT (CAL-POLISH-02; D-02/D-04/D-11) ======
-# Behavioral contract — invokes the guard, asserts the NOTE fires/suppresses by
-# (session_id, CC-ticks, file). The probe CANNOT drive findCCTicks directly (it
-# reads /proc for the LIVE ticks), so:
-#   - cases that need the gate to HIT pre-seed nothing; the FIRST invocation creates
-#     the seen-set under the hook's live {session_id}-{ticks}, the SECOND invocation
-#     hits it.
-#   - the ticks-varying re-arm relocates the populated seen-set to a DIFFERENT ticks
-#     suffix (and clears the live-ticks file), proving suppression is ticks-keyed,
-#     not session-only — a static filename grep cannot catch the shell-ticks regression.
-# All writes stay under $TMPHOME/.cache/dhx/ (SAFE_FOR_LIVE: yes — no escape to real ~/.cache/dhx).
-> "$CACHE"
-echo "{\"path\":\"$TMPFILE\",\"ts\":$NOW,\"source\":\"read\",\"partial\":true}" >> "$CACHE"
-SEEN_SID="probe-seen-001"
-SEEN_INPUT=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID" "$TMPFILE")
-
-# Test 15 (V-SEEN-FAILSAFE-FIRST-READ / D-11): NO pre-existing seen-set → the
-# readFileSync throws ENOENT → fail-safe treats it as a cache-miss → the NOTE FIRES,
-# then the file is created on append. This is the regression net for the D-11
-# swallow-on-ENOENT bug both reviewers flagged. (Note: NO seen-set is pre-seeded here.)
-find "$TMPHOME/.cache/dhx" -name 'partial-read-seen-*.jsonl' -delete 2>/dev/null
-OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-SEEN-FAILSAFE-FIRST-READ (D-11): first Edit with NO seen-set should FIRE (ENOENT fail-safe), got: $OUTPUT"
-SEEN_FILE=$(find "$TMPHOME/.cache/dhx" -name "partial-read-seen-${SEEN_SID}-*.jsonl" | head -1)
-[ -n "$SEEN_FILE" ] || cleanup_fail "V-SEEN-FAILSAFE-FIRST-READ (D-11): cache-miss did not append a partial-read-seen-*.jsonl"
-
-# Test 16 (V-SEEN-2ND-EDIT-SILENT / D-02): 2nd Edit, SAME session_id + SAME live ticks
-# + SAME file → seen-set HIT → silent (the happy-path once-per-file dedup). Behavioral
-# (invokes the hook twice), not a static filename grep.
-OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-SEEN-2ND-EDIT-SILENT (D-02): 2nd same-(session,ticks,file) Edit should be silent, got: $OUTPUT"
-
-# Test 17 (V-SEEN-DIFFERENT-FILE-FIRES / D-02): a DIFFERENT file in the same session
-# → fires (per-file granularity, not per-session).
-echo "{\"path\":\"$TMPFILE2\",\"ts\":$NOW,\"source\":\"read\",\"partial\":true}" >> "$CACHE"
-SEEN_INPUT2=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID" "$TMPFILE2")
-OUTPUT=$(echo "$SEEN_INPUT2" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-SEEN-DIFFERENT-FILE-FIRES (D-02): different file in same session should FIRE, got: $OUTPUT"
-
-# Test 18 (V-SEEN-TICKS-REARM / D-04): a rotated-ticks process (e.g. /resume) re-arms.
-# The seen-set is keyed on (session_id, CC-ticks) — relocate the populated seen-set to a
-# DIFFERENT ticks suffix and CLEAR the live-ticks file, so the hook's live-ticks lookup
-# misses → fires again. This varies the {ticks} component (not just {session_id}); a
-# session_id-only test would NOT catch a regression that drops ticks from the key.
-LIVE_TICKS=$(basename "$SEEN_FILE" | sed -nE "s/^partial-read-seen-${SEEN_SID}-(.+)\.jsonl$/\1/p")
-[ -n "$LIVE_TICKS" ] || cleanup_fail "V-SEEN-TICKS-REARM (D-04): could not parse live ticks from $SEEN_FILE"
-OTHER_TICKS="${LIVE_TICKS}9999"   # a distinct, non-live ticks value
-cp "$SEEN_FILE" "$TMPHOME/.cache/dhx/partial-read-seen-${SEEN_SID}-${OTHER_TICKS}.jsonl"
-> "$SEEN_FILE"   # clear the live-ticks seen-set → rotated-ticks process sees a fresh state
-OUTPUT=$(echo "$SEEN_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-SEEN-TICKS-REARM (D-04): rotated-ticks process should re-arm (fire), got: $OUTPUT"
-
-# Test 19 (V-SEEN-INVALID-SID-DISABLES / D-11 constraint 3): an unsafe session_id
-# (contains / or ..) DISABLES the optimization → always-fire (no dedup), and writes
-# NO seen-set file (reject-and-disable, not strip-and-continue → no key collision).
-BAD_INPUT=$(printf '{"tool_name":"Edit","session_id":"a/b","tool_input":{"file_path":"%s"}}' "$TMPFILE")
-OUT1=$(echo "$BAD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-OUT2=$(echo "$BAD_INPUT" | HOME="$TMPHOME" node "$GUARD")
-echo "$OUT1" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id 1st Edit should FIRE, got: $OUT1"
-echo "$OUT2" | jq -e '.hookSpecificOutput.additionalContext | test("PARTIAL-READ NOTE")' >/dev/null \
-  || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id 2nd Edit should ALSO FIRE (disable, not dedup), got: $OUT2"
-BAD_SEEN=$(find "$TMPHOME/.cache/dhx" -path '*partial-read-seen-a*' 2>/dev/null | wc -l)
-[ "$BAD_SEEN" -eq 0 ] || cleanup_fail "V-SEEN-INVALID-SID-DISABLES (D-11): invalid session_id wrote a seen-set file (should reject-and-disable)"
-
-# Test 20 (V-SEEN-MALFORMED-LINE-SKIP / D-11 constraint 2): a malformed JSONL line in the
-# seen-set is skipped INDIVIDUALLY; dedup still works on the well-formed record.
-SEEN_SID3="probe-seen-003"
-SEEN_INPUT3=$(printf '{"tool_name":"Edit","session_id":"%s","tool_input":{"file_path":"%s"}}' "$SEEN_SID3" "$TMPFILE")
-# Prime the seen-set under the live ticks by firing once (creates the file), then inject garbage.
-echo "$SEEN_INPUT3" | HOME="$TMPHOME" node "$GUARD" >/dev/null
-SEEN_FILE3=$(find "$TMPHOME/.cache/dhx" -name "partial-read-seen-${SEEN_SID3}-*.jsonl" | head -1)
-[ -n "$SEEN_FILE3" ] || cleanup_fail "V-SEEN-MALFORMED-LINE-SKIP (D-11): priming Edit did not create the seen-set"
-# Prepend a malformed line; the well-formed record (written by the prime) must still dedup.
-printf 'this is not valid json\n%s' "$(cat "$SEEN_FILE3")" > "$SEEN_FILE3.tmp" && mv "$SEEN_FILE3.tmp" "$SEEN_FILE3"
-OUTPUT=$(echo "$SEEN_INPUT3" | HOME="$TMPHOME" node "$GUARD")
-[ -z "$OUTPUT" ] || cleanup_fail "V-SEEN-MALFORMED-LINE-SKIP (D-11): malformed line should be skipped and the good record still dedup (silent), got: $OUTPUT"
-
-# Test 21 (V-SEEN-NO-LIVE-ESCAPE / SAFE_FOR_LIVE): the seen-set work never escaped to the
-# real ~/.cache/dhx — assert all partial-read-seen-* files live under $TMPHOME only.
-ESCAPED=$(find "$HOME/.cache/dhx" -maxdepth 1 -name "partial-read-seen-probe-seen-*.jsonl" 2>/dev/null | wc -l)
-[ "$ESCAPED" -eq 0 ] || cleanup_fail "V-SEEN-NO-LIVE-ESCAPE: probe wrote a partial-read-seen file to the REAL ~/.cache/dhx (SAFE_FOR_LIVE violation)"
-
-echo "[PASS] dhx-read-cache.sh: 20/20 assertions (writer 7 + guard 5 + V-TTL-EXPIRY 1 + seen-set 7)"
+echo "[PASS] probe-read-cache.sh: 7/7 assertions (partial-detect writer, session_id-alone keying, invalid-session reject, realpath, no global cache)"
 exit 0

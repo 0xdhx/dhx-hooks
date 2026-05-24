@@ -133,10 +133,6 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-source-write-flag.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-write-cache.sh\""
           }
         ]
       },
