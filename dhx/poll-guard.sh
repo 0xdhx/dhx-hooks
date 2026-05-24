@@ -2,7 +2,10 @@
 # poll-guard: PreToolUse hook for Claude Code Read tool
 # Patterns: HP-007, HP-028
 # Rate-limits reads of background task output files to prevent busy-polling.
-# Complements read-once (content dedup) with frequency rate-limiting.
+# Frequency rate-limiting ONLY — there is no content-dedup re-read guard. (The
+# read-once `READ_ONCE_DIFF` content-dedup was retired `bc45a2e`/`523d3ec`; this
+# hook is the sole re-read guard and is narrow to task-output files, not general
+# re-reads. The prior "Complements read-once (content dedup)" wording was stale.)
 #
 # When a task output file is re-read within the cooldown window, blocks the
 # read and tells Claude to use TaskGet instead. Escalating cooldowns:

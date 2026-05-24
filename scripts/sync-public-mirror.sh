@@ -75,27 +75,15 @@ echo "[sync] scrubbing cross-references..."
 find tests/probes -type f \( -name '*.sh' -o -name '*.js' \) \
   -exec sed -i '/^# Backs[a-z]*:\?[[:space:]]\+docs\/decisions\.md/d; /^\/\/ Backs[a-z]*:\?[[:space:]]\+docs\/decisions\.md/d' {} +
 
-# Class A surgical: read-cache probe headers fuse `# Backs the v1.1 Phase 1
-# atomic-commit decisions.md row` with substantive text on continuation lines.
-# Single-line regex above can't safely delete those without orphaning English.
-# Per-file rewrites preserve substantive content while stripping cross-refs.
-sed -i 's|^# Backs the v1.1 Phase 1 atomic-commit decisions\.md row (Option B retire$|# Replaces ~/.claude/read-once/ with a dhx-owned read-tracking stack (Option B retire|' tests/probes/probe-read-cache.sh
-# Now line 5 still says "# ~/.claude/read-once/, own the read-tracking stack). Asserts:"
-# which becomes redundant — collapse it:
-sed -i 's|^# ~/\.claude/read-once/, own the read-tracking stack)\. Asserts:$|# ~/.claude/read-once/). Asserts:|' tests/probes/probe-read-cache.sh
-
-sed -i 's|^# Backs the v1.1 Phase 1 atomic-commit decisions\.md row (REQ READ-06,$|# Asserts (REQ READ-06,|' tests/probes/probe-read-cache-concurrency.sh
-
-# probe-read-cache-cross-session.sh: 3-line block — replace lines 4 and 5,
-# delete line 6's "(the load-bearing citation...)" parenthetical.
-sed -i 's|^# Backs the v1.1 Phase 1 atomic-commit decisions\.md row (REQ READ-03,$|# Asserts (REQ READ-03,|' tests/probes/probe-read-cache-cross-session.sh
-sed -i 's|^# READ-11) AND reports/done/2026-04-15-read-guard-session-scoping-false-positives\.md$|# READ-11) that the|' tests/probes/probe-read-cache-cross-session.sh
-sed -i '/^# (the load-bearing citation for the global-TTL design)\. Asserts that the$/d' tests/probes/probe-read-cache-cross-session.sh
-
-sed -i 's|^# Backs the v1.1 Phase 1 atomic-commit decisions\.md row (D-13 rename-then-$|# Backs the D-13 rename-then-|' tests/probes/probe-read-cache-prune-concurrency.sh
-
-# probe-write-cache.sh has a similar pattern
-sed -i 's|^# Backs the 2026-04-19 decisions\.md row "dhx-write-cache\.sh: PostToolUse|# Asserts dhx-write-cache.sh PostToolUse|' tests/probes/probe-write-cache.sh
+# Class A surgical: the read-guard partial-detection probe headers fuse
+# `# Backs the 2026-05-24 decisions.md Option C collapse row` with substantive
+# text on the same line. The single-line regex above can't delete that without
+# orphaning the trailing English, so rewrite per-file. (The pre-Option-C
+# read-cache global-cache probe corpus — concurrency/prune/cross-session/
+# write-cache — was retired in commit 32d12f5; its scrub rules were removed
+# with it.)
+sed -i 's|^# Backs the 2026-05-24 decisions\.md Option C collapse row\. After the collapse,$|# After the Option C read-guard collapse,|' tests/probes/probe-read-cache.sh
+sed -i 's|^# Backs the 2026-05-24 decisions\.md Option C collapse row\. The collapse removed$|# The Option C read-guard collapse removed|' tests/probes/probe-read-guard-partial-detection.sh
 
 # probe-bashrc-wrapper-heal.sh:17
 sed -i 's|^# Backs decisions\.md 2026-04-17 row "plugin-keys load-gating verified +$|# Asserts plugin-keys load-gating verified +|' tests/probes/probe-bashrc-wrapper-heal.sh
@@ -385,12 +373,12 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
 | `dhx-assessed-guard.sh` | `Write\|Edit` | Prevents `[assessed]` markers without explicit user approval. |
-| `dhx-read-guard.js` | `Write\|Edit` | Read-before-edit advisory using a 7200s global TTL on `~/.cache/dhx/read-cache.jsonl`. Three-state advisory (silent/soft/strong). |
+| `dhx-read-guard.js` | `Write\|Edit` | Partial-read advisory (PARTIAL-READ NOTE) — fires when a file was Read with offset/limit this session then edited outside the read window. CC's native runtime owns full read-before-edit enforcement; this shim only covers CC's partial-read blindness. |
 | `dhx-worktree-write-guard.sh` | `Edit\|Write\|MultiEdit` | Blocks writes whose absolute path escapes the enclosing CC-managed worktree (gh#36182 mitigation). |
 | `dhx-ui-vision-guard.sh` | `Agent` | Ensures `z-gsdui` project skill exists when GSD UI subagents spawn. |
 | `dhx-agent-leak-snapshot.sh` | `Agent` | Captures pre-dispatch `git status` baseline for paired post-check (subagent-leak detection). |
 | `dhx-poll-guard.sh` | `Read` | Rate-limits busy-polling on background-task output files (escalating cooldowns). |
-| `dhx-read-cache.sh` | `Read` | Sole writer for `~/.cache/dhx/read-cache.jsonl`. Lock-free `>>` appends; flock-protected prune. |
+| `dhx-read-cache.sh` | `Read` | Records partial Reads (offset/limit) to a session-scoped detection store (`~/.cache/dhx/partial-read-detect-<session_id>.jsonl`) keyed on session_id; feeds the read-guard's PARTIAL-READ NOTE. |
 
 ### PostToolUse
 
@@ -399,7 +387,6 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | `dhx-merge-reminder.sh` | `Skill` | After milestone-completion skills, reminds user to merge working branch. |
 | `dhx-new-milestone-promote-reminder.sh` | `Skill` | After `/gsd-new-milestone`, reminds `/dhx:backlog promote-next` if `next`-tagged briefs exist. |
 | `dhx-source-write-flag.sh` | `Write\|Edit` | Sets per-turn flag for the test-gate when source files are written. |
-| `dhx-write-cache.sh` | `Write\|Edit` | Mirrors successful writes into the read cache (`source:"write"` entries) — closes Write→Edit false-positive class. |
 | `dhx-context-gate.sh` | `Write` | Blocks (exit 2) when CONTEXT.md is missing required DHX sections. |
 | `dhx-execute-checkpoint.sh` | `Agent` | Drift detection calibration injected when a `gsd-executor` agent completes. |
 | `dhx-execute-review.sh` | `Agent` | Execution fidelity review on `gsd-verifier` completion (includes phase-number derivation from `STATE.md` + pointer to `/dhx:execute` review skill — absorbed `dhx-post-execute-review.sh` 2026-05-03). |
@@ -453,7 +440,7 @@ Each hook script declares a `# Patterns: HP-XXX, HP-YYY` header listing the runt
 
 ## Forks from upstream
 
-`gsd/` contains read-only snapshots of upstream `gsd-build/get-shit-done` hooks, vendored for fork-tracking. The fork-and-modify lineage for `gsd-read-guard.js` → `dhx/dhx-read-guard.js` is documented in commit history; the fork ships persistent JSONL state-tracking the upstream binary doesn't (see `dhx/dhx-read-cache.sh` + the `probe-read-cache*` probe corpus).
+`gsd/` contains read-only snapshots of upstream `gsd-build/get-shit-done` hooks, vendored for fork-tracking. The fork-and-modify lineage for `gsd-read-guard.js` → `dhx/dhx-read-guard.js` is documented in commit history; the fork adds session-scoped partial-read detection the upstream binary doesn't (see `dhx/dhx-read-cache.sh` + the `probe-read-cache.sh` / `probe-read-guard-partial-detection.sh` probes).
 
 ## License
 
@@ -504,7 +491,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Initial public release. Mirror of the dhx hook surface from the private workflow repo. See README for the hook inventory.
 
 ### Added
-- `dhx/` hook source: SessionStart health/drift/worktree checks, PreToolUse read-cache + read-guard with persistent JSONL state-tracking, workflow + prompt guards, validate-commit, worktree-bash-guard, ui-vision-guard, statusline composition.
+- `dhx/` hook source: SessionStart health/drift/worktree checks, PreToolUse read-cache + read-guard (session-scoped partial-read detection), workflow + prompt guards, validate-commit, worktree-bash-guard, ui-vision-guard, statusline composition.
 - `dhx-plugin/` Claude Code plugin manifest registering all dhx hooks (rewriter-safe via plugin manifest path).
 - `tests/probes/` regression probe corpus (~22 active probes) asserting runtime invariants.
 - `scripts/run-probes.sh`, `scripts/verify-hooks.sh`, `scripts/sync-public-mirror.sh`.
@@ -512,7 +499,7 @@ Initial public release. Mirror of the dhx hook surface from the private workflow
 - `gsd/` read-only snapshots of upstream `gsd-build/get-shit-done` hooks (vendored for fork-tracking).
 
 ### Notable hooks
-- **Persistent JSONL read-cache** (`dhx-read-cache.sh` + `dhx-read-guard.js`) — cross-tool, cross-session read tracking with 7200s TTL. Three-state advisory (silent / soft / strong) finer-grained than upstream's binary skip. CCS-multi-instance safe.
+- **Partial-read advisory** (`dhx-read-cache.sh` + `dhx-read-guard.js`) — session-scoped detection of files Read with `offset`/`limit` then edited outside the read window, surfaced as a soft PARTIAL-READ NOTE. Covers CC's partial-read blindness (its native read-gate is binary — a partial read satisfies it for an edit anywhere); CC's runtime owns full read-before-edit enforcement.
 - **Plugin-manifest registration** — survives Claude Code's atomic settings-rename rewriter.
 
 [0.2.0]: https://github.com/0xdhx/dhx-hooks/releases/tag/v0.2.0
@@ -584,8 +571,7 @@ for path in \
   dhx/dhx-read-cache.sh \
   dhx/dhx-read-guard.js \
   tests/probes/probe-read-cache.sh \
-  tests/probes/probe-read-cache-concurrency.sh \
-  tests/probes/probe-read-cache-prune-concurrency.sh \
+  tests/probes/probe-read-guard-partial-detection.sh \
   README.md \
   CHANGELOG.md \
   LICENSE \
