@@ -198,75 +198,87 @@ function runRenderer(stdinData) {
   });
 }
 
-// ccburn: collect data + build compact segment from --json --once.
-// Two calls, run SEQUENTIALLY: (1) `collect` populates ccburn's SQLite DB from
-// the statusline stdin payload (no-op if ccburn missing); (2) `--json --once`
-// reads the structured limits we format ourselves. Sequential (not concurrent)
-// avoids the collect/read SQLite contention flagged in the 2026-05-25 incident
-// triage. Prior design piped `--compact` through a regex munger, which coupled
-// our output to ccburn's text format and didn't expose the weekly reset timer;
-// JSON gives us `resets_in_minutes` / `resets_in_hours` directly and lets
-// `formatBurnDuration` own a single duration convention.
+// ccburn segment — stale-while-revalidate cache (2026-05-25 ccburn-storm fix).
 //
-// ORPHAN-PREVENTION INVARIANT (2026-05-25 ccburn-storm incident). Both spawns
-// run under the coreutil `timeout` so the child's lifetime is bounded by a timer
-// living OUTSIDE this Node process. CC cancels an in-flight statusline by
-// SIGKILLing the wrapper on the next refresh; a Node-side setTimeout would die
-// with the parent and orphan the ccburn child — which then blocks indefinitely
-// on fsync against a degraded WSL writeback layer (the incident's amplification
-// loop, ~24 refreshes/min × N sessions × 2 unreaped spawns each). `timeout`
-// self-terminates the child even when reparented to init, bringing ccburn under
-// the D-14 "no unbounded subprocess on the render hot path" rule the 2026-04-26
-// capture-pane wedge established (docs/statusline-wrapper.md § Fleet D-14;
-// reports/2026-05-25-ccburn-storm-statusline-spawn-hardening.md). `collect` is
-// now awaited — it was fire-and-forget, a second silent orphan source.
-// Probe: tests/probes/probe-ccburn-no-orphan.sh.
-const CCBURN_COLLECT_TIMEOUT = '0.8s';
-const CCBURN_JSON_TIMEOUT = '1.2s';
-const CCBURN_KILL_AFTER = '0.5s';
-const CCBURN_MAX_STDOUT = 256 * 1024;
+// `ccburn --json --once` is a HEAVY usage scan: measured ~4.5-8s/call on this box
+// (it scans usage/JSONL to compute session+weekly limits). It is NOT the ~15ms the
+// incident triage reported — that benchmark unknowingly timed the no-op shim, not
+// real ccburn. Running this scan on EVERY statusline refresh (~24/min × N sessions)
+// was the incident's real amplifier: the "high-RAM JSONL search" was ccburn itself.
+// So we keep the scan OFF the render hot path:
+//
+//   • render path reads a cached segment — a single readFileSync, instant;
+//   • at most once per TTL, ONE detached, timeout-bounded refresher recomputes the
+//     cache in the background.
+//
+// The refresher is `detached:true` + `unref()` so it OUTLIVES this wrapper (which
+// exits in ms) and can finish the ~5s scan — but every ccburn invocation inside it
+// is wrapped in coreutil `timeout`, so it self-terminates and can NEVER orphan into
+// a storm. That preserves the D-14 "no unbounded subprocess on the render hot path"
+// rule (2026-04-26 capture-pane precedent; docs/statusline-wrapper.md § Fleet D-14)
+// while fixing the deeper problem the timeout alone didn't: the per-refresh scan
+// frequency. Single-flight is enforced by bumping the cache mtime BEFORE spawning,
+// so concurrent refreshes — and other sessions sharing ~/.cache/dhx — skip.
+//
+// Cache: ~/.cache/dhx/ccburn-json.json holds raw `--json --once` output; the wrapper
+// builds the segment at read time. This file also supersedes the old rolling
+// statusline-trace.jsonl for raw-json anomaly inspection.
+// Probe: tests/probes/probe-ccburn-no-orphan.sh. Tunables are env-overridable.
+const CCBURN_CACHE = process.env.DHX_CCBURN_CACHE
+  || path.join(os.homedir(), '.cache', 'dhx', 'ccburn-json.json');
+const CCBURN_TTL_MS = Number(process.env.DHX_CCBURN_TTL_MS) || 30_000;
+const CCBURN_REFRESH_TIMEOUT = process.env.DHX_CCBURN_REFRESH_TIMEOUT || '10s';
+const CCBURN_COLLECT_TIMEOUT = process.env.DHX_CCBURN_COLLECT_TIMEOUT || '2s';
+const CCBURN_KILL_AFTER = process.env.DHX_CCBURN_KILL_AFTER || '2s';
 
-// Spawn `ccburn <args>` under coreutil `timeout`, capturing capped stdout.
-// Always resolves to a string ('' on any failure: missing ccburn, missing
-// `timeout`, non-zero exit, timeout-kill, or stdout-cap). Never rejects, never
-// outlives the timeout band.
-function spawnCcburnTimed(args, stdin, timeoutArg) {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn('timeout', ['-k', CCBURN_KILL_AFTER, timeoutArg, 'ccburn', ...args], {
-        stdio: [stdin == null ? 'ignore' : 'pipe', 'pipe', 'ignore'],
-      });
-    } catch {
-      return resolve('');
-    }
-    let out = '';
-    let capped = false;
-    child.stdout.on('data', (chunk) => {
-      if (capped) return;
-      out += chunk;
-      if (out.length > CCBURN_MAX_STDOUT) {
-        capped = true;
-        try { child.kill('SIGKILL'); } catch {}
-      }
-    });
-    child.on('error', () => resolve('')); // `timeout` or ccburn not found
-    child.on('close', () => resolve(out));
-    if (stdin != null) {
-      child.stdin.on('error', () => {}); // EPIPE if child already exited
-      child.stdin.end(stdin);
-    }
-  });
+// Detached, timeout-bounded background refresh of the ccburn cache. Fire-and-forget:
+// it survives this wrapper's exit (detached+unref) to finish the slow scan, but each
+// ccburn invocation is `timeout`-bounded so it cannot orphan indefinitely.
+function refreshCcburnCache(stdinData) {
+  try {
+    fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
+    const tmp = `${CCBURN_CACHE}.${process.pid}.tmp`;
+    // collect (cheap, ~0.03s) populates ccburn's DB; then the heavy read. Atomic
+    // publish via rename; tmp cleaned on failure. Paths are fixed/internal — the
+    // only external value (stdinData) is fed via stdin, never interpolated.
+    const sh =
+      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_COLLECT_TIMEOUT} ccburn collect >/dev/null 2>&1; ` +
+      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_REFRESH_TIMEOUT} ccburn --json --once > '${tmp}' 2>/dev/null ` +
+      `&& mv -f '${tmp}' '${CCBURN_CACHE}' || rm -f '${tmp}'`;
+    const child = spawn('bash', ['-c', sh], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    child.stdin.on('error', () => {}); // EPIPE if `collect` exits before reading
+    child.stdin.end(stdinData);        // fed to `ccburn collect`
+    child.unref();
+  } catch { /* best-effort; the render still shows the last cached value */ }
 }
 
+// Render-path entry: returns the cached segment instantly; triggers a single
+// background refresh when the cache is older than the TTL. Never blocks on ccburn.
 async function runCcburn(stdinData) {
-  // collect first (populates the DB the read consumes), bounded + awaited so a
-  // hung collect can't orphan; then the structured read.
-  await spawnCcburnTimed(['collect'], stdinData, CCBURN_COLLECT_TIMEOUT);
-  const out = await spawnCcburnTimed(['--json', '--once'], null, CCBURN_JSON_TIMEOUT);
-  const segment = buildCcburnSegment(out);
-  if (segment) appendTrace({ ts: new Date().toISOString(), json: out.trim(), segment });
-  return segment || '';
+  let raw = '';
+  let mtimeMs = 0;
+  try {
+    const st = fs.statSync(CCBURN_CACHE);
+    mtimeMs = st.mtimeMs;
+    raw = fs.readFileSync(CCBURN_CACHE, 'utf8');
+  } catch { /* no cache yet — first run renders nothing, populates for the next refresh */ }
+
+  if (Date.now() - mtimeMs >= CCBURN_TTL_MS) {
+    // Claim the refresh slot by bumping mtime FIRST, so concurrent refreshes and
+    // other sessions sharing this cache don't all spawn (single-flight).
+    try {
+      const now = new Date();
+      try {
+        fs.utimesSync(CCBURN_CACHE, now, now);
+      } catch {
+        fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
+        fs.writeFileSync(CCBURN_CACHE, '');
+      }
+    } catch { /* claim failed; still attempt the refresh below */ }
+    refreshCcburnCache(stdinData);
+  }
+
+  return buildCcburnSegment(raw) || '';
 }
 
 // Rolling ccburn trace — ~/.cache/dhx/statusline-trace.jsonl (+ .prev on rotation).
