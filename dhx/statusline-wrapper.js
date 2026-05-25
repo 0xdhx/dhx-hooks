@@ -199,34 +199,74 @@ function runRenderer(stdinData) {
 }
 
 // ccburn: collect data + build compact segment from --json --once.
-// Two calls: (1) `collect` populates ccburn's database from the statusline
-// stdin payload (no-op if ccburn missing); (2) `--json --once` returns the
-// structured limits we format ourselves. Prior design piped `--compact`
-// through a regex munger, which coupled our output to ccburn's text format
-// and didn't expose the weekly reset timer. JSON gives us `resets_in_minutes`
-// / `resets_in_hours` directly and lets `formatBurnDuration` own a single
-// duration convention shared between session and weekly.
-function runCcburn(stdinData) {
-  return new Promise((resolve) => {
-    const collect = spawn('ccburn', ['collect'], {
-      stdio: ['pipe', 'ignore', 'ignore'],
-    });
-    collect.stdin.write(stdinData);
-    collect.stdin.end();
-    collect.on('error', () => {}); // ccburn not installed — no-op
+// Two calls, run SEQUENTIALLY: (1) `collect` populates ccburn's SQLite DB from
+// the statusline stdin payload (no-op if ccburn missing); (2) `--json --once`
+// reads the structured limits we format ourselves. Sequential (not concurrent)
+// avoids the collect/read SQLite contention flagged in the 2026-05-25 incident
+// triage. Prior design piped `--compact` through a regex munger, which coupled
+// our output to ccburn's text format and didn't expose the weekly reset timer;
+// JSON gives us `resets_in_minutes` / `resets_in_hours` directly and lets
+// `formatBurnDuration` own a single duration convention.
+//
+// ORPHAN-PREVENTION INVARIANT (2026-05-25 ccburn-storm incident). Both spawns
+// run under the coreutil `timeout` so the child's lifetime is bounded by a timer
+// living OUTSIDE this Node process. CC cancels an in-flight statusline by
+// SIGKILLing the wrapper on the next refresh; a Node-side setTimeout would die
+// with the parent and orphan the ccburn child — which then blocks indefinitely
+// on fsync against a degraded WSL writeback layer (the incident's amplification
+// loop, ~24 refreshes/min × N sessions × 2 unreaped spawns each). `timeout`
+// self-terminates the child even when reparented to init, bringing ccburn under
+// the D-14 "no unbounded subprocess on the render hot path" rule the 2026-04-26
+// capture-pane wedge established (docs/statusline-wrapper.md § Fleet D-14;
+// reports/2026-05-25-ccburn-storm-statusline-spawn-hardening.md). `collect` is
+// now awaited — it was fire-and-forget, a second silent orphan source.
+// Probe: tests/probes/probe-ccburn-no-orphan.sh.
+const CCBURN_COLLECT_TIMEOUT = '0.8s';
+const CCBURN_JSON_TIMEOUT = '1.2s';
+const CCBURN_KILL_AFTER = '0.5s';
+const CCBURN_MAX_STDOUT = 256 * 1024;
 
-    const json = spawn('ccburn', ['--json', '--once'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+// Spawn `ccburn <args>` under coreutil `timeout`, capturing capped stdout.
+// Always resolves to a string ('' on any failure: missing ccburn, missing
+// `timeout`, non-zero exit, timeout-kill, or stdout-cap). Never rejects, never
+// outlives the timeout band.
+function spawnCcburnTimed(args, stdin, timeoutArg) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('timeout', ['-k', CCBURN_KILL_AFTER, timeoutArg, 'ccburn', ...args], {
+        stdio: [stdin == null ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+      });
+    } catch {
+      return resolve('');
+    }
     let out = '';
-    json.stdout.on('data', chunk => out += chunk);
-    json.on('close', () => {
-      const segment = buildCcburnSegment(out);
-      if (segment) appendTrace({ ts: new Date().toISOString(), json: out.trim(), segment });
-      resolve(segment);
+    let capped = false;
+    child.stdout.on('data', (chunk) => {
+      if (capped) return;
+      out += chunk;
+      if (out.length > CCBURN_MAX_STDOUT) {
+        capped = true;
+        try { child.kill('SIGKILL'); } catch {}
+      }
     });
-    json.on('error', () => resolve(''));
+    child.on('error', () => resolve('')); // `timeout` or ccburn not found
+    child.on('close', () => resolve(out));
+    if (stdin != null) {
+      child.stdin.on('error', () => {}); // EPIPE if child already exited
+      child.stdin.end(stdin);
+    }
   });
+}
+
+async function runCcburn(stdinData) {
+  // collect first (populates the DB the read consumes), bounded + awaited so a
+  // hung collect can't orphan; then the structured read.
+  await spawnCcburnTimed(['collect'], stdinData, CCBURN_COLLECT_TIMEOUT);
+  const out = await spawnCcburnTimed(['--json', '--once'], null, CCBURN_JSON_TIMEOUT);
+  const segment = buildCcburnSegment(out);
+  if (segment) appendTrace({ ts: new Date().toISOString(), json: out.trim(), segment });
+  return segment || '';
 }
 
 // Rolling ccburn trace — ~/.cache/dhx/statusline-trace.jsonl (+ .prev on rotation).
@@ -1824,6 +1864,11 @@ module.exports = {
   // can drive the real helper (not a reimplementation) under a mocked
   // fs.renameSync to assert the leaked-tmp cleanup invariant.
   writeAtomic,
+  // runCcburn export — lets probe-ccburn-no-orphan.sh drive the real function
+  // (not a reimplementation) under a hung fake-ccburn on PATH to assert the
+  // 2026-05-25 orphan-prevention invariant (child self-terminates via coreutil
+  // `timeout` even after the Node parent is SIGKILLed).
+  runCcburn,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
