@@ -150,9 +150,9 @@ exceed the 30s/probe wrapper budget.
 
 | Probe | Runtime | Auth | Sandbox | Operator command |
 |-------|---------|------|---------|------------------|
-| `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` OR seeded `~/.claude/.credentials.json` (cell 1); `ANTHROPIC_API_KEY` only (cell 2) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
-| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
-| `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
+| `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` **only** (no key → clean `skipped`; an OAuth credentials_file is NOT a safe sandbox-auth path — copying it can rotate/invalidate the source token, 2026-05-24 finding) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above (`ANTHROPIC_API_KEY` **only**; OAuth credentials_file unsafe — 2026-05-24) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
+| `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above (`ANTHROPIC_API_KEY` **only**; OAuth credentials_file unsafe — 2026-05-24) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
 | `probe-read-guard-native-enforcement-tripwire.sh` | ~60-120s | `ANTHROPIC_API_KEY` **only** (no API key → clean `skipped`; an OAuth credentials_file is NOT a safe sandbox-auth path — copying it can rotate/invalidate the source token, 2026-05-24 finding) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` + out-of-band `printf` targets | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-read-guard-native-enforcement-tripwire.sh` (Option C Q3 supersession-watchdog — exit 0+premise_holds = CC block holds; exit 1 = revive signal; exit 0+skipped = inconclusive/no auth, never a false pass) |
 
 **Routing via `--probes-unsafe`:** `bash scripts/run-probes.sh --probes-unsafe`

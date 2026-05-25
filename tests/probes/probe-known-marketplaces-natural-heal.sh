@@ -26,6 +26,18 @@
 #
 # Run: ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh
 #
+# AUTH (2026-05-24 watchdog-probe auth hardening — generalized from the read-guard
+# native-enforcement tripwire): a sandboxed `claude -p` (fresh CLAUDE_CONFIG_DIR) is
+# logged out unless ANTHROPIC_API_KEY is inherited from env. Seeding a live
+# ~/.claude/.credentials.json into the sandbox is UNSAFE — the sandboxed claude rotates
+# the OAuth refresh token and writes the new one to the throwaway dir, so the provider
+# invalidates the SOURCE credential (measured: a copied cred authed once then 401'd
+# minutes later). So this probe gates on ANTHROPIC_API_KEY ONLY; no key → fast clean
+# `skipped` (exit 2, never a false `v1_2_work_warranted`). The strengthened auth-failure
+# regex in classify_failure() ensures a logged-out / invalid-key / credit-exhausted
+# subprocess degrades to ambiguous, never rolls up to a positive conclusion (false-PASS
+# guard). See docs/decisions.md 2026-05-24 watchdog-probe-auth-hardening row.
+#
 # D-25 set-flag discipline (WR-04 corrected): file top is `set -uo pipefail`
 # only — `errexit` is NEVER enabled. The original draft sprinkled `set +e`
 # around every subprocess; those calls were no-ops (you can't disable a flag
@@ -86,11 +98,32 @@ LIVE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # CCS-aware per CLAUDE.md
 LIVE_KM="$LIVE_CFG/plugins/known_marketplaces.json"
 
 # ----------------------------------------------------------------------------
+# Auth gate (2026-05-24 watchdog-probe auth hardening): ANTHROPIC_API_KEY ONLY.
+# OAuth credentials_file seeding REMOVED — copying a live ~/.claude/.credentials.json
+# into the sandbox is UNSAFE (the sandboxed claude -p rotates the refresh token and
+# invalidates the SOURCE credential; see header AUTH note + decisions.md). No key →
+# fast clean `skipped` (exit 2 / ambiguous family — never a false work_warranted),
+# BEFORE any cp -rL or subprocess spawn. Replaces the prior "credentials_file OR
+# ANTHROPIC_API_KEY" Cell-1 contract.
+# ----------------------------------------------------------------------------
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "SKIP probe-known-marketplaces-natural-heal: no ANTHROPIC_API_KEY (a sandboxed claude -p cannot auth via OAuth credentials_file safely — re-run with an API key)"
+  cell_outcome="skipped_no_api_key"
+  conclusion="skipped"
+  exit_code=2
+  cell1_auth_method="none"
+  SKIP_CELLS=true
+else
+  cell1_auth_method="ANTHROPIC_API_KEY"
+  SKIP_CELLS=false
+fi
+
+# ----------------------------------------------------------------------------
 # D-24 early pre-state gate: assert LIVE_KM exists BEFORE cp -rL.
 # Pre-state abnormal is meaningfully different from supersession-or-no-supersession;
 # treat as ambiguous and write the outcome JSON anyway (audit trail).
 # ----------------------------------------------------------------------------
-if [[ ! -f "$LIVE_KM" ]]; then
+if [[ "$SKIP_CELLS" == "false" ]] && [[ ! -f "$LIVE_KM" ]]; then
   echo "FAIL pre-state-abnormal: live $LIVE_KM missing — cannot evaluate Hn() heal behavior"
   cell_outcome="ambiguous_pre_state_abnormal"
   conclusion="ambiguous_pre_state_abnormal"
@@ -98,8 +131,6 @@ if [[ ! -f "$LIVE_KM" ]]; then
   FAIL=$((FAIL+1))
   cell1_auth_method="unknown"
   SKIP_CELLS=true
-else
-  SKIP_CELLS=false
 fi
 
 # ----------------------------------------------------------------------------
@@ -132,34 +163,15 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# Auth strategy (D-23 per-cell auth_method; RESEARCH HIGH-3 strict-mode):
-#   Cell 1 (default -p)  accepts .credentials.json OR ANTHROPIC_API_KEY
-#   Cell 2 (--bare -p)   STRICTLY requires ANTHROPIC_API_KEY (CLI-enforced invariant)
+# Auth (D-23 per-cell auth_method): ANTHROPIC_API_KEY only — decided up front by the
+# auth gate above (no key → skipped before this point). Cell 1 (default -p) authenticates
+# via the inherited env key. The unsafe OAuth credentials_file seeding was removed
+# 2026-05-24 (see header AUTH note); only the non-credential settings.json is copied
+# into the sandbox. (Cell 2 / --bare was already DROPPED per Pattern A note 3 — D-11
+# is Cell 1 only.)
 # ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  if [[ -f "$LIVE_CFG/.credentials.json" ]]; then
-    cp "$(readlink -f "$LIVE_CFG/.credentials.json")" "$SANDBOX/.credentials.json"
-    chmod 600 "$SANDBOX/.credentials.json"
-    cell1_auth_method="credentials_file"
-  fi
-  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    [[ -z "$cell1_auth_method" ]] && cell1_auth_method="ANTHROPIC_API_KEY"
-  fi
-  if [[ -z "$cell1_auth_method" ]]; then
-    echo "FATAL: no auth available for Cell 1 (.credentials.json absent AND ANTHROPIC_API_KEY unset)"
-    cell_outcome="auth_failure"
-    conclusion="ambiguous"
-    exit_code=2
-    FAIL=$((FAIL+1))
-    SKIP_CELLS=true
-  fi
-
-  # NOTE: Cell 2 (--bare -p) DROPPED per Pattern A note 3 — D-11 is Cell 1 only.
-
-  # Sanitized settings.json copy
-  if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
-    cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
-  fi
+if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
+  cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
 fi
 
 # ----------------------------------------------------------------------------
@@ -293,7 +305,12 @@ classify_failure() {
   if [[ "$rc" -eq 124 ]] || echo "$stderr" | grep -qiE 'timeout|deadline'; then
     echo "timeout_124"; return
   fi
-  if echo "$stderr" | grep -qiE '401|403|unauthorized|invalid api key|authentication'; then
+  # Auth-failure regex broadened 2026-05-24 to mirror the read-guard tripwire's
+  # AUTH_FAIL_RE — the narrow original ('401|403|unauthorized|invalid api key|
+  # authentication') missed "Not logged in", "Failed to authenticate", credit
+  # exhaustion, OAuth expiry, and "invalid x-api-key", any of which (on an exit-0
+  # subprocess) could slip past to a false v1_2_work_warranted. False-PASS guard.
+  if echo "$stderr" | grep -qiE '401|403|unauthorized|not logged in|please run /login|invalid (x-)?api[- ]?key|authentication|failed to authenticate|credit balance is too low|oauth token has expired'; then
     echo "auth_failure"; return
   fi
   if echo "$stderr" | grep -qiE 'network|connection|ENETUNREACH|ECONNREFUSED|EAI_'; then
