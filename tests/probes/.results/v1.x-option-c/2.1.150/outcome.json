@@ -1,0 +1,1 @@
+{"probe":"read-guard-native-enforcement-tripwire","cc_version":"2.1.150","conclusion":"skipped","note":"no ANTHROPIC_API_KEY (credentials_file is not a safe sandbox-auth path)","ts":1779669189}
