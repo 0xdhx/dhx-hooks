@@ -47,6 +47,13 @@
 #
 # Fires: PreToolUse on the Read tool. Action: state-write + stats-log only; no stdout,
 # no blocking, never fails the tool call (set -uo, not -e — dhx convention).
+#
+# COST NOTE — "log-only" means zero CONTEXT cost, NOT free. Each Read forks ~6 procs
+# (jq×2, realpath, stat×2, grep); a re-read adds a python3 proc + a full-file line count.
+# State files are pruned (TTL + hourly stale-session sweep) but read-dedup-stats.jsonl is
+# append-only and NOT pruned (intended for the bounded Phase-1 window — needs rotation if
+# the hook outlives it). `timeout:5` (manifest) is a kill-switch, not a latency budget.
+# (drain LOW-2, codex 2026-05-25 — Phase-2 follow-ups tracked in the brief §0.)
 
 set -uo pipefail   # NOT -e; a hook error must never fail the user's Read.
 
@@ -150,9 +157,10 @@ for line in os.environ.get("PRIORS_DATA", "").splitlines():
         r = json.loads(line)
     except Exception:
         continue
-    # TTL window: a read older than TTL is treated as scrolled-out / post-compaction,
-    # i.e. no longer "in context" -> not counted toward overlap.
-    if now - int(r.get("ts", 0)) > ttl:
+    # TTL window: a read at/older than TTL is treated as scrolled-out / post-compaction,
+    # i.e. no longer "in context" -> not counted toward overlap. `>=` matches Boucle's
+    # expire-at-TTL semantics exactly (hook.sh ENTRY_AGE >= TTL).
+    if now - int(r.get("ts", 0)) >= ttl:
         continue
     priors.append(r)
 
@@ -189,34 +197,40 @@ for s, e in intervals:
     else:
         merged.append((s, e))
 
-# Lines of the current [cs,ce) already covered by the prior union.
-overlap = 0
-for s, e in merged:
-    lo, hi = max(s, cs), min(e, ce)
-    if hi > lo:
-        overlap += hi - lo
-if overlap <= 0:
-    emit("new", 0, 0, "none")   # re-read of same file but a non-overlapping region: new content.
-    sys.exit(0)
-
-# Token estimate: overlapping lines * avg bytes/line / 4 — the spike's flat chars/4 proxy.
+# Compute the file's real line extent FIRST — overlap must not count lines that don't
+# exist. A "full read" models [1,2001) regardless of file length, and a partial read can
+# extend past EOF (offset+limit > file lines), so clamp every interval to [1, file_end)
+# BEFORE counting. (drain catch #MED-1, codex 2026-05-25: the prior post-hoc
+# min(overlap, total_lines) only caught full->full; an EOF-crossing partial like [250,450)
+# on a 300-line file reported 200 overlap lines when ~51 exist, inflating the BROAD band.)
 try:
     with open(path, "rb") as fh:
         total_lines = sum(1 for _ in fh) or 1
 except Exception:
     total_lines = max(int(csize) // 50, 1)  # ~50 B/line fallback
-# Clamp the line-interval overlap to lines that actually exist. A "full read" models
-# [1,2001) regardless of file length, so a small file's full->full overlap would
-# otherwise report 2000 lines; re-injected content can't exceed the file. This keeps
-# the token magnitude comparable to the spike (which measured actual re-injected bytes).
-eff_overlap = min(overlap, total_lines)
-avg_line_bytes = int(csize) / total_lines if total_lines else 0
-overlap_tokens = int(round(eff_overlap * avg_line_bytes / 4))
+file_end = total_lines + 1   # exclusive upper bound of lines that actually exist
 
+# Lines of the current [cs,ce) already covered by the prior union — every interval
+# clamped to the real file extent so past-EOF range never counts.
+overlap = 0
+for s, e in merged:
+    lo = max(s, cs, 1)
+    hi = min(e, ce, file_end)
+    if hi > lo:
+        overlap += hi - lo
+if overlap <= 0:
+    emit("new", 0, 0, "none")   # non-overlapping (or wholly-past-EOF) region: new content.
+    sys.exit(0)
+
+# Token estimate: overlapping REAL lines * avg bytes/line / 4 — the spike's flat chars/4 proxy.
+avg_line_bytes = int(csize) / total_lines if total_lines else 0
+overlap_tokens = int(round(overlap * avg_line_bytes / 4))
+
+# Band uses the UNCLAMPED full-read model — band is about read INTENT, not file length.
 cur_full = (cs == 1 and ce == 2001)
 prior_full = any(s == 1 and e == 2001 for s, e in merged)
 band = "strict" if (cur_full and prior_full) else "broad"
-emit(band, eff_overlap, overlap_tokens, band)
+emit(band, overlap, overlap_tokens, band)
 PY
   )
   if [ -n "${EVENT_JSON:-}" ]; then

@@ -120,6 +120,18 @@ DHX_READ_DEDUP_STATE_DIR="$SBX_R/cache" mk "$LN" "siderp" | DHX_READ_DEDUP_STATE
 REC_PATH=$(tail -1 "$SBX_R/cache/read-dedup/siderp.jsonl" 2>/dev/null | jq -r '.path' 2>/dev/null)
 chk "V-REALPATH path symlink-resolved" "$REC_PATH" "$RP"
 
+# --- V-EOF-CLAMP (drain MED-1): a partial read crossing EOF counts only real lines ---
+# [250,450) on a 300-line file overlaps a prior full read only on real lines 250..300 = 51,
+# NOT the raw interval 200. Guards the pre-fix overcount that inflated the BROAD band.
+SBX_E="$SBX/eof"; mkdir -p "$SBX_E/cache"
+TFE="$SBX/eof.md"; printf 'e%s\n' $(seq 1 300) > "$TFE"
+runE(){ DHX_READ_DEDUP_STATE_DIR="$SBX_E/cache" bash "$HOOK"; }
+printf '{"tool_name":"Read","session_id":"sideof","tool_input":{"file_path":"%s"}}' "$TFE" | runE
+printf '{"tool_name":"Read","session_id":"sideof","tool_input":{"file_path":"%s","offset":250,"limit":200}}' "$TFE" | runE
+EOF_EV=$(tail -1 "$SBX_E/cache/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-EOF-CLAMP event" "$(echo "$EOF_EV" | jq -r '.event')" "broad"
+chk "V-EOF-CLAMP overlap clamped to real lines (51, not raw 200)" "$(echo "$EOF_EV" | jq -r '.overlap_lines')" "51"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
