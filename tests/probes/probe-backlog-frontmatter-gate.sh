@@ -6,9 +6,9 @@
 # dispatcher (scripts/hooks/pre-commit) owns .git/hooks/pre-commit and COMPOSES
 # the established verify-hook-patterns 8-check gate (folded behind the 05- leaf)
 # with the convention's 10-backlog-frontmatter.sh gate leaf. Both gates fire; the
-# backlog leaf BLOCKS a non-canonical active brief (status not in ['captured'] or
-# absent target_milestone) and PASSES a canonical one (status: captured + non-empty
-# target_milestone).
+# backlog leaf BLOCKS a non-canonical active brief (status not in ['captured',
+# 'in-progress'] or absent target_milestone) and PASSES a canonical one (status:
+# captured OR in-progress + non-empty target_milestone).
 #
 # Backs: docs/decisions.md 2026-05-22 backlog-frontmatter-gate enrollment row +
 #        the INFRA-05 intent ON THE GATE (not the dropped advisory backlog hook).
@@ -54,11 +54,20 @@ else
   bad "composition guard: 05-verify-hook-patterns.sh missing/not-executable/does-not-reference verify-hook-patterns.sh"
 fi
 
-if [ -L .git/hooks/pre-commit ] && \
-   [ "$(readlink -f .git/hooks/pre-commit 2>/dev/null)" = "$(readlink -f scripts/hooks/pre-commit 2>/dev/null)" ]; then
-  ok ".git/hooks/pre-commit symlink resolves to scripts/hooks/pre-commit (dispatcher installed)"
+# Resolve via `git rev-parse --git-path hooks/pre-commit` — respects core.hooksPath
+# AND works from both main checkout and linked worktrees (in a worktree `.git` is
+# a gitdir-pointer FILE, so literal `.git/hooks/pre-commit` is not a real path).
+# Compare by CONTENT (diff -q), not absolute-path equivalence: from a worktree,
+# `scripts/hooks/pre-commit` resolves to the worktree's checkout of the file
+# (separate inode from the main repo's), yet the live hook symlink targets the
+# main repo's copy — both have the same blob, so content-equivalence is the
+# correct invariant.
+LIVE_HOOK=$(git rev-parse --git-path hooks/pre-commit 2>/dev/null)
+if [ -n "$LIVE_HOOK" ] && [ -L "$LIVE_HOOK" ] && \
+   diff -q "$LIVE_HOOK" scripts/hooks/pre-commit >/dev/null 2>&1; then
+  ok "live hooks/pre-commit symlink resolves to the dispatcher (scripts/hooks/pre-commit content)"
 else
-  bad ".git/hooks/pre-commit is not a symlink resolving to scripts/hooks/pre-commit"
+  bad "live hooks/pre-commit ($LIVE_HOOK) is not a symlink whose target matches scripts/hooks/pre-commit"
 fi
 
 # --- behavioral block/pass (isolated throwaway repo) ------------------------
@@ -129,6 +138,29 @@ EOF
     ok "behavioral pass case: status: captured + target_milestone commits clean"
   else
     bad "behavioral pass case: canonical brief should have committed but was blocked"
+  fi
+
+  # Case 1b — pass: status: in-progress + non-empty target_milestone.
+  # 'in-progress' is a canonical active status (skills backlog-close.cjs:44 +
+  # backlog-regen.cjs:232 both honor {captured,in-progress,''}); the gate's
+  # ALLOWED_ACTIVE_STATUS enum was widened to match in cross-repo a5a659a,
+  # propagated to hooks in a81706b. Mirrors cross-repo Case 1b. Guards against
+  # regression back to a captured-only enum.
+  cat > "$TMP/.planning/backlog/probe-pass-in-progress.md" <<'EOF'
+---
+title: probe pass fixture (in-progress)
+created: 2026-05-22T00:00:00Z
+status: in-progress
+target_milestone: next
+---
+body
+EOF
+  pass_ip_rc=0
+  ( cd "$TMP" && git add .planning/backlog/probe-pass-in-progress.md && git commit -q -m "pass-in-progress" ) >/dev/null 2>&1 || pass_ip_rc=$?
+  if [ "$pass_ip_rc" -eq 0 ]; then
+    ok "behavioral pass case (1b): status: in-progress + target_milestone commits clean"
+  else
+    bad "behavioral pass case (1b): canonical in-progress brief should have committed but was blocked"
   fi
 fi
 
