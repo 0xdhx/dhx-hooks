@@ -132,10 +132,15 @@ const parseFrontmatter = function (raw) {
   return fm;
 };
 
-// Bounded active-status enum (D-05 / A1). cross-repo's only active-status value
-// today is `captured` (all 25 active briefs). Trivial to extend — add values to
-// this allowlist (e.g. 'active', 'blocked') when the corpus legitimately uses them.
-const ALLOWED_ACTIVE_STATUS = ['captured'];
+// Bounded active-status enum (D-05 / A1). Mirrors the cross-repo backlog-status
+// convention the two authoritative lifecycle tools already encode —
+// skills/scripts/backlog-close.cjs CLOSEABLE_STATUSES and backlog-regen.cjs
+// CANONICAL_STATUS are both {'captured','in-progress',''} (see skills
+// decisions.md § "Backlog Terminal States — Cross-Repo Convention"). `in-progress`
+// is a real active state (a partially-built brief); the gate was the lone outlier
+// rejecting it. Empty/absent status is handled separately as a soft signal, so it
+// is not listed here. Trivial to extend further — add values to this allowlist.
+const ALLOWED_ACTIVE_STATUS = ['captured', 'in-progress'];
 
 // Terminal subdirs (D-04 — fixed to the subdir name, not discretion).
 const TERMINAL_SUBDIRS = ['shipped', 'rejected', 'superseded'];
