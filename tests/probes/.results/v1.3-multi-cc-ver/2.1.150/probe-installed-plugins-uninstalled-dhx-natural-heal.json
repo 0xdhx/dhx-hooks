@@ -1,0 +1,25 @@
+{
+  "probe_id": "probe-installed-plugins-uninstalled-dhx-natural-heal",
+  "exit_code": 1,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.150",
+  "cc_version_match": true,
+  "confidence": "HIGH",
+  "ts": "2026-05-26T06:28:23Z",
+  "run_id": "f7c0d0cc-f628-4052-99c7-608b00fe94cc",
+  "observations": {
+    "pre_size": 394,
+    "post_size": 2949,
+    "json_validity_post": true,
+    "dhx_entry_present_post": true,
+    "post_fake_a_present": true,
+    "post_fake_b_present": true,
+    "install_path_resolves_to_expected_cache_layout": false,
+    "cell1_auth_method": "ANTHROPIC_API_KEY",
+    "cell1_rc": 0,
+    "inode_isolated": true,
+    "cell_outcome": "uninstalled_hn_heals",
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "supersession_found_drop_heal"
+}
