@@ -360,13 +360,14 @@ fi
 # D-22 cell{N}_rc; D-23 per-cell auth_method; D-30 hostname-hash).
 # ----------------------------------------------------------------------------
 set +e
-CC_VERSION=$(claude --version 2>/dev/null | awk '{print $1}')
+CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 set +e
 [[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
-OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.2-phase-0"
+# CC-keyed corpus path (quick-260526-10r) — never writes to the frozen v1.2 baseline; validator scans this dir
+OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.3-multi-cc-ver/$CC_VERSION"
 mkdir -p "$OUT_DIR"
 OUT_FILE="$OUT_DIR/probe-installed-plugins-no-natural-heal.json"
 
