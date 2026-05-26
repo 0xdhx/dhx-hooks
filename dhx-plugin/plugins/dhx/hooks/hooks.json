@@ -90,6 +90,11 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-read-cache.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-read-dedup.sh\"",
+            "timeout": 5
           }
         ]
       },
