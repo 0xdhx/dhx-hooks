@@ -86,6 +86,22 @@ FAIL=0
 PASS=0
 TIMEOUT=0
 SKIPPED=0
+# SUPERSESSION bucket (Convention-A FAIL gating, brief
+# .planning/backlog/2026-05-13-run-probes-convention-a-recognition.md): a
+# Convention A probe (exit_0_means_v1_2_work_warranted) that correctly exits 1|2
+# observing a supersession is NOT a test failure. Such observations land HERE,
+# never silently in PASS, so the summary surfaces them distinctly.
+SUPERSESSION=0
+
+# active_cc single-source-of-truth (hoisted above the loop). The loop's
+# Convention-A gate (below) AND the D-21 multi-cc-results validator (after the
+# loop) both need the active CC version to resolve per-probe outcome JSON paths
+# under tests/probes/.results/v1.3-multi-cc-ver/<active_cc>/. Derive it ONCE here
+# with the dotted-triple grep + "unknown" fallback; both consumers reuse it.
+# `|| true` keeps `set -uo pipefail` from errexiting when `claude` is absent.
+cc_full=$(claude --version 2>/dev/null || true)
+active_cc=$(printf '%s' "$cc_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+[[ -n "$active_cc" ]] || active_cc="unknown"
 
 # D-14 default-injection (Phase 6 C4): bare invocation defaults to
 # SAFE_FOR_LIVE=yes — supersession-watchdog probes (and any other
@@ -131,24 +147,64 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   elif [ "$RC" -eq 0 ]; then
     PASS=$((PASS+1))
   else
-    FAIL=$((FAIL+1))
+    # ----- Convention-A-aware FAIL gating -----
+    # Brief: .planning/backlog/2026-05-13-run-probes-convention-a-recognition.md
+    # A non-zero, non-124 RC is NOT automatically a failure. Supersession-watchdog
+    # probes use Convention A (exit_0_means_v1_2_work_warranted) where exit 1 =
+    # supersession FOUND (the VALUE signal), exit 0 = premise still holds. Resolve
+    # the probe's freshly-written outcome JSON (exit_code_convention + conclusion)
+    # to decide. Convention B (exit_0_means_pass, or field absent) keeps the
+    # original "any non-zero → FAIL" semantics. Anything that can't be resolved
+    # (jq absent / JSON missing / unparseable) FAILS SAFE → Convention B → FAIL.
+    probe_base="$(basename "$p")"
+    case "$probe_base" in
+      *.sh) probe_stem="${probe_base%.sh}" ;;
+      *.js) probe_stem="${probe_base%.js}" ;;
+      *)    probe_stem="$probe_base" ;;
+    esac
+    outcome_json="$REPO/tests/probes/.results/v1.3-multi-cc-ver/$active_cc/${probe_stem}.json"
+    convention=""
+    conclusion=""
+    if command -v jq >/dev/null 2>&1 && [ -f "$outcome_json" ] && jq -e . "$outcome_json" >/dev/null 2>&1; then
+      convention=$(jq -r '.exit_code_convention // ""' "$outcome_json" 2>/dev/null || echo "")
+      conclusion=$(jq -r '.conclusion // ""' "$outcome_json" 2>/dev/null || echo "")
+    fi
+    if [ "$convention" = "exit_0_means_v1_2_work_warranted" ]; then
+      # Convention A. RC>=3 is a truly unexpected exit → FAIL regardless of conclusion.
+      if [ "$RC" -ge 3 ]; then
+        echo "[FAIL] $probe_base — Convention A probe exited $RC (>=3, unexpected) — counted FAIL"
+        FAIL=$((FAIL+1))
+      elif [ "$conclusion" = "error" ] || [ "$conclusion" = "ambiguous" ]; then
+        echo "[FAIL] $probe_base — Convention A conclusion=$conclusion (exit $RC) — counted FAIL"
+        FAIL=$((FAIL+1))
+      else
+        # conclusion=supersession_found_* (or any benign conclusion) at RC 1|2:
+        # a legitimate supersession observation, NOT a failure.
+        echo "[SUPERSESSION OBSERVED] $probe_base — conclusion=$conclusion exit=$RC (Convention A — informational, not FAIL)"
+        SUPERSESSION=$((SUPERSESSION+1))
+      fi
+    else
+      # Convention B / field absent / unparseable / jq missing → fail SAFE.
+      FAIL=$((FAIL+1))
+    fi
   fi
   echo "---"
 done
-echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped)"
+echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped), $SUPERSESSION supersession-observed"
 
 # D-21 (Phase 15 MULTI-CC-VER): defensive validation of the supersession-watchdog
 # cross-version result corpus. Non-blocking on absent v1.3-multi-cc-ver/<active-cc>/ dir
 # so ad-hoc / sandbox-only sweeps (e.g., --filter SAFE_FOR_LIVE=yes) stay clean — the
 # validator is only meaningful after a real watchdog re-run has populated the dir.
-if cc_full=$(claude --version 2>/dev/null) && [[ -n "$cc_full" ]]; then
-  active_cc=$(printf '%s' "$cc_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  results_dir="$REPO/tests/probes/.results/v1.3-multi-cc-ver/$active_cc"
-  if [[ -n "$active_cc" ]] && [[ -d "$results_dir" ]] && [[ -x "$REPO/scripts/verify-multi-cc-results.sh" ]]; then
-    echo "Running multi-cc-results validator against $results_dir..."
-    bash "$REPO/scripts/verify-multi-cc-results.sh" || FAIL=$((FAIL+1))
-    echo "---"
-  fi
+# Reuses the hoisted active_cc (single source of truth — derived once above the
+# loop, shared with the Convention-A gate). The "unknown" fallback is treated as
+# absent here: the guards below require a real dotted-triple version AND an
+# existing results_dir, so an "unknown" active_cc simply skips the validator.
+results_dir="$REPO/tests/probes/.results/v1.3-multi-cc-ver/$active_cc"
+if [[ -n "$active_cc" ]] && [[ "$active_cc" != "unknown" ]] && [[ -d "$results_dir" ]] && [[ -x "$REPO/scripts/verify-multi-cc-results.sh" ]]; then
+  echo "Running multi-cc-results validator against $results_dir..."
+  bash "$REPO/scripts/verify-multi-cc-results.sh" || FAIL=$((FAIL+1))
+  echo "---"
 fi
 
 [ "$FAIL" -eq 0 ]
