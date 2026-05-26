@@ -22,7 +22,14 @@ source "$(dirname "$0")/lib.sh"
 VALIDATOR="$REPO_ROOT/scripts/verify-multi-cc-results.sh"
 CORPUS_DIR="$REPO_ROOT/tests/probes/.results/v1.3-multi-cc-ver"
 README="$REPO_ROOT/tests/probes/README.md"
-REQS="$REPO_ROOT/.planning/REQUIREMENTS.md"
+# MULTI-CC-VER-* are v1.3-milestone REQs (Phase 15) — at v1.3 milestone close their
+# rows were archived out of the active .planning/REQUIREMENTS.md (now the v1.4 set,
+# no MULTI-CC-VER section) into .planning/milestones/v1.3-REQUIREMENTS.md. Test 5
+# reads whichever file actually carries the rows: prefer the archived v1.3 file,
+# fall back to the active file for any pre-archival checkout (2026-05-26: Test 5 was
+# orphaned by the v1.3 archival until this repoint).
+REQS="$REPO_ROOT/.planning/milestones/v1.3-REQUIREMENTS.md"
+[[ -f "$REQS" ]] || REQS="$REPO_ROOT/.planning/REQUIREMENTS.md"
 DECISIONS="$REPO_ROOT/docs/decisions.md"
 
 [[ -r "$VALIDATOR" ]] || { echo "FATAL: validator not found at $VALIDATOR"; exit 1; }
