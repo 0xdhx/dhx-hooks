@@ -1,4 +1,5 @@
 'use strict';
+// Patterns: HP-032
 //
 // scripts/lib/plugin-cache-allowlist.js
 // =====================================
