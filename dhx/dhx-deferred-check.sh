@@ -124,8 +124,18 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # extraction and (b) non-empty extraction but zero bullet items after filtering.
 check_header_fallback() {
   local file="$1"
+  # Two-stage pipeline parity with the main UNCAPTURED path: Stage 1
+  # (classify_deferred_lines, marker silencing) + Stage 2
+  # (auto_silence_deferred_lines, REQ-ID / dated-filename resolution).
+  # The fallback was Stage 1 only until 2026-05-27 — an item under an untagged
+  # `## Deferred` header whose only durable-home signal is a Stage 2 signal
+  # (resolvable REQ-ID or dated `.md` citation) was silenced by the main path
+  # but surfaced as a false positive here. See docs/decisions.md 2026-05-27
+  # header-fallback Stage 2 parity row + brief
+  # .planning/backlog/2026-05-22-deferred-check-header-fallback-missing-stage2-autosilence.md.
   MD_DEFERRED=$(sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | classify_deferred_lines)
+    | classify_deferred_lines \
+    | auto_silence_deferred_lines "$file")
   if [ -n "$MD_DEFERRED" ]; then
     # WR-03 (Phase 20 code-review follow-up): mirror the main-path D-01/D-10 fix.
     # The prior echo|wc-l count returned 1 for empty/whitespace-only classifier

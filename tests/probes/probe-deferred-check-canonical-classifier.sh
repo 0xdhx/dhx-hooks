@@ -465,6 +465,100 @@ else
   check "header-fallback missing positive-count guard (found $GUARD_COUNT, expected >=2)" 0
 fi
 
+# --- Section 12: header-fallback pipelines through BOTH stages (2026-05-27) ---
+#
+# Pre-2026-05-27 the header-fallback ran Stage 1 only (classify_deferred_lines)
+# while the main UNCAPTURED path ran Stage 1 + Stage 2 (auto_silence_deferred_lines).
+# Consequence: an item under an UNTAGGED `## Deferred` header whose only
+# durable-home signal is a Stage-2 signal (resolvable REQ-ID or dated `.md`
+# citation) — but which carries no Stage-1-recognizable marker — was silenced
+# by the main path but surfaced as a false positive by the header-fallback.
+#
+# Backs: docs/decisions.md 2026-05-27 header-fallback Stage 2 parity row.
+# Parent brief: .planning/backlog/2026-05-22-deferred-check-header-fallback-missing-stage2-autosilence.md
+
+# 12a. Static: check_header_fallback() body contains the second-stage call.
+#      `auto_silence_deferred_lines "$file"` is uniquely the fallback shape —
+#      the main UNCAPTURED path uses `"$LATEST"` for the same call, so this
+#      string only appears inside check_header_fallback (or in this comment).
+HF_BODY=$(awk '/^check_header_fallback\(\) \{/{f=1} f{print} f && /^\}$/{f=0; exit}' "$HOOK")
+if [[ -z "$HF_BODY" ]]; then
+  check "could not extract check_header_fallback body — assertion shape changed" 0
+else
+  if echo "$HF_BODY" | grep -q 'classify_deferred_lines' \
+     && echo "$HF_BODY" | grep -qE 'auto_silence_deferred_lines[[:space:]]+"\$file"'; then
+    check "check_header_fallback pipelines through both stages (classify_deferred_lines + auto_silence_deferred_lines \"\$file\")" 1
+  else
+    check "check_header_fallback missing two-stage pipeline — Stage 2 not wired" 0
+  fi
+fi
+
+# 12b. Behavioral: untagged `## Deferred` header with a Stage-2-only-silenceable
+#      item (REQ-ID resolvable in REQUIREMENTS.md, no Stage-1 marker) — the
+#      two-stage pipeline must silence it; the single-stage pipeline would NOT.
+TMP_FIXTURE_HF=$(mktemp -d /tmp/probe-deferred-hf-stage2.XXXXXX)
+trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF"' EXIT
+
+mkdir -p "$TMP_FIXTURE_HF/.planning/phases/01-stage2-test"
+mkdir -p "$TMP_FIXTURE_HF/.planning/backlog"
+# Stage-2 corpus: REQ-V2-FALLBACK defined in REQUIREMENTS.md (bold body def
+# anchor — the auto_silence rid_def_pat shape), and a dated backlog brief
+# whose basename matches a citation we'll put in the fixture.
+cat > "$TMP_FIXTURE_HF/.planning/REQUIREMENTS.md" <<'EOF'
+# Requirements
+
+**REQ-V2-FALLBACK** — fallback Stage-2 silencing target for the header-fallback probe.
+EOF
+touch "$TMP_FIXTURE_HF/.planning/backlog/2026-05-22-stage2-fallback-target.md"
+
+# Fixture CONTEXT.md: NO <deferred> tags (header-fallback is the only path that fires);
+# `## Deferred` header with three bullets — REQ-ID-only-resolvable, dated-filename-only-
+# resolvable, and one unmarked bullet that should survive (no Stage-2 anchor at all).
+HF_CTX="$TMP_FIXTURE_HF/.planning/phases/01-stage2-test/01-CONTEXT.md"
+cat > "$HF_CTX" <<'EOF'
+# Phase 01 — Stage2 fallback test
+
+## Deferred
+
+- Item resolvable only via REQ-V2-FALLBACK (no Stage-1 marker)
+- Item resolvable only via 2026-05-22-stage2-fallback-target.md (no Stage-1 marker)
+- Real unassessed bullet with no durable-home signal at all
+
+## Next Section
+EOF
+
+# Run the header-fallback pipeline shape (sed extraction + both stages) the same
+# way the hook does. Sourcing the canonical classifier mirrors how the hook
+# composes the pipeline.
+HF_RESULT=$(bash -c '
+  . "'"$CLASSIFIER"'"
+  sed -n "/^##[^#].*[Dd]eferred/,/^##[^#]/p" "'"$HF_CTX"'" \
+    | classify_deferred_lines \
+    | auto_silence_deferred_lines "'"$HF_CTX"'"
+')
+
+survived_hf=$(printf '%s\n' "$HF_RESULT" | grep -c '^- ' || true)
+if [[ "$survived_hf" == "1" ]] && printf '%s\n' "$HF_RESULT" | grep -q "Real unassessed bullet"; then
+  check "header-fallback two-stage: Stage-2-only items silenced (REQ-ID + dated filename); 1 unmarked bullet survives" 1
+else
+  check "header-fallback two-stage failure — $survived_hf bullet(s) survived (expected 1: only the unmarked bullet). Output: $HF_RESULT" 0
+fi
+
+# 12c. Negative control: confirm Stage 1 ALONE would have left both Stage-2-only
+#      items un-silenced — establishes that the silencing in 12b comes from
+#      Stage 2 specifically (the bug surface), not coincidental Stage 1 behavior.
+HF_STAGE1_ONLY=$(bash -c '
+  . "'"$CLASSIFIER"'"
+  sed -n "/^##[^#].*[Dd]eferred/,/^##[^#]/p" "'"$HF_CTX"'" \
+    | classify_deferred_lines
+')
+survived_stage1=$(printf '%s\n' "$HF_STAGE1_ONLY" | grep -c '^- ' || true)
+if [[ "$survived_stage1" == "3" ]]; then
+  check "negative control: Stage 1 alone leaves all 3 bullets unsilenced — Stage 2 is what silences the REQ-ID + dated-filename items" 1
+else
+  check "negative control failed: Stage 1 alone produced $survived_stage1 bullets (expected 3) — fixture or classifier drift. Output: $HF_STAGE1_ONLY" 0
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" == 0 ]]
