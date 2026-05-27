@@ -33,5 +33,7 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 # RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
 # detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
 node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
+# Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh || true
 
 exit 0
