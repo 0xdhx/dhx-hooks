@@ -159,6 +159,16 @@
             "command": "bash \"$HOME/.claude/hooks/dhx-context-gate.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-backlog-vocab-check.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStop": [
