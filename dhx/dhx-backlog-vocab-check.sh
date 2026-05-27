@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-backlog-vocab-check.sh — PostToolUse hook (Write|Edit|MultiEdit matcher)
-# Patterns: HP-003, HP-007, HP-009, HP-017
+# Patterns: HP-003, HP-007, HP-009, HP-017, HP-038, HP-039
 # Write-time advisory for non-canonical target_milestone in .planning/backlog/*.md briefs.
 #
 # Layering (closes write-time VALUE-enum gap):
@@ -17,11 +17,19 @@
 # (rejected/, shipped/, superseded/) are intentionally skipped (re-classifying
 # a brief to a terminal state must NOT fire the gate).
 #
-# Output: non-blocking stderr advisory per terminal-patterns-status.md. Exit 0
-# always (PostToolUse advises; cannot block — HP-009). Source-of-truth vocab
-# stays in backlog-regen.cjs; we shell out to --check <brief.md> rather than
-# mirroring the canonical-set logic in bash. One place to update when
-# MILESTONES.md grows; zero drift surface here.
+# Output: dual-channel non-blocking advisory. Exit 0 always (PostToolUse
+# advises; cannot block — HP-009).
+#   - stderr ⚠ advisory per terminal-patterns-status.md — for the human user's
+#     terminal. HP-038: PostToolUse exit-0 stderr does NOT surface to Claude
+#     inline on CC 2.1.152, so stderr alone cannot drive Claude inline
+#     correction (it can only drive user-side correction).
+#   - stdout JSON {hookSpecificOutput: {hookEventName, additionalContext}} —
+#     surfaces to Claude inline as a <system-reminder> in the triggering
+#     tool-result wrapper (HP-039, verified 2026-05-27). This is the channel
+#     that closes the loop for Claude-side inline correction.
+# Source-of-truth vocab stays in backlog-regen.cjs; we shell out to
+# --check <brief.md> rather than mirroring the canonical-set logic in bash.
+# One place to update when MILESTONES.md grows; zero drift surface here.
 #
 # Scope: passes target_milestone + status (the scope of --check upstream).
 # urgency is explicitly OUT OF SCOPE — --check excludes it (advisory vocabulary,
@@ -83,12 +91,26 @@ if [ "$CHECK_RC" -eq 0 ]; then
   exit 0
 fi
 
-# Drift detected — emit stderr advisory per terminal-patterns-status.md.
+# Drift detected — dual-channel advisory:
+#   stderr → user terminal (HP-038: PostToolUse exit-0 stderr does NOT surface
+#             to Claude inline on CC 2.1.152 — terminal-visible only)
+#   stdout → JSON {hookSpecificOutput: {hookEventName: PostToolUse,
+#             additionalContext}} surfaces to Claude inline as a
+#             <system-reminder> in the triggering tool result (HP-039 — verified
+#             2026-05-27 via direct write-tool spike on CC 2.1.152). This is the
+#             "write-time advisory for inline correction" channel — keeps the
+#             hook's design intent intact across both the human and Claude.
 # ⚠ (U+26A0) leading symbol, single-line headline, indented detail rows.
 BASENAME=$(basename "$FILE_PATH")
-{
-  echo "⚠ backlog-vocab: non-canonical frontmatter in $BASENAME"
-  echo "$CHECK_OUT" | sed 's/^/  /'
-} >&2
+ADVISORY="⚠ backlog-vocab: non-canonical frontmatter in $BASENAME"$'\n'"$(echo "$CHECK_OUT" | sed 's/^/  /')"
+
+echo "$ADVISORY" >&2
+
+jq -nc --arg msg "$ADVISORY" '{
+  hookSpecificOutput: {
+    hookEventName: "PostToolUse",
+    additionalContext: $msg
+  }
+}'
 
 exit 0

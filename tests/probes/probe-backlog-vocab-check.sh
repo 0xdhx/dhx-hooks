@@ -5,13 +5,18 @@
 #
 # Invariants:
 #   1. Non-canonical target_milestone in a top-level .planning/backlog/*.md
-#      brief fires a stderr advisory (⚠ prefix, brief basename) and exits 0.
+#      brief fires a dual-channel advisory and exits 0:
+#        - stderr ⚠ headline + indented detail (terminal-visible per HP-038)
+#        - stdout JSON {hookSpecificOutput:{hookEventName:"PostToolUse",
+#          additionalContext:<full advisory text>}} (Claude-inline-visible
+#          per HP-039)
 #   2. Canonical target_milestone (declared version, unscoped, next+N, post-N)
-#      is silent and exits 0.
-#   3. Writes outside .planning/backlog/ are skipped silently by the path gate.
+#      is silent on BOTH stdout and stderr and exits 0.
+#   3. Writes outside .planning/backlog/ are skipped silently (both channels)
+#      by the path gate.
 #   4. Writes into terminal subdirs (rejected/, shipped/, superseded/) are
-#      skipped silently — re-classifying a brief must NOT fire the gate even
-#      when the brief carries a non-canonical literal.
+#      skipped silently (both channels) — re-classifying a brief must NOT
+#      fire the gate even when the brief carries a non-canonical literal.
 #
 # Backs: docs/decisions.md 2026-05-27 backlog target_milestone value-enum
 # write-time advisory row + .planning/backlog/2026-05-09-backlog-target-
@@ -72,13 +77,15 @@ emit_input() {
 
 run_hook() {
   local path="$1"
-  local stderr_file
+  local stderr_file stdout_file
   stderr_file=$(mktemp)
+  stdout_file=$(mktemp)
   local rc
-  emit_input "$path" | bash "$HOOK" 2>"$stderr_file"
+  emit_input "$path" | bash "$HOOK" >"$stdout_file" 2>"$stderr_file"
   rc=$?
   STDERR=$(cat "$stderr_file")
-  rm -f "$stderr_file"
+  STDOUT=$(cat "$stdout_file")
+  rm -f "$stderr_file" "$stdout_file"
   RC=$rc
 }
 
@@ -104,6 +111,14 @@ if [[ "$STDERR" == *"⚠ backlog-vocab"* ]] && [[ "$STDERR" == *"non-canonical"*
 else
   check "non-canonical brief: stderr missing expected advisory shape — got: $STDERR" 0
 fi
+# stdout JSON additionalContext envelope (HP-039 — Claude-inline-visible channel)
+if printf '%s' "$STDOUT" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null 2>&1 \
+   && printf '%s' "$STDOUT" | jq -e '.hookSpecificOutput.additionalContext | tostring | contains("⚠ backlog-vocab")' >/dev/null 2>&1 \
+   && printf '%s' "$STDOUT" | jq -e '.hookSpecificOutput.additionalContext | tostring | contains("2026-05-27-bad.md")' >/dev/null 2>&1; then
+  check "non-canonical brief: stdout JSON hookSpecificOutput.additionalContext carries advisory (HP-039)" 1
+else
+  check "non-canonical brief: stdout JSON missing/malformed — got: $STDOUT" 0
+fi
 
 # --- Scenario 2: canonical target_milestone is silent ---
 GOOD="$TMP/.planning/backlog/2026-05-27-good.md"
@@ -117,10 +132,10 @@ status: captured
 body
 EOF
 run_hook "$GOOD"
-if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]]; then
-  check "canonical brief: silent + exit 0" 1
+if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]] && [[ -z "$STDOUT" ]]; then
+  check "canonical brief: silent on both channels + exit 0" 1
 else
-  check "canonical brief: expected silent exit 0, got rc=$RC stderr='$STDERR'" 0
+  check "canonical brief: expected silent exit 0, got rc=$RC stderr='$STDERR' stdout='$STDOUT'" 0
 fi
 
 # --- Scenario 3: non-backlog path is skipped by path gate ---
@@ -128,10 +143,10 @@ OTHER="$TMP/some/random/file.js"
 mkdir -p "$(dirname "$OTHER")"
 echo "console.log('x')" > "$OTHER"
 run_hook "$OTHER"
-if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]]; then
-  check "non-backlog path: silent + exit 0 (path gate early-exit)" 1
+if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]] && [[ -z "$STDOUT" ]]; then
+  check "non-backlog path: silent on both channels + exit 0 (path gate early-exit)" 1
 else
-  check "non-backlog path: expected silent exit 0, got rc=$RC stderr='$STDERR'" 0
+  check "non-backlog path: expected silent exit 0, got rc=$RC stderr='$STDERR' stdout='$STDOUT'" 0
 fi
 
 # --- Scenario 4: terminal subdir (rejected/) skipped even with bad value ---
@@ -146,10 +161,10 @@ status: captured
 body
 EOF
 run_hook "$REJ"
-if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]]; then
-  check "rejected/ subdir: silent + exit 0 (re-classification must not fire)" 1
+if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]] && [[ -z "$STDOUT" ]]; then
+  check "rejected/ subdir: silent on both channels + exit 0 (re-classification must not fire)" 1
 else
-  check "rejected/ subdir: expected silent exit 0, got rc=$RC stderr='$STDERR'" 0
+  check "rejected/ subdir: expected silent exit 0, got rc=$RC stderr='$STDERR' stdout='$STDOUT'" 0
 fi
 
 # Defense-in-depth: also verify shipped/ and superseded/ skip silently when bad.
@@ -163,10 +178,10 @@ status: captured
 ---
 EOF
   run_hook "$TPATH"
-  if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]]; then
-    check "$sub/ subdir: silent + exit 0" 1
+  if [[ "$RC" == "0" ]] && [[ -z "$STDERR" ]] && [[ -z "$STDOUT" ]]; then
+    check "$sub/ subdir: silent on both channels + exit 0" 1
   else
-    check "$sub/ subdir: expected silent exit 0, got rc=$RC stderr='$STDERR'" 0
+    check "$sub/ subdir: expected silent exit 0, got rc=$RC stderr='$STDERR' stdout='$STDOUT'" 0
   fi
 done
 
