@@ -5,9 +5,13 @@
 # Scans tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/*.json and
 # enforces the 6 D-08 assertions from Phase 15 (MULTI-CC-VER):
 #   1. .cc_version field equals active CC (or the explicit-version arg).
-#   2. .cc_version_match: true where the field is present — UNLESS the
-#      conclusion is "ambiguous" (legitimate stale-anchor signal,
-#      documented via D-17 fragility brief; cross-check via D-08 #5).
+#   2. .cc_version_match (INFORMATIONAL only as of 2026-05-26 — the probe-internal
+#      EXPECTED_CC_VERSIONS allow-list is RETIRED; the field now signals on-disk
+#      corpus-membership, NOT a stale-anchor gate). Assertion 2 no longer fails on
+#      cc_version_match=false: a NEW corpus cell with a decisive conclusion legitimately
+#      carries cc_version_match=false. The has()-guard preserves validation of old
+#      on-disk cells that still carry the boolean. See docs/decisions.md row 220 (gate
+#      closed) + HP-024 § Corpus advancement.
 #   3. .probe_id ∈ the 5-name supersession-watchdog allowlist.
 #   4. .conclusion matches the allowed-token regex (D-08 #4).
 #   5. No JSON with conclusion="ambiguous" is cited in any docs/decisions.md
@@ -79,7 +83,10 @@ in_allowlist() {
 
 # validate_dir <cc-version>
 # Runs all 6 assertions against $RESULTS_ROOT/<cc-version>/*.json.
-# Returns 0 if all pass, non-zero if any FAIL.
+# Echoes the FAIL count on stdout (0 if all pass); per-assertion diagnostics go
+# to stderr. Callers capture the count via command substitution — NOT the exit
+# status, which is taken mod 256 and would wrap a 256-failure dir to "clean"
+# (IN-04). validate_dir is stdout-silent otherwise, so stdout carries only the count.
 validate_dir() {
   local cc="$1"
   local dir="$RESULTS_ROOT/$cc"
@@ -89,6 +96,7 @@ validate_dir() {
   if [[ ! -d "$dir" ]]; then
     # Bare mode (active CC) treats this as non-blocking (D-21 wording);
     # explicit-version mode handles the absent case as exit 2 at top level.
+    printf '%s\n' 0
     return 0
   fi
 
@@ -124,10 +132,12 @@ validate_dir() {
       fails=$((fails+1))
     fi
 
-    # Assertion 2: cc_version_match: true where present — UNLESS conclusion
-    # is "ambiguous" (legitimate stale-anchor signal preserved via D-17
-    # fragility brief; assertion #5 cross-checks against decisions.md
-    # so ambiguous cells cannot pollute Validated stable rows).
+    # Assertion 2 (LOOSENED 2026-05-26 — allow-list RETIRED): cc_version_match is now
+    # an INFORMATIONAL corpus-membership signal, NOT a stale-anchor gate. A NEW corpus
+    # cell with a decisive (non-ambiguous) conclusion legitimately carries
+    # cc_version_match=false, so we NO LONGER fail on cc_version_match=false. The only
+    # surviving check is shape: if the field is present it must not be null/empty (old
+    # on-disk cells still carry the boolean; the has()-guard skips cells that drop it).
     # Note: do NOT use `// empty` here — boolean `false` is falsy in jq's //
     # operator, so we use a `has(...) | <bool>|tostring` form to preserve the
     # literal "false" string.
@@ -136,10 +146,8 @@ validate_dir() {
       if [[ -z "${match:-}" ]]; then
         echo "verify-multi-cc-results: cc_version_match present but null (in $f)" >&2
         fails=$((fails+1))
-      elif [[ "$match" != "true" ]] && [[ "$conc" != "ambiguous" ]]; then
-        echo "verify-multi-cc-results: cc_version_match=$match but conclusion='$conc' (expected true for non-ambiguous) (in $f)" >&2
-        fails=$((fails+1))
       fi
+      # cc_version_match=false is admissible for any conclusion (informational, non-gating).
     fi
 
     # Assertion 3: probe_id in allowlist
@@ -154,17 +162,35 @@ validate_dir() {
 
     # Assertion 5 (D-08 A1 single-pass per-row grep idiom): if this JSON
     # has conclusion=="ambiguous", no docs/decisions.md row may simultaneously
-    # cite the probe basename AND contain "Validated stable" verdict text.
+    # cite THIS version's cell AND contain "Validated stable" verdict text.
+    #
+    # Version-scoped (Phase 19 fix): the row must cite this cell's
+    # version-scoped path ("v1.3-multi-cc-ver/<cc>/<pid>") on the same line as
+    # the "Validated stable" verdict — NOT merely the bare probe basename.
+    # A bare-basename grep cross-contaminated versions: a fresh 2.1.148
+    # `ambiguous` cell falsely matched the 2.1.140 "Validated stable" row
+    # (which legitimately validates the SEPARATE 2.1.140 cell). Validated-stable
+    # rows always cite the full versioned path, so the version-scoped match is
+    # exact: an ambiguous cell can only trip on a row claiming THAT SAME cell
+    # is stable — the real corpus-integrity hazard.
     if [[ "$conc" == "ambiguous" ]] && [[ -n "${pid:-}" ]] && [[ -f "$REPO/docs/decisions.md" ]]; then
-      if grep -E "${pid}.*Validated stable" "$REPO/docs/decisions.md" >/dev/null 2>&1; then
-        echo "verify-multi-cc-results: $pid has conclusion=ambiguous but is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
+      # Order-independent same-line match: the row must reference BOTH this
+      # cell's version-scoped path AND the "Validated stable" verdict (grep the
+      # path first, then re-grep that row for the verdict — robust to whichever
+      # table column each token lands in).
+      # grep -F (IN-03): the cell path is a literal substring, not a regex. -F
+      # treats ERE metacharacters in the operator-supplied $cc (and $pid) as
+      # literal, so a version like '2.1.*' cannot over-match decisions.md rows.
+      if grep -F "v1.3-multi-cc-ver/${cc}/${pid}" "$REPO/docs/decisions.md" 2>/dev/null \
+           | grep -F "Validated stable" >/dev/null 2>&1; then
+        echo "verify-multi-cc-results: $pid (cc $cc) has conclusion=ambiguous but its $cc cell is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
         fails=$((fails+1))
       fi
     fi
   done
   shopt -u nullglob
 
-  return "$fails"
+  printf '%s\n' "$fails"
 }
 
 # --- Arg parsing (D-24) ---
@@ -201,16 +227,14 @@ case "$MODE" in
     if [[ ! -d "$RESULTS_ROOT/$cc" ]]; then
       exit 0
     fi
-    validate_dir "$cc"
-    GLOBAL_FAILS=$?
+    GLOBAL_FAILS=$(validate_dir "$cc")
     ;;
   explicit)
     if [[ ! -d "$RESULTS_ROOT/$TARGET_VERSION" ]]; then
       echo "verify-multi-cc-results: requested version dir does not exist: $RESULTS_ROOT/$TARGET_VERSION" >&2
       exit 2
     fi
-    validate_dir "$TARGET_VERSION"
-    GLOBAL_FAILS=$?
+    GLOBAL_FAILS=$(validate_dir "$TARGET_VERSION")
     ;;
   all)
     shopt -s nullglob
@@ -220,8 +244,7 @@ case "$MODE" in
       ver=$(basename "$verdir")
       found_any=1
       echo "verify-multi-cc-results: scanning $ver" >&2
-      validate_dir "$ver"
-      rc=$?
+      rc=$(validate_dir "$ver")
       if (( rc > 0 )); then
         GLOBAL_FAILS=$((GLOBAL_FAILS + rc))
         echo "verify-multi-cc-results: $ver failed ($rc assertion(s))" >&2

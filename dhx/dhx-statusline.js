@@ -9,10 +9,22 @@
 // Owned by the hooks repo (not by /gsd-update). Kept byte-distinct from
 // gsd-statusline.js so GSD updates never alter our rendering.
 // See docs/statusline-wrapper.md for segment table and color semantics.
+// Patterns: HP-032
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// Shared plugins/cache allowlist (D-14) — the RAT-04 `⚠ cc-novel` segment
+// re-applies isAllowlisted to cc-novel-patterns.json entries AT RENDER TIME so
+// a widened allowlist clears the warning on the next ~1Hz refresh without a
+// re-enumeration. The require is try/catch-wrapped: a missing module degrades
+// the segment to inert (it hides) rather than throwing. The module is pure JS
+// — no fs, no subprocess — so the render-time re-filter keeps STATUS-06 (D-12).
+let pluginCacheAllowlist = null;
+try {
+  pluginCacheAllowlist = require('../scripts/lib/plugin-cache-allowlist.js');
+} catch (e) { /* module absent → cc-novel segment stays inert */ }
 
 // --- Model + CCS identity ----------------------------------------------------
 
@@ -33,9 +45,10 @@ function compactModel(displayName) {
 }
 
 // Effort level → colored braille-density glyph (set B from menu: both-column
-// bottom-up fill). Read from settings.json's effortLevel key; CC updates
-// this atomically on /effort so the next refresh reflects the change.
-// effortLevel is session-safe (NOT in WARN set) so changes don't trip drift.
+// bottom-up fill). Read from the statusline stdin payload (data.effort?.level);
+// CC emits effort per-session and refreshes it on /effort, so the next render
+// reflects the change. Absent/unknown level → glyph hidden. (Source pivoted
+// settings.json → tmux pane-scrape → stdin; pane-scrape retired ad9cf44.)
 //
 // States + colors track the context-bar ramp so both meters read with the
 // same "hotter = more burn" polarity. Unknown / missing → '' (hide segment).
@@ -432,7 +445,14 @@ function runStatusline() {
           // Running /gsd-update would downgrade — show a contextual warning instead.
           const isDevInstall = (() => {
             if (!cache.installed || !cache.latest || cache.latest === 'unknown') return false;
-            const parseV = v => v.replace(/^v/, '').split('.').map(Number);
+            // Normalize missing segments to 0 (WR-02 shape): without this a
+            // 2-segment version destructures its third segment to undefined and
+            // the tie-break `ci > cn` (undefined > n) is false — a real patch
+            // difference would misreport. Mirrors the cc-update comparator fix.
+            const parseV = v => {
+              const p = v.replace(/^v/, '').split('.').map(Number);
+              return [p[0] || 0, p[1] || 0, p[2] || 0];
+            };
             const [ai, bi, ci] = parseV(cache.installed);
             const [an, bn, cn] = parseV(cache.latest);
             return ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
@@ -445,6 +465,121 @@ function runStatusline() {
         }
       } catch (e) {}
     }
+
+    // --- RAT-04: cc-novel novel-pattern segment (render-time re-filter) ------
+    // Reads ~/.cache/dhx/cc-novel-patterns.json (written once per CC version
+    // cohort by statusline-wrapper.js's enumeration — Plan 01) and re-applies
+    // the shared isAllowlisted predicate to every novel_patterns entry AT
+    // RENDER TIME (D-14). Two filters stack: enumeration writes the post-
+    // allowlist novel set to the cache; the renderer re-filters against the
+    // CURRENT allowlist on top. This is what makes D-13a's contract real —
+    // when the operator widens the allowlist mid-cohort, the stale cache
+    // survives, but the next ~1Hz refresh re-filters it and the `⚠ cc-novel`
+    // warning clears with no re-enumeration. The segment renders iff the
+    // post-re-filter surviving count > 0. The re-filter is PURE ARRAY WORK
+    // (no fs, no subprocess) so STATUS-06 / D-12 hold. Malformed/missing
+    // cache → segment hides (D-13a — mirrors the gsdUpdate block).
+    let ccNovel = '';
+    const novelFile = path.join(homeDir, '.cache', 'dhx', 'cc-novel-patterns.json');
+    if (fs.existsSync(novelFile)) {
+      try {
+        const c = JSON.parse(fs.readFileSync(novelFile, 'utf8'));
+        if (Array.isArray(c.novel_patterns)) {
+          let surviving = c.novel_patterns.length;
+          // Re-filter against the CURRENT allowlist (D-14) when the shared
+          // module loaded. If the module is absent, fall back to the bare
+          // cache count — detector degrades to "shows the cohort warning",
+          // never to a crash.
+          if (pluginCacheAllowlist && typeof pluginCacheAllowlist.isAllowlisted === 'function') {
+            surviving = c.novel_patterns.filter(
+              (e) => e && !pluginCacheAllowlist.isAllowlisted(e.path, e.basename)
+            ).length;
+          }
+          if (surviving > 0) {
+            ccNovel = '\x1b[33m⚠ cc-novel\x1b[0m \x1b[2m│\x1b[0m ';
+          }
+        }
+      } catch (e) {}
+    }
+
+    // --- RAT-06: cc-update segment + dev-install branch ---------------------
+    // Reads ~/.cache/cc/cc-update-check.json ({latest, checked_at,
+    // installed_at_check} — Plan 02 + RAT-06b) and COMPUTES update_available
+    // renderer-side (D-08): the cache carries `latest`; the installed version
+    // is the stdin `data.version` the renderer already has free. parseV strips
+    // a prerelease/build suffix (`.split('-')[0]`) before the numeric compare
+    // (D-16) so a canary `latest` does not produce NaN — the dev-install
+    // compare degrades to a base-version compare on canary builds (documented,
+    // acceptable).
+    //   latest base > installed base → `⬆ cc`
+    //   installed base > latest base → `⚠ cc dev install` (RAT-06b guarded)
+    //   equal / 'unknown' / null      → neither
+    // Malformed/missing cache → segment hides (D-13a).
+    //
+    // RAT-06b dev-install guard: `installed base > latest base` is a FALSE
+    // POSITIVE when the CC auto-updater bumped the installed binary past the
+    // cache's `latest` WITHIN the parent's ~6h TTL window (the cache still
+    // names the OLDER latest it last checked). The fix: only fire dev-install
+    // when `cache.installed_at_check` matches the running `data.version` — i.e.
+    // npm `latest` was confirmed against THIS binary, not a since-replaced one.
+    // installed_at_check ABSENT (old cache schema / worker probe failed) → fall
+    // back to the prior unguarded fire (status-quo, backward-compatible).
+    // INVARIANT (cross-process): cc-check-update-worker.js stamps
+    // installed_at_check from `claude --version` parsed to the same bare shape
+    // as stdin `data.version`; this read assumes that shape match. Asserted by
+    // tests/probes/probe-cc-check-update-worker.sh + probe-statusline-load.js
+    // Scenarios 10-12.
+    let ccUpdate = '';
+    const ccUpdateFile = path.join(homeDir, '.cache', 'cc', 'cc-update-check.json');
+    if (fs.existsSync(ccUpdateFile)) {
+      try {
+        const cache = JSON.parse(fs.readFileSync(ccUpdateFile, 'utf8'));
+        const installed = data.version;
+        if (installed && cache.latest && cache.latest !== 'unknown') {
+          // D-16: strip the prerelease/build suffix before the numeric split.
+          // Normalize missing segments to 0 (WR-02): a 2-segment version
+          // ("2.1") would otherwise destructure its third segment to
+          // `undefined`, and the tie-break `cn > ci` (e.g. `1 > undefined`)
+          // is false — so installed "2.1" vs latest "2.1.1" would report NO
+          // `⬆ cc` even though an update exists. CC versions are consistently
+          // 3-segment so this is latent, but the comparator is written to be
+          // defensive against arbitrary `latest` strings from `npm view`.
+          const parseV = (v) => {
+            const p = v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+            return [p[0] || 0, p[1] || 0, p[2] || 0];
+          };
+          const [ai, bi, ci] = parseV(installed);
+          const [an, bn, cn] = parseV(cache.latest);
+          const latestNewer =
+            an > ai || (an === ai && bn > bi) || (an === ai && bn === bi && cn > ci);
+          const installedNewer =
+            ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
+          // RAT-06b: was npm `latest` confirmed against the binary running NOW?
+          // Absent stamp → fall back to firing (status-quo). Present → require a
+          // base-version match (parseV both sides so a canary suffix on either
+          // doesn't spuriously break the equality).
+          let confirmedAhead = true;
+          if (cache.installed_at_check) {
+            const [ka, kb, kc] = parseV(cache.installed_at_check);
+            confirmedAhead = ai === ka && bi === kb && ci === kc;
+          }
+          if (latestNewer) {
+            ccUpdate = '\x1b[33m⬆ cc\x1b[0m \x1b[2m│\x1b[0m ';
+          } else if (installedNewer && confirmedAhead) {
+            ccUpdate = '\x1b[33m⚠ cc dev install\x1b[0m \x1b[2m│\x1b[0m ';
+          }
+        }
+      } catch (e) {}
+    }
+
+    // --- RAT-06: cc-autoupd auto-update-suppression segment (D-09) -----------
+    // A single process.env read — zero subprocess, no cache, no hook. Glyph is
+    // `⚠` (U+26A0, BMP single-width) — NOT the U+1F6AB no-entry sign, which is
+    // a double-width SMP emoji (RESEARCH Pitfall 3: width bug + status-symbol-
+    // set inconsistency — the repo's warning vocabulary is `⚠`/`⬆`).
+    const ccAutoupd = process.env.DISABLE_AUTOUPDATER === '1'
+      ? '\x1b[33m⚠ cc-autoupd\x1b[0m \x1b[2m│\x1b[0m '
+      : '';
 
     // --- Line 1: model + CCS + [task |] dir + ctx ---
     // The wrapper appends cache, git, and repo signals (R/T/B) after this
@@ -459,11 +594,13 @@ function runStatusline() {
     // signal stays where the eye lands first. Line 2 carries GSD state only.
     const taskSegment = task ? ` \x1b[1m${task}\x1b[0m │` : '';
     // Effort glyph sits after the model, separated by a space so the two
-    // segments don't visually merge. Hidden when settings.json has no
-    // effortLevel (e.g. CCS instance swap before first /effort).
+    // segments don't visually merge. Hidden when the stdin payload omits
+    // effort.level (e.g. a CC version or session state that doesn't emit it).
     const effortSeg = effort ? ` ${effort}` : '';
 
-    const line1 = `${gsdUpdate}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
+    // RAT-04/RAT-06 segments sit adjacent to gsdUpdate at the line-1 head
+    // (cache/env signals cluster together where the operator's eye lands).
+    const line1 = `${gsdUpdate}${ccUpdate}${ccAutoupd}${ccNovel}\x1b[2m${model}\x1b[0m${effortSeg}${profileSegment} │${taskSegment} \x1b[2m${dirname}\x1b[0m${ctx}`;
 
     // --- Line 2: GSD state (conditional) ---
     // Gate: any of milestone/phase/status present. ccburn prepends to this

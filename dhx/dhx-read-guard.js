@@ -1,86 +1,85 @@
 #!/usr/bin/env node
-// DHX Read Guard — PreToolUse hook (fork of gsd-read-guard.js)
+// DHX Read Guard — PreToolUse hook (partial-only shim)
+// Patterns: HP-003, HP-016, HP-036
 //
-// Fork of gsd-read-guard.js v1.32.0 with session-aware gating replaced
-// by a global TTL-based cache lookup. Rewritten in v1.1 Phase 1 for the
-// dhx-owned read-tracking stack (Option B; replaces ~/.claude/read-once/).
+// COLLAPSED to partial-only on 2026-05-24 (Option C — read-guard fork-weight
+// investigation). The prior three-state design (strong READ-BEFORE-EDIT advisory
+// + full-read suppress + global-TTL/flock/prune cache) was removed. Empirical
+// probes (1a–1f, 2, 3, M2, Probe 5; see the brief + decisions.md Option C row)
+// showed CC's NATIVE runtime owns read-before-edit enforcement — it hard-blocks
+// an Edit AND a Write to an unread file across same-session / resume / CCS-swap /
+// subagent contexts. So the strong advisory was non-delivering when correct
+// (swallowed by CC's native block) and a false positive when it spoke (long-
+// session prune / Write-then-Edit). The ONE thing CC lacks is partial-read
+// blindness: CC's read-gate is BINARY — a `limit:N` read satisfies it for an edit
+// ANYWHERE in the file (Probe 2). This shim fires a soft NOTE in exactly that gap.
 //
-// Gate: Checks the dhx-owned XDG cache for recent reads. Entries with ts
-// within the last 2 hours count as "read". Pure global TTL eliminates
-// session-scoping false positives caused by CCS instance swaps changing
-// session_id (load-bearing citation:
-// reports/done/2026-04-15-read-guard-session-scoping-false-positives.md).
+// Reference impl of the removed global-TTL/flock/prune machinery: the pre-collapse
+// SHA is pinned in docs/decisions.md (Option C row) + the Q1 extraction-on-demand
+// backlog brief. Recover from git if a multi-writer cross-session TTL store is
+// ever needed; do NOT keep dead code in-tree.
 //
-// Cache path read:
-//   - ~/.cache/dhx/read-cache.jsonl (XDG, dhx-owned, D-04)
+// DETECTION (session-scoped, keyed on session_id ALONE — Probe 5 / Branch 1):
+//   dhx-read-cache.sh records partial Reads to
+//   ~/.cache/dhx/partial-read-detect-<session_id>.jsonl. session_id is PRESERVED
+//   across plain /exit+--resume (corpus N=12, incl. a 24.8 h single-id gap) and
+//   ROTATES only on a CCS profile-swap (HP-036). Keying on session_id ALONE
+//   confines the only lost case to the rare swap (fail-toward-silence: CC still
+//   allows the edit — the partial Read is in the restored transcript — only the
+//   soft NOTE is missed). No regression to the 2026-04-15 false-positive class is
+//   possible: State-1/State-2 are gone, so a session-scoped miss can only fail
+//   toward silence, never toward a false strong-advisory fire.
 //
-// D-01 dual-path migration-window fallback (also read ~/.claude/read-once/reads.jsonl
-// during the ~1 week post-Phase-1 window while in-flight CC sessions still wrote to
-// the legacy path) removed in v1.1.1 hygiene commit (2026-05-03): >1 week elapsed,
-// all sessions confirmed restarted, legacy cache mtime >2h stale.
+// DEDUP (once-per-(session_id, ticks) — Q4 keep-as-is): the seen-set re-arms per
+// CC process (ticks = /proc start-time field 22 rotate on resume — HP-016) so the
+// NOTE re-fires after resume, while repeated Edits within ONE process stay deduped.
+// DETECTION and DEDUP are DISTINCT stores with DISTINCT keys by design — do NOT
+// unify them (unifying would suppress the deliberate re-fire-after-resume UX).
 //
-// Cache is written by:
-//   - dhx-read-cache.sh (sole PreToolUse:Read writer; full + partial reads)
-//   - dhx-write-cache.sh (PostToolUse:Write|Edit; "source":"write" entries)
+// Exit semantics (preserved from gsd): always exit 0, never block. Silent on every
+// error path (parse, stdin, I/O). The only output is the PARTIAL-READ NOTE.
 //
-// Line format (D-08 schema with D-07 null-safety):
-//   {"path":"/abs/path","ts":<unix>,"source":"read"}
-//   {"path":"/abs/path","ts":<unix>,"source":"read","partial":true}
-//   {"path":"/abs/path","ts":<unix>,"source":"write"}
-//   {"path":"/abs/path","ts":<unix>}                    (legacy, no source)
-//   {"path":"/abs/path","ts":<unix>,"partial":true}     (legacy partial)
-//
-// D-07 null-safety: absent `source` field = treat as "read". D-08 semantics:
-// `source:"write"` entries count as full reads (writing IS a "you've seen
-// the bytes" signal — see dhx-write-cache.sh header for the false-positive
-// class this closes).
-//
-// D-17 PARTIAL+WRITE INVARIANT (defense-in-depth): the guard treats any
-// `partial:true` entry as partial regardless of the `source` value, by
-// design. Writers MUST NOT emit `partial:true` with `source:"write"`
-// (dhx-read-cache.sh writer header enforces this; only Read-tool partial
-// loads carry partial:true). HOWEVER, if a writer ever regresses and emits
-// the forbidden combo (partial:true + source:"write"), the guard's branch
-// here degrades SAFELY to a PARTIAL-READ NOTE rather than incorrectly
-// suppressing as a full read. This is the conservative/safe failure mode:
-// emitting an unnecessary advisory is better than missing a needed one.
-//
-// Three-state detection (REQ READ-04; collapse to two-state deferred to
-// v1.2 per READ-FUT-02 + D-03 dead-signal probe):
-//   - Full read in cache (within TTL) → suppress advisory entirely
-//   - Partial read in cache ({"partial":true}, within TTL) → light "PARTIAL-READ NOTE"
-//   - No read in cache within TTL → strong "READ-BEFORE-EDIT" advisory
-//
-// Caveats (accepted residuals):
-//   - If both caches don't exist or are empty, all edits get the advisory
-//     (safe degradation — same as before any Read happens in a session).
-//   - Global cache eliminates session-scoping false positives on CCS instance
-//     swap, session resume, and context compaction.
-//   - Entries older than 2 hours are pruned by dhx-read-cache.sh's hourly
-//     cleanup cycle (.last-cleanup marker, flock-protected awk-rewrite —
-//     see D-13 in CONTEXT.md for the rename-then-append-back pattern).
-//
-// Exit semantics preserved from gsd: always exit 0, never block. Silent on
-// every error path (parse, stdin, I/O) — the hook must never be the reason
-// a tool call fails.
-//
-// Triggers on: Write and Edit tool calls
-// Action: Advisory (does not block) — injects read-first guidance on cache miss
-//
-// Scope (HP-003 reframe, audit 2026-04-21): fires for parent AND subagent
-// Write/Edit calls. The global reads.jsonl cache is TTL-scoped, not session-
-// scoped, so parent and subagent reads both feed the same cache (assuming
-// read-once/hook.sh fires in both contexts — currently assumed, not verified
-// under the new HP-003 matcher-specific framing). Uniform enforcement
-// intended: if a subagent is about to Edit a file that has not been Read in
-// the last 2h (by anyone), CC's runtime will reject the Edit and this
-// advisory warns in advance. The hook does NOT branch on agent_id. The
-// advisory is non-blocking, so a false positive in subagent context costs
-// only one advisory line — cheap enough to accept over per-matcher branching.
+// Scope (HP-003): fires for parent AND subagent Write|Edit calls — no agent_id
+// branch. Triggers on: Write and Edit tool calls.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// DEDUP seen-set keying (D-04/HP-016): keyed on (session_id, CC-process-start-ticks).
+// read-guard.js registers as `node "$HOME/..."` → CC shell-wraps the command, so
+// process.ppid is an EPHEMERAL SHELL whose start-ticks rotate per Edit. A naive
+// getProcessStartTicks(process.ppid) keys the seen-set on that shell → the lookup
+// ALWAYS misses → the note fires every time. Walk ancestry past shells to the first
+// non-shell ancestor (the CC process), mirroring statusline-wrapper.js's
+// findCCTicks(). Returns null on non-Linux / unreadable /proc / all-shell-ancestry
+// → caller degrades to always-fire (never crashes).
+const SHELL_COMMS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'tcsh', 'ksh']);
+function findCCTicks(startPpid) {
+  const MAX_HOPS = 5;
+  let pid = startPpid;
+  for (let i = 0; i < MAX_HOPS && pid > 1; i++) {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const comm = stat.substring(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const after = stat.substring(stat.lastIndexOf(')') + 2).split(' ');
+      if (!SHELL_COMMS.has(comm)) {
+        return after[19] || null; // starttime = field 22 (HP-016)
+      }
+      pid = parseInt(after[1]); // ppid — walk up past the ephemeral shell
+    } catch { return null; }
+  }
+  return null;
+}
+
+// IN-02: align with the shell writer's `realpath` semantics — dhx-read-cache.sh
+// resolves symlinks before recording `path`, so the guard must too or a symlink
+// lookup misses (writer stores the resolved target, guard would look up the symlink
+// string). Fall back to path.resolve when the file was deleted between Read and Edit
+// (matches the writer's `|| echo "$FILE_PATH"` fallback).
+function resolvePath(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
 
 let input = '';
 const stdinTimeout = setTimeout(() => process.exit(0), 3000);
@@ -91,136 +90,133 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
     const toolName = data.tool_name;
+    const sessionId = data.session_id; // untrusted — validated before use as a filename component (D-11)
 
-    // Only intercept Write and Edit tool calls
-    if (toolName !== 'Write' && toolName !== 'Edit') {
-      process.exit(0);
-    }
+    // Only intercept Write and Edit tool calls.
+    if (toolName !== 'Write' && toolName !== 'Edit') process.exit(0);
 
     const filePath = data.tool_input?.file_path || '';
-    if (!filePath) {
-      process.exit(0);
-    }
+    if (!filePath) process.exit(0);
 
-    // Only inject guidance when the file already exists.
-    // New files don't need a prior Read — the runtime allows creating them directly.
-    let fileExists = false;
+    // Only an existing file can have been partial-read; CC allows creating new
+    // files directly, so there is nothing to note on a non-existent path.
     try {
       fs.accessSync(filePath, fs.constants.F_OK);
-      fileExists = true;
     } catch {
-      // File does not exist — no guidance needed
-    }
-
-    if (!fileExists) {
       process.exit(0);
     }
 
-    // Global TTL-based cache lookup (XDG primary cache only; D-01 legacy fallback
-    // removed in v1.1.1 hygiene commit). Any error falls through to emit the
-    // "no read" advisory (safe default). D-07 null-safety; D-17 invariant.
-    let hasFullRead = false;
+    // D-11: session_id is untrusted and is a filename component for BOTH the
+    // detection and dedup stores. If it is empty / contains a path separator
+    // (/ or \) / `..`, we cannot safely key either store → exit silently.
+    // Fail-toward-silence is the accepted direction now that the strong advisory
+    // is gone. Reject-and-disable, never sanitize (sanitizing risks two distinct
+    // session_ids colliding to one store).
+    const sessionIdSafe =
+      typeof sessionId === 'string' && sessionId.length > 0 &&
+      !/[/\\]/.test(sessionId) && !sessionId.includes('..');
+    if (!sessionIdSafe) process.exit(0);
+
+    const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
+    const resolvedTarget = resolvePath(filePath);
+
+    // DETECTION: was this file partial-read this session? Session-scoped store,
+    // read-only here (dhx-read-cache.sh is the sole writer). No TTL / flock /
+    // prune: a single logical writer per session, and O_APPEND keeps concurrent
+    // subagent appends atomic at the line level (< PIPE_BUF). Any I/O error →
+    // treat as "not partial-read" → exit silent.
     let hasPartialRead = false;
     try {
-      const primaryCachePath = path.join(os.homedir(), '.cache', 'dhx', 'read-cache.jsonl');
-
-      // IN-02: align with shell writers' `realpath` semantics — both
-      // dhx-read-cache.sh and dhx-write-cache.sh resolve symlinks before
-      // emitting `path`. Using path.resolve here would miss matches when
-      // the target is a symlink (writer emits the resolved target, guard
-      // looks up the symlink string). Fall back to path.resolve when the
-      // file was deleted between Read and Edit (matches writer's
-      // `|| echo "$FILE_PATH"` fallback).
-      let resolvedTarget;
-      try {
-        resolvedTarget = fs.realpathSync(filePath);
-      } catch {
-        resolvedTarget = path.resolve(filePath);
-      }
-      const resolveEntryPath = (p) => {
+      // INVARIANT: the detection store keys on session_id ALONE — NOT
+      // session_id+ticks. ticks rotate on EVERY resume (HP-016/HP-036); keying on
+      // them would miss the NOTE on every cross-session edit, not just the rare
+      // CCS-swap, collapsing the Probe-5/Branch-1 result. Do not add ticks here.
+      const detectPath = path.join(cacheDir, `partial-read-detect-${sessionId}.jsonl`);
+      const contents = fs.readFileSync(detectPath, 'utf8');
+      for (const line of contents.split('\n')) {
+        if (!line.trim()) continue;
         try {
-          return fs.realpathSync(p);
+          const entry = JSON.parse(line);
+          if (entry && typeof entry.path === 'string' &&
+              resolvePath(entry.path) === resolvedTarget) {
+            hasPartialRead = true;
+            break;
+          }
         } catch {
-          return path.resolve(p);
+          // skip malformed line, continue scanning
         }
-      };
-      const nowSec = Math.floor(Date.now() / 1000);
-      const ttl = 7200; // 2 hours
+      }
+    } catch {
+      // no detection store / unreadable → not partial-read this session
+    }
 
-      // Reader factored out — same loop runs against both paths.
-      // Accumulator is monotonic per V-DUAL-PATH-NOOP (RESEARCH.md);
-      // no dedupe needed if same path appears in both caches.
-      const scanCache = (cachePath) => {
-        if (!fs.existsSync(cachePath)) return;
-        const contents = fs.readFileSync(cachePath, 'utf8');
+    // No partial read recorded → SILENT. CC's native runtime owns full
+    // read-before-edit enforcement (Probes 1a–1f); there is nothing for this shim
+    // to add. (This replaces both the old State-1 strong advisory and the old
+    // State-2 full-read suppress — neither delivered net value under CC.)
+    //
+    // INVARIANT: this silence DEPENDS on CC's tool layer hard-blocking an Edit or
+    // Write to a file not Read this session ("File has not been read yet."). If a
+    // future CC release weakens that, blind edits to unread files would proceed
+    // un-warned. The dependency is asserted by the supersession-watchdog
+    // tests/probes/probe-read-guard-native-enforcement-tripwire.sh — when it flips
+    // red, revisit the Option C collapse (the strong advisory may need reviving).
+    if (!hasPartialRead) process.exit(0);
+
+    // DEDUP: once-per-(session_id, ticks) — Q4 keep-as-is. null ticks (non-Linux /
+    // unreadable /proc) → skip the gate → always-fire.
+    // D-11 FAIL-SAFE (load-bearing): ALL seen-set ops live inside a targeted
+    // try/catch whose catch FALLS THROUGH TO FIRE the note — it does NOT exit and
+    // does NOT re-throw. The canonical case is the EXPECTED first-read ENOENT (the
+    // seen-set file does not exist yet) → treated as a miss → the note FIRES, then
+    // the file is created on append. Any seen-set error degrades to FIRING, never
+    // to silence. The ONLY legitimate suppression is the happy-path cache HIT.
+    const ticks = findCCTicks(process.ppid);
+    if (ticks) {
+      try {
+        const seenPath = path.join(cacheDir, `partial-read-seen-${sessionId}-${ticks}.jsonl`);
+        const contents = fs.readFileSync(seenPath, 'utf8');
         for (const line of contents.split('\n')) {
           if (!line.trim()) continue;
           try {
-            const entry = JSON.parse(line);
-            if (entry && typeof entry.path === 'string' &&
-                resolveEntryPath(entry.path) === resolvedTarget &&
-                typeof entry.ts === 'number' &&
-                (nowSec - entry.ts) <= ttl) {
-              // D-07: absent `source` field = treat as "read" (legacy entries
-              //       from ~/.claude/read-once/hook.sh which emit {"path","ts"}).
-              // D-08: "source":"write" entries also count as full reads
-              //       (writing IS a "you've seen the bytes" signal — that is
-              //       why dhx-write-cache.sh exists).
-              // D-17: any `partial:true` entry is treated as partial regardless
-              //       of `source`, by design — defense-in-depth against a
-              //       writer regression emitting partial:true + source:"write"
-              //       (forbidden by writer invariant, but guard degrades safely).
-              if (entry.partial) {
-                hasPartialRead = true;
-              } else {
-                hasFullRead = true;
-              }
+            const rec = JSON.parse(line);
+            if (rec && rec.path === resolvedTarget) {
+              process.exit(0); // cache HIT — the only legitimate suppression
             }
           } catch {
             // skip malformed line, continue scanning
           }
         }
-      };
-
-      scanCache(primaryCachePath);
-    } catch {
-      // fall through to advisory on any I/O error
+        // cache MISS — append, then fall through to FIRE.
+        fs.mkdirSync(cacheDir, { recursive: true });
+        fs.appendFileSync(seenPath, JSON.stringify({ path: resolvedTarget, ts: Math.floor(Date.now() / 1000) }) + '\n');
+      } catch {
+        // D-11 fail-safe: ANY seen-set error (incl. the expected first-read ENOENT)
+        // is a miss → fire the note. Best-effort append so the next Edit can dedup;
+        // if even the append fails, the note has already fired (the safe outcome).
+        try {
+          const seenPath = path.join(cacheDir, `partial-read-seen-${sessionId}-${ticks}.jsonl`);
+          fs.mkdirSync(cacheDir, { recursive: true });
+          fs.appendFileSync(seenPath, JSON.stringify({ path: resolvedTarget, ts: Math.floor(Date.now() / 1000) }) + '\n');
+        } catch {
+          // append also failed — note still fires below (safe default)
+        }
+      }
     }
 
-    // INVARIANT: fires for parent AND subagent Write|Edit calls (HP-003
-    // verified 2026-04-21). Advisory is uniform across contexts — no
-    // agent_id short-circuit.
-    // Full read → suppress entirely
-    if (hasFullRead) {
-      process.exit(0);
-    }
-
+    // PARTIAL-READ NOTE — text preserved verbatim (Q4). Fires on dedup miss, null
+    // ticks, or seen-set error; suppressed ONLY on a dedup cache HIT above.
     const fileName = path.basename(filePath);
-
-    if (hasPartialRead) {
-      // Partial read found — targeted advisory
-      const output = {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext:
-            `PARTIAL-READ NOTE: "${fileName}" was Read with offset/limit this session ` +
-            'but not in full. You may proceed if you have sufficient context for this edit. ' +
-            'If unsure, do a full Read first.',
-        },
-      };
-      process.stdout.write(JSON.stringify(output));
-    } else {
-      // No read at all — strong advisory
-      const output = {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext:
-            `READ-BEFORE-EDIT: "${fileName}" exists but has not been Read this session. ` +
-            'You MUST Read it before editing — the runtime will reject edits to unread files.',
-        },
-      };
-      process.stdout.write(JSON.stringify(output));
-    }
+    const output = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext:
+          `PARTIAL-READ NOTE: "${fileName}" was Read with offset/limit this session ` +
+          'but not in full. You may proceed if you have sufficient context for this edit. ' +
+          'If unsure, do a full Read first.',
+      },
+    };
+    process.stdout.write(JSON.stringify(output));
   } catch {
     // Silent fail — never block tool execution
     process.exit(0);

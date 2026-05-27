@@ -13,7 +13,7 @@ SRC=$(echo "$INPUT" | jq -r '.source // "unknown"' 2>/dev/null || echo unknown)
 echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-probe.log
 
 # Dispatch to canonical scripts. Hand each its own stdin copy.
-# Run all four even if one fails — each is independent.
+# Run each even if one fails — they are independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
@@ -30,5 +30,10 @@ bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
 bash /home/dhx/.claude/hooks/dhx-plugin-cache-staleness-detector.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+# RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
+# detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
+node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
+# Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh || true
 
 exit 0

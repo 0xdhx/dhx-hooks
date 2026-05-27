@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // gsd-hook-version: 1.42.3
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -65,7 +65,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('firstPrompt', getFirstUserPrompt(data)),
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]) => {
+    withSegmentDiag('fleet',      readFleetFeed()),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -87,6 +88,12 @@ process.stdin.on('end', () => {
     const firstPrompt    = unwrap(firstPromptR, name => sigil(name));
     const health         = unwrap(healthR,     name => ({ front: sigil(name), tail: '' }));
     const driftWarning   = unwrap(driftR,      name => sigil(name));
+    // fleet is fail-silent (D-03d): its own try/catch returns '' on ANY error,
+    // so the rejection arm here uses a '' fallback (NOT a sigil) as defense in
+    // depth. A `⚠ fleet?` sigil would be the OPPOSITE of silence — fleet must
+    // never reach the sigil path. Deliberately omitted from sigilCount below so
+    // a (theoretically impossible) fleet rejection can't bump the meta-glyph either.
+    const fleetWarning   = unwrap(fleetR,      () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -120,6 +127,11 @@ process.stdin.on('end', () => {
     const front = [];
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
+    // Fleet drift (SURF-02): a third orange-208 front member, additive only.
+    // Order: drift (session identity) → health (session wiring) → fleet
+    // (cross-repo convention drift). Local-session warnings precede the broader
+    // fleet signal. Silent at zero / stale / error (readFleetFeed returns '').
+    if (fleetWarning) front.push(fleetWarning);
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
@@ -186,35 +198,87 @@ function runRenderer(stdinData) {
   });
 }
 
-// ccburn: collect data + build compact segment from --json --once.
-// Two calls: (1) `collect` populates ccburn's database from the statusline
-// stdin payload (no-op if ccburn missing); (2) `--json --once` returns the
-// structured limits we format ourselves. Prior design piped `--compact`
-// through a regex munger, which coupled our output to ccburn's text format
-// and didn't expose the weekly reset timer. JSON gives us `resets_in_minutes`
-// / `resets_in_hours` directly and lets `formatBurnDuration` own a single
-// duration convention shared between session and weekly.
-function runCcburn(stdinData) {
-  return new Promise((resolve) => {
-    const collect = spawn('ccburn', ['collect'], {
-      stdio: ['pipe', 'ignore', 'ignore'],
-    });
-    collect.stdin.write(stdinData);
-    collect.stdin.end();
-    collect.on('error', () => {}); // ccburn not installed — no-op
+// ccburn segment — stale-while-revalidate cache (2026-05-25 ccburn-storm fix).
+//
+// `ccburn --json --once` is a HEAVY usage scan: measured ~4.5-8s/call on this box
+// (it scans usage/JSONL to compute session+weekly limits). It is NOT the ~15ms the
+// incident triage reported — that benchmark unknowingly timed the no-op shim, not
+// real ccburn. Running this scan on EVERY statusline refresh (~24/min × N sessions)
+// was the incident's real amplifier: the "high-RAM JSONL search" was ccburn itself.
+// So we keep the scan OFF the render hot path:
+//
+//   • render path reads a cached segment — a single readFileSync, instant;
+//   • at most once per TTL, ONE detached, timeout-bounded refresher recomputes the
+//     cache in the background.
+//
+// The refresher is `detached:true` + `unref()` so it OUTLIVES this wrapper (which
+// exits in ms) and can finish the ~5s scan — but every ccburn invocation inside it
+// is wrapped in coreutil `timeout`, so it self-terminates and can NEVER orphan into
+// a storm. That preserves the D-14 "no unbounded subprocess on the render hot path"
+// rule (2026-04-26 capture-pane precedent; docs/statusline-wrapper.md § Fleet D-14)
+// while fixing the deeper problem the timeout alone didn't: the per-refresh scan
+// frequency. Single-flight is enforced by bumping the cache mtime BEFORE spawning,
+// so concurrent refreshes — and other sessions sharing ~/.cache/dhx — skip.
+//
+// Cache: ~/.cache/dhx/ccburn-json.json holds raw `--json --once` output; the wrapper
+// builds the segment at read time. This file also supersedes the old rolling
+// statusline-trace.jsonl for raw-json anomaly inspection.
+// Probe: tests/probes/probe-ccburn-no-orphan.sh. Tunables are env-overridable.
+const CCBURN_CACHE = process.env.DHX_CCBURN_CACHE
+  || path.join(os.homedir(), '.cache', 'dhx', 'ccburn-json.json');
+const CCBURN_TTL_MS = Number(process.env.DHX_CCBURN_TTL_MS) || 30_000;
+const CCBURN_REFRESH_TIMEOUT = process.env.DHX_CCBURN_REFRESH_TIMEOUT || '10s';
+const CCBURN_COLLECT_TIMEOUT = process.env.DHX_CCBURN_COLLECT_TIMEOUT || '2s';
+const CCBURN_KILL_AFTER = process.env.DHX_CCBURN_KILL_AFTER || '2s';
 
-    const json = spawn('ccburn', ['--json', '--once'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    let out = '';
-    json.stdout.on('data', chunk => out += chunk);
-    json.on('close', () => {
-      const segment = buildCcburnSegment(out);
-      if (segment) appendTrace({ ts: new Date().toISOString(), json: out.trim(), segment });
-      resolve(segment);
-    });
-    json.on('error', () => resolve(''));
-  });
+// Detached, timeout-bounded background refresh of the ccburn cache. Fire-and-forget:
+// it survives this wrapper's exit (detached+unref) to finish the slow scan, but each
+// ccburn invocation is `timeout`-bounded so it cannot orphan indefinitely.
+function refreshCcburnCache(stdinData) {
+  try {
+    fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
+    const tmp = `${CCBURN_CACHE}.${process.pid}.tmp`;
+    // collect (cheap, ~0.03s) populates ccburn's DB; then the heavy read. Atomic
+    // publish via rename; tmp cleaned on failure. Paths are fixed/internal — the
+    // only external value (stdinData) is fed via stdin, never interpolated.
+    const sh =
+      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_COLLECT_TIMEOUT} ccburn collect >/dev/null 2>&1; ` +
+      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_REFRESH_TIMEOUT} ccburn --json --once > '${tmp}' 2>/dev/null ` +
+      `&& mv -f '${tmp}' '${CCBURN_CACHE}' || rm -f '${tmp}'`;
+    const child = spawn('bash', ['-c', sh], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
+    child.stdin.on('error', () => {}); // EPIPE if `collect` exits before reading
+    child.stdin.end(stdinData);        // fed to `ccburn collect`
+    child.unref();
+  } catch { /* best-effort; the render still shows the last cached value */ }
+}
+
+// Render-path entry: returns the cached segment instantly; triggers a single
+// background refresh when the cache is older than the TTL. Never blocks on ccburn.
+async function runCcburn(stdinData) {
+  let raw = '';
+  let mtimeMs = 0;
+  try {
+    const st = fs.statSync(CCBURN_CACHE);
+    mtimeMs = st.mtimeMs;
+    raw = fs.readFileSync(CCBURN_CACHE, 'utf8');
+  } catch { /* no cache yet — first run renders nothing, populates for the next refresh */ }
+
+  if (Date.now() - mtimeMs >= CCBURN_TTL_MS) {
+    // Claim the refresh slot by bumping mtime FIRST, so concurrent refreshes and
+    // other sessions sharing this cache don't all spawn (single-flight).
+    try {
+      const now = new Date();
+      try {
+        fs.utimesSync(CCBURN_CACHE, now, now);
+      } catch {
+        fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
+        fs.writeFileSync(CCBURN_CACHE, '');
+      }
+    } catch { /* claim failed; still attempt the refresh below */ }
+    refreshCcburnCache(stdinData);
+  }
+
+  return buildCcburnSegment(raw) || '';
 }
 
 // Rolling ccburn trace — ~/.cache/dhx/statusline-trace.jsonl (+ .prev on rotation).
@@ -683,6 +747,61 @@ function readHealthCache(sessionId) {
   });
 }
 
+// --- Fleet drift front-stack segment (SURF-02 render half, phase-10) ---
+//
+// Surfaces an always-visible orange-208 token (▼N conv) when `required`-level
+// conventions went NEWLY-MISSING in the latest cross-repo fleet scan. Silent at
+// zero, silent on stale, silent on ANY error — the always-visible surface stays
+// trustworthy by showing nothing when there is nothing to act on. The pull
+// surface (/dhx:watch list) shows a clean-state line; the statusline does not.
+//
+// RESOURCE SAFETY (load-bearing — D-14). A SINGLE synchronous read of one thin
+// cache file, cloning the sym-health reader pattern above (readFileSync in a
+// try/catch). This path NEVER spawns a subprocess — no tmux, git, node-child,
+// and it NEVER invokes the scanner. The 2026-04-26 tmux capture-pane wedge
+// (reports/done/2026-04-26-statusline-capture-pane-wedge.md) was caused by a
+// subprocess spawned per-refresh across 17 concurrent sessions overwhelming the
+// single tmux server; a cache-file read is that report's recommended mitigation,
+// not the hazard. The expensive scan stays on the daily systemd cadence (Phase 9),
+// fully off this render hot path — this fn only reads a number a daily job
+// already computed.
+//
+// FAIL-SILENT (load-bearing — D-03d). The whole body is wrapped in try/catch and
+// returns '' on ANY error path: absent file / malformed JSON / NaN or non-finite
+// date / unexpected schema_version / stale / non-integer / negative / zero count.
+// A '' RETURN renders nothing. A THROW would land in withSegmentDiag's rejection
+// arm → computeSegmentSigil → a red `⚠ fleet?` sigil, the OPPOSITE of silence,
+// polluting the always-visible surface. This fn must NEVER throw; the call-site
+// unwrap also uses a '' fallback as a second line of defense.
+//
+// Feed contract (producer: cross-repo scripts/fleet/emit-statusline-feed.cjs):
+//   { schema_version: 1, required_newly_missing: <non-neg int>, computed_at: <full ISO-8601> }
+// computed_at is the emitter's own write-time (hour-resolution ISO), which is
+// what lets the ~48h freshness gate work — NOT SUMMARY.json's date-only stamp.
+// Counts required_newly_missing ONLY (D-07): the all-enforce-levels view is the
+// watch-list's job (SURF-01); the statusline stays required-only because it is
+// always-visible. Probe: tests/probes/probe-fleet-statusline-render.js (5 states).
+const FLEET_FEED_FILE = path.join(os.homedir(), '.cache', 'dhx', 'fleet-statusline.json');
+// ~48h: covers 2 daily scan cycles + RandomizedDelaySec + a sleep grace, with the
+// timer's Persistent=true self-healing on wake. newly_missing is inherently
+// per-scan, so a stale feed must not assert "newly" drift that should have aged out.
+const FLEET_STALE_MS = 48 * 3600 * 1000;
+
+function readFleetFeed() {
+  try {
+    const feed = JSON.parse(fs.readFileSync(FLEET_FEED_FILE, 'utf8'));
+    if (!feed || feed.schema_version !== 1) return '';
+    const n = feed.required_newly_missing;
+    if (!Number.isInteger(n) || n < 0) return '';
+    const ageMs = Date.now() - Date.parse(feed.computed_at);
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= FLEET_STALE_MS) return '';
+    if (n === 0) return ''; // silent at zero
+    return `\x1b[38;5;208m▼${n} conv\x1b[0m`;
+  } catch {
+    return '';
+  }
+}
+
 // Process start-time in clock ticks since boot, read from /proc/<pid>/stat field 22.
 // Stable per-process within a boot (immune to PID reuse). Returns null on
 // non-Linux / unreadable.
@@ -781,7 +900,7 @@ function hashWarnSettings(settingsReal) {
 // every running session's drift signal. Filtering affects both mtime and count,
 // so an orphan sweep is invisible to checkDrift while real plugin writes are still
 // caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
-function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
+function scanRecursive(dir, keepPredicate) {
   let maxMtime = 0;
   let count = 0;
   // `maxPath` is the file path whose mtime won the scan — additive forensic
@@ -794,17 +913,24 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
-      if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
-      // Path-prefix filter: skip entries whose ancestry includes a CC bookkeeping
-      // segment (e.g. `temp_git_<digits>_<token>/` install-cycle extraction dirs).
-      // Basename-only matching is insufficient because `readdirSync({recursive:true})`
-      // returns leaf files by their OWN basename — `temp_git_*` only appears as
-      // an intermediate path component, never as an entry.name for the leaves
-      // inside it. We test the full constructed path so both the dir entry
-      // itself AND every descendant are dropped from mtime + count.
-      if (ignorePathPattern) {
-        const full = entry.path ? path.join(entry.path, entry.name) : entry.name;
-        if (ignorePathPattern.test(full)) continue;
+      // Allowlist inversion (D-04): a single optional `keepPredicate(rel, basename)
+      // -> bool` replaces the former two denylist params (ignoreBasenames /
+      // ignorePathPattern). The agents/gsd callers pass nothing → undefined →
+      // every entry is kept (unchanged behavior). The `plugins` caller passes
+      // (rel,b) => classifyEntryFn(rel,b) === 'content', so only content-
+      // classified entries advance the drift mtime/count (D-03).
+      //
+      // D-20 (LOAD-BEARING): keepPredicate MUST receive a CACHE-ROOT-RELATIVE,
+      // forward-slash-normalized path — NOT the absolute `full`. classifyEntry
+      // checks segment 0 against marketplaceTopLevel; feeding the absolute path
+      // makes segment 0 = `home`/`.ccs` → marketplaceTopLevel never matches →
+      // every entry classifies `novel` → `=== 'content'` never true → the
+      // `plugins` trigger silently never fires (total drift false-negative).
+      // This mirrors enumerateNovelPatterns' rel-normalization at :911-912.
+      if (keepPredicate) {
+        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const rel = path.relative(dir, full).split(path.sep).join('/');
+        if (!keepPredicate(rel, entry.name)) continue;
       }
       count++;
       // Skip directory mtimes: POSIX bumps a dir's mtime on any direct-child
@@ -828,34 +954,131 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   return { maxMtime, count, maxPath };
 }
 
-// Filenames CC writes into plugins/cache as internal bookkeeping — drift-irrelevant.
-const PLUGIN_CACHE_IGNORE = new Set(['.orphaned_at']);
+// Shared plugins/cache allowlist module (RAT-04, D-06 + D-14). Consolidates
+// the former inline `PLUGIN_CACHE_IGNORE` (bookkeeping basename Set) and
+// `PLUGIN_CACHE_PATH_IGNORE` (bookkeeping path-segment RegExp) constants into
+// one documented in-code allowlist that is ALSO consumed by the renderer
+// (dhx-statusline.js, Plan 03's render-time re-filter) — it cannot stay inline.
+// `scripts/lib/` is the established shared-code home (tiers.json `require` at
+// :641). Wrapped in the same try/catch-fallback discipline as tiers.json: a
+// missing/unparseable module falls back to the historical bookkeeping
+// constants so the `plugins` drift trigger keeps filtering — the UI hot path
+// stays alive. `PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames` /
+// `.bookkeepingPathPattern` drive `scanRecursive`'s `ignoreBasenames` /
+// `ignorePathPattern` filter (the dual-use members; the rest of the allowlist
+// — legitContentBasenames/Segments, versionDirPattern, marketplaceTopLevel,
+// the isAllowlisted predicate — backs RAT-04 novel-pattern enumeration).
+// See docs/decisions.md 2026-04-23 (.orphaned_at), 2026-04-27 (temp_git_*),
+// 2026-05-13 (.in_use/<pid>) rows for the filter lineage this consolidates.
+let PLUGIN_CACHE_ALLOWLIST = {
+  bookkeepingBasenames: new Set(['.orphaned_at']),
+  bookkeepingPathPattern: /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/,
+};
+// Default predicate when the shared module is unavailable: treat everything as
+// novel-candidate-free (return true) so a missing module never produces a
+// flood of false `⚠ cc-novel` hits — RAT-04 degrades to "detector inert", not
+// "detector noisy". The bookkeeping fallback above still drives the drift
+// filter. Replaced by the real predicate on a successful require.
+let isAllowlistedPattern = () => true;
+// Default classifier when the shared module is unavailable (D-08 / D-23). The
+// `plugins` drift trigger's keepPredicate (collectSnapshot, Site 2) tests
+// `classifyEntryFn(rel,b) === 'content'`, so a missing/bad module MUST still
+// have a working 2-state classifier — otherwise the predicate would crash or
+// silence drift entirely. This inline fallback degrades to TODAY'S DENYLIST
+// behavior: it returns 'bookkeeping' for the inline bookkeeping constants
+// (`.orphaned_at` basename; `temp_git_*` / `.in_use` path segments) and
+// 'content' for everything else. It NEVER returns 'novel' (D-08: a missing
+// module must never manufacture novel hits — the inverse of the
+// `isAllowlistedPattern = () => true` "detector inert, never noisy" posture for
+// enumeration) and NEVER throws (D-23 / ASVS V5: same `typeof` input guards as
+// the real classifyEntry, so a non-string / null / empty filePath or basename
+// returns a string instead of crashing `.test()` / `.has()`). Replaced by the
+// real classifyEntry on a successful, complete require (the typeof gate below).
+let classifyEntryFn = function (filePath, basename) {
+  if (typeof basename === 'string') {
+    if (PLUGIN_CACHE_ALLOWLIST.bookkeepingBasenames.has(basename)) return 'bookkeeping';
+  }
+  if (typeof filePath === 'string') {
+    if (PLUGIN_CACHE_ALLOWLIST.bookkeepingPathPattern.test(filePath)) return 'bookkeeping';
+  }
+  // Everything else is content — denylist-equivalent degradation; the fallback
+  // never manufactures a novel hit (D-08).
+  return 'content';
+};
+try {
+  const allowlistMod = require('../scripts/lib/plugin-cache-allowlist.js');
+  PLUGIN_CACHE_ALLOWLIST = allowlistMod.PLUGIN_CACHE_ALLOWLIST;
+  isAllowlistedPattern = allowlistMod.isAllowlisted;
+  // D-23 typeof gate: adopt the real classifier ONLY when it is actually a
+  // function. A partial / bad module load (export missing or non-function)
+  // RETAINS the inline fallback above rather than setting classifyEntryFn =
+  // undefined, which would crash the keepPredicate path in collectSnapshot.
+  if (typeof allowlistMod.classifyEntry === 'function') {
+    classifyEntryFn = allowlistMod.classifyEntry;
+  }
+} catch (e) {
+  // Fall back gracefully if the shared module is missing or unparseable. The
+  // inline default above keeps the `plugins` drift filter behaving exactly as
+  // the pre-consolidation constants did — drift detection never regresses on
+  // a bad module load. RAT-04 enumeration degrades to "no allowlist module"
+  // (isAllowlistedPattern returns true → zero novel hits) and is itself
+  // try/catch-guarded at its call site. classifyEntryFn keeps the inline
+  // denylist-equivalent fallback (D-08 — never 'novel', never throws).
+}
 
-// Path-segment filter for two classes of CC-internal bookkeeping that leak
-// through the plugin-cache scan via the `~/.ccs/shared/plugins/cache` symlink
-// topology (any one CCS instance's write trips drift in every live session).
-// Combined alternation keeps the call-site signature single-regex.
+// RAT-04 novel-pattern enumeration (D-02 / D-13a / D-14). Walks the
+// `plugins/cache` tree once and returns the leaf entries whose path + basename
+// match NO member of the shared allowlist — "novel" file classes that appeared
+// under `plugins/cache` and warrant operator attention after a CC upgrade.
 //
-// (1) `temp_git_<epoch_ms>_<token>/` — CC's install-cycle clones. CC clones
-// marketplace sources into these siblings under `plugins/cache/` while
-// resolving plugin installs (e.g. retry attempts for a declared-but-uninstalled
-// plugin), then the dir lingers post-extraction with no GC. A clone races
-// snapshot capture (snapshot at T, clone finishes at T+~500ms), so every
-// refresh after sees plugins_mtime advance and fires `triggers.push('plugins')`
-// → spurious `⚠ restart plugins`. See decisions.md 2026-04-27 row.
+// fs-ONLY (D-12) — no subprocess. Reuses the same
+// `fs.readdirSync(dir, {withFileTypes:true, recursive:true})` walk shape as
+// `scanRecursive` (deliberately not a hand-rolled recursion). For each
+// non-directory entry, the relative path (forward-slash joined, relative to
+// `pluginsCacheRoot`) + the leaf basename are tested against
+// `isAllowlistedPattern`; an entry that is NOT allowlisted is collected as
+// `{ path, basename, first_seen_mtime }` (mtime in ms).
 //
-// (2) `.in_use/<pid>` — CC session-lifetime lock markers. CC writes a
-// `<pid>` basename file under `.in_use/` in each plugin cache subtree when a
-// session opens; the marker is never reaped during that session's lifetime.
-// Because the cache is shared cross-instance, a sibling CCS session's
-// `.in_use/<new_pid>` write trips drift on every running session's snapshot
-// (mtime advances even though no plugin code changed). Same architectural
-// class as `.orphaned_at` (2026-04-23 decisions row) and `temp_git_*`
-// (2026-04-27 decisions row) — CC-internal bookkeeping, drift-irrelevant.
-// Path-segment filtering (not basename Set) is required because the `<pid>`
-// leaves carry arbitrary digit basenames; `.in_use` only appears as an
-// intermediate path component in `entry.path`. See decisions.md 2026-05-13 row.
-const PLUGIN_CACHE_PATH_IGNORE = /(^|\/)(temp_git_\d+_[a-z0-9]+|\.in_use)(\/|$)/;
+// `pluginsCacheRoot` is an optional fixture-root arg (D-11) — defaults to the
+// live `plugins/cache` path the `plugins` drift trigger derives
+// (`$CLAUDE_CONFIG_DIR/plugins/cache`). The whole walk is wrapped in
+// `try { } catch { return []; }` so an unreadable / poisoned `plugins/cache`
+// yields no novel signal rather than throwing out of `checkDrift` (T-17-02).
+//
+// CRITICAL: this is invoked ONLY from `checkDrift`'s `version`-change branch
+// (once per CC version transition — Pattern 4 / Pitfall 2). It is NOT called
+// from `collectSnapshot` (which runs every refresh — calling it there would
+// re-walk the tree ~1Hz and defeat the once-per-cohort contract). It also does
+// NOT reuse `collectSnapshot`'s `scanRecursive` result — that call produces
+// the snapshot's mtime/count for the `plugins` trigger; enumeration needs
+// per-entry path + basename, so it does its own scan inside the version branch.
+function enumerateNovelPatterns(pluginsCacheRoot) {
+  const root = pluginsCacheRoot || path.join(
+    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+    'plugins', 'cache',
+  );
+  const novel = [];
+  try {
+    const entries = fs.readdirSync(root, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (entry.isDirectory && entry.isDirectory()) continue;
+      // `entry.path` is the absolute parent dir (Node ≥ 20); fall back to the
+      // scan root for top-level entries.
+      const absParent = entry.path || root;
+      const absFull = path.join(absParent, entry.name);
+      // Relative-to-cache-root path, forward-slash normalized — the shape the
+      // allowlist predicate's per-segment logic expects.
+      const rel = path.relative(root, absFull).split(path.sep).join('/');
+      if (isAllowlistedPattern(rel, entry.name)) continue;
+      let mtime = 0;
+      try { mtime = fs.statSync(absFull).mtimeMs; } catch { /* unreadable — keep 0 */ }
+      novel.push({ path: rel, basename: entry.name, first_seen_mtime: mtime });
+    }
+  } catch {
+    return []; // unreadable plugins/cache → no novel signal (T-17-02 graceful path)
+  }
+  return novel;
+}
 
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
@@ -876,10 +1099,16 @@ function collectSnapshot(data) {
 
   const agents = scanRecursive(path.join(os.homedir(), '.claude', 'agents'));
   const gsd = scanRecursive(GSD_LIVE_ROOT);
+  // Allowlist inversion (D-03 / D-04): count only `content`-classified entries.
+  // keepPredicate receives the cache-root-relative normalized `rel` (D-20) that
+  // scanRecursive computes per entry. `bookkeeping` (silent) and `novel`
+  // (routed to the ⚠ cc-novel detector) entries are excluded from the plugins
+  // drift mtime/count. classifyEntryFn is the fallback-aware reference (D-08 /
+  // D-23) — the real classifyEntry when the module loads, an inline denylist-
+  // equivalent fallback otherwise. agents/gsd pass no predicate (scan all).
   const plugins = scanRecursive(
     path.join(configDir, 'plugins', 'cache'),
-    PLUGIN_CACHE_IGNORE,
-    PLUGIN_CACHE_PATH_IGNORE,
+    (rel, b) => classifyEntryFn(rel, b) === 'content',
   );
 
   const snapshot = {
@@ -897,6 +1126,15 @@ function collectSnapshot(data) {
     // pattern as the 2026-04-18 *_count fields' schema migration).
     plugins_maxPath: plugins.maxPath,
     version: data.version || '',
+    // schema_version (D-07 / D-25) — explicit integer that re-baselines on
+    // mismatch. The Phase 18 inversion changed plugins_count's VALUE SEMANTICS
+    // (all-minus-denylist -> content-only) on an always-present key, which the
+    // existing presence-sniff migration guard cannot see. Injected here in the
+    // plain object construction (outside any try/catch) so it ALWAYS serializes.
+    // Both writers that serialize `current` (writeBaselineAndReturnClean and the
+    // gsdSuppressed rebaseline) get the field for free; the marker-driven
+    // rebaseline writer (which serializes the LOADED snapshot) sets it explicitly.
+    schema_version: CURRENT_SCHEMA_VERSION,
   };
 
   // Active settings.json — follow symlinks, hash WARN-set keys only
@@ -1025,6 +1263,36 @@ function collectGsdDriftDivergingFiles(snapshot, liveRoot = GSD_LIVE_ROOT, forkR
 // First invocation: snapshots all 5 path mtimes + version into a single cache file.
 // Subsequent invocations: compares current state against snapshot, warns on change.
 // Age timer uses the snapshot file's own mtime (written ≈ session start).
+// Drift-snapshot schema version (D-07 / D-25). Phase 17 baseline is implicitly
+// `1`; Phase 18 bumps to `2` because the inversion changed plugins_count's value
+// semantics (all-minus-denylist -> content-only). A snapshot whose
+// schema_version !== CURRENT_SCHEMA_VERSION re-baselines (the migration guard in
+// checkDrift), so no operator with a live session spanning the deploy gets a
+// false `⚠ restart plugins` on the first post-deploy refresh.
+const CURRENT_SCHEMA_VERSION = 2;
+
+// Atomic write: serialize `dataObj` to a per-pid tmp sibling, then rename onto
+// the target. Single source of truth for the `.tmp.<pid>` suffix + the leaked-
+// tmp cleanup (IN-03). Before this helper, the six atomic-write sites in
+// checkDrift each open-coded the tmp+rename; the three catch blocks that bothered
+// to clean up RECONSTRUCTED `target + '.tmp.' + process.pid` (one even via a
+// divergent path.join) because the try-scoped const was out of scope, and the
+// other three leaked the tmp on a post-write renameSync failure. Computing `tmp`
+// once here makes write and unlink reference the same path by construction.
+// INVARIANT: every atomic snapshot/cache write in checkDrift routes through this
+// helper — do not re-introduce open-coded tmp+rename (probe-writeatomic-leak-cleanup.js).
+function writeAtomic(targetPath, dataObj) {
+  const tmp = targetPath + '.tmp.' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(dataObj));
+    fs.renameSync(tmp, targetPath);
+  } catch (e) {
+    // renameSync may have thrown after a successful write — unlink the leaked tmp.
+    try { fs.unlinkSync(tmp); } catch { /* may not exist */ }
+    throw e; // preserve each caller's existing skip-on-failure handling
+  }
+}
+
 function checkDrift(data) {
   return new Promise((resolve) => {
     if (!data.session_id) return resolve('');
@@ -1046,10 +1314,11 @@ function checkDrift(data) {
 
     const writeBaselineAndReturnClean = () => {
       try {
-        const tmp = snapshotFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(current));
-        fs.renameSync(tmp, snapshotFile);
-      } catch { /* write failed — skip drift this invocation */ }
+        writeAtomic(snapshotFile, current);
+      } catch {
+        // write failed — skip drift this invocation. writeAtomic already
+        // unlinked any leaked tmp before re-throwing (WR-03 / IN-03).
+      }
       return resolve('');
     };
 
@@ -1066,7 +1335,17 @@ function checkDrift(data) {
     // snapshots (2026-04-18 drift bundle) lack `agents_count`. Either absence
     // re-baselines as a first-invocation so mixed-format fields never compare.
     // Unified guard = one round of grace per upgrade, not two.
-    if (!('settings_hash' in snapshot) || !('agents_count' in snapshot)) {
+    //
+    // D-07 / D-25 schema_version clause: a pre-Phase-18 snapshot has
+    // schema_version === undefined !== CURRENT_SCHEMA_VERSION, so it re-baselines
+    // clean. This catches the plugins_count VALUE-SEMANTICS change (all-minus-
+    // denylist -> content-only) that a presence-sniff cannot see (the key was
+    // always present). This guard PRECEDES the marker-rebaseline block below
+    // (D-25 ordering invariant) — short-circuiting here means a pre-Phase-18
+    // snapshot re-baselines even when a /restart-plugins marker is present,
+    // rather than the marker writer preserving its stale schema.
+    if (!('settings_hash' in snapshot) || !('agents_count' in snapshot) ||
+        snapshot.schema_version !== CURRENT_SCHEMA_VERSION) {
       return writeBaselineAndReturnClean();
     }
 
@@ -1084,11 +1363,19 @@ function checkDrift(data) {
       fs.statSync(markerFile);  // throws ENOENT if absent
       snapshot.plugins_mtime = current.plugins_mtime;
       snapshot.plugins_count = current.plugins_count;
+      // D-25: keep schema_version current on this in-place rewrite. This writer
+      // serializes the LOADED snapshot (not `current`), so without this line a
+      // marker-rebaselined snapshot would lack the field. Placed OUTSIDE the
+      // inner try/catch (alongside the plugins-fields rewrite above) so it
+      // always assigns before serialization. Only reachable for an already-
+      // current snapshot — a pre-Phase-18 one re-baselined via the guard above.
+      snapshot.schema_version = current.schema_version;
       try {
-        const tmp = snapshotFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(snapshot));
-        fs.renameSync(tmp, snapshotFile);
-      } catch { /* best-effort persistence; in-memory snapshot still rebaselined */ }
+        writeAtomic(snapshotFile, snapshot);
+      } catch {
+        // best-effort persistence; in-memory snapshot still rebaselined.
+        // writeAtomic already unlinked any leaked tmp before re-throwing (WR-03 / IN-03).
+      }
       try { fs.unlinkSync(markerFile); } catch { /* concurrent refresh consumed it first; harmless */ }
     } catch { /* marker absent or unreadable — no-op, normal drift compare follows */ }
 
@@ -1149,7 +1436,34 @@ function checkDrift(data) {
         }
       } catch { /* breadcrumb failure must not affect drift detection */ }
     }
-    if (current.version !== snapshot.version) triggers.push('version');
+    if (current.version !== snapshot.version) {
+      triggers.push('version');
+      // RAT-04 (D-02 / D-13a) — post-CC-upgrade novel-pattern enumeration.
+      // Gated on the version-change branch so it runs exactly once per CC
+      // version transition (Pattern 4 / Pitfall 2): the snapshot rebaselines
+      // on this same drift-detected refresh, so the next refresh's
+      // `current.version === snapshot.version` and enumeration does not
+      // re-fire. Writes the novel hits to ~/.cache/dhx/cc-novel-patterns.json
+      // via the atomic temp+rename pattern (the gsd-drift-first-seen.json
+      // writer precedent). The whole side-effect is try/catch-wrapped — a
+      // cache or walk failure must never affect drift detection (T-17-02);
+      // same discipline as the breadcrumb writer above.
+      try {
+        const novelPatterns = enumerateNovelPatterns();
+        const ccNovelCache = {
+          detected_at: new Date().toISOString(),
+          cc_version: current.version,
+          novel_patterns: novelPatterns,
+        };
+        fs.mkdirSync(cacheDir, { recursive: true });
+        const ccNovelFile = path.join(cacheDir, 'cc-novel-patterns.json');
+        writeAtomic(ccNovelFile, ccNovelCache);
+      } catch {
+        // cache failure must not affect drift detection. writeAtomic already
+        // unlinked any leaked tmp before re-throwing (WR-03 / IN-03) — passing
+        // the real ccNovelFile var eliminates the prior path.join reconstruction.
+      }
+    }
 
     // GSD-specific first-seen cache clearance (Phase 16, D-22 — HP-031).
     // The cross-session cache ~/.cache/dhx/gsd-drift-first-seen.json is keyed on
@@ -1163,9 +1477,7 @@ function checkDrift(data) {
       try {
         const cacheFile = path.join(cacheDir, 'gsd-drift-first-seen.json');
         if (fs.existsSync(cacheFile)) {
-          const tmp = cacheFile + '.tmp.' + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify({}));
-          fs.renameSync(tmp, cacheFile);
+          writeAtomic(cacheFile, {});
         }
       } catch { /* cleanup failure non-fatal */ }
     }
@@ -1178,9 +1490,7 @@ function checkDrift(data) {
       // triggers were ever raised — the snapshot already matches current.)
       if (gsdSuppressed) {
         try {
-          const tmp = snapshotFile + '.tmp.' + process.pid;
-          fs.writeFileSync(tmp, JSON.stringify(current));
-          fs.renameSync(tmp, snapshotFile);
+          writeAtomic(snapshotFile, current);
         } catch { /* best-effort; suppression still holds for this refresh */ }
       }
       return resolve('');
@@ -1269,9 +1579,7 @@ function checkDrift(data) {
         }
 
         fs.mkdirSync(cacheDir, { recursive: true });
-        const tmp = cacheFile + '.tmp.' + process.pid;
-        fs.writeFileSync(tmp, JSON.stringify(newCache));
-        fs.renameSync(tmp, cacheFile);
+        writeAtomic(cacheFile, newCache);
       } catch { /* cache failure must not affect drift detection */ }
     }
 
@@ -1552,6 +1860,27 @@ module.exports = {
   checkPluginRegistry,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
+  // RAT-04 novel-pattern detector (Phase 17 Plan 01)
+  enumerateNovelPatterns,
+  // scanRecursive export (D-20) — required by Plan 04's residual-signal probe;
+  // not previously exported despite being the wrapper's core recursive walk.
+  scanRecursive,
+  // checkDrift export — lets probe-cc-novel-patterns.sh drive the version
+  // branch directly with an injected `data` object for the D-22 behavioral
+  // assertion ("version-unchanged → no enumeration → cc-novel-patterns.json
+  // NOT written"). checkDrift is a pure function of `data` + filesystem;
+  // sandbox via HOME + CLAUDE_CONFIG_DIR overrides. Mirrors the
+  // fixture-injection rationale behind the isGsdDriftFromForkSync export.
+  checkDrift,
+  // IN-03 atomic-write helper — exported so probe-writeatomic-leak-cleanup.js
+  // can drive the real helper (not a reimplementation) under a mocked
+  // fs.renameSync to assert the leaked-tmp cleanup invariant.
+  writeAtomic,
+  // runCcburn export — lets probe-ccburn-no-orphan.sh drive the real function
+  // (not a reimplementation) under a hung fake-ccburn on PATH to assert the
+  // 2026-05-25 orphan-prevention invariant (child self-terminates via coreutil
+  // `timeout` even after the Node parent is SIGKILLed).
+  runCcburn,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,

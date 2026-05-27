@@ -90,6 +90,11 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-read-cache.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-read-dedup.sh\"",
+            "timeout": 5
           }
         ]
       },
@@ -99,6 +104,16 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use-gh-issue-create.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-git-destructive-guard.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-worktree-bash-guard.sh\"",
             "timeout": 5
           }
         ]
@@ -133,10 +148,6 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-source-write-flag.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-write-cache.sh\""
           }
         ]
       },
@@ -146,6 +157,16 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-context-gate.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-backlog-vocab-check.sh\"",
+            "timeout": 5
           }
         ]
       }

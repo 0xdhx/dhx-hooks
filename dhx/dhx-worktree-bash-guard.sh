@@ -12,12 +12,20 @@
 # which route through the Bash tool and bypass the write-guard entirely.
 #
 # ════════════════════════════════════════════════════════════════════════════
-# SCOPE LIMITATION (HP-003): does NOT fire inside Agent subprocesses.
+# SUBAGENT COVERAGE (HP-003 v2, verified 2026-04-21, CC 2.1.112+)
 # ════════════════════════════════════════════════════════════════════════════
-# Same HP-003 constraint as the write-guard. This hook catches:
+# PreToolUse:Bash propagates from subagents with full agent context
+# (agent_id / agent_type populated). This guard now catches:
 #   - user's own top-level Bash writes from a worktree cwd
 #   - inline Skill (e.g. gsd-fast) Bash writes that escape the worktree
-# For the Agent-subprocess variant, see dhx-agent-leak-{snapshot,check}.sh.
+#   - subagent Bash writes (general-purpose / Explore / gsd-* etc.) —
+#     same uniform enforcement path (no agent_id branching)
+# The prior comment claimed "does NOT fire inside Agent subprocesses (HP-003)"
+# — that pre-2026-04-21 reading is superseded by HP-003 v2. The hook code
+# itself was already correct; only the scope-limitation comment was stale.
+# Companion observers `dhx-agent-leak-{snapshot,check}.sh` (PostToolUse:Agent
+# layer) remain useful for post-hoc filesystem visibility around subagent
+# boundaries, but they are no longer the ONLY coverage path for this vector.
 #
 # DETECTION SCOPE (deliberately narrow to avoid blocking legit reads):
 #   sed -i | tee | > | >> | printf ... > | python3? -c | dd ... of= | install

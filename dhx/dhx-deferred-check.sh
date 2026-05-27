@@ -124,10 +124,27 @@ if [ -z "$LATEST" ]; then exit 0; fi
 # extraction and (b) non-empty extraction but zero bullet items after filtering.
 check_header_fallback() {
   local file="$1"
+  # Two-stage pipeline parity with the main UNCAPTURED path: Stage 1
+  # (classify_deferred_lines, marker silencing) + Stage 2
+  # (auto_silence_deferred_lines, REQ-ID / dated-filename resolution).
+  # The fallback was Stage 1 only until 2026-05-27 — an item under an untagged
+  # `## Deferred` header whose only durable-home signal is a Stage 2 signal
+  # (resolvable REQ-ID or dated `.md` citation) was silenced by the main path
+  # but surfaced as a false positive here. See docs/decisions.md 2026-05-27
+  # header-fallback Stage 2 parity row + brief
+  # .planning/backlog/2026-05-22-deferred-check-header-fallback-missing-stage2-autosilence.md.
   MD_DEFERRED=$(sed -n '/^##[^#].*[Dd]eferred/,/^##[^#]/p' "$file" 2>/dev/null \
-    | classify_deferred_lines)
+    | classify_deferred_lines \
+    | auto_silence_deferred_lines "$file")
   if [ -n "$MD_DEFERRED" ]; then
-    COUNT=$(echo "$MD_DEFERRED" | wc -l | tr -d ' ')
+    # WR-03 (Phase 20 code-review follow-up): mirror the main-path D-01/D-10 fix.
+    # The prior echo|wc-l count returned 1 for empty/whitespace-only classifier
+    # output (the `-n` guard above passes on whitespace), producing a phantom
+    # "1 deferred item(s)" header-fallback warning. Count classifier bullets with
+    # the same errexit-safe formula as the main UNCAPTURED path, and guard on a
+    # positive count before emitting the warning.
+    COUNT=$(printf '%s\n' "$MD_DEFERRED" | grep -c '^- ' || true)
+    [ "${COUNT:-0}" -le 0 ] && exit 0
     jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
       '{"decision": "block", "reason": $msg}'
     exit 0
@@ -214,28 +231,32 @@ if [ -z "$CLASSIFIED" ]; then check_header_fallback "$LATEST"; fi
 UNCAPTURED=$(printf '%s\n' "$CLASSIFIED" | auto_silence_deferred_lines "$LATEST")
 if [ -z "$UNCAPTURED" ]; then exit 0; fi
 
-# Count
-COUNT=$(echo "$UNCAPTURED" | wc -l | tr -d ' ')
+# Count — Fix A (D-01/D-10): bullet-shape-aware + errexit-safe. `echo|wc -l`
+# appended a phantom newline → 1 for empty/whitespace-only input (the phantom
+# "1 unassessed item(s)" block). `printf` + `grep -c '^- '` counts only
+# classifier bullets (0 for empty/whitespace); trailing `|| true` neutralizes
+# grep's rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
+COUNT=$(printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true)
+# Fix B (D-01): defense-in-depth numeric guard — if any future regression leaks
+# past the line-215 `-z` check, exit silently before rendering a 0-item block.
+[ "${COUNT:-0}" -le 0 ] && exit 0
 
 # Signal that deferred review is active (assessed-guard checks this)
 REVIEW_MARKER="/tmp/dhx-deferred-review-$(echo "$CWD" | md5sum | cut -d' ' -f1 2>/dev/null || echo "default")"
 touch "$REVIEW_MARKER"
 
-# Multi-line block message exposes the inline marker contract so trivial
-# cases can resolve via Edit without invoking /dhx:defer-review. Marker
-# syntax is canonical at ~/.claude/dhx-tools/dhx-classify-deferred.sh
-# (CLASSIFY_DEFERRED_MARKERS) and mirrored in this hook's header (lines 9-15).
+# Block message: count line + PRIMARY path + a one-line pointer to where the
+# inline marker syntax is canonically documented. D-06 (Phase 20) dropped the
+# 6-marker inline legend (reverses e2bd3df 2026-05-02) — the legend re-printed
+# ~565 chars (~141 tok) on every Stop block (~127K effective tok/7d) for an
+# operator who already knows the markers; marker syntax stays discoverable at
+# /dhx:defer-review or /dhx:capture. HP-009 decision:block + the uncaptured-
+# items count line are preserved verbatim.
 MSG="DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s) in ${LATEST}.
 
 PRIMARY path: resolve via /dhx:defer-review ${LATEST} (interactive review with batched UAQ; touches SILENCED marker on confirmation so this hook self-suppresses for 10 min).
 
-FALLBACK (trivial cases only — single-item review where /dhx:defer-review's full flow is overkill): mark inline with one of 6 canonical markers:
-  [captured: <ref>]      item filed to backlog/todo via /dhx:capture
-  [existing: <path>]     item already tracked elsewhere
-  [assessed: <reason>]   intentionally not captured (requires user approval; PreToolUse guard enforces)
-  [tracked: REQ-ID]      tracked against a requirement
-  [note: <detail>]       non-actionable decision-trail commentary
-  [preserved-in: <phase>] content folded into another phase/decision"
+See /dhx:defer-review or /dhx:capture for marker syntax."
 
 jq -n --arg msg "$MSG" \
   '{"decision": "block", "reason": $msg}'

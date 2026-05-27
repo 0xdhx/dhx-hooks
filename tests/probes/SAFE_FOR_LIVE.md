@@ -21,23 +21,35 @@ asserts row count == file count.
 | Probe | SAFE_FOR_LIVE | Reason |
 |-------|---------------|--------|
 | `probe-agent-leak-check.sh` | no | writes baselines under live `$HOME/.cache/dhx/` (session-tag prefixed + trap cleanup, but writes hit the live cache directory) |
+| `probe-backlog-frontmatter-gate.sh` | yes | structural checks are read-only grep/readlink against in-repo files; behavioral block/pass cells run entirely inside a throwaway mktemp git repo (copies the dispatcher + 10- leaf + validator, installs a sandbox symlink); never mutates the live repo index, history, or `.git/hooks` (260522-ib4 backlog-frontmatter-gate convention enrollment probe) |
+| `probe-backlog-vocab-check.sh` | yes | fixture-only mktemp repo (`.planning/MILESTONES.md` + `STATE.md` + a few briefs across top-level and terminal subdirs); stdin-simulated JSON to the hook; reads live `~/.claude/dhx-tools/backlog-regen.cjs` via `--check` against the throwaway tree but never touches the live `.planning/` directory (2026-05-27 backlog `target_milestone` value-enum write-time advisory probe) |
 | `probe-bashrc-wrapper-heal.sh` | yes | grep-only against live `~/.bashrc` and in-repo files; no writes |
 | `probe-cache-age-anchor.js` | yes | re-implements function locally; tmp-file fixtures only |
+| `probe-cc-check-update-ttl.sh` | yes | mktemp cache dir + `CC_CHECK_UPDATE_CACHE` env-override injects a fixture cache; never reads or writes live `~/.cache/cc` (Phase 17 RAT-06 TTL-gate regression probe) |
+| `probe-cc-check-update-worker.sh` | yes | stubbed `npm`/`claude` on a tmp PATH + `CC_CACHE_FILE` override points the worker at a fixture cache; no network, never reads or writes live `~/.cache/cc` (RAT-06b installed_at_check capture probe) |
+| `probe-cc-novel-patterns.sh` | yes | mktemp fixture trees + `node -e require` of the live wrapper with explicit fixture-root arg; scenario 5 drives `checkDrift` under HOME + CLAUDE_CONFIG_DIR overrides; never reads live `~/.claude` or `~/.cache/dhx` (Phase 17 RAT-04 D-13a/D-15/D-22 enumeration regression probe) |
+| `probe-cc-residual-signal.sh` | yes | mktemp fixture tree + `node -e require` of the live wrapper (`scanRecursive` + `hashWarnSettings`) with explicit fixture paths; fixture mtimes set via `fs.utimesSync`; never reads live `~/.claude` or `~/.cache/dhx` (Phase 17 RAT-01 D-01 residual-signal demonstration probe) |
+| `probe-ccburn-no-orphan.sh` | yes | mktemp-scoped fake `ccburn` on PATH + `node -e require` of the live wrapper's exported `runCcburn`; the fake emits nothing so `buildCcburnSegment` returns `''` and `appendTrace` never fires (no live `~/.cache/dhx` write); SIGKILL targets only the probe's own backgrounded node, `pkill -f` matches only the unique `$TMP` path (2026-05-25 ccburn-storm orphan-prevention invariant probe — D-14 enforcement) |
 | `probe-deferred-check-canonical-classifier.sh` | yes | static grep + sourcing test against in-repo classifier; mktemp fixture for source-test |
 | `probe-deferred-check-header-fallback.sh` | yes | static sed-pattern equality + read-only repo-file inspection |
 | `probe-deferred-check-req-id-regex.sh` | yes | regex-equality static check against hook source; no writes |
 | `probe-dhx-statusline.js` | yes | re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths |
 | `probe-drift-cleanup.sh` | no | sets `$TMPHOME/.cache/dhx` and runs `dhx-health-check.sh` under HOME=$TMPHOME (sandboxed); but uses HOME override and live `/proc` reads — sandbox confines writes |
+| `probe-drift-allowlist.sh` | yes | mktemp fixture trees + node -e require of the live wrapper (checkDrift/scanRecursive/enumerateNovelPatterns) + classifyEntry from plugin-cache-allowlist.js under HOME + CLAUDE_CONFIG_DIR overrides; mtime via fs.utimesSync; never reads live ~/.claude or ~/.cache/dhx (Phase 18 DRIFT-ALLOW-03 3-state D-21 + D-20 structural + D-24a residual-novel + glob-not-guess schema-migration D-22 probe) |
 | `probe-drift-detection.js` | yes | mkdtempSync + tmp-file fixtures; reimplemented compare core; no live writes |
 | `probe-drift-multi-anchor-distinct-surfacing.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; invokes dhx-gsd-drift-surface.sh against fixture caches; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 positive probe) |
 | `probe-drift-single-anchor-no-overcount.sh` | yes | mktemp + env-override DHX_DRIFT_CACHE; single-entry fixture cache; never touches the live dhx drift cache (Phase 16 REQ-DRIFT-ACTION-05 negative probe) |
 | `probe-effort-level-stdin-absent.sh` | yes | read-only via file-gated wrapper edit; no live mutation (Phase 3 D-14 supersession-watchdog tag preserved per Task 2 idempotency) |
 | `probe-execute-hooks-subagent-stop.sh` | yes | per-test mktemp HOME / TMPDIR; cwd passed via stdin payload (HP-001 cwd field) so hooks read `.planning` fixtures from the sandbox dir; no live `~/.cache/dhx`, `~/.claude`, or git state touched (2026-05-07 SubagentStop migration probe) |
 | `probe-execute-stop-review.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live writes |
+| `probe-execute-stop-review-state-allowlist.sh` | yes | per-scenario mktemp fixture + isolated subprocess; cwd points at $TMP via stdin payload (HP-001); no live writes |
+| `probe-fleet-statusline-render.js` | yes | uses `_make-fake-home` (mktemp + HOME + CLAUDE_CONFIG_DIR override per spawn); fixture fleet-statusline.json planted inside the tmp `.cache/dhx/`; never touches live `~/.cache/dhx` (phase-10 SURF-02 readFleetFeed render probe; mirrors `probe-health-suffix.js`) |
 | `probe-gate-6-canonical-mirror-discipline.sh` | yes | read-only `diff -q` against live `~/.claude/get-shit-done/` + `~/.claude/gsd-local-patches/` trees; derives file set from backup-meta.json; never writes (Phase 16 REQ-DRIFT-ACTION-04 byte-equality probe) |
 | `probe-gate-6-cross-repo-parity.sh` | yes | read-only sha256 of the Gate 6 doc section across hooks-side + `~/repos/cross-repo/`; never modifies cross-repo (Phase 16 REQ-DRIFT-ACTION-04 verify-only parity probe; D-21/D-24) |
+| `probe-git-destructive-guard.sh` | yes | hook subshell test with synthetic stdin; no real git invocations — force-push command strings are blocked by the hook before any shell execution (2026-05-25 dhx-git-destructive-guard PreToolUse:Bash backstop for +refspec / -C / --git-dir / -c k=v / bundled short-cluster syntactic bypasses HP-037 cannot catch) |
 | `probe-gsd-canonical-mirror-gate-tiered-outcome.sh` | yes | mktemp + env-overrides DHX_DRAFT_BUFFER_DIR + DHX_BACKUP_META; fixture marker dir + backup-meta; never touches the live dhx cache or live gsd-local-patches (Phase 16 REQ-DRIFT-ACTION-03 tiered-outcome probe) |
 | `probe-gsd-fork-aware-drift.sh` | yes | mktemp + node -e require with explicit liveRoot/forkRoot args; never reads live `~/.claude` |
+| `probe-health-check-session-id-rm-safety.sh` | yes | static grep of in-repo `dhx/dhx-health-check.sh` + allowlist-regex primitive + integration over a mktemp cache dir; never touches `$HOME` or the live cache (Phase 20 WR-01 session_id rm-glob safety) |
 | `probe-health-sh-no-side-effects.sh` | no | mktemp + fake HOME; full env-var isolation (Wave 2 tag preserved) |
 | `probe-health-sh-tiering.sh` | no | mktemp + fake HOME; uses stub-leaf-tool fixtures (Wave 2 tag preserved) |
 | `probe-health-suffix.js` | yes | uses `_make-fake-home` (mktemp + HOME override per spawn); fully sandboxed |
@@ -55,18 +67,19 @@ asserts row count == file count.
 | `probe-milestone-close-vocab-parity.sh` | yes | static grep + awk against in-repo hook + canonical `~/.claude/dhx-tools/backlog-regen.cjs`; soft-skips with WARN if dhx-tools absent; no writes, no subprocess invocation of CC |
 | `probe-new-milestone-promote-reminder.sh` | yes | mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation |
 | `probe-phase-10-doc-contracts.sh` | yes | read-only token-presence grep against committed `docs/hook-patterns.md`, `docs/decisions.md`, `.planning/REQUIREMENTS.md`; no subprocesses, no writes, no env mutation (Phase 10 Nyquist gap-fill 2026-05-13 — HEAL-07-06 + HEAL-07-07 doc-contract regression probe) |
+| `probe-enumerate-novel-patterns.js` | yes | mkdtempSync fixture trees + `require()` of the live wrapper with an explicit fixture-root arg; no live `~/.claude` or `~/.cache/dhx` access (Phase 17 RAT-04 D-20 enumeration-helper export probe) |
+| `probe-plugin-cache-allowlist.js` | yes | pure-unit: `require()`s `scripts/lib/plugin-cache-allowlist.js` + asserts the predicate/structure; no fs, no subprocess, no live mutation (Phase 17 RAT-04 D-06/D-14 allowlist probe) |
 | `probe-plugin-keys.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; live read of settings is jq -e only |
 | `probe-plugin-registry-heal.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/` |
 | `probe-plugin-cache-staleness.sh` | yes | mktemp + fake HOME + env-var override (DHX_CACHE_STALENESS_LIVE_MANIFEST, DHX_CACHE_STALENESS_CACHE_ROOT); never touches live `~/.claude/plugins/cache/dhx-local` or live `dhx-plugin/` manifest |
 | `probe-plugin-registry.sh` | yes | mktemp tmpdir-as-config; HOME=$cfg/cache-dhx-home; never mutates live registry |
-| `probe-read-cache-concurrency.sh` | yes | mktemp HOME isolation (`$TMPHOME`); 50-writer concurrency stays inside `$TMPHOME/.cache/dhx/` |
-| `probe-read-cache-d17-invariant.sh` | yes | read-only scan of live `~/.cache/dhx/read-cache.jsonl` (Phase 6 C3 SCHEMA-01 D-17 invariant scanner — Convention A exit 0/1/2; jq array-length counting per D-23) |
-| `probe-read-cache-cross-session.sh` | yes | mktemp HOME isolation; CCS-swap simulation contained in $TMPHOME |
-| `probe-read-cache-lock-sh-race.sh` | yes | mktemp HOME isolation; deterministic LOCK_SH writer-pruner race reproducer (D-25); contained in $TMPHOME |
-| `probe-read-cache-prune-concurrency.sh` | yes | mktemp HOME isolation; adversarial prune contention contained in $TMPHOME |
-| `probe-read-cache.sh` | yes | mktemp HOME isolation; XDG cache writes contained in $TMPHOME/.cache/dhx |
-| `probe-read-guard-strong-signal.sh` | no | sandboxed via D-18d (cp -rL dhx-plugin/ from REPO + ~/.claude/plugins/ from live tree to mktemp; HOME=$TMPROOT + CLAUDE_CONFIG_DIR=$SANDBOX); D-18e jq surgical hook removal preserves matcher entry; live `dhx-plugin/` untouched. **Re-classified to `no` by Phase 6 CR-01 (commit `4774a73`):** read-only against live state by intent, but routed through SAFE_FOR_LIVE=no because 9-15min wallclock exceeds run-probes.sh 30s/probe budget — operator-invoked only (Phase 6 C3 SCHEMA-02 20-cell event-stream observation harness — observation-only, exits 0 unconditionally per D-03). See "Long-runtime / auth-required probes — invocation runbook" below. |
+| `probe-read-cache.sh` | yes | mktemp HOME isolation; session-scoped partial-detect store writes contained in $TMPHOME/.cache/dhx (Option C collapse — partial-detection writer) |
+| `probe-read-dedup.sh` | yes | mktemp cache via `DHX_READ_DEDUP_STATE_DIR` env-override (D-20); all state/stats writes contained in $SBX; never reads or writes live `~/.cache/dhx` or Boucle's `~/.claude/read-once` (read-once restoration BUILD — Phase 1 log-only measurement hook) |
+| `probe-read-guard-partial-detection.sh` | yes | mktemp HOME isolation; guard reads a seeded session-scoped detect store + emits NOTE; reads/writes confined to $TMPHOME/.cache/dhx (Option C collapse) |
+| `probe-read-guard-native-enforcement-tripwire.sh` | no | spawns `claude -p` subprocesses against a sandbox CLAUDE_CONFIG_DIR + mktemp out-of-band targets; supersession-watchdog asserting CC still hard-blocks unread Edit/Write (Option C Q3); operator-invoked, requires `ANTHROPIC_API_KEY` (a sandboxed `claude -p` is logged out, and seeding an OAuth credentials_file is unsafe — see the probe header AUTH note + 2026-05-24 decisions row) |
+| `probe-repair-installed-plugins.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/`; no claude subprocess, no auth, no network; fixture-only — no live registry mutation (Phase 19 SYM-REPAIR D-10/D-15 repair-action probe; SC2 empirical anchor) |
 | `probe-restart-plugins-stop-hook.sh` | yes | mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP |
+| `probe-run-probes-convention-a.sh` | yes | per-case mktemp REPO-shaped sandbox; copies `scripts/run-probes.sh` into the tmp tree + plants one fake probe + fixture outcome JSON; never touches the live repo, `~/.claude`, or `~/.cache/dhx` (quick-260526-1qm Convention-A FAIL-gating regression probe) |
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |
 | `probe-sigpipe-pipefail-shapes.sh` | yes | static lint grepping in-repo `dhx/*.sh` for pipeline shapes; no writes |
@@ -89,7 +102,7 @@ asserts row count == file count.
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-worktree-bash-guard.sh` | yes | hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution) |
 | `probe-worktree-write-guard.sh` | yes | hook subshell test with synthetic stdin; assertions on hook exit code only |
-| `probe-write-cache.sh` | yes | mktemp HOME isolation; cache writes contained in $TMPHOME/.cache/dhx |
+| `probe-writeatomic-leak-cleanup.js` | yes | mkdtempSync fixtures + require of live wrapper's `writeAtomic`; mocks `fs.renameSync` then restores it; no live `~/.cache/dhx` or `~/.claude` writes (IN-03 leaked-tmp cleanup invariant probe) |
 | `probe-safe-for-live-tags.sh` | yes | (D-29 reserved row) read-only grep over repo files; runtime invariant for the audit itself; lands in Task 3 of this plan |
 
 ## Classification Heuristic
@@ -142,10 +155,10 @@ exceed the 30s/probe wrapper budget.
 
 | Probe | Runtime | Auth | Sandbox | Operator command |
 |-------|---------|------|---------|------------------|
-| `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` OR seeded `~/.claude/.credentials.json` (cell 1); `ANTHROPIC_API_KEY` only (cell 2) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
-| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
-| `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
-| `probe-read-guard-strong-signal.sh` | ~9-15min | seed `~/.claude/.credentials.json` into sandbox `CLAUDE_CONFIG_DIR` (D-18d sandbox loses live credential reachability; current Wave 0 OQ1 INVALID state caused by `apiKeySource=none` in sandboxed subprocess) | mktemp + cp -rL dhx-plugin/ + ~/.claude/plugins/ + `CLAUDE_CONFIG_DIR=$SANDBOX` | `cp ~/.claude/.credentials.json $SANDBOX/.credentials.json && bash tests/probes/probe-read-guard-strong-signal.sh` (operator must seed credentials inside the sandbox per probe internals) |
+| `probe-installed-plugins-badjson-natural-heal.sh` | ~30s | `ANTHROPIC_API_KEY` **only** (no key → clean `skipped`; an OAuth credentials_file is NOT a safe sandbox-auth path — copying it can rotate/invalidate the source token, 2026-05-24 finding) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-badjson-natural-heal.sh` |
+| `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | ~30s | same as above (`ANTHROPIC_API_KEY` **only**; OAuth credentials_file unsafe — 2026-05-24) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh` |
+| `probe-known-marketplaces-natural-heal.sh` | ~30s | same as above (`ANTHROPIC_API_KEY` **only**; OAuth credentials_file unsafe — 2026-05-24) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh` |
+| `probe-read-guard-native-enforcement-tripwire.sh` | ~60-120s | `ANTHROPIC_API_KEY` **only** (no API key → clean `skipped`; an OAuth credentials_file is NOT a safe sandbox-auth path — copying it can rotate/invalidate the source token, 2026-05-24 finding) | mktemp + `CLAUDE_CONFIG_DIR=$SANDBOX` + out-of-band `printf` targets | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-read-guard-native-enforcement-tripwire.sh` (Option C Q3 supersession-watchdog — exit 0+premise_holds = CC block holds; exit 1 = revive signal; exit 0+skipped = inconclusive/no auth, never a false pass) |
 
 **Routing via `--probes-unsafe`:** `bash scripts/run-probes.sh --probes-unsafe`
 delegates to `--filter SAFE_FOR_LIVE=no` and runs all four probes (plus any

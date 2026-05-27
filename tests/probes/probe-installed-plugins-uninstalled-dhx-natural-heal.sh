@@ -12,8 +12,11 @@
 #   exit 1 = upstream supersession found (UNINSTALLED branch retired safely; D-15 gate PASS)
 #   exit 2 = ambiguous (auth gap, sandbox isolation failure, confounded outcome,
 #            failure-class detected per cell stderr inspection,
-#            pre-state abnormal — live $LIVE_IP missing,
-#            cc_version mismatch per D-22 silent-upgrade safeguard)
+#            pre-state abnormal — live $LIVE_IP missing).
+#            NOTE: a live `claude --version` absent from any hardcoded list NO
+#            LONGER forces ambiguous — the cc-version allow-list is
+#            RETIRED (see header "ALLOW-LIST RETIRED" note); conclusion/confidence
+#            derive from the substantive observation (.observations.cell_outcome).
 #
 # Operates on LIVE plugin cache content (which may lag repo source until
 # next plugin install/reload); supersession-watchdog reads live state by
@@ -26,6 +29,18 @@
 #
 # Run: ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-uninstalled-dhx-natural-heal.sh
 #
+# AUTH (2026-05-24 watchdog-probe auth hardening — generalized from the read-guard
+# native-enforcement tripwire): a sandboxed `claude -p` (fresh CLAUDE_CONFIG_DIR) is
+# logged out unless ANTHROPIC_API_KEY is inherited from env. Seeding a live
+# ~/.claude/.credentials.json into the sandbox is UNSAFE — the sandboxed claude rotates
+# the OAuth refresh token and writes the new one to the throwaway dir, so the provider
+# invalidates the SOURCE credential (measured: a copied cred authed once then 401'd
+# minutes later). So this probe gates on ANTHROPIC_API_KEY ONLY; no key → fast clean
+# `skipped` (exit 2, never a false `v1_2_work_warranted`). The strengthened auth-failure
+# regex in classify_failure() ensures a logged-out / invalid-key / credit-exhausted
+# subprocess degrades to ambiguous, never rolls up to a positive conclusion (false-PASS
+# guard). See docs/decisions.md 2026-05-24 watchdog-probe-auth-hardening row.
+#
 # D-25 set-flag discipline (WR-04 corrected): file top is `set -uo pipefail`
 # only — `errexit` is NEVER enabled. The original draft sprinkled `set +e`
 # around every subprocess; those calls were no-ops (you can't disable a flag
@@ -34,18 +49,21 @@
 # code regardless of `errexit`, so an early jq/stat exit-1 cannot abort
 # before the ambiguous outcome JSON is written.
 #
-# D-22 (cross-AI review 2026-05-03; allow-list extension 2026-05-19 per twin
-# fragility-lift quick task 260519-w6k mirroring km probe template commit
-# e93a600): asserts live `claude --version` matches one entry in the
-# cross-version allow-list. Mismatch rewrites .conclusion to "ambiguous"
-# (gate-halting) and emits confidence=LOW so C2 D-15 gate halts on silent CC
-# upgrade. Allow-list grows by intentional probe re-run per new CC version
-# (deliberate friction; each entry backed by a `tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/`
-# evidence cell). RETIREMENT GATE: at N≥3 entries, promote to HP-024-style
-# multi-cell matrix per Phase 15 SC 5 (SCHEMA-04 precedent) and retire this
-# allow-list — matrix cells become the source of truth.
+# ALLOW-LIST RETIRED (2026-05-26 — HP-024 matrix promotion EXECUTED; decisions
+# row 220 retirement gate CLOSED). The former D-22 cc-version allow-list
+# (`("2.1.121" "2.1.140" "2.1.145")`) was temporary scaffolding ("friction deliberate,
+# retires at N≥3" — decisions row 220). The N≥3 gate is MET (2.1.121 / 2.1.140 / 2.1.148)
+# and the promotion is now EXECUTED: the per-(cc_version) result cells under
+# `tests/probes/.results/v1.3-multi-cc-ver/<ver>/` (+ the v1.2-phase-6 baseline) are THE
+# source of truth for conclusion/confidence — NOT membership in a hardcoded version array.
+# conclusion/confidence now derive from `.observations.cell_outcome` (the substantive
+# subprocess observation). A never-before-seen CC version records a clean NEW cell, never
+# a false-ambiguous (this eliminated the audit-misleading signal that cost the 2026-05-25
+# plugin-registry-heal re-eval — see decisions rows 220 + 237 + HP-024 § Corpus advancement).
+# `cc_version_match` is REPURPOSED to a non-gating informational signal: "is this CC version
+# already represented in the on-disk corpus" (true = a cell dir already exists; false = this
+# run is a NEW cell). It NEVER rewrites conclusion or downgrades confidence.
 set -uo pipefail
-EXPECTED_CC_VERSIONS=("2.1.121" "2.1.140" "2.1.145")
 
 # ----------------------------------------------------------------------------
 # State (D-22 per-cell rc + failure-class enums; D-23 per-cell auth_method;
@@ -60,7 +78,9 @@ cell_outcome="bizarre"
 cell1_rc=-1
 cell1_auth_method=""
 
-# D-22 cc_version assertion defaults (cross-AI review 2026-05-03)
+# cc_version_match: informational corpus-membership signal (allow-list RETIRED
+# 2026-05-26 — non-gating). confidence defaults LOW; set HIGH at cell-attribution
+# when the substantive cell produces a decisive (non-skip, non-failure) outcome.
 cc_version_match=false
 confidence="LOW"
 
@@ -87,11 +107,32 @@ LIVE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # CCS-aware per CLAUDE.md
 LIVE_IP="$LIVE_CFG/plugins/installed_plugins.json"
 
 # ----------------------------------------------------------------------------
+# Auth gate (2026-05-24 watchdog-probe auth hardening): ANTHROPIC_API_KEY ONLY.
+# OAuth credentials_file seeding REMOVED — copying a live ~/.claude/.credentials.json
+# into the sandbox is UNSAFE (the sandboxed claude -p rotates the refresh token and
+# invalidates the SOURCE credential; see header AUTH note + decisions.md). No key →
+# fast clean `skipped` (exit 2 / ambiguous family — never a false work_warranted),
+# BEFORE any cp -rL or subprocess spawn. Replaces the prior "credentials_file OR
+# ANTHROPIC_API_KEY" Cell-1 contract.
+# ----------------------------------------------------------------------------
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "SKIP probe-installed-plugins-uninstalled-dhx-natural-heal: no ANTHROPIC_API_KEY (a sandboxed claude -p cannot auth via OAuth credentials_file safely — re-run with an API key)"
+  cell_outcome="skipped_no_api_key"
+  conclusion="skipped"
+  exit_code=2
+  cell1_auth_method="none"
+  SKIP_CELLS=true
+else
+  cell1_auth_method="ANTHROPIC_API_KEY"
+  SKIP_CELLS=false
+fi
+
+# ----------------------------------------------------------------------------
 # D-24 early pre-state gate: assert LIVE_IP exists BEFORE cp -rL.
 # Pre-state abnormal is meaningfully different from supersession-or-no-supersession;
 # treat as ambiguous and write the outcome JSON anyway (audit trail).
 # ----------------------------------------------------------------------------
-if [[ ! -f "$LIVE_IP" ]]; then
+if [[ "$SKIP_CELLS" == "false" ]] && [[ ! -f "$LIVE_IP" ]]; then
   echo "FAIL pre-state-abnormal: live $LIVE_IP missing — cannot evaluate Hn() heal behavior"
   cell_outcome="ambiguous_pre_state_abnormal"
   conclusion="ambiguous_pre_state_abnormal"
@@ -99,8 +140,6 @@ if [[ ! -f "$LIVE_IP" ]]; then
   FAIL=$((FAIL+1))
   cell1_auth_method="unknown"
   SKIP_CELLS=true
-else
-  SKIP_CELLS=false
 fi
 
 # ----------------------------------------------------------------------------
@@ -122,34 +161,15 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
 fi
 
 # ----------------------------------------------------------------------------
-# Auth strategy (D-23 per-cell auth_method; RESEARCH HIGH-3 strict-mode):
-#   Cell 1 (default -p)  accepts .credentials.json OR ANTHROPIC_API_KEY
-#   Cell 2 (--bare -p)   STRICTLY requires ANTHROPIC_API_KEY (CLI-enforced invariant)
+# Auth (D-23 per-cell auth_method): ANTHROPIC_API_KEY only — decided up front by the
+# auth gate above (no key → skipped before this point). Cell 1 (default -p) authenticates
+# via the inherited env key. The unsafe OAuth credentials_file seeding was removed
+# 2026-05-24 (see header AUTH note); only the non-credential settings.json is copied
+# into the sandbox. (Cell 2 / --bare was already DROPPED per Pattern A note 3 — D-07b
+# is Cell 1 only.)
 # ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  if [[ -f "$LIVE_CFG/.credentials.json" ]]; then
-    cp "$(readlink -f "$LIVE_CFG/.credentials.json")" "$SANDBOX/.credentials.json"
-    chmod 600 "$SANDBOX/.credentials.json"
-    cell1_auth_method="credentials_file"
-  fi
-  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    [[ -z "$cell1_auth_method" ]] && cell1_auth_method="ANTHROPIC_API_KEY"
-  fi
-  if [[ -z "$cell1_auth_method" ]]; then
-    echo "FATAL: no auth available for Cell 1 (.credentials.json absent AND ANTHROPIC_API_KEY unset)"
-    cell_outcome="auth_failure"
-    conclusion="ambiguous"
-    exit_code=2
-    FAIL=$((FAIL+1))
-    SKIP_CELLS=true
-  fi
-
-  # NOTE: Cell 2 (--bare -p) DROPPED per Pattern A note 3 — D-07b is Cell 1 only.
-
-  # Sanitized settings.json copy
-  if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
-    cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
-  fi
+if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
+  cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
 fi
 
 # ----------------------------------------------------------------------------
@@ -294,7 +314,12 @@ classify_failure() {
   if [[ "$rc" -eq 124 ]] || echo "$stderr" | grep -qiE 'timeout|deadline'; then
     echo "timeout_124"; return
   fi
-  if echo "$stderr" | grep -qiE '401|403|unauthorized|invalid api key|authentication'; then
+  # Auth-failure regex broadened 2026-05-24 to mirror the read-guard tripwire's
+  # AUTH_FAIL_RE — the narrow original ('401|403|unauthorized|invalid api key|
+  # authentication') missed "Not logged in", "Failed to authenticate", credit
+  # exhaustion, OAuth expiry, and "invalid x-api-key", any of which (on an exit-0
+  # subprocess) could slip past to a false v1_2_work_warranted. False-PASS guard.
+  if echo "$stderr" | grep -qiE '401|403|unauthorized|not logged in|please run /login|invalid (x-)?api[- ]?key|authentication|failed to authenticate|credit balance is too low|oauth token has expired'; then
     echo "auth_failure"; return
   fi
   if echo "$stderr" | grep -qiE 'network|connection|ENETUNREACH|ECONNREFUSED|EAI_'; then
@@ -310,61 +335,56 @@ if [[ "$SKIP_CELLS" == "false" ]]; then
   cell1_class=$(classify_failure "$cell1_rc" "$cell1_stderr")
 
   if [[ "$cell1_class" != "clean" ]]; then
-    cell_outcome="$cell1_class"; conclusion="ambiguous"; exit_code=2
+    # Failure-class outcome (auth_failure / timeout_124 / network_failure /
+    # setup_failure): genuinely indeterminate → confidence LOW (NOT version-miss).
+    cell_outcome="$cell1_class"; conclusion="ambiguous"; exit_code=2; confidence="LOW"
     echo "FAIL cell-attribution: Cell 1 $cell1_class (rc=$cell1_rc) — investigation required"
     FAIL=$((FAIL+1))
   elif [[ "$dhx_entry_present_post" == "true" && "$post_fake_a" == "true" && "$post_fake_b" == "true" ]]; then
-    cell_outcome="uninstalled_hn_heals"; conclusion="supersession_found_drop_heal"; exit_code=1
+    # Decisive substantive outcome → confidence HIGH (cell_outcome is the source of truth).
+    cell_outcome="uninstalled_hn_heals"; conclusion="supersession_found_drop_heal"; exit_code=1; confidence="HIGH"
     echo "OK   cell-attribution: uninstalled_hn_heals — Hn() rehydrated dhx AND preserved fakes; retire UNINSTALLED branch"
     PASS=$((PASS+1))
   else
-    cell_outcome="uninstalled_no_heal"; conclusion="v1_2_work_warranted"; exit_code=0
+    # Decisive substantive outcome → confidence HIGH (cell_outcome is the source of truth).
+    cell_outcome="uninstalled_no_heal"; conclusion="v1_2_work_warranted"; exit_code=0; confidence="HIGH"
     echo "OK   cell-attribution: uninstalled_no_heal — HP-025 holds for UNINSTALLED:dhx (or fakes mutated); surgical-slim retain"
     PASS=$((PASS+1))
   fi
 fi
 
 # ----------------------------------------------------------------------------
-# D-22 (cross-AI review 2026-05-03): cc_version match assertion. Mismatch →
-# confidence=LOW + conclusion=ambiguous (gate-halting safeguard).
-#
-# Review concern: a silent CC upgrade between probe authoring and execution
-# would otherwise produce false-confident PASS in C2's D-15 pre-flight gate.
+# cc_version_match — INFORMATIONAL corpus-membership signal (allow-list RETIRED
+# 2026-05-26; non-gating). true iff this CC version already has an on-disk result
+# cell (v1.3-multi-cc-ver/<ver>/ OR the v1.2-phase-6 baseline); false = NEW cell.
+# CRITICAL: this NEVER rewrites conclusion or downgrades confidence — those are
+# owned solely by the cell-outcome attribution above. A never-before-seen CC version
+# records a clean NEW cell, not a false-ambiguous (the audit-misleading signal that
+# decisions row 237 documents is hereby eliminated). Resolved the same way OUT_DIR
+# resolves REPO_ROOT below; a missing corpus dir yields false, never an error.
 # ----------------------------------------------------------------------------
 cc_version_full=$(claude --version 2>/dev/null | head -1)
+cc_version_now=$(printf '%s' "$cc_version_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+CORPUS_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
+CORPUS_RESULTS="$CORPUS_REPO_ROOT/tests/probes/.results"
 cc_version_match=false
-matched_version=""
-for expected in "${EXPECTED_CC_VERSIONS[@]}"; do
-  if printf '%s' "$cc_version_full" | grep -qF "$expected"; then
-    cc_version_match=true
-    matched_version="$expected"
-    break
-  fi
-done
-if $cc_version_match; then
-  confidence="HIGH"
-  echo "OK   cc_version_match: live='$cc_version_full' matches allow-list entry '$matched_version' (corpus: ${EXPECTED_CC_VERSIONS[*]})"
-  PASS=$((PASS+1))
-else
-  confidence="LOW"
-  # Override conclusion to halt C2 D-15 gate on version drift — review concern:
-  # a silent CC upgrade between authoring + execution would otherwise produce false-confident PASS.
-  conclusion="ambiguous"
-  exit_code=2
-  echo "FAIL cc_version_match: live='$cc_version_full' not in allow-list (${EXPECTED_CC_VERSIONS[*]}) — confidence=LOW; conclusion=ambiguous"
-  FAIL=$((FAIL+1))
+if [[ -n "$cc_version_now" ]] \
+   && { [[ -d "$CORPUS_RESULTS/v1.3-multi-cc-ver/$cc_version_now" ]] || [[ -d "$CORPUS_RESULTS/v1.2-phase-6" && "$cc_version_now" == "2.1.121" ]]; }; then
+  cc_version_match=true
 fi
+echo "INFO cc_version_match (informational, non-gating): live='$cc_version_full' corpus-member=$cc_version_match (allow-list RETIRED — conclusion/confidence derive from cell_outcome=$cell_outcome)"
 
 # ----------------------------------------------------------------------------
 # Outcome JSON write (D-08 schema + sanitization; RESEARCH HIGH-1 live cc_version;
 # D-22 cell{N}_rc; D-23 per-cell auth_method; D-30 hostname-hash).
 # ----------------------------------------------------------------------------
-CC_VERSION=$(claude --version 2>/dev/null | awk '{print $1}')
+CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 [[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
-OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.2-phase-6"
+# CC-keyed corpus path (quick-260526-10r) — never writes to the frozen v1.2 baseline; validator scans this dir
+OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.3-multi-cc-ver/$CC_VERSION"
 mkdir -p "$OUT_DIR"
 OUT_FILE="$OUT_DIR/probe-installed-plugins-uninstalled-dhx-natural-heal.json"
 

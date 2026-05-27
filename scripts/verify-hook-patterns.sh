@@ -36,6 +36,89 @@ if ! GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null); then
 fi
 cd "$GIT_TOPLEVEL"
 
+# ---------------------------------------------------------------------------
+# Probe `set +e` discipline lint (CAL-POLISH-05 / D-07 / D-10 / D-12).
+#
+# Per docs/decisions.md D-25: errexit (`set -e`) is never enabled in probes, so
+# a bare `set +e` is a no-op decoration (the WR-04 anti-pattern). The actual
+# gate is `rc=$?` capture immediately after the subprocess. This lint BLOCKS any
+# NEW `set +e` staged into tests/probes/* in a file that does NOT enable errexit.
+#
+# Detection is two-step (D-07): staged-diff finds candidate ADDITIONS, then the
+# FULL staged content (`git show :"$file"`) gates each candidate — if errexit is
+# present the `set +e` is a legitimate save/restore pair and is SKIPPED. Reading
+# full content (not `git diff -U0`) avoids false-positiving on an unchanged
+# top-of-file `set -e`.
+#
+# D-10 errexit-safety: this runs under the host's `set -euo pipefail` (line 2).
+# EVERY grep / command-substitution that can legitimately match nothing carries
+# `|| true` — an empty match set is rc=1 and would otherwise early-exit the host
+# (e.g. a docs-only commit with no staged probe changes). The errexit-present
+# GATE regex is flag-order-agnostic and catches `-o errexit` (matches set -e,
+# set -eu, set -euo pipefail, set -ue, set -o errexit).
+#
+# D-12 test-harness seam: extracted as a callable function so
+# tests/test-probe-set-flag-lint.sh can source this script and drive the lint
+# against fixture-staged content directly (the script's `cd "$GIT_TOPLEVEL"`
+# above makes running the whole gate against a mktemp fixture brittle, and risks
+# recursion). The function increments the shared FAIL accumulator (so the gate's
+# consolidated `exit 1` blocks the commit) AND returns its OWN result — a prior
+# check that set FAIL=1 must not make this lint claim a set+e violation it never
+# found (WR-02, Phase 20 code-review follow-up). The source-time guard below
+# (DHX_SKIP_SET_FLAG_LINT_TESTS) keeps sourcing from running the gate body.
+lint_probe_set_flags() {
+  # D-10: `|| true` so a no-candidate (docs-only) commit doesn't abort the host.
+  local candidates
+  candidates=$(git diff --cached --name-only --diff-filter=ACM -- 'tests/probes/' || true)
+  [ -z "$candidates" ] && return 0
+
+  local file added_set_plus_e full_content
+  local found=0
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # D-10: per-file newly-added `set +e` detection; `|| true` — an empty diff
+    # (no added set +e in this file) is rc=1 and would abort under errexit.
+    added_set_plus_e=$(git diff --cached -U0 -- "$file" | grep -E '^\+.*set \+e' || true)
+    [ -z "$added_set_plus_e" ] && continue
+
+    # Gate on FULL staged content (D-07): skip if errexit is present (legitimate
+    # save/restore pair). D-10 hardened regex — flag-order-agnostic + `-o errexit`.
+    full_content=$(git show ":$file" 2>/dev/null || true)
+    if printf '%s\n' "$full_content" | grep -qE '^[[:space:]]*set[[:space:]]+(-[a-z]*e[a-z]*|-o[[:space:]]+errexit)'; then
+      continue
+    fi
+
+    cat >&2 <<EOF
+ERROR: $file introduces a no-op 'set +e' (probe set-flag discipline lint).
+
+$added_set_plus_e
+
+Per docs/decisions.md D-25 (post-2026-05-03 WR-04 correction): errexit is
+never enabled in probes, so 'set +e' is a no-op decoration. The actual gate
+is 'rc=\$?' capture immediately after the subprocess. Remove the 'set +e' and
+capture the return code directly instead.
+
+This lint reads the FULL staged content (git show :$file), not just the diff,
+so a legitimate 'set -e' + 'set +e' save/restore pair is exempt — only files
+that never enable errexit are flagged.
+EOF
+    FAIL=1    # contribute to the shared gate accumulator (the gate's exit 1 blocks)
+    found=1   # WR-02: track THIS function's own finding, independent of FAIL
+  done <<< "$candidates"
+  # WR-02 (Phase 20 code-review follow-up): return our OWN result, not the global
+  # FAIL — so the test harness (and any future caller) gets an honest verdict even
+  # when an unrelated earlier check already set FAIL=1. The shared FAIL above is
+  # what actually gates the commit; this return is the function's local contract.
+  [ "$found" -eq 0 ]
+}
+
+# D-12 source-time guard: when tests/test-probe-set-flag-lint.sh sources this
+# script to import lint_probe_set_flags, return BEFORE running any gate check
+# (and before the test wiring below re-invokes the harness — recursion guard).
+if [ "${DHX_SKIP_SET_FLAG_LINT_TESTS:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 # 1. Collect staged dhx hook files (Added/Copied/Modified only — ignore deletes)
 STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^dhx/.*\.sh$' || true)
 
@@ -197,6 +280,26 @@ if [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-citation-check.sh" ]; then
   bash tests/test-citation-check.sh || { echo "FAILED: citation-check tests"; exit 1; }
 fi
 
+# 7b. Probe `set +e` discipline lint (CAL-POLISH-05 / D-07). Runs the extracted
+#     lint function (defined above) against the staged index. Placed STRICTLY
+#     BEFORE the DHX_RED_COMMIT opt-out branch (check #8) — this is a
+#     code-quality lint, NOT a probe-suite run, so it must fire even on TDD-RED
+#     commits (per the brief, set +e doesn't change probe pass/fail; it just
+#     produces misleading no-op code). The function increments FAIL on a hit;
+#     the consolidated `exit 1` at the bottom blocks the commit.
+lint_probe_set_flags || true
+
+# 7c. Run the set-flag lint test harness when probe/test files are staged. The
+#     harness is a test-* (not a probe-*), so run-probes.sh won't auto-run it —
+#     mirror check #6's shape (the `[ -x ]` guard is why the harness is chmod +x
+#     at creation). DHX_SKIP_SET_FLAG_LINT_TESTS guards against recursion: it is
+#     set inside the harness, and the source-time guard above honors it so the
+#     gate is never re-entered.
+if [ "${DHX_SKIP_SET_FLAG_LINT_TESTS:-0}" != "1" ] && [ -n "$STAGED_HOOKS" ] && [ -x "tests/test-probe-set-flag-lint.sh" ]; then
+  echo "Running probe set-flag lint tests..."
+  bash tests/test-probe-set-flag-lint.sh || { echo "FAILED: set-flag lint tests"; exit 1; }
+fi
+
 # 8. Run probe suite when dhx/*.js or tests/probes/* are staged. Catches
 #    the silent-red incident class — wrapper require-boundary changes that
 #    don't update fake-$HOME fixtures, probe edits that break their own
@@ -218,6 +321,12 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     echo "Skipping probe suite — DHX_RED_COMMIT=1 (TDD-RED commit; pair with GREEN to close)."
   else
     echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
+    # Phase 25 D-06 (2026-05-24) re-synced the hooks-side `### Gate 6` doc section
+    # to the cross-repo canonical byte-for-byte and retired the
+    # DHX_PROBE_ALLOW_CROSS_REPO_DIVERGENCE override that previously masked the
+    # by-design divergence here. probe-gate-6-cross-repo-parity.sh now passes
+    # plainly; a mismatch again means real drift and blocks (its original
+    # REQ-04 contract).
     bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
   fi
 fi

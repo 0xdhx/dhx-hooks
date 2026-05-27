@@ -1,0 +1,23 @@
+{
+  "probe_id": "probe-installed-plugins-badjson-natural-heal",
+  "exit_code": 2,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.148",
+  "cc_version_match": false,
+  "confidence": "LOW",
+  "ts": "2026-05-22T05:55:57Z",
+  "run_id": "4f7a9250-a3b4-4100-9de4-f36b36db6769",
+  "observations": {
+    "pre_size": 20,
+    "post_size": 20,
+    "json_validity_post": false,
+    "dhx_entry_present_post": false,
+    "install_path_resolves_to_expected_cache_layout": false,
+    "cell1_auth_method": "credentials_file",
+    "cell1_rc": 0,
+    "inode_isolated": true,
+    "cell_outcome": "badjson_no_heal",
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "ambiguous"
+}

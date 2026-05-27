@@ -1,0 +1,24 @@
+{
+  "probe_id": "probe-installed-plugins-no-natural-heal",
+  "exit_code": 2,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.148",
+  "ts": "2026-05-22T05:55:35Z",
+  "run_id": "9329dee1-9963-43f9-819a-58cca1f24acd",
+  "observations": {
+    "pre_size": 0,
+    "post_size_default": 0,
+    "post_size_bare": 0,
+    "json_validity_default": false,
+    "dhx_entry_present_default": false,
+    "install_path_resolves_to_expected_cache_layout": false,
+    "cell1_auth_method": "credentials_file",
+    "cell2_auth_method": "ANTHROPIC_API_KEY",
+    "cell1_rc": -1,
+    "cell2_rc": -1,
+    "inode_isolated": false,
+    "cell_outcome": "auth_failure",
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "ambiguous"
+}
