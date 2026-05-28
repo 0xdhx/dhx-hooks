@@ -1,0 +1,10 @@
+{
+  "probe_id": "probe-subagent-stop-sync",
+  "exit_code": 0,
+  "exit_code_convention": "exit_0_means_subagent_stop_fires_for_arm",
+  "built_against_cc_version": "2.1.153",
+  "arm": "fixtures-only",
+  "run_id": "baseline",
+  "observations": {},
+  "conclusion": "fixtures_only_baseline"
+}
