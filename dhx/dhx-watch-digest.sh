@@ -21,6 +21,13 @@
 # failing-items sections. The dead-man's-switch timer_stale verdict SUPERSEDES the
 # former cadence-based `2x min` checker_stale heartbeat (D-01/D-12) removed here.
 #
+# Action-required inbox consumer (cross-repo Phase 21 action-state surface): READS
+# watchlist.json directly (the same file + fail-silent jq shape as the drift line)
+# and renders a distinct, level-triggered "⚠ Action required (N)" section listing
+# every CURRENT non-snoozed action_state=="awaiting_us" item until ack/snooze clears
+# it. Read-only consumer -- never recomputes action_state/snooze (D-05); does NOT
+# touch the 12-key health cache. Distinct from the edge-triggered digest delta block.
+#
 # Suppression: DHX_SKIP_WATCH_DIGEST=1
 # Source-of-truth: ~/repos/hooks/dhx/dhx-watch-digest.sh
 # Symlinked to:   ~/.claude/hooks/dhx-watch-digest.sh (Task 3 of Plan 4)
@@ -195,6 +202,86 @@ if [ "$CORRUPT_LINES" -gt 0 ]; then
 "
 fi
 
+# Awaiting-us action inbox (cross-repo Phase 21 action-state surface consumer;
+# CONTRACT-01 producer: scripts/watch/dhx-watch-check.cjs computes action_state,
+# dhx-watch-driver.cjs writes ack/snooze via stampAndWrite). Level-triggered (D-05):
+# reads watchlist.json DIRECTLY -- the SAME file + fail-silent jq shape as the drift
+# line below -- and re-renders every CURRENT non-snoozed awaiting_us item each
+# session until ack/snooze clears it. DISTINCT from the edge-triggered digest delta
+# block above: a delta fires once and is gone next session, so an unacted awaiting_us
+# item must NOT fall out of view -- this section persists it. Read-only consumer:
+# NEVER recomputes action_state / snooze fields. Does NOT touch the Phase-20 12-key
+# health cache (D-05) -- watchlist.json and the health cache are two independent
+# surfaces.
+#
+# Filter: status=="active" AND action_state=="awaiting_us" AND not currently snoozed.
+# The snooze test is DEFENSIVE (D-13): a null / expired / malformed snooze_until is
+# treated as NOT snoozed (the item RENDERS); only a still-in-the-future ISO timestamp
+# or the literal "perma" HIDES the item. DO NOT invert this predicate.
+#
+#   snooze_until value           -> action-banner disposition
+#     null                       -> RENDER  (never snoozed)
+#     missing field              -> RENDER  (the `== null` branch is true)
+#     expired ISO (parsed < now) -> RENDER  (snooze elapsed; parses, compares < now)
+#     malformed / unparseable    -> RENDER  ((..)? fails -> // 0 -> 0 < now is TRUE -> RENDER)
+#     future ISO (parsed >= now) -> HIDE    (still snoozed)
+#     "perma"                    -> HIDE    (permanently snoozed)
+#
+# INVARIANT (cross-process, producer<->consumer): the cross-repo producer stamps
+# millisecond-precision ISO timestamps; this jq consumer MUST strip fractional seconds
+# before fromdateiso8601 or the snooze gate silently never hides. Enforced here, proven
+# by probe-watch-action-render.js; the producer side cannot enforce it for us.
+#
+# LOAD-BEARING: the `sub("\\.[0-9]+";"")` strips fractional seconds BEFORE
+# fromdateiso8601. The producer stamps millisecond-precision ISO (e.g. last_checked_at
+# "2026-05-14T03:00:43.430Z" -- the snooze_until fingerprint), but jq-1.7's
+# fromdateiso8601 does NOT parse fractional seconds -> it would throw on EVERY real
+# snooze_until -> // 0 -> a *future* snooze would (wrongly) RENDER, never hiding. The
+# strip restores the future->HIDE half of the contract for the producer's actual
+# format while keeping malformed->RENDER (a genuinely unparseable string still fails
+# after the strip). The whole pipe is wrapped in (..)? so a non-string snooze_until
+# (producer misbehaves) is swallowed to // 0 -> RENDER too, never a banner throw.
+# DO NOT "simplify" this back to a bare `fromdateiso8601? // 0` -- that reintroduces
+# the never-hide bug. (Probe: probe-watch-action-render.js future-ISO HIDE case.)
+#
+# WR-04: the `status == "active"` clause is REQUIRED, not redundant -- an action_state
+# left at "awaiting_us" on an item later closed/paused must NOT render; action_state
+# is NOT re-cleared on status change, so dropping the clause re-surfaces resolved/
+# closed items.
+ACTION_BLOCK=""
+if [ -f "$WATCHLIST" ]; then
+  ACTION_COUNT=$(jq '[.items[]
+    | select(.status == "active"
+        and .action_state == "awaiting_us"
+        and (.snooze_until == null
+             or (.snooze_until != "perma"
+                 and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))]
+    | length' "$WATCHLIST" 2>/dev/null)
+  case "$ACTION_COUNT" in
+    ''|*[!0-9]*) ACTION_COUNT=0 ;;
+  esac
+  if [ "$ACTION_COUNT" -gt 0 ]; then
+    # SAME predicate as the count select above -- keep the two textually identical
+    # (the probe asserts count and render together so divergence is caught). Renders
+    # an actionable-inbox row per item (tag · labels · url) + copy-ready ack/snooze
+    # shortcuts -- the driver subcommands `ack <id>` / `snooze <id> 8h`, which users
+    # invoke via /dhx:watch -- never bare ids.
+    ACTION_ROWS=$(jq -r '.items[]
+      | select(.status == "active"
+          and .action_state == "awaiting_us"
+          and (.snooze_until == null
+               or (.snooze_until != "perma"
+                   and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
+      | "    " + .tag
+        + (((.last_seen_labels // []) | .[0:3] | join(", ")) as $lbl | if $lbl == "" then "" else " · " + $lbl end)
+        + " · " + .url
+        + "\n      › /dhx:watch ack " + .id + " · snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
+    ACTION_BLOCK="⚠ Action required (${ACTION_COUNT}):
+${ACTION_ROWS}
+"
+  fi
+fi
+
 # Upstream-closed drift surfacing (XR-WATCH-RECONCILE): count active watchlist items
 # whose upstream went closed/merged while still locally active. Single source: matches
 # isUpstreamClosedDrift() in cross-repo scripts/watch/dhx-watch-shared.cjs (current-state
@@ -221,15 +308,19 @@ fi
 # section is swallowed before the printf below.
 if [ "$ANY_SURFACED" -eq 0 ] \
   && [ -z "$TIMER_STALE_LINE" ] && [ -z "$POLLS_DEGRADED_LINE" ] && [ -z "$FAILING_ITEMS_LINE" ] \
-  && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
+  && [ -z "$ACTION_BLOCK" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
   exit 0
 fi
 
-# Emit in D-11 order: timer_stale → polls_degraded → failing-items → drift → corrupt
-# → per-event rendered block.
-printf '%s%s%s%s%s%s' \
+# Emit in D-11 order: timer_stale → polls_degraded → failing-items → action-required
+# → drift → corrupt → per-event rendered block. Action-required (the awaiting_us
+# inbox, watchlist-derived) sits after the health-cache alarms and before drift: it
+# is a direct ask on the user (higher priority than the informational closed-upstream
+# drift line), while the watcher-health alarms above contextualize whether the
+# awaiting_us verdict is even fresh.
+printf '%s%s%s%s%s%s%s' \
   "$TIMER_STALE_LINE" "$POLLS_DEGRADED_LINE" "$FAILING_ITEMS_LINE" \
-  "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
+  "$ACTION_BLOCK" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
 
 # Spec section Surfacer logic step 4: atomic-write new pointer.
 if [ "$MAX_SURFACED" != "$PTR" ]; then
