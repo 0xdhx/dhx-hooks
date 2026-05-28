@@ -29,6 +29,13 @@ bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
 # mirrors heal-hook (no stdin parsing).
 bash /home/dhx/.claude/hooks/dhx-plugin-cache-staleness-detector.sh < /dev/null || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
+# Watch-health computer (cross-repo D-08/D-10/D-22a): recompute the precomputed
+# health verdict cache BEFORE the digest banner reads it, so the banner consumes a
+# fresh cache in the same session. The explicit `[ -e … ]` existence test guarantees
+# a graceful no-op when the cross-repo installer hasn't provisioned the symlink yet
+# (a bare `node <absent-symlink>` would exit non-zero); >/dev/null 2>&1 || true keeps
+# it silent + non-blocking regardless. Filesystem/network-only; no stdin needed.
+[ -e ~/.claude/dhx-tools/dhx-watch-health.cjs ] && node ~/.claude/dhx-tools/dhx-watch-health.cjs >/dev/null 2>&1 || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 # RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
 # detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.

@@ -13,12 +13,13 @@
 # the spec's "render compactly" framing means label changes should be visible but
 # not visually-elevated; the blank-prefix branch is correct.
 #
-# D-54 design intent: checker_stale emits per SessionStart while stale. This is a
-# problem-state signal, NOT a notification. A cooldown was rejected (option A in
-# the discuss fork point) because it would HIDE the broken-timer indicator from
-# the single-maintainer user (who IS the sysadmin); "noise IS the signal" framing
-# applies. The user suppresses by FIXING the underlying timer/checker issue, not
-# by hiding the message.
+# Watch-health cache consumer (cross-repo D-08): the SessionStart dispatcher runs
+# the cross-repo computer (scripts/watch/dhx-watch-health.cjs) which writes the
+# precomputed {timer_stale, polls_degraded, failing_items} verdict to
+# ~/.cache/dhx/dhx-watch-health.json. This surfacer READS that cache (never
+# recomputes a verdict, D-06) and renders the timer_stale / polls_degraded /
+# failing-items sections. The dead-man's-switch timer_stale verdict SUPERSEDES the
+# former cadence-based `2x min` checker_stale heartbeat (D-01/D-12) removed here.
 #
 # Suppression: DHX_SKIP_WATCH_DIGEST=1
 # Source-of-truth: ~/repos/hooks/dhx/dhx-watch-digest.sh
@@ -39,7 +40,6 @@ INPUT=$(cat 2>/dev/null || true)
 WATCH_DIR="${DHX_WATCH_DIR:-$HOME/repos/cross-repo/watch}"
 DIGEST="$WATCH_DIR/digest.jsonl"
 POINTER="$WATCH_DIR/pointer.txt"
-META="$WATCH_DIR/meta.json"
 WATCHLIST="$WATCH_DIR/watchlist.json"
 
 # Spec section Surfacer logic step 1: missing pointer = 0 (everything surfaces; first-run = recovery).
@@ -53,20 +53,21 @@ case "$PTR" in
   ''|*[!0-9]*) PTR=0 ;;
 esac
 
-# If digest doesn't exist yet, nothing to surface (first-run before any checker fire).
-if [ ! -f "$DIGEST" ]; then
-  exit 0
-fi
-
 # Spec section Surfacer logic steps 2-4: scan, render, atomic-write pointer.
 # jq -c per-line; we capture the max entry_id surfaced for the atomic-rewrite step.
 MAX_SURFACED="$PTR"
 ANY_SURFACED=0
 CORRUPT_LINES=0
 
-# Buffer the rendered output so we can prepend optional checker_stale entry.
+# Buffer the rendered per-event output.
 RENDER_OUT=""
 
+# The digest scan only runs when the digest exists (first-run before any checker
+# fire has none). The watchlist-derived drift line and the cache-derived health
+# sections below are INDEPENDENT of the digest and still render when it is absent,
+# so this is a scoped skip of the scan loop -- NOT an early `exit 0` (which would
+# swallow drift/health on a no-digest session).
+if [ -f "$DIGEST" ]; then
 while IFS= read -r LINE; do
   # Skip blank
   [ -z "$LINE" ] && continue
@@ -128,24 +129,61 @@ while IFS= read -r LINE; do
     \"${SUMMARY}\" ${REL}
 "
 done < "$DIGEST"
+fi  # end digest-exists scan guard
 
-# Spec section Surfacer logic step 5: checker_stale check.
-# OPEN QUESTION 3 resolution: jq min cadence_hours across active items; default 24h if none.
-# D-54: emit per-SessionStart while stale (NO cooldown -- "noise IS the signal" per surfacer header).
-STALE_HEADER=""
-if [ -f "$META" ] && [ -f "$WATCHLIST" ]; then
-  LAST_RUN=$(jq -r '.last_check_run_at // ""' "$META" 2>/dev/null)
-  if [ -n "$LAST_RUN" ]; then
-    LAST_RUN_TS=$(date -d "$LAST_RUN" +%s 2>/dev/null || echo 0)
-    NOW_TS=$(date +%s)
-    MIN_CADENCE_HOURS=$(jq -r '[.items[] | select(.status == "active") | .cadence_hours] | min // 24' "$WATCHLIST" 2>/dev/null)
-    case "$MIN_CADENCE_HOURS" in
-      ''|*[!0-9]*) MIN_CADENCE_HOURS=24 ;;
-    esac
-    THRESHOLD_SECONDS=$((MIN_CADENCE_HOURS * 3600 * 2))
-    if [ "$LAST_RUN_TS" -gt 0 ] && [ "$((NOW_TS - LAST_RUN_TS))" -gt "$THRESHOLD_SECONDS" ]; then
-      STALE_HEADER="[!] checker_stale · last run ${LAST_RUN} (>2× min cadence ${MIN_CADENCE_HOURS}h)
+# Watch-health cache sections (cross-repo D-08 CONTRACT-01 producer:
+# scripts/watch/dhx-watch-health.cjs). Read-only consumer (D-06): NEVER recompute a
+# verdict -- the booleans/counts below are precomputed in the cache. Fail-silent
+# (D-09): absent / malformed / non-JSON / wrong schema_version / stale computed_at
+# all render nothing. This SUPERSEDES the former cadence-based `2x min`
+# checker_stale heartbeat (D-01/D-12) -- the timer_stale dead-man's switch in the
+# cache replaces it.
+#
+# TWO DISTINCT STALENESS WINDOWS (do not conflate):
+#  1. RENDERER freshness window = 1h (HEALTH_CACHE_STALE_SECONDS below). The cache
+#     is recomputed every SessionStart, so a computed_at older than 1h means the
+#     computer did not run / the symlink is broken -> hide the WHOLE section.
+#  2. The cache's INTERNAL timer_stale verdict (3h default, timer_stale_threshold_hours,
+#     cross-repo D-04) -- the dead-man's switch, already decided. We read the boolean.
+HEALTH_CACHE="${DHX_WATCH_HEALTH_CACHE:-$HOME/.cache/dhx/dhx-watch-health.json}"
+HEALTH_CACHE_STALE_SECONDS=3600   # renderer freshness window (1h), constant #1 above
+TIMER_STALE_LINE=""
+POLLS_DEGRADED_LINE=""
+FAILING_ITEMS_LINE=""
+if [ -f "$HEALTH_CACHE" ]; then
+  HC=$(jq -c '.' "$HEALTH_CACHE" 2>/dev/null) || HC=""
+  if [ -n "$HC" ] && [ "$HC" != "null" ]; then
+    HC_SCHEMA=$(printf '%s' "$HC" | jq -r '.schema_version // empty' 2>/dev/null)
+    HC_COMPUTED=$(printf '%s' "$HC" | jq -r '.computed_at // empty' 2>/dev/null)
+    if [ "$HC_SCHEMA" = "1" ] && [ -n "$HC_COMPUTED" ]; then
+      HC_TS=$(date -d "$HC_COMPUTED" +%s 2>/dev/null || echo 0)
+      NOW_TS=$(date +%s)
+      HC_AGE=$((NOW_TS - HC_TS))
+      # Render only when the cache itself is fresh (window #1). Stale -> hide all.
+      if [ "$HC_TS" -gt 0 ] && [ "$HC_AGE" -ge 0 ] && [ "$HC_AGE" -lt "$HEALTH_CACHE_STALE_SECONDS" ]; then
+        # 1. timer_stale (dead-man's switch verdict, window #2 -- read, not recomputed).
+        if [ "$(printf '%s' "$HC" | jq -r '.timer_stale // false' 2>/dev/null)" = "true" ]; then
+          TFIRE=$(printf '%s' "$HC" | jq -r '.timer_fire_at // "never"' 2>/dev/null)
+          TTHRESH=$(printf '%s' "$HC" | jq -r '.timer_stale_threshold_hours // "?"' 2>/dev/null)
+          TIMER_STALE_LINE="[!] watch checker stale · last timer fire ${TFIRE} (>${TTHRESH}h threshold) — the watch checker may be dead.
 "
+        fi
+        # 2. polls_degraded (systemic: auth_error | rate-limit halt | processed:0-with-active).
+        if [ "$(printf '%s' "$HC" | jq -r '.polls_degraded // false' 2>/dev/null)" = "true" ]; then
+          POLLS_DEGRADED_LINE="[!] watch polls degraded · last run accomplished nothing (auth failure / rate-limit halt / no items processed).
+"
+        fi
+        # 3. failing-items (level-triggered, D-15) -- modeled on the drift line below:
+        #    count via jq with non-numeric->0 guard, render only when > 0, one line per item.
+        FAIL_COUNT=$(printf '%s' "$HC" | jq '.failing_items | length' 2>/dev/null)
+        case "$FAIL_COUNT" in ''|*[!0-9]*) FAIL_COUNT=0 ;; esac
+        if [ "$FAIL_COUNT" -gt 0 ]; then
+          FAIL_ROWS=$(printf '%s' "$HC" | jq -r '.failing_items[] | "    \(.url) · \(.last_failure_reason) (\(.consecutive_failures)x)"' 2>/dev/null)
+          FAILING_ITEMS_LINE="⚠ ${FAIL_COUNT} watch item(s) failing:
+${FAIL_ROWS}
+"
+        fi
+      fi
     fi
   fi
 fi
@@ -177,15 +215,21 @@ if [ -f "$WATCHLIST" ]; then
 fi
 
 # BACKLOG-INTEGRATION obligation 2: silent on no deltas. EXIT EARLY before any stdout.
-# DRIFT_LINE is watchlist-derived (independent of ANY_SURFACED) so it MUST be in this guard,
-# or a drift-only session (no new events, fresh checker, no corrupt lines) exits silently
-# and the drift line is swallowed before the printf below.
-if [ "$ANY_SURFACED" -eq 0 ] && [ -z "$STALE_HEADER" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
+# Each health section + DRIFT_LINE is independent of ANY_SURFACED (cache/watchlist-
+# derived), so each MUST be in this guard -- else a session whose ONLY output is a
+# health/drift section (no new events, no corrupt lines) exits silently and that
+# section is swallowed before the printf below.
+if [ "$ANY_SURFACED" -eq 0 ] \
+  && [ -z "$TIMER_STALE_LINE" ] && [ -z "$POLLS_DEGRADED_LINE" ] && [ -z "$FAILING_ITEMS_LINE" ] \
+  && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
   exit 0
 fi
 
-# Emit (stale + drift + corrupt headers first, then per-event rendered block)
-printf '%s%s%s%s' "$STALE_HEADER" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
+# Emit in D-11 order: timer_stale → polls_degraded → failing-items → drift → corrupt
+# → per-event rendered block.
+printf '%s%s%s%s%s%s' \
+  "$TIMER_STALE_LINE" "$POLLS_DEGRADED_LINE" "$FAILING_ITEMS_LINE" \
+  "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
 
 # Spec section Surfacer logic step 4: atomic-write new pointer.
 if [ "$MAX_SURFACED" != "$PTR" ]; then

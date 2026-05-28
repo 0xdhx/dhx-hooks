@@ -100,6 +100,7 @@ asserts row count == file count.
 | `probe-verify-hooks-worktree.sh` | yes | mktemp tmproot + fake HOME; sandboxed git repo + worktree contained in $TMPROOT; no live `~/.claude/hooks/` or `.git/worktrees/` writes |
 | `probe-watch-check.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
+| `probe-watch-health-render.js` | yes | `_make-fake-home` (mktemp + HOME override per spawn) fixtures `dhx-watch-health.json`; spawns the banner (`dhx-watch-digest.sh`, `DHX_WATCH_DIR` pointed at a nonexistent dir) + the statusline wrapper under the fake `$HOME`; never reads or writes live `~/.cache/dhx/` (2026-05-28 watch-health cache consumer render probe) |
 | `probe-worktree-bash-guard.sh` | yes | hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution) |
 | `probe-worktree-write-guard.sh` | yes | hook subshell test with synthetic stdin; assertions on hook exit code only |
 | `probe-writeatomic-leak-cleanup.js` | yes | mkdtempSync fixtures + require of live wrapper's `writeAtomic`; mocks `fs.renameSync` then restores it; no live `~/.cache/dhx` or `~/.claude` writes (IN-03 leaked-tmp cleanup invariant probe) |

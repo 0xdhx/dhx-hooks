@@ -66,7 +66,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
     withSegmentDiag('fleet',      readFleetFeed()),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR]) => {
+    withSegmentDiag('watch',      readWatchHealth()),
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -94,6 +95,12 @@ process.stdin.on('end', () => {
     // never reach the sigil path. Deliberately omitted from sigilCount below so
     // a (theoretically impossible) fleet rejection can't bump the meta-glyph either.
     const fleetWarning   = unwrap(fleetR,      () => '');
+    // watch-health is fail-silent (D-09) exactly like fleet: its own try/catch
+    // returns '' on ANY error, so the rejection arm uses a '' fallback (NOT a
+    // sigil) — a `⚠ watch?` sigil would be the opposite of silence. Deliberately
+    // omitted from sigilCount below so a (theoretically impossible) rejection
+    // can't bump the meta-glyph either.
+    const watchWarning   = unwrap(watchR,      () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -132,6 +139,11 @@ process.stdin.on('end', () => {
     // (cross-repo convention drift). Local-session warnings precede the broader
     // fleet signal. Silent at zero / stale / error (readFleetFeed returns '').
     if (fleetWarning) front.push(fleetWarning);
+    // Watch-health (cross-repo D-08): a fourth orange-208 front member, additive.
+    // Order placed after fleet — both are cross-repo signals; watch:stale /
+    // watch:Nfail report upstream-watch checker health. Silent when healthy /
+    // stale / error (readWatchHealth returns '').
+    if (watchWarning) front.push(watchWarning);
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
@@ -797,6 +809,38 @@ function readFleetFeed() {
     if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= FLEET_STALE_MS) return '';
     if (n === 0) return ''; // silent at zero
     return `\x1b[38;5;208m▼${n} conv\x1b[0m`;
+  } catch {
+    return '';
+  }
+}
+
+// Watch-health front-stack tokens (cross-repo D-08 CONTRACT-01 producer:
+// scripts/watch/dhx-watch-health.cjs). Reads the precomputed health verdict — NEVER
+// recomputes (D-06). Structural twin of readFleetFeed (own try/catch → '' on ANY
+// error, schema-version gate, computed_at freshness gate, silent when healthy) so a
+// `⚠ watch?` sigil can never render — but its freshness window is DELIBERATELY 1h,
+// NOT FLEET_STALE_MS (48h). The cache is recomputed every SessionStart (the
+// dispatcher runs the computer), so computed_at older than 1h means the computer
+// didn't run / the symlink is broken — show NOTHING rather than a stale verdict.
+// This 1h window is the RENDERER freshness gate; it is distinct from the cache's
+// own internal timer_stale_threshold_hours (3h, cross-repo D-04) verdict we read below.
+const WATCH_HEALTH_FILE = path.join(os.homedir(), '.cache', 'dhx', 'dhx-watch-health.json');
+const HEALTH_CACHE_STALE_MS = 3600 * 1000; // 1h — NOT FLEET_STALE_MS
+
+function readWatchHealth() {
+  try {
+    const feed = JSON.parse(fs.readFileSync(WATCH_HEALTH_FILE, 'utf8'));
+    if (!feed || feed.schema_version !== 1) return '';
+    const ageMs = Date.now() - Date.parse(feed.computed_at);
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= HEALTH_CACHE_STALE_MS) return '';
+    const tokens = [];
+    // timer_stale: the dead-man's-switch verdict (window #2) — read, not recomputed.
+    if (feed.timer_stale === true) tokens.push('watch:stale');
+    // failing-items: count interpolated (D-22d — NOT the literal `watch:Nfail`).
+    const failing = Array.isArray(feed.failing_items) ? feed.failing_items.length : 0;
+    if (failing > 0) tokens.push(`watch:${failing}fail`);
+    if (tokens.length === 0) return ''; // silent when healthy
+    return `\x1b[38;5;208m${tokens.join(' ')}\x1b[0m`;
   } catch {
     return '';
   }
