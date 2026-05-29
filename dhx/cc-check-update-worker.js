@@ -1,16 +1,22 @@
 #!/usr/bin/env node
-// RAT-06 (STATUSLINE-RAT-06) detached worker — npm view @anthropic-ai/claude-code
-// version -> write {latest, checked_at} to the cache. Spawned detached by
-// cc-check-update.js; never blocks SessionStart.
+// RAT-06 (STATUSLINE-RAT-06) detached worker — one `npm view
+// @anthropic-ai/claude-code version versions --json` call -> write
+// {latest, max_published, checked_at, installed_at_check?} to the cache.
+// Spawned detached by cc-check-update.js; never blocks SessionStart.
 //
 // Clones the gsd-check-update-worker.js npm-view shape, trimmed to one job.
 // DROPPED from the GSD worker: the MANAGED_HOOKS stale-hooks scan and the
 // isNewer semver helper (D-08 — the renderer computes update_available). ADDED
 // over the GSD precedent: a defensive mkdir (D-19), an atomic temp+rename write
-// (T-17-06), and a `claude --version` probe (RAT-06b) that stamps the installed
+// (T-17-06), a `claude --version` probe (RAT-06b) that stamps the installed
 // version npm `latest` was confirmed against — the dev-install false-positive
-// guard. The GSD `installed` field served stale-hooks math; RAT-06b's
-// installed_at_check serves the renderer's auto-updater-race suppression.
+// guard — and a `max_published` field (RAT-06c) that records the SEMVER-MAX of
+// every published version so the renderer's dev-install branch can compare
+// against "ahead of everything npm has published" rather than the `latest`
+// dist-tag (which npm moves separately from, and hours after, publishing a
+// version). The GSD `installed` field served stale-hooks math; RAT-06b's
+// installed_at_check + RAT-06c's max_published serve the renderer's
+// false-positive suppression.
 //
 // Using a separate file (rather than node -e '<inline code>') avoids the
 // template-literal regex-escaping problem and makes the worker independently
@@ -28,23 +34,69 @@ const { execFileSync } = require('child_process');
 // (cc-check-update.js) sets it in the spawn env; the worker reads it here.
 const cacheFile = process.env.CC_CACHE_FILE;
 
+// RAT-06c: the highest PUBLISHED version by base-version semver (prerelease
+// suffix stripped, same shape as the renderer's parseV). The dev-install branch
+// compares the installed binary against THIS, not the `latest` dist-tag —
+// because npm moves `latest` separately from (and hours after) publishing a
+// version, and CC auto-updates from a faster channel, so a perfectly normal
+// freshly-published binary reads as "ahead of the latest tag" during the lag.
+// npm does NOT guarantee `versions[]` is sorted, so compute the max rather than
+// taking the last element. Returns the original version string with the highest
+// base tuple, or null when the list is empty / all non-string.
+function pickMaxBaseVersion(versions) {
+  let best = null;
+  let bestTuple = [-1, -1, -1];
+  for (const v of versions) {
+    if (typeof v !== 'string') continue;
+    const p = v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+    const t = [p[0] || 0, p[1] || 0, p[2] || 0];
+    if (t[0] > bestTuple[0]
+      || (t[0] === bestTuple[0] && t[1] > bestTuple[1])
+      || (t[0] === bestTuple[0] && t[1] === bestTuple[1] && t[2] > bestTuple[2])) {
+      best = v;
+      bestTuple = t;
+    }
+  }
+  return best;
+}
+
 let latest = null;
+let maxPublished = null;
 try {
-  latest = execFileSync('npm', ['view', '@anthropic-ai/claude-code', 'version'], {
-    encoding: 'utf8',
-    timeout: 10000,
-    windowsHide: true,
-    // On Windows, 'npm' is distributed as npm.cmd. Node's execFileSync does
-    // not apply PATHEXT resolution and looks for a literal 'npm' binary,
-    // failing with ENOENT. Setting shell:true on Windows routes through
-    // cmd.exe which resolves npm.cmd via PATHEXT.
-    // POSIX (Linux/macOS) is left untouched — no shell spawn, no extra
-    // signal/exit-code semantics, no overhead.
-    shell: process.platform === 'win32',
-  }).trim();
+  // ONE combined network round-trip yields both references: `.version` is the
+  // `latest` dist-tag version (the `⬆ cc` update reference); `.versions` is
+  // every published version (the RAT-06c dev-install max reference). `--json`
+  // with multiple fields makes npm emit a {version, versions} object.
+  const raw = execFileSync(
+    'npm',
+    ['view', '@anthropic-ai/claude-code', 'version', 'versions', '--json'],
+    {
+      encoding: 'utf8',
+      timeout: 10000,
+      windowsHide: true,
+      // On Windows, 'npm' is distributed as npm.cmd. Node's execFileSync does
+      // not apply PATHEXT resolution and looks for a literal 'npm' binary,
+      // failing with ENOENT. Setting shell:true on Windows routes through
+      // cmd.exe which resolves npm.cmd via PATHEXT.
+      // POSIX (Linux/macOS) is left untouched — no shell spawn, no extra
+      // signal/exit-code semantics, no overhead.
+      shell: process.platform === 'win32',
+    },
+  );
+  const meta = JSON.parse(raw);
+  if (typeof meta.version === 'string' && meta.version.trim()) {
+    latest = meta.version.trim();
+  }
+  // A package with a single published version makes npm emit `versions` as a
+  // bare string rather than an array — normalize both shapes.
+  const versions = Array.isArray(meta.versions)
+    ? meta.versions
+    : (typeof meta.versions === 'string' ? [meta.versions] : []);
+  maxPublished = pickMaxBaseVersion(versions);
 } catch (e) {
-  // Network failure / unexpected output / timeout — latest stays null; the
-  // cache records 'unknown' and the renderer treats it as "no update".
+  // Network failure / non-JSON output / timeout — latest + maxPublished stay
+  // null; the cache records latest:'unknown' (the renderer skips the whole
+  // cc-version block) and omits max_published.
 }
 
 // RAT-06b: record the installed CC version this npm `latest` was confirmed
@@ -77,14 +129,20 @@ try {
 // Cache write — DIVERGES from gsd-check-update-worker.js per D-08. The GSD
 // worker writes {update_available, installed, latest, checked, stale_hooks};
 // RAT-06 writes {latest, checked_at} plus the RAT-06b installed_at_check stamp
-// (added only when the `claude --version` probe succeeded — absence is the
-// renderer's fallback signal). ISO-8601 checked_at so the parent's TTL gate can
-// Date.parse it. The renderer (Plan 03) computes update_available.
+// and the RAT-06c max_published stamp (each added only when its probe yielded a
+// value — absence is the renderer's fallback signal). ISO-8601 checked_at so
+// the parent's TTL gate can Date.parse it. The renderer (Plan 03) computes
+// update_available.
 const result = {
   latest: latest || 'unknown',
   checked_at: new Date().toISOString(),
 };
 if (installed) result.installed_at_check = installed;
+// RAT-06c: omit when null (npm probe failed / list unparseable) so the renderer
+// falls back to comparing against `latest` — backward-compatible with the
+// pre-RAT-06c cache schema. Never written as 'unknown' (which would parse to
+// [0,0,0] and false-fire dev-install); absence is the fallback signal.
+if (maxPublished) result.max_published = maxPublished;
 
 if (cacheFile) {
   // `tmp` is declared outside the try so the catch can unlink it on a

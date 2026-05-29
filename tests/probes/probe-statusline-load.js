@@ -384,6 +384,62 @@ for (const c of malformedCases) {
     r.status === 0 && /cc dev install/.test(l1), true);
 }
 
+// --- RAT-06c: dev-install compares against max_published, not the latest tag -
+// npm moves the `latest` DIST-TAG separately from (and hours after) publishing
+// a version; CC auto-updates from a faster channel. So a normally-published
+// binary reads as "ahead of the latest tag" during that lag and false-fired
+// `⚠ cc dev install` across EVERY session for the duration (observed live
+// 2026-05-28/29: installed 2.1.156, latest-tag 2.1.154 for ~5.5h while 2.1.156
+// was already published). Fix: the worker records `max_published` (the
+// SEMVER-MAX of `npm view … versions`) and the renderer compares the installed
+// binary against THAT — only a build npm has never published (a genuine
+// dev/canary) is ahead of max_published. Falls back to cache.latest when
+// max_published is absent (old schema, covered by Scenarios 11-12) or 'unknown'.
+// See decisions.md 2026-05-29 RAT-06c row + HP-033 invariant 8.
+
+// Scenario 13 — installed > latest-tag BUT installed === max_published (the
+// latest-tag-lag false positive: a normally-published binary, npm's tag just
+// hasn't caught up) → dev-install SUPPRESSED, and no `⬆ cc` either.
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.154', max_published: '2.1.156', installed_at_check: '2.1.156',
+    checked_at: '2026-05-29T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.156' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06c installed===max_published, latest-tag lagging → dev-install SUPPRESSED',
+    r.status === 0 && !/cc dev install/.test(l1), true);
+  ok('RAT-06c latest-tag lagging → no `⬆ cc` (installed not behind latest tag)',
+    !/⬆ cc(\b|[^-])/.test(l1), true);
+}
+
+// Scenario 14 — installed > max_published (a build npm has NEVER published:
+// genuine local/dev/canary) AND installed_at_check === installed → dev-install
+// FIRES. max_published lags the latest tag here too, proving the compare is
+// against max_published, not latest.
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.154', max_published: '2.1.156', installed_at_check: '2.1.158',
+    checked_at: '2026-05-29T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.158' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06c installed>max_published (genuine dev build) → dev-install PRESENT',
+    r.status === 0 && /cc dev install/.test(l1), true);
+}
+
+// Scenario 15 — max_published === 'unknown' (hand-edited / future writer) →
+// renderer must NOT parseV('unknown')→[0,0,0] and false-fire; it falls back to
+// cache.latest. Here installed === latest → neither marker. Without the
+// 'unknown' guard, devRef would parse to [0,0,0] and dev-install would fire.
+{
+  const home = fixtureHome({ updateCheck: {
+    latest: '2.1.156', max_published: 'unknown', installed_at_check: '2.1.156',
+    checked_at: '2026-05-29T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.156' }, { env: { HOME: home } });
+  const l1 = strip(r.stdout);
+  ok('RAT-06c max_published==="unknown" → falls back to latest, no false dev-install',
+    r.status === 0 && !/cc dev install/.test(l1), true);
+}
+
 // 4. Wall-time emission (informational only — D-03/D-06 lock; NO hard threshold)
 console.log();
 console.log(`info: median wall-time per render = ${medianMs.toFixed(2)}ms (informational; no gate)`);

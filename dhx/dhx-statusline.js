@@ -511,9 +511,9 @@ function runStatusline() {
     // (D-16) so a canary `latest` does not produce NaN — the dev-install
     // compare degrades to a base-version compare on canary builds (documented,
     // acceptable).
-    //   latest base > installed base → `⬆ cc`
-    //   installed base > latest base → `⚠ cc dev install` (RAT-06b guarded)
-    //   equal / 'unknown' / null      → neither
+    //   latest base > installed base        → `⬆ cc`
+    //   installed base > max_published base  → `⚠ cc dev install` (RAT-06b + RAT-06c guarded)
+    //   equal / 'unknown' / null             → neither
     // Malformed/missing cache → segment hides (D-13a).
     //
     // RAT-06b dev-install guard: `installed base > latest base` is a FALSE
@@ -525,10 +525,11 @@ function runStatusline() {
     // installed_at_check ABSENT (old cache schema / worker probe failed) → fall
     // back to the prior unguarded fire (status-quo, backward-compatible).
     // INVARIANT (cross-process): cc-check-update-worker.js stamps
-    // installed_at_check from `claude --version` parsed to the same bare shape
-    // as stdin `data.version`; this read assumes that shape match. Asserted by
+    // installed_at_check (from `claude --version`) and max_published (the
+    // semver-max of `npm view … versions`) to the same bare shape as stdin
+    // `data.version`; this read assumes that shape match. Asserted by
     // tests/probes/probe-cc-check-update-worker.sh + probe-statusline-load.js
-    // Scenarios 10-12.
+    // Scenarios 10-15.
     let ccUpdate = '';
     const ccUpdateFile = path.join(homeDir, '.cache', 'cc', 'cc-update-check.json');
     if (fs.existsSync(ccUpdateFile)) {
@@ -552,8 +553,22 @@ function runStatusline() {
           const [an, bn, cn] = parseV(cache.latest);
           const latestNewer =
             an > ai || (an === ai && bn > bi) || (an === ai && bn === bi && cn > ci);
+          // RAT-06c: the dev-install reference is `max_published` (the SEMVER-MAX
+          // of every published version, stamped by the worker), NOT the `latest`
+          // dist-tag. npm moves `latest` separately from (and hours after)
+          // publishing a version, and CC auto-updates from a faster channel — so
+          // a normally-published binary reads as `installed > latest` for the
+          // duration of that lag and false-fired `⚠ cc dev install` across every
+          // session. Comparing against max_published flags only a build npm has
+          // never published (a genuine dev/canary). Fall back to cache.latest
+          // when max_published is absent (pre-RAT-06c cache schema) or 'unknown'
+          // — the latter guarded explicitly because parseV('unknown') is [0,0,0],
+          // which would make any installed version look "ahead".
+          const devRef = (cache.max_published && cache.max_published !== 'unknown')
+            ? cache.max_published : cache.latest;
+          const [am, bm, cm] = parseV(devRef);
           const installedNewer =
-            ai > an || (ai === an && bi > bn) || (ai === an && bi === bn && ci > cn);
+            ai > am || (ai === am && bi > bm) || (ai === am && bi === bm && ci > cm);
           // RAT-06b: was npm `latest` confirmed against the binary running NOW?
           // Absent stamp → fall back to firing (status-quo). Present → require a
           // base-version match (parseV both sides so a canary suffix on either
