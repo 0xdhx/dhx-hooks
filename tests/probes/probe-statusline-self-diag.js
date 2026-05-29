@@ -5,7 +5,7 @@
 // Invariants exercised:
 //   1. withSegmentDiag(name, promise) returns {value, error, segmentName} for both success and rejection.
 //   2. appendStatuslineError appends one JSON line per call to ~/.cache/dhx/statusline-errors.jsonl.
-//   3. Log rotates to .prev when size + new line > 1MB (mirror of appendTrace pattern).
+//   3. Log rotates to .prev when size + new line > 1MB (size-based rotation pattern).
 //   4. Log writer failure (mocked fs.appendFile throw) MUST NOT throw out of appendStatuslineError —
 //      the outer try/catch swallows everything so the render path never blocks.
 //   5. Clean path: appendStatuslineError is never called when no segment errored — log file stays

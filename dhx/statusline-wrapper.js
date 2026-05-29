@@ -53,7 +53,7 @@ process.stdin.on('end', () => {
   }
 
   // Run the dhx renderer, git info, cache-age, ccburn, health cache, and drift check in parallel.
-  // ccburn collect silently feeds its database; compact output goes in the statusline.
+  // ccburn renders synchronously from the stdin rate_limits payload — no subprocess (2026-05-29).
   // Each branch is wrapped via withSegmentDiag so a thrown exception in any one
   // segment yields a red `⚠ <segment>?` sigil + a JSONL log line instead of
   // collapsing the entire statusline to silent empty (2026-04-26 #4 self-diag).
@@ -61,7 +61,7 @@ process.stdin.on('end', () => {
     withSegmentDiag('renderer',   runRenderer(input)),
     withSegmentDiag('git',        getGitInfo(cwd)),
     withSegmentDiag('cacheAge',   getCacheAge(data)),
-    withSegmentDiag('ccburn',     runCcburn(input)),
+    withSegmentDiag('ccburn',     buildCcburnFromStdin(input)),
     withSegmentDiag('firstPrompt', getFirstUserPrompt(data)),
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
     withSegmentDiag('drift',      checkDrift(data)),
@@ -210,111 +210,115 @@ function runRenderer(stdinData) {
   });
 }
 
-// ccburn segment — stale-while-revalidate cache (2026-05-25 ccburn-storm fix).
+// ccburn segment — rendered directly from the statusline stdin's rate_limits.
 //
-// `ccburn --json --once` is a HEAVY usage scan: measured ~4.5-8s/call on this box
-// (it scans usage/JSONL to compute session+weekly limits). It is NOT the ~15ms the
-// incident triage reported — that benchmark unknowingly timed the no-op shim, not
-// real ccburn. Running this scan on EVERY statusline refresh (~24/min × N sessions)
-// was the incident's real amplifier: the "high-RAM JSONL search" was ccburn itself.
-// So we keep the scan OFF the render hot path:
+// 2026-05-29 rewrite: dropped the ccburn subprocess + the global
+// ~/.cache/dhx/ccburn-json.json cache + `ccburn collect`. Root cause of the
+// "wrong / fluctuating between windows" reports: that cache was GLOBAL, but the
+// ccburn store it cached is PER-CCS-PROFILE (ccburn keys its data dir on
+// CLAUDE_CONFIG_DIR → .ccburna / .ccburnb / .ccburnc). Single-flight meant
+// whichever profile's window won the 30s race wrote ITS profile's reading into the
+// one shared cache, so every window displayed one random profile's number, flipping
+// each refresh. Compounded inside ccburn: it prefers its newest SQLite row when
+// <120s old (fed by per-window `collect`) over the live API, so an idle window
+// poisoned the shared store with its frozen-stale rate_limits. See
+// docs/statusline-wrapper.md § ccburn segment + docs/decisions.md 2026-05-29 row.
 //
-//   • render path reads a cached segment — a single readFileSync, instant;
-//   • at most once per TTL, ONE detached, timeout-bounded refresher recomputes the
-//     cache in the background.
+// CC already ships authoritative usage in stdin's `rate_limits` (same source as
+// /usage), so we render it ourselves — no subprocess, no cache, no collect, just
+// arithmetic on data runMain already parsed. Each window shows ITS OWN
+// account-accurate usage. The 2026-05-25 storm/orphan class (D-14) is now
+// structurally impossible for this segment: there is nothing to spawn.
 //
-// The refresher is `detached:true` + `unref()` so it OUTLIVES this wrapper (which
-// exits in ms) and can finish the ~5s scan — but every ccburn invocation inside it
-// is wrapped in coreutil `timeout`, so it self-terminates and can NEVER orphan into
-// a storm. That preserves the D-14 "no unbounded subprocess on the render hot path"
-// rule (2026-04-26 capture-pane precedent; docs/statusline-wrapper.md § Fleet D-14)
-// while fixing the deeper problem the timeout alone didn't: the per-refresh scan
-// frequency. Single-flight is enforced by bumping the cache mtime BEFORE spawning,
-// so concurrent refreshes — and other sessions sharing ~/.cache/dhx — skip.
+//   rate_limits.five_hour = { used_percentage, resets_at }   → session (5h window)
+//   rate_limits.seven_day = { used_percentage, resets_at }   → weekly  (7d, all models)
 //
-// Cache: ~/.cache/dhx/ccburn-json.json holds raw `--json --once` output; the wrapper
-// builds the segment at read time. This file also supersedes the old rolling
-// statusline-trace.jsonl for raw-json anomaly inspection.
-// Probe: tests/probes/probe-ccburn-no-orphan.sh. Tunables are env-overridable.
-const CCBURN_CACHE = process.env.DHX_CCBURN_CACHE
-  || path.join(os.homedir(), '.cache', 'dhx', 'ccburn-json.json');
-const CCBURN_TTL_MS = Number(process.env.DHX_CCBURN_TTL_MS) || 30_000;
-const CCBURN_REFRESH_TIMEOUT = process.env.DHX_CCBURN_REFRESH_TIMEOUT || '10s';
-const CCBURN_COLLECT_TIMEOUT = process.env.DHX_CCBURN_COLLECT_TIMEOUT || '2s';
-const CCBURN_KILL_AFTER = process.env.DHX_CCBURN_KILL_AFTER || '2s';
+// `resets_at` is epoch-seconds today; ISO strings are tolerated for forward-compat
+// (ccburn's own collector normalized both, so CC has emitted both across versions).
+//
+// Pace → color: ccburn derived pace from burn-rate history we don't hold
+// in-process, so we reconstruct it as utilization-vs-fraction-of-window-elapsed
+// (the 5h / 7d window lengths are fixed by limit type). behind = under the clock
+// (conserving), ahead = over it (will deplete early), within tolerance = on pace.
+// A near-exhausted limit (≥ DHX_CCBURN_RED_AT, default 90%) is forced to `ahead`
+// regardless of pace so it never reads calm. A side whose resets_at is already in
+// the past is window-expired (an idle window CC hasn't refreshed yet) → skipped,
+// never shown stale.
 
-// Detached, timeout-bounded background refresh of the ccburn cache. Fire-and-forget:
-// it survives this wrapper's exit (detached+unref) to finish the slow scan, but each
-// ccburn invocation is `timeout`-bounded so it cannot orphan indefinitely.
-function refreshCcburnCache(stdinData) {
-  try {
-    fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
-    const tmp = `${CCBURN_CACHE}.${process.pid}.tmp`;
-    // collect (cheap, ~0.03s) populates ccburn's DB; then the heavy read. Atomic
-    // publish via rename; tmp cleaned on failure. Paths are fixed/internal — the
-    // only external value (stdinData) is fed via stdin, never interpolated.
-    const sh =
-      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_COLLECT_TIMEOUT} ccburn collect >/dev/null 2>&1; ` +
-      `timeout -k ${CCBURN_KILL_AFTER} ${CCBURN_REFRESH_TIMEOUT} ccburn --json --once > '${tmp}' 2>/dev/null ` +
-      `&& mv -f '${tmp}' '${CCBURN_CACHE}' || rm -f '${tmp}'`;
-    const child = spawn('bash', ['-c', sh], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] });
-    child.stdin.on('error', () => {}); // EPIPE if `collect` exits before reading
-    child.stdin.end(stdinData);        // fed to `ccburn collect`
-    child.unref();
-  } catch { /* best-effort; the render still shows the last cached value */ }
-}
+// Pace palette: behind / on-pace / ahead colors. DHX_CCBURN_PALETTE picks one;
+// default is the user-chosen mix (cyan / dim / red). All switchable live, no edit.
+const CCBURN_PALETTES = {
+  default:    { behind: '\x1b[36m',      on: '\x1b[2m',        ahead: '\x1b[31m' },
+  'ice-fire': { behind: '\x1b[36m',      on: '\x1b[2m',        ahead: '\x1b[38;5;208m' },
+  traffic:    { behind: '\x1b[32m',      on: '\x1b[33m',       ahead: '\x1b[31m' },
+  quiet:      { behind: '\x1b[2;32m',    on: '\x1b[2m',        ahead: '\x1b[31m' },
+  gradient:   { behind: '\x1b[38;5;75m', on: '\x1b[38;5;179m', ahead: '\x1b[38;5;203m' },
+  'bold-hot': { behind: '\x1b[32m',      on: '\x1b[2m',        ahead: '\x1b[1;31m' },
+};
+// Utilization at/above this forces `ahead` (red) regardless of pace. 0-100 → fraction.
+const CCBURN_RED_AT = (() => {
+  const v = Number(process.env.DHX_CCBURN_RED_AT);
+  return Number.isFinite(v) && v > 0 && v <= 100 ? v / 100 : 0.90;
+})();
+const CCBURN_PACE_TOL = 0.05;                                  // ± band around budget pace for `on`
+const CCBURN_WINDOW_SECS = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
 
-// Render-path entry: returns the cached segment instantly; triggers a single
-// background refresh when the cache is older than the TTL. Never blocks on ccburn.
-async function runCcburn(stdinData) {
-  let raw = '';
-  let mtimeMs = 0;
-  try {
-    const st = fs.statSync(CCBURN_CACHE);
-    mtimeMs = st.mtimeMs;
-    raw = fs.readFileSync(CCBURN_CACHE, 'utf8');
-  } catch { /* no cache yet — first run renders nothing, populates for the next refresh */ }
-
-  if (Date.now() - mtimeMs >= CCBURN_TTL_MS) {
-    // Claim the refresh slot by bumping mtime FIRST, so concurrent refreshes and
-    // other sessions sharing this cache don't all spawn (single-flight).
-    try {
-      const now = new Date();
-      try {
-        fs.utimesSync(CCBURN_CACHE, now, now);
-      } catch {
-        fs.mkdirSync(path.dirname(CCBURN_CACHE), { recursive: true });
-        fs.writeFileSync(CCBURN_CACHE, '');
-      }
-    } catch { /* claim failed; still attempt the refresh below */ }
-    refreshCcburnCache(stdinData);
+// resets_at → epoch seconds. Accepts an epoch number (seconds) or an ISO string;
+// returns null on anything else so the caller skips that side.
+function ccburnResetSecs(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const t = Date.parse(v);
+    if (!Number.isNaN(t)) return Math.floor(t / 1000);
   }
-
-  return buildCcburnSegment(raw) || '';
+  return null;
 }
 
-// Rolling ccburn trace — ~/.cache/dhx/statusline-trace.jsonl (+ .prev on rotation).
-// Captures raw --json output + composed segment per refresh so a recurrence of
-// the 2026-04-23 "1h298" anomaly (duration ending in a digit — not producible
-// by formatBurnDuration()) can be replayed off-line: either ccburn emitted
-// malformed JSON-adjacent bytes or our composition went wrong. Size-bounded at
-// 1MB → rotate to .prev (~2MB disk ceiling). Append via fs.appendFile
-// fire-and-forget so the statusline refresh stays non-blocking. Retire by
-// 2026-06-01 if no matching anomaly lands in the trace — tracked by
-// docs/backlog.md::ccburn-trace-retire.
-const TRACE_FILE = path.join(os.homedir(), '.cache', 'dhx', 'statusline-trace.jsonl');
-const TRACE_MAX_BYTES = 1_000_000;
-function appendTrace(entry) {
-  try {
-    const line = JSON.stringify(entry) + '\n';
-    try {
-      const st = fs.statSync(TRACE_FILE);
-      if (st.size + line.length > TRACE_MAX_BYTES) {
-        fs.renameSync(TRACE_FILE, TRACE_FILE + '.prev');
-      }
-    } catch { /* first write — file absent, nothing to rotate */ }
-    fs.appendFile(TRACE_FILE, line, () => {});
-  } catch { /* trace must never block the statusline */ }
+// Classify pace from utilization (0-1) vs the fraction of the window elapsed.
+// ≥ CCBURN_RED_AT short-circuits to 'ahead' (near-exhaustion override). Returns
+// one of 'behind' | 'on' | 'ahead' — the palette keys.
+function ccburnPace(util, secsToReset, windowSecs) {
+  if (util >= CCBURN_RED_AT) return 'ahead';
+  if (!Number.isFinite(windowSecs) || windowSecs <= 0) return 'on';
+  const budgetPace = 1 - secsToReset / windowSecs;             // fraction of window elapsed
+  if (util > budgetPace + CCBURN_PACE_TOL) return 'ahead';
+  if (util < budgetPace - CCBURN_PACE_TOL) return 'behind';
+  return 'on';
+}
+
+// Render-path entry (sync): build the ccburn line straight from the stdin payload.
+// `nowSecs` is injectable for probes; defaults to wall clock. Returns '' when
+// rate_limits is absent/empty or every side is window-expired — the segment hides,
+// matching the prior no-data behavior. No I/O, no subprocess.
+function buildCcburnFromStdin(stdinData, nowSecs) {
+  let data;
+  try { data = typeof stdinData === 'string' ? JSON.parse(stdinData) : stdinData; }
+  catch { return ''; }
+  const rl = data && data.rate_limits;
+  if (!rl || typeof rl !== 'object') return '';
+
+  const pal = CCBURN_PALETTES[process.env.DHX_CCBURN_PALETTE] || CCBURN_PALETTES.default;
+  const now = Number.isFinite(nowSecs) ? nowSecs : Date.now() / 1000;
+  const DIM = '\x1b[2m', R = '\x1b[0m';
+  const parts = [];
+
+  for (const key of ['five_hour', 'seven_day']) {
+    const lim = rl[key];
+    if (!lim || typeof lim !== 'object') continue;
+    const pctRaw = Number(lim.used_percentage);
+    if (!Number.isFinite(pctRaw)) continue;
+    const resetSecs = ccburnResetSecs(lim.resets_at);
+    // Already reset, but this (idle) window's rate_limits hasn't refreshed → skip.
+    // Never render an expired side — that was the cross-profile "100%" staleness bug.
+    if (resetSecs == null || resetSecs <= now) continue;
+    const secsToReset = resetSecs - now;
+    const util = Math.max(0, Math.min(1, pctRaw / 100));
+    const pace = ccburnPace(util, secsToReset, CCBURN_WINDOW_SECS[key]);
+    const dur = formatBurnDuration(secsToReset / 60);
+    parts.push(`${pal[pace]}${Math.round(pctRaw)}%${R}${dur ? ` ${DIM}(${dur})${R}` : ''}`);
+  }
+  if (parts.length === 0) return '';
+  return parts.join(` ${DIM}·${R} `);
 }
 
 // --- Per-segment self-diagnosis (2026-04-26 statusline observability bundle #4) ---
@@ -335,7 +339,7 @@ function appendTrace(entry) {
 // INVARIANT: Log writer failure (mocked appendFile/statSync/renameSync throw)
 // MUST NOT propagate out of appendStatuslineError. The outer try/catch swallows
 // EVERYTHING — disk-full, permission-denied, or any unforeseen I/O error must
-// not block the render path. Mirrors appendTrace exactly.
+// not block the render path.
 //
 // INVARIANT: A structured warning that bubbles through readHealthCache (e.g.,
 // {front: "plugin-keys:MISSING", tail: ""}) is NOT a thrown exception and MUST
@@ -408,38 +412,6 @@ function computeMetaGlyph(driftWarning, healthFront, healthTail, sigilCount) {
   return warn ? '\x1b[38;5;220m⌃\x1b[0m' : '\x1b[2;38;5;70m∙\x1b[0m';
 }
 
-// Map ccburn's pace status → status glyph. `status` reflects utilization-vs-
-// budget-pace (behind = conserving, ahead = burning hot), which is what the
-// user actually reads at a glance — not raw % alone. Unknown statuses
-// collapse to empty so the segment still renders a pct without a misleading
-// icon.
-//
-// `on_pace` uses a dim `✓` (1 column, muted) instead of 🟢 (2 columns, full
-// weight). Rationale: `on_pace` carries no action — nothing to fix, nothing
-// to watch — so a muted glyph matches the signal's urgency; the original 🟢
-// was oversized relative to the surrounding monochrome text. `behind_pace`
-// (🧊) and `ahead_of_pace` (🚨) keep emoji because those states carry real
-// informational weight (conserving / burning hot) and the distinctive shape
-// earns the extra column. Tradeoff: segment width jitters by one column when
-// session transitions into/out of on_pace. Acceptable — status transitions
-// are rare (minutes/hours apart) vs. the timer's per-refresh tick.
-//
-// INVARIANT: ccburn's get_status() returns exactly one of
-// {ahead_of_pace, on_pace, behind_pace} — see
-// ccburn/utils/calculator.py:203 (the only producer). Expired limits get
-// coerced to behind_pace in ccburn/app.py:677/693, so `exhausted` is never
-// emitted and doesn't need a branch here. Prior map carried `at_pace`/
-// `exhausted` — stale from an older ccburn; silently dropped session emoji
-// across every refresh once ccburn renamed to `on_pace`.
-function statusEmoji(status) {
-  switch (status) {
-    case 'behind_pace':   return '🧊';
-    case 'on_pace':       return '\x1b[2m✓\x1b[0m';
-    case 'ahead_of_pace': return '🚨';
-    default:              return '';
-  }
-}
-
 // Minutes → compact duration. Rules:
 //   <1m   → "<1m"
 //   <1h   → "XXm"        (e.g. "47m")
@@ -458,39 +430,6 @@ function formatBurnDuration(minutes) {
   }
   if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
   return `${Math.floor(minutes / 1440)}d`;
-}
-
-// Build the ccburn status segment from parsed JSON. ccburn exposes one
-// reset field populated per limit (minutes for short horizons, hours for
-// long ones); we normalize to minutes before formatting. Partial limits
-// (session present, weekly absent, or vice versa) render whichever side
-// has data — resilient to ccburn shape drift.
-//
-// Example: `{limits:{session:{utilization:0.09,status:"behind_pace",resets_in_minutes:118},
-// weekly:{utilization:0.47,status:"ahead_of_pace",resets_in_hours:72}}}`
-// →       `S:🧊 9% (1h58m) · W:🚨 47% (3d)`
-function buildCcburnSegment(jsonText) {
-  if (!jsonText) return '';
-  let data;
-  try { data = JSON.parse(jsonText); } catch { return ''; }
-  const limits = data && data.limits;
-  if (!limits) return '';
-  const parts = [];
-  for (const [key, prefix] of [['session', 'S'], ['weekly', 'W']]) {
-    const limit = limits[key];
-    if (!limit) continue;
-    const pct = Math.round((limit.utilization || 0) * 100);
-    const emoji = statusEmoji(limit.status);
-    const mins = limit.resets_in_minutes != null
-      ? limit.resets_in_minutes
-      : limit.resets_in_hours != null
-        ? limit.resets_in_hours * 60
-        : null;
-    const dur = formatBurnDuration(mins);
-    const pctLabel = emoji ? `${emoji} ${pct}%` : `${pct}%`;
-    parts.push(`${prefix}:${pctLabel}${dur ? ` (${dur})` : ''}`);
-  }
-  return parts.join(' · ');
 }
 
 // Plugin-registry drift detector. Catches clobber of the downstream registry
@@ -1896,9 +1835,13 @@ function getGitInfo(cwd) {
 }
 
 module.exports = {
-  buildCcburnSegment,
+  // ccburn segment — stdin-rendered (2026-05-29). buildCcburnFromStdin is the
+  // render entry; ccburnPace + ccburnResetSecs are exported so the probe can pin
+  // the pace classification + resets_at normalization deterministically.
+  buildCcburnFromStdin,
+  ccburnPace,
+  ccburnResetSecs,
   formatBurnDuration,
-  statusEmoji,
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
@@ -1920,11 +1863,6 @@ module.exports = {
   // can drive the real helper (not a reimplementation) under a mocked
   // fs.renameSync to assert the leaked-tmp cleanup invariant.
   writeAtomic,
-  // runCcburn export — lets probe-ccburn-no-orphan.sh drive the real function
-  // (not a reimplementation) under a hung fake-ccburn on PATH to assert the
-  // 2026-05-25 orphan-prevention invariant (child self-terminates via coreutil
-  // `timeout` even after the Node parent is SIGKILLed).
-  runCcburn,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,

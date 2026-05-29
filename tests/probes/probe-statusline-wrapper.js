@@ -1,19 +1,23 @@
 // Probe: statusline-wrapper.js helper contracts.
 //
-// Locks: ccburn JSON → compact string transform, duration formatter,
-// status-emoji mapping. These helpers own the visual contract the user
-// reads every refresh ("S:🧊 9% (1h58m) · W:🚨 47% (3d)"). Prior design
-// regex-munged ccburn's --compact text and could only surface what
-// ccburn itself formatted; JSON-driven composition moved the format
-// decisions into our code, so the probe has to pin them.
+// Locks the ccburn segment's stdin→line transform, the duration formatter, the
+// pace classifier, and the meta-glyph. 2026-05-29 rewrite: the segment renders
+// CC's stdin `rate_limits` directly (no ccburn subprocess, no cache, no
+// `collect`), so the contract pinned here is the rate_limits→colored-line
+// transform — pace = color, expired-side skip, ≥90% red override, fail-silent.
+// These helpers own the visual contract the user reads every refresh
+// ("62% (2h35m) · 41% (8h)", number colored by pace).
 //
-// Pairs with: docs/statusline-wrapper.md "ccburn compact" section,
-// docs/decisions.md 2026-04-18 statusline-compaction row.
+// Pairs with: docs/statusline-wrapper.md § ccburn segment,
+// docs/decisions.md 2026-05-29 stdin-render row.
 
-// SAFE_FOR_LIVE: yes   (pure require + helper function tests; no FS writes)
+// SAFE_FOR_LIVE: yes   (pure require + helper function tests; no FS writes).
+// Pins DHX_CCBURN_PALETTE='default' so colour assertions are deterministic
+// regardless of the ambient palette env; assumes the default DHX_CCBURN_RED_AT (90).
 const path = require('path');
 const WRAPPER = path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
-const { buildCcburnSegment, formatBurnDuration, statusEmoji, computeMetaGlyph } = require(WRAPPER);
+const { buildCcburnFromStdin, ccburnPace, ccburnResetSecs, formatBurnDuration, computeMetaGlyph } = require(WRAPPER);
+process.env.DHX_CCBURN_PALETTE = 'default';
 
 let pass = 0;
 let fail = 0;
@@ -45,98 +49,85 @@ ok('duration: 1440 min (1d)',          formatBurnDuration(1440),      '1d');
 ok('duration: 4320 min (3d)',          formatBurnDuration(4320),      '3d');
 ok('duration: 10080 min (7d)',         formatBurnDuration(10080),     '7d');
 
-// --- § 2 statusEmoji --------------------------------------------------------
-// INVARIANT: the mapped set is exactly ccburn's three emitted statuses
-// (ccburn/utils/calculator.py:203 — the only producer). `at_pace` and
-// `exhausted` from prior ccburn revisions no longer exist and must not be
-// reintroduced without a matching producer.
+// --- § 2 ccburnResetSecs + ccburnPace ---------------------------------------
+// resets_at accepts epoch-seconds OR an ISO string (CC has emitted both). Pace
+// is reconstructed from utilization vs the fraction of the window elapsed —
+// budgetPace = 1 - secsToReset/windowSecs. ≥ DHX_CCBURN_RED_AT (default 90%)
+// short-circuits to 'ahead' so a near-empty limit never reads calm.
 
-ok('emoji: behind_pace',   statusEmoji('behind_pace'),   '🧊');
-ok('emoji: on_pace',       statusEmoji('on_pace'),       '\x1b[2m✓\x1b[0m');
-ok('emoji: ahead_of_pace', statusEmoji('ahead_of_pace'), '🚨');
-ok('emoji: unknown → empty', statusEmoji('approaching'), '');
-ok('emoji: at_pace (retired) → empty', statusEmoji('at_pace'), '');
-ok('emoji: exhausted (retired) → empty', statusEmoji('exhausted'), '');
-ok('emoji: null → empty',    statusEmoji(null),          '');
-ok('emoji: undefined → empty', statusEmoji(undefined),   '');
+ok('resetSecs: epoch number passthrough', ccburnResetSecs(1780000000), 1780000000);
+ok('resetSecs: ISO string → epoch secs',  ccburnResetSecs('2026-05-29T08:20:00Z'),
+   Math.floor(Date.parse('2026-05-29T08:20:00Z') / 1000));
+ok('resetSecs: garbage string → null',    ccburnResetSecs('not-a-date'), null);
+ok('resetSecs: null → null',              ccburnResetSecs(null), null);
+ok('resetSecs: NaN → null',               ccburnResetSecs(NaN), null);
 
-// --- § 3 buildCcburnSegment -------------------------------------------------
+// windowSecs 18000 (5h), secsToReset 9000 → budgetPace 0.5, tol ±0.05.
+ok('pace: under clock → behind',          ccburnPace(0.10, 9000, 18000), 'behind');
+ok('pace: at clock → on',                 ccburnPace(0.50, 9000, 18000), 'on');
+ok('pace: within +tol → on',              ccburnPace(0.54, 9000, 18000), 'on');
+ok('pace: over clock → ahead',            ccburnPace(0.80, 9000, 18000), 'ahead');
+// 95% util with budgetPace 0.95 would be 'on' by pace alone — override forces 'ahead'.
+ok('pace: ≥90% override beats on-pace',   ccburnPace(0.95, 900, 18000), 'ahead');
+ok('pace: degenerate window → on',        ccburnPace(0.5, 100, 0), 'on');
 
-// Canonical live shape: session in minutes, weekly in hours.
-const CANONICAL = JSON.stringify({
-  limits: {
-    session: {
-      utilization: 0.09,
-      status: 'behind_pace',
-      resets_in_minutes: 118,
-      resets_in_hours: null,
-    },
-    weekly: {
-      utilization: 0.47,
-      status: 'ahead_of_pace',
-      resets_in_minutes: null,
-      resets_in_hours: 72,
-    },
-  },
-});
-ok('ccburn: canonical session+weekly', buildCcburnSegment(CANONICAL),
-   'S:🧊 9% (1h58m) · W:🚨 47% (3d)');
+// --- § 3 buildCcburnFromStdin -----------------------------------------------
+// Default palette: behind = cyan (36), on = dim (2), ahead = red (31). Number
+// coloured by pace; duration always dim. nowSecs injected for determinism.
+const NOW = 1780000000;
+const CY = '\x1b[36m', RD = '\x1b[31m', DM = '\x1b[2m', RS = '\x1b[0m';
 
-// Rounding: utilization 0.095 → 10% (half-up).
-ok('ccburn: utilization rounds half-up',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.095, status: 'behind_pace', resets_in_minutes: 60 } },
-   })),
-   'S:🧊 10% (1h00m)');
+// five_hour 62%, 9300s left (2h35m), 5h window → budgetPace .483, util .62 → ahead (red).
+// seven_day 41%, 28800s left (8h), 7d window → budgetPace .952, util .41 → behind (cyan).
+ok('stdin: canonical session+weekly',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 62, resets_at: NOW + 9300 },
+     seven_day: { used_percentage: 41, resets_at: NOW + 28800 },
+   }}), NOW),
+   `${RD}62%${RS} ${DM}(2h35m)${RS} ${DM}·${RS} ${CY}41%${RS} ${DM}(8h)${RS}`);
 
-// Hours fallback when minutes are null (long horizon): 2.5h → 2h30m.
-ok('ccburn: hours fallback converts to minutes',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.5, status: 'on_pace', resets_in_hours: 2.5 } },
-   })),
-   'S:\x1b[2m✓\x1b[0m 50% (2h30m)');
+// Expired session side (resets_at in the past) → skipped; weekly renders alone.
+// This is the cross-profile "stale 100%" guard — never show a window-expired side.
+ok('stdin: expired session side skipped',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 100, resets_at: NOW - 100 },
+     seven_day: { used_percentage: 41, resets_at: NOW + 28800 },
+   }}), NOW),
+   `${CY}41%${RS} ${DM}(8h)${RS}`);
 
-// No reset time at all → segment still renders pct + emoji, no parens.
-ok('ccburn: missing resets → no duration',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.3, status: 'behind_pace' } },
-   })),
-   'S:🧊 30%');
+// ≥90% override → red even where pace (budgetPace .95, util .95) would be 'on'.
+ok('stdin: ≥90% override → red',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 95, resets_at: NOW + 900 },
+   }}), NOW),
+   `${RD}95%${RS} ${DM}(15m)${RS}`);
 
-// Unknown status → pct only (no stray emoji, no misleading icon).
-ok('ccburn: unknown status → no emoji',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.2, status: 'mystery_state', resets_in_minutes: 30 } },
-   })),
-   'S:20% (30m)');
+// ISO resets_at string tolerated (forward-compat).
+ok('stdin: ISO resets_at string',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 30, resets_at: new Date((NOW + 9300) * 1000).toISOString() },
+   }}), NOW),
+   `${CY}30%${RS} ${DM}(2h35m)${RS}`);
 
-// Partial: weekly only renders when session is absent.
-ok('ccburn: weekly-only',
-   buildCcburnSegment(JSON.stringify({
-     limits: { weekly: { utilization: 0.47, status: 'ahead_of_pace', resets_in_hours: 72 } },
-   })),
-   'W:🚨 47% (3d)');
+// Rounding: 61.6 → 62%.
+ok('stdin: used_percentage rounds',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     seven_day: { used_percentage: 61.6, resets_at: NOW + 28800 },
+   }}), NOW),
+   `${CY}62%${RS} ${DM}(8h)${RS}`);
 
-// Partial: session only.
-ok('ccburn: session-only',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { utilization: 0.09, status: 'behind_pace', resets_in_minutes: 118 } },
-   })),
-   'S:🧊 9% (1h58m)');
-
-// Empty / malformed / absent → empty string (segment hides).
-ok('ccburn: empty string',           buildCcburnSegment(''),            '');
-ok('ccburn: null',                   buildCcburnSegment(null),          '');
-ok('ccburn: malformed JSON',         buildCcburnSegment('{not json'),   '');
-ok('ccburn: no limits key',          buildCcburnSegment('{}'),          '');
-ok('ccburn: empty limits object',    buildCcburnSegment('{"limits":{}}'), '');
-
-// Utilization defaults to 0 when missing (edge of fresh session).
-ok('ccburn: missing utilization → 0%',
-   buildCcburnSegment(JSON.stringify({
-     limits: { session: { status: 'behind_pace', resets_in_minutes: 300 } },
-   })),
-   'S:🧊 0% (5h00m)');
+// Fail-silent: missing / malformed / fully-expired → '' (segment hides).
+ok('stdin: no rate_limits → empty',        buildCcburnFromStdin('{}', NOW), '');
+ok('stdin: malformed JSON → empty',        buildCcburnFromStdin('{not json', NOW), '');
+ok('stdin: null → empty',                  buildCcburnFromStdin(null, NOW), '');
+ok('stdin: both sides expired → empty',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 50, resets_at: NOW - 1 },
+   }}), NOW), '');
+ok('stdin: non-numeric used_percentage skipped → empty',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 'x', resets_at: NOW + 9300 },
+   }}), NOW), '');
 
 // --- § 4 computeMetaGlyph (2026-04-26 #2b additive meta-glyph) -------------
 // Aggregates {driftWarning, healthFront, healthTail, sigilCount} into a single
