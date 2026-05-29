@@ -17,6 +17,10 @@
 const path = require('path');
 const WRAPPER = path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
 const { buildCcburnFromStdin, ccburnPace, ccburnResetSecs, formatBurnDuration, computeMetaGlyph } = require(WRAPPER);
+// Pin palette to default + point the override-file at a nonexistent path so the
+// colour assertions are deterministic regardless of the ambient env or any real
+// ~/.config/dhx/ccburn-palette on this machine.
+process.env.DHX_CCBURN_PALETTE_FILE = '/nonexistent/dhx-ccburn-palette';
 process.env.DHX_CCBURN_PALETTE = 'default';
 
 let pass = 0;

@@ -263,6 +263,23 @@ const CCBURN_RED_AT = (() => {
 const CCBURN_PACE_TOL = 0.05;                                  // ± band around budget pace for `on`
 const CCBURN_WINDOW_SECS = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
 
+// Palette resolution — file trumps env trumps default. The statusline runs as a
+// child of `claude` and inherits its launch-time env, so DHX_CCBURN_PALETTE only
+// applies if exported BEFORE `claude` started (a restart). The override file is
+// re-read every refresh, so it's the LIVE switch: `echo traffic >
+// ~/.config/dhx/ccburn-palette` flips the palette on the next refresh, no restart.
+// Both the path-env and the file contents are read per call so the override is
+// fully live (and probe-overridable). Unknown names in either source → default.
+function resolveCcburnPalette() {
+  const file = process.env.DHX_CCBURN_PALETTE_FILE
+    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'dhx', 'ccburn-palette');
+  try {
+    const name = fs.readFileSync(file, 'utf8').trim();
+    if (CCBURN_PALETTES[name]) return CCBURN_PALETTES[name];
+  } catch { /* no override file (ENOENT) — fall through to env/default */ }
+  return CCBURN_PALETTES[process.env.DHX_CCBURN_PALETTE] || CCBURN_PALETTES.default;
+}
+
 // resets_at → epoch seconds. Accepts an epoch number (seconds) or an ISO string;
 // returns null on anything else so the caller skips that side.
 function ccburnResetSecs(v) {
@@ -297,7 +314,7 @@ function buildCcburnFromStdin(stdinData, nowSecs) {
   const rl = data && data.rate_limits;
   if (!rl || typeof rl !== 'object') return '';
 
-  const pal = CCBURN_PALETTES[process.env.DHX_CCBURN_PALETTE] || CCBURN_PALETTES.default;
+  const pal = resolveCcburnPalette();
   const now = Number.isFinite(nowSecs) ? nowSecs : Date.now() / 1000;
   const DIM = '\x1b[2m', R = '\x1b[0m';
   const parts = [];
