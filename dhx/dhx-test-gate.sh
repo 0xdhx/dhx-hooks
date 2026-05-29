@@ -16,6 +16,9 @@
 #     "target": "tests/test_unit",
 #     "memory_max": "4G",
 #     "runtime_max_sec": 60 }
+#   `target` semantics (2026-05-29): a directory → the gate runs from that
+#   dir's pytest rootdir (cd <rootdir> && pytest <rel-target>); a file /
+#   node-id / glob → appended as a path arg with cwd = repo root.
 #
 # Opt-out cascade (highest precedence first):
 #   1. DHX_SKIP_TEST_GATE=1 env
@@ -34,10 +37,12 @@
 # Companion: dhx-source-write-flag.sh (PostToolUse) sets a dirty flag when
 # source files are written. No flag = no source changes = skip tests.
 #
-# Test runner detection: 9-step cascade. Config files → project type
-# indicators → ambient tools → generic fallbacks. Fails open if no runner
-# found. Produces a TEST_RUNNER_ARGV array (no `eval`) that run_runner()
-# composes with the cgroup prefix + optional target + extra args.
+# Test runner detection: cascade. Config files → project type indicators →
+# subdir/monorepo config discovery → ambient tools → generic fallbacks. Fails
+# open if no runner found. Produces a TEST_RUNNER_ARGV array (no `eval`) that
+# run_runner() composes with the cgroup prefix + optional target + extra args,
+# invoked from RUN_CWD (pytest's rootdir for subdir layouts — see the
+# 2026-05-29 subdir-layout decisions row).
 
 set -uo pipefail
 
@@ -199,10 +204,77 @@ if [ -n "$PHASE_SKIP_REASON" ]; then
   exit 0
 fi
 
-# --- Detect test runner (9-step cascade → TEST_RUNNER_ARGV array) ---
+# --- Detect test runner (cascade → TEST_RUNNER_ARGV array) ---
 cd "$PROJECT_DIR" || exit 0
 
+# Subdir/monorepo layout helpers (2026-05-29). A repo can keep its pytest
+# config (pytest.ini / pyproject[tool.pytest] / setup.cfg / tox.ini) in a
+# subdirectory rather than at the repo root. pytest resolves rootdir by walking
+# UP from its args/cwd, so bare pytest from the repo root never sees a subdir
+# config — its addopts/markers are silently dropped and a broader/wrong
+# selection runs. These helpers let the gate anchor on the config dir (= pytest
+# rootdir) and run from there. See docs/decisions.md 2026-05-29 row.
+
+# _has_pytest_cfg DIR — true if DIR holds a recognized pytest config.
+_has_pytest_cfg() {
+  local d="$1"
+  [ -f "$d/pytest.ini" ] && return 0
+  [ -f "$d/pyproject.toml" ] && grep -qE '^\[tool\.pytest' "$d/pyproject.toml" 2>/dev/null && return 0
+  [ -f "$d/setup.cfg" ] && grep -q '^\[tool:pytest\]' "$d/setup.cfg" 2>/dev/null && return 0
+  [ -f "$d/tox.ini" ] && grep -q '^\[pytest\]' "$d/tox.ini" 2>/dev/null && return 0
+  return 1
+}
+
+# walk_up_for_pytest_config START — echo the nearest ancestor (incl. START)
+# holding a pytest config, walking up to PROJECT_DIR ('.'). START is relative
+# to PROJECT_DIR. Echo nothing + return 1 if none found.
+walk_up_for_pytest_config() {
+  local d="${1#./}"
+  while :; do
+    if _has_pytest_cfg "$d"; then printf '%s\n' "$d"; return 0; fi
+    [ "$d" = "." ] && break
+    d=$(dirname "$d")
+  done
+  return 1
+}
+
+# discover_subdir_pytest_rootdir — bounded-depth search for a pytest config in
+# a SUBDIRECTORY (repo root already handled by the cascade). Echo the single
+# unambiguous config dir (relative, no leading ./) + return 0; on zero or
+# multiple matches echo nothing + return 1 (logging the ambiguous case). Only
+# reached when no root config/runner matched, so the find cost is bounded to
+# the already-misfiring layouts.
+discover_subdir_pytest_rootdir() {
+  local f dir
+  local -a dirs=()
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    dir=$(dirname "$f"); dir="${dir#./}"
+    [ "$dir" = "." ] && continue
+    case "$(basename "$f")" in
+      pytest.ini)     dirs+=("$dir") ;;
+      pyproject.toml) grep -qE '^\[tool\.pytest' "$f" 2>/dev/null && dirs+=("$dir") ;;
+      setup.cfg)      grep -q '^\[tool:pytest\]' "$f" 2>/dev/null && dirs+=("$dir") ;;
+      tox.ini)        grep -q '^\[pytest\]' "$f" 2>/dev/null && dirs+=("$dir") ;;
+    esac
+  done < <(find . -maxdepth 3 \
+             \( -name .git -o -name node_modules -o -name .venv -o -name venv \
+                -o -name dist -o -name build -o -name .tox -o -name '*.egg-info' \) -prune -o \
+             -type f \( -name pytest.ini -o -name pyproject.toml \
+                        -o -name setup.cfg -o -name tox.ini \) -print 2>/dev/null)
+  [ "${#dirs[@]}" -eq 0 ] && return 1
+  local uniq
+  uniq=$(printf '%s\n' "${dirs[@]}" | sort -u)
+  if [ "$(printf '%s\n' "$uniq" | wc -l)" -eq 1 ]; then
+    printf '%s\n' "$uniq"
+    return 0
+  fi
+  log "Multiple subdir pytest configs found (ambiguous): $(printf '%s ' $uniq)→ not anchoring; running from repo root"
+  return 1
+}
+
 IS_PYTEST=0
+DISCOVERED_ROOTDIR=""
 TEST_RUNNER_ARGV=()
 if [ -f "pytest.ini" ] || [ -f "pytest.toml" ] || [ -f ".pytest.toml" ]; then
   TEST_RUNNER_ARGV=("$PYTHON" -m pytest --tb=short -q)
@@ -220,6 +292,15 @@ elif [ -f "go.mod" ]; then
 elif [ -f "package.json" ] && grep -q '"test"' package.json 2>/dev/null && \
      ! grep -q 'no test specified' package.json 2>/dev/null; then
   TEST_RUNNER_ARGV=(npm test)
+elif DISCOVERED_ROOTDIR=$(discover_subdir_pytest_rootdir) && [ -n "$DISCOVERED_ROOTDIR" ]; then
+  # No root config matched, but a single unambiguous subdir pytest config
+  # exists → anchor on it. run_runner cd's to $RUN_CWD (set below) so pytest
+  # resolves rootdir from the config dir. Placed AFTER the package.json branch
+  # so a real root npm suite still wins (preserves the 2026-04-14 cascade
+  # ordering); fires only where the gate would otherwise fall to ambient/fail-open.
+  TEST_RUNNER_ARGV=("$PYTHON" -m pytest --tb=short -q)
+  IS_PYTEST=1
+  log "Subdir pytest config discovered at $DISCOVERED_ROOTDIR → cwd=$DISCOVERED_ROOTDIR"
 elif "$PYTHON" -m pytest --version &>/dev/null 2>&1; then
   TEST_RUNNER_ARGV=("$PYTHON" -m pytest --tb=short -q)
   IS_PYTEST=1
@@ -231,6 +312,32 @@ else
   log "No test runner detected → allowing stop (fail open)"
   rm -f "$COUNTER_FILE"
   exit 0
+fi
+
+# --- Resolve effective working directory + target arg (subdir/monorepo) ---
+# RUN_CWD = directory the runner is invoked from (pytest's rootdir when a config
+# lives there). RUN_TARGET = optional path arg, relative to RUN_CWD. Reproduces
+# the canonical `cd <config-dir> && <runner> [rel-target]`: `python -m` puts cwd
+# on sys.path, addopts/markers load, .pytest_cache anchors at the rootdir.
+# See docs/decisions.md 2026-05-29 row.
+RUN_CWD="$PROJECT_DIR"
+RUN_TARGET=""
+if [ -n "$TEST_TARGET" ] && [[ "$TEST_TARGET" != /* ]] && [ -d "$TEST_TARGET" ]; then
+  # Explicit target is a (relative) directory → anchor on its pytest rootdir.
+  _cfgdir=$(walk_up_for_pytest_config "$TEST_TARGET" || true)
+  if [ -n "$_cfgdir" ]; then
+    RUN_CWD="$PROJECT_DIR/$_cfgdir"
+    [ "$TEST_TARGET" != "$_cfgdir" ] && RUN_TARGET="${TEST_TARGET#"$_cfgdir"/}"
+    log "Target '$TEST_TARGET' is a dir; pytest rootdir=$_cfgdir → cwd=$_cfgdir, target=${RUN_TARGET:-<none>}"
+  else
+    RUN_CWD="$PROJECT_DIR/$TEST_TARGET"
+    log "Target '$TEST_TARGET' is a dir with no pytest config above it → cwd=$TEST_TARGET"
+  fi
+elif [ -n "$TEST_TARGET" ]; then
+  # File / node-id / glob / absolute path → append as an arg, cwd = repo root.
+  RUN_TARGET="$TEST_TARGET"
+elif [ -n "$DISCOVERED_ROOTDIR" ]; then
+  RUN_CWD="$PROJECT_DIR/$DISCOVERED_ROOTDIR"
 fi
 
 # --- Cgroup wrap factory ---
@@ -263,18 +370,23 @@ fi
 run_runner() {
   local extra=("$@")
   local argv=("${CGROUP_PREFIX[@]}" "${TEST_RUNNER_ARGV[@]}")
-  if [ -n "$TEST_TARGET" ]; then
-    argv+=("$TEST_TARGET")
+  if [ -n "$RUN_TARGET" ]; then
+    argv+=("$RUN_TARGET")
   fi
   if [ "${#extra[@]}" -gt 0 ]; then
     argv+=("${extra[@]}")
   fi
+  [ "$RUN_CWD" != "$PROJECT_DIR" ] && log "Runner cwd: $RUN_CWD"
   log "Running: ${argv[*]}"
-  "${argv[@]}" 2>&1
+  # Subshell cd so the runner resolves pytest's rootdir from the config dir
+  # (addopts/markers, sys.path via `python -m`, .pytest_cache). RUN_CWD is
+  # always a validated existing dir (PROJECT_DIR, a discovered config dir, or a
+  # `-d`-checked target), so the cd does not fail in practice.
+  ( cd "$RUN_CWD" && "${argv[@]}" 2>&1 )
 }
 
 # --- pytest --last-failed branch (primary; no dead -x full-suite fallback) ---
-if [ "$IS_PYTEST" = "1" ] && [ -d ".pytest_cache" ]; then
+if [ "$IS_PYTEST" = "1" ] && [ -d "$RUN_CWD/.pytest_cache" ]; then
   LF_EXIT=0
   LF_OUTPUT=$(run_runner --last-failed --last-failed-no-failures none) || LF_EXIT=$?
 
