@@ -161,6 +161,32 @@ sed -i '/^\/\/ bundle row\.$/d' dhx/statusline-wrapper.js
 sed -i 's|, docs/research/economics/session-cost-mechanics\.md||' dhx/statusline-wrapper.js
 sed -i 's| / docs/research/economics/away-summary-billing\.md||' dhx/statusline-wrapper.js
 
+# Class C (2026-05-29): dhx-git-destructive-guard.sh — strip private cross-repo
+# doc/report path refs from the security-hook header comments. The deny-history
+# docs/research refs (L33+L44) are the docs/ FAIL that blocked the mirror since
+# 2026-05-25; the reports/done ref (L23) + the docs/git ref (L8-9) slip the verify
+# gate (`docs/git` not in the FAIL alternation, `cross-repo` not in the cross-repo
+# gate) but are the same private-path class — scrub all four. Each delete is paired
+# with a prose-balance `s` on the prior line so no dangling sentence fragment ships.
+# The genericized wording keeps the security content (bypass vectors, council-lock)
+# verbatim — only the private path references are removed.
+sed -i 's|^# skills-repo v1\.3 /dhx:git (cross-repo$|# skills-repo v1.3 /dhx:git.|' dhx/dhx-git-destructive-guard.sh
+sed -i '/^# docs\/git\/destructive-op-enforcement-backstop\.md)\.$/d' dhx/dhx-git-destructive-guard.sh
+sed -i 's|^# the live CC matcher in$|# the live CC matcher (bypass-vector audit):|' dhx/dhx-git-destructive-guard.sh
+sed -i '/^# cross-repo\/reports\/done\/2026-05-25-git-force-push-deny-rule-bypass-vectors\.md:$/d' dhx/dhx-git-destructive-guard.sh
+sed -i 's|^# Permission eval order (canonical:$|# Permission eval order:|' dhx/dhx-git-destructive-guard.sh
+sed -i 's|council-locked D-1\.\.D-7 (2026-05-08;$|council-locked D-1..D-7 (2026-05-08):|' dhx/dhx-git-destructive-guard.sh
+sed -i '/^# cross-repo\/docs\/research\/2026-05-08-git-reset-hard-worktree-deny-history\.md):$/d' dhx/dhx-git-destructive-guard.sh
+
+# Class C (2026-05-29): dhx-test-gate.sh — strip the bare `docs/decisions.md` refs.
+# These don't match the docs/ FAIL alternation (no path segment after `.md`), so
+# they slip the gate silently; strip per the Class C convention. The inline form
+# (L216) is anchored to its FULL line so its ` See docs/decisions.md …` substring
+# does NOT also truncate the standalone L322 (whose leading `# ` would otherwise
+# match), which would leave an orphan `#` the verify gate can't catch.
+sed -i 's|^# rootdir) and run from there\. See docs/decisions\.md 2026-05-29 row\.$|# rootdir) and run from there.|' dhx/dhx-test-gate.sh
+sed -i '/^# See docs\/decisions\.md 2026-05-29 row\.$/d' dhx/dhx-test-gate.sh
+
 # Class D: forgefinder → acme-app in test fixtures
 sed -i 's|/home/dhx/repos/forgefinder|/home/dhx/repos/acme-app|g' tests/probes/probe-worktree-bash-guard.sh
 sed -i 's|forgefinder Phase 26|a real-world Phase 26|' tests/probes/probe-deferred-check-header-fallback.sh
@@ -209,6 +235,17 @@ sed -i 's|~/repos/skills/dhx/|<skills-monorepo>/dhx/|g' dhx-plugin/plugins/dhx/.
 # the absolute path, keeping the "'s cmd_* ... precedent" continuation
 # intact.
 sed -i 's|~/repos/skills/scripts/dhx-sym\.sh|the skills-monorepo dhx-sym.sh|' tests/probes/probe-plugin-cache-staleness.sh
+
+# Class F (2026-05-29): residual `~/repos/skills/` path leaks that surfaced only
+# once the guard-hook docs/ FAIL above was cleared. The verify gate exits at the
+# FIRST failing check and the docs/ FAIL (checked before the cross-repo gate)
+# masked these for ~4 days — they are pre-existing scrub-debt accrued across files
+# touched since the last clean sync (2026-04-28). Genericize to `the skills-monorepo
+# …` per the Class F convention above (L203 plugin.json, L211 dhx-sym.sh).
+sed -i 's|~/repos/skills/scripts/install-hooks\.sh|the skills-monorepo install-hooks.sh|' scripts/install-hooks.sh
+sed -i 's|~/repos/skills/scripts/hooks/pre-commit|the skills-monorepo scripts/hooks/pre-commit|' scripts/hooks/pre-commit
+sed -i 's|^# ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive\.md$|# the skills-monorepo auto-silence false-positive report (2026-05-22).|' tests/probes/probe-deferred-check-req-id-regex.sh
+sed -i 's|See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive\.md|See the skills-monorepo auto-silence false-positive report (2026-05-22).|' tests/probes/probe-deferred-check-canonical-classifier.sh
 
 # --- 3b. Scrub verification ------------------------------------------------
 echo "[sync] verifying scrubs..."
