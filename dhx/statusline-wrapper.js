@@ -240,10 +240,12 @@ function runRenderer(stdinData) {
 // in-process, so we reconstruct it as utilization-vs-fraction-of-window-elapsed
 // (the 5h / 7d window lengths are fixed by limit type). behind = under the clock
 // (conserving), ahead = over it (will deplete early), within tolerance = on pace.
-// A near-exhausted limit (≥ DHX_CCBURN_RED_AT, default 90%) is forced to `ahead`
-// regardless of pace so it never reads calm. A side whose resets_at is already in
-// the past is window-expired (an idle window CC hasn't refreshed yet) → skipped,
-// never shown stale.
+// Two symmetric floor overrides bypass pace: a near-exhausted limit
+// (≥ DHX_CCBURN_RED_AT, default 90%) is forced to `ahead` so it never reads calm,
+// and a barely-used limit (≤ DHX_CCBURN_BLUE_AT, default 5%) is forced to `behind`
+// so low/zero usage always reads as conserving rather than neutral-dim at a fresh
+// window's start. A side whose resets_at is already in the past is window-expired
+// (an idle window CC hasn't refreshed yet) → skipped, never shown stale.
 
 // Pace palette: behind / on-pace / ahead colors. DHX_CCBURN_PALETTE picks one;
 // default is the user-chosen mix (cyan / dim / red). All switchable live, no edit.
@@ -259,6 +261,11 @@ const CCBURN_PALETTES = {
 const CCBURN_RED_AT = (() => {
   const v = Number(process.env.DHX_CCBURN_RED_AT);
   return Number.isFinite(v) && v > 0 && v <= 100 ? v / 100 : 0.90;
+})();
+// Utilization at/below this forces `behind` (conserving) regardless of pace. 0-100 → fraction.
+const CCBURN_BLUE_AT = (() => {
+  const v = Number(process.env.DHX_CCBURN_BLUE_AT);
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? v / 100 : 0.05;
 })();
 const CCBURN_PACE_TOL = 0.05;                                  // ± band around budget pace for `on`
 const CCBURN_WINDOW_SECS = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
@@ -292,10 +299,13 @@ function ccburnResetSecs(v) {
 }
 
 // Classify pace from utilization (0-1) vs the fraction of the window elapsed.
-// ≥ CCBURN_RED_AT short-circuits to 'ahead' (near-exhaustion override). Returns
-// one of 'behind' | 'on' | 'ahead' — the palette keys.
+// Symmetric floor overrides short-circuit pace: ≥ CCBURN_RED_AT → 'ahead'
+// (near-exhaustion), ≤ CCBURN_BLUE_AT → 'behind' (barely used / conserving).
+// Red is checked first so it wins a (misconfigured) overlap. Returns one of
+// 'behind' | 'on' | 'ahead' — the palette keys.
 function ccburnPace(util, secsToReset, windowSecs) {
   if (util >= CCBURN_RED_AT) return 'ahead';
+  if (util <= CCBURN_BLUE_AT) return 'behind';
   if (!Number.isFinite(windowSecs) || windowSecs <= 0) return 'on';
   const budgetPace = 1 - secsToReset / windowSecs;             // fraction of window elapsed
   if (util > budgetPace + CCBURN_PACE_TOL) return 'ahead';

@@ -73,6 +73,10 @@ ok('pace: within +tol → on',              ccburnPace(0.54, 9000, 18000), 'on')
 ok('pace: over clock → ahead',            ccburnPace(0.80, 9000, 18000), 'ahead');
 // 95% util with budgetPace 0.95 would be 'on' by pace alone — override forces 'ahead'.
 ok('pace: ≥90% override beats on-pace',   ccburnPace(0.95, 900, 18000), 'ahead');
+// 3% util at a fresh window (budgetPace ~0.028) would be 'on' by pace — ≤5% floor forces 'behind'.
+ok('pace: ≤5% override beats on-pace',    ccburnPace(0.03, 17500, 18000), 'behind');
+ok('pace: 0% → behind (floor)',           ccburnPace(0, 17999, 18000), 'behind');
+ok('pace: just above floor stays paced',  ccburnPace(0.06, 17500, 18000), 'on');
 ok('pace: degenerate window → on',        ccburnPace(0.5, 100, 0), 'on');
 
 // --- § 3 buildCcburnFromStdin -----------------------------------------------
@@ -105,6 +109,14 @@ ok('stdin: ≥90% override → red',
      five_hour: { used_percentage: 95, resets_at: NOW + 900 },
    }}), NOW),
    `${RD}95%${RS} ${DM}(15m)${RS}`);
+
+// ≤5% override → behind (cyan): 0% in a freshly-reset window reads as conserving,
+// not neutral-dim. budgetPace ~0 here, so without the floor it would be 'on' (dim).
+ok('stdin: 0% fresh window → behind (cyan)',
+   buildCcburnFromStdin(JSON.stringify({ rate_limits: {
+     five_hour: { used_percentage: 0, resets_at: NOW + 17999 },
+   }}), NOW),
+   `${CY}0%${RS} ${DM}(4h59m)${RS}`);
 
 // ISO resets_at string tolerated (forward-compat).
 ok('stdin: ISO resets_at string',
