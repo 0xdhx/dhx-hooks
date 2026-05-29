@@ -82,6 +82,7 @@ asserts row count == file count.
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |
 | `probe-sigpipe-pipefail-shapes.sh` | yes | static lint grepping in-repo `dhx/*.sh` for pipeline shapes; no writes |
+| `probe-skill-pressure.js` | yes | mkdtempSync tmp `reports/skills/*/actionable/` fixtures; the fixture-injection scenario reads the skills-repo `tests/fixtures/actionable/` by path (read-only); no live writes (Phase 24 PRESSURE-06 cross-repo skill-pressure agreement probe) |
 | `probe-stale-hooks-filter-retired.js` | yes | read-only assertions against repo-tracked source files |
 | `probe-stale-worktree-sweep.sh` | yes | mktemp + fake worktree state; never operates on live worktrees |
 | `probe-subagent-stop-sync.sh` | yes | arming-mode writes only to `${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe/` (per-process scratch); fixtures-only mode is read-only when probe dir absent (BG-AGENT-2 / Phase 9 sync+bg SubagentStop verification probe; mirrors `probe-effort-level-stdin-absent.sh` D-32 / SCHEMA-04 file-gated convention) |

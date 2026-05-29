@@ -67,7 +67,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('drift',      checkDrift(data)),
     withSegmentDiag('fleet',      readFleetFeed()),
     withSegmentDiag('watch',      readWatchHealth()),
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR]) => {
+    withSegmentDiag('skillPressure', readSkillPressure()),  // D-01/D-02/D-03: fail-silent, not sigil-generating
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -101,6 +102,9 @@ process.stdin.on('end', () => {
     // omitted from sigilCount below so a (theoretically impossible) rejection
     // can't bump the meta-glyph either.
     const watchWarning   = unwrap(watchR,      () => '');
+    // skillPressure is fail-silent (D-01): own try/catch → '' on ANY error.
+    // Do NOT add to sigilCount — a `⚠ skillPressure?` sigil contradicts fail-silent.
+    const skillPressureWarning = unwrap(skillPressureR, () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -144,6 +148,10 @@ process.stdin.on('end', () => {
     // watch:Nfail report upstream-watch checker health. Silent when healthy /
     // stale / error (readWatchHealth returns '').
     if (watchWarning) front.push(watchWarning);
+    // Skill-pressure (D-03, R-05): fifth orange-208 front member. Aggregate token
+    // ⚑N — silent at zero pressure. Order: drift → health → fleet → watch →
+    // skill-pressure (local-session warnings precede cross-repo, then skill state).
+    if (skillPressureWarning) front.push(skillPressureWarning);
     if (front.length > 0) {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
@@ -809,6 +817,139 @@ function readWatchHealth() {
     return `\x1b[38;5;208m${tokens.join(' ')}\x1b[0m`;
   } catch {
     return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Skill-pressure segment (D-01/D-02/D-03, Phase 24)
+// Reads reports/skills/*/actionable/*.md from the skills repo, counts files
+// whose `status` ∈ PRESSURE_STATUSES, and returns a compact ⚑N token (or ''
+// at zero). All errors are swallowed — this segment is fully fail-silent.
+// ---------------------------------------------------------------------------
+
+// Mirror _OPEN_STATUSES from tests/lib/skills_report_lint.py exactly.
+const PRESSURE_STATUSES = new Set(['active', 'needs-verify', 'regressed']);
+
+// D-02: resolve the skills-repo root. Returns null if no candidate passes
+// existence-validation against reports/skills/. Never throws.
+function resolveSkillsRoot() {
+  const candidates = [];
+  // Step 1: env override — enables worktrees, alternate layouts, test harnesses.
+  if (process.env.DHX_SKILLS_REPO) {
+    candidates.push(process.env.DHX_SKILLS_REPO);
+  }
+  // Step 2: symlink-derive — realpath dhx-plugin/plugins/dhx/skills → parent.
+  // The symlink resolves to ~/repos/skills/dhx; its PARENT is the repo root.
+  // The PARENT correction is load-bearing: realpathing the marketplace path
+  // alone lands in the hooks repo, not the skills repo. (Verified 2026-05-29.)
+  try {
+    const pluginSkillsLink = path.join(__dirname, '..', 'dhx-plugin', 'plugins', 'dhx', 'skills');
+    const realSkills = fs.realpathSync(pluginSkillsLink);
+    candidates.push(path.dirname(realSkills));
+  } catch { /* broken symlink — fall through to hardcode */ }
+  // Step 3: hardcoded fallback.
+  candidates.push(path.join(os.homedir(), 'repos', 'skills'));
+
+  for (const c of candidates) {
+    try {
+      fs.accessSync(path.join(c, 'reports', 'skills'));
+      return c;
+    } catch { /* ENOENT or broken — try next */ }
+  }
+  return null; // no valid candidate
+}
+
+// Inline status-only frontmatter parser (R-01: do NOT require()
+// backlog-frontmatter-validator.cjs — it is not exported and calls
+// main()+process.exit() at line 244, which would terminate the statusline
+// process at require time). Logic copied from
+// ~/repos/hooks/scripts/lib/backlog-frontmatter-validator.cjs lines 86-133.
+// Returns only the `status` string, or null on parse failure.
+function parseStatusFromFrontmatter(raw) {
+  if (typeof raw !== 'string') return null;
+  if (!raw.startsWith('---')) return null;
+  const lines = raw.split(/\r?\n/);
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i] === '---') { end = i; break; }
+  }
+  if (end === -1) return null;
+  for (const line of lines.slice(1, end)) {
+    const m = line.match(/^status:\s*(.*)$/);
+    if (!m) continue;
+    let val = m[1].trim();
+    // Strip outer single OR double quotes (WR-03 logic from validator).
+    if (val.length >= 2) {
+      const first = val[0];
+      const last = val[val.length - 1];
+      if ((first === '"' && last === '"' && !val.slice(1, -1).includes('"')) ||
+          (first === "'" && last === "'" && !val.slice(1, -1).includes("'"))) {
+        val = val.slice(1, -1);
+      }
+    }
+    return val;
+  }
+  return null; // no status key found
+}
+
+const SKILL_PRESSURE_SIZE_CAP = 64 * 1024; // R-04: skip files >64 KB
+
+// D-01: count files in reports/skills/*/actionable/ whose status ∈ PRESSURE_STATUSES.
+// Returns {pressure, parseMs}. Fail-silent per-file and per-dir.
+function countSkillPressure(skillsRoot) {
+  const t0 = Date.now();
+  let pressure = 0;
+  try {
+    const reportsSkills = path.join(skillsRoot, 'reports', 'skills');
+    const skillDirs = fs.readdirSync(reportsSkills, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => path.join(reportsSkills, e.name, 'actionable'));
+    for (const actionDir of skillDirs) {
+      try {
+        const files = fs.readdirSync(actionDir).filter(f => f.endsWith('.md'));
+        for (const f of files) {
+          const filePath = path.join(actionDir, f);
+          try {
+            // R-04: size cap — skip files larger than SKILL_PRESSURE_SIZE_CAP.
+            const stat = fs.statSync(filePath);
+            if (stat.size > SKILL_PRESSURE_SIZE_CAP) continue;
+            // R-04: leading-frontmatter-only scan — read up to 4 KB (ample for
+            // any frontmatter block) rather than the whole file body.
+            const fd = fs.openSync(filePath, 'r');
+            const buf = Buffer.alloc(4096);
+            const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+            fs.closeSync(fd);
+            const raw = buf.slice(0, bytesRead).toString('utf8');
+            const status = parseStatusFromFrontmatter(raw);
+            if (status && PRESSURE_STATUSES.has(status)) pressure++;
+          } catch { /* unreadable file — D-01 fail-silent, skip */ }
+        }
+      } catch { /* missing actionable/ dir — expected for skills with no items */ }
+    }
+  } catch { /* reportsSkills unreadable — D-01 fail-silent */ }
+  return { pressure, parseMs: Date.now() - t0 };
+}
+
+// D-01: read skill pressure, return '' on zero or any error (fail-silent).
+// Logs to STATUSLINE_ERROR_FILE only on error or slow parse (R-03: NOT
+// unconditionally on every refresh — hot-path I/O noise).
+function readSkillPressure() {
+  try {
+    const skillsRoot = resolveSkillsRoot();
+    if (!skillsRoot) return '';
+    const { pressure, parseMs } = countSkillPressure(skillsRoot);
+    // R-03: log only on slow parse (≥50 ms) — revisit trigger per D-01.
+    if (parseMs >= 50) {
+      try {
+        const ts = new Date().toISOString();
+        const line = JSON.stringify({ ts, segment: 'skillPressure', slow: true, skillsRoot, pressure, parseMs }) + '\n';
+        fs.appendFile(STATUSLINE_ERROR_FILE, line, () => {});
+      } catch { /* log failure must never block statusline */ }
+    }
+    if (pressure === 0) return ''; // D-03: silent at zero
+    return `\x1b[38;5;208m⚑${pressure}\x1b[0m`; // D-03: aggregate token, orange 208
+  } catch {
+    return ''; // D-01: fail-silent on any error
   }
 }
 
@@ -1896,4 +2037,9 @@ module.exports = {
   computeSegmentSigil,
   // Meta-glyph composition (2026-04-26 #2b)
   computeMetaGlyph,
+  // Skill-pressure segment (D-01/D-02/D-03, Phase 24)
+  readSkillPressure,
+  resolveSkillsRoot,
+  countSkillPressure,
+  PRESSURE_STATUSES,
 };
