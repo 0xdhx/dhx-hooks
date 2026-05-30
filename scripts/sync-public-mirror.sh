@@ -247,6 +247,14 @@ sed -i 's|~/repos/skills/scripts/hooks/pre-commit|the skills-monorepo scripts/ho
 sed -i 's|^# ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive\.md$|# the skills-monorepo auto-silence false-positive report (2026-05-22).|' tests/probes/probe-deferred-check-req-id-regex.sh
 sed -i 's|See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive\.md|See the skills-monorepo auto-silence false-positive report (2026-05-22).|' tests/probes/probe-deferred-check-canonical-classifier.sh
 
+# Class F (2026-05-30): statusline-wrapper.js symlink-topology comment names the
+# `~/repos/skills/dhx` realpath target (the skills-repo symlink the segment derives
+# the repo root from). Pre-existing scrub-debt unmasked once the prior FAIL cleared
+# (the verify gate exits at the first failing check). Genericize the path; the
+# load-bearing "realpath PARENT correction" content stays verbatim — only the
+# absolute skills-repo path is removed.
+sed -i 's|resolves to ~/repos/skills/dhx;|resolves to the skills-monorepo dhx;|' dhx/statusline-wrapper.js
+
 # --- 3b. Scrub verification ------------------------------------------------
 echo "[sync] verifying scrubs..."
 
