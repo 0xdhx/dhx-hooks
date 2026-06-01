@@ -26,6 +26,17 @@ try {
   pluginCacheAllowlist = require('../scripts/lib/plugin-cache-allowlist.js');
 } catch (e) { /* module absent → cc-novel segment stays inert */ }
 
+// cc-warning snooze (shared module — single source of truth for the snooze file
+// path/format/predicate). When `/dhx:statusline snooze cc <dur>` is active, the
+// cc version-drift cluster below collapses to a dim countdown token. try/catch
+// require so a missing module degrades to "no snooze" (warnings always show)
+// rather than throwing — fail-OPEN, since a snooze hides a real signal. See
+// scripts/lib/cc-snooze.js.
+let ccSnooze = null;
+try {
+  ccSnooze = require('../scripts/lib/cc-snooze.js');
+} catch (e) { /* module absent → cc warnings never snooze (fail-open) */ }
+
 // --- Model + CCS identity ----------------------------------------------------
 
 // Compact display_name to "<lowercase-letter><version>[+]".
@@ -592,9 +603,31 @@ function runStatusline() {
     // `⚠` (U+26A0, BMP single-width) — NOT the U+1F6AB no-entry sign, which is
     // a double-width SMP emoji (RESEARCH Pitfall 3: width bug + status-symbol-
     // set inconsistency — the repo's warning vocabulary is `⚠`/`⬆`).
-    const ccAutoupd = process.env.DISABLE_AUTOUPDATER === '1'
+    let ccAutoupd = process.env.DISABLE_AUTOUPDATER === '1'
       ? '\x1b[33m⚠ cc-autoupd\x1b[0m \x1b[2m│\x1b[0m '
       : '';
+
+    // --- cc-warning snooze: collapse the cc version-drift cluster ------------
+    // When `/dhx:statusline snooze cc <dur>` is active, the three cc version
+    // segments above (⬆ cc, ⚠ cc dev install, ⚠ cc-autoupd) collapse into ONE
+    // DIM countdown token instead of vanishing — a quiet reminder that the
+    // (deliberately-chosen, e.g. post-rollback) cc state still exists, plus the
+    // time until it auto-reverts to the bright warning. Renders only when the
+    // cluster WOULD have shown something; an all-clear cc state stays silent.
+    // FAIL-OPEN: any module/read error leaves the bright warnings intact (a
+    // snooze must never silently hide a real signal on a bug). Scope is the
+    // version cluster ONLY — ⚠ cc-novel (RAT-04 plugin-pattern detector) is
+    // untouched. See scripts/lib/cc-snooze.js + docs/statusline-wrapper.md.
+    if (ccSnooze && (ccUpdate || ccAutoupd)) {
+      try {
+        const snz = ccSnooze.snoozeState('cc');
+        if (snz.active) {
+          const rem = ccSnooze.formatRemaining(snz);
+          ccUpdate = `\x1b[2m⚠ cc ${rem}\x1b[0m \x1b[2m│\x1b[0m `;
+          ccAutoupd = '';
+        }
+      } catch (e) { /* fail-open: leave the bright cc warnings as-is */ }
+    }
 
     // --- Line 1: model + CCS + [task |] dir + ctx ---
     // The wrapper appends cache, git, and repo signals (R/T/B) after this

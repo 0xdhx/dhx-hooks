@@ -140,6 +140,7 @@ A probe is a **schema-evolution probe** when it answers "should we migrate this 
 | `probe-execute-stop-review.sh` | decisions.md 2026-04-28 SIGPIPE+pipefail audit round-2 row (HP-028 lines 39 / 53 transcript-scan regression) | `bash tests/probes/probe-execute-stop-review.sh` |
 | `probe-sigpipe-pipefail-shapes.sh` | decisions.md 2026-04-28 SIGPIPE+pipefail static lint row (HP-028 enforced invariant — at-rest scan paired with verify-hook-patterns.sh check #5) | `bash tests/probes/probe-sigpipe-pipefail-shapes.sh` |
 | `probe-backlog-frontmatter-gate.sh` | decisions.md 2026-05-22 backlog-frontmatter-gate enrollment row + INFRA-05 (gate structure + composition with verify-hook-patterns via the run-parts dispatcher; behavioral block/pass in a throwaway mktemp repo) | `bash tests/probes/probe-backlog-frontmatter-gate.sh` |
+| `probe-cc-snooze.js` | decisions.md 2026-05-31 cc-warning-snooze row + docs/statusline-wrapper.md § Snooze (parse / round-trip / expiry / perma / fail-open / formatRemaining + renderer dim-collapse integration) | `node tests/probes/probe-cc-snooze.js` |
 
 ## Running all probes
 
