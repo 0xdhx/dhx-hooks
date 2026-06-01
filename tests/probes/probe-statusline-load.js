@@ -290,7 +290,11 @@ for (const c of malformedCases) {
   const r1 = renderOnce(baseFixture, { env: { DISABLE_AUTOUPDATER: '1' } });
   ok('RAT-06 DISABLE_AUTOUPDATER=1 → `cc-autoupd` marker present',
     r1.status === 0 && strip(r1.stdout).includes('cc-autoupd'), true);
-  const r2 = renderOnce(baseFixture);
+  // Explicitly clear DISABLE_AUTOUPDATER in the child — renderOnce spreads
+  // ...process.env, so a parent shell that has it set (e.g. an operator on a
+  // deliberate CC rollback) would otherwise leak it in and false-fail this
+  // "unset" assertion. '' is not '1', so the segment stays absent.
+  const r2 = renderOnce(baseFixture, { env: { DISABLE_AUTOUPDATER: '' } });
   ok('RAT-06 DISABLE_AUTOUPDATER unset → `cc-autoupd` marker absent',
     !strip(r2.stdout).includes('cc-autoupd'), true);
 }
