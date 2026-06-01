@@ -287,14 +287,20 @@ for (const c of malformedCases) {
 
 // Scenario 6 — DISABLE_AUTOUPDATER=1 → suppression marker present; unset → absent.
 {
-  const r1 = renderOnce(baseFixture, { env: { DISABLE_AUTOUPDATER: '1' } });
+  // Isolate HOME: the cc cluster (incl. cc-autoupd) is suppressed when an
+  // operator's live ~/.cache/dhx/cc-warning-snooze.json is active, which the
+  // renderer reads from HOME. A bare fixtureHome() has no snooze and no
+  // cc-update-check.json, so DISABLE_AUTOUPDATER alone drives the marker here —
+  // the scenario stays hermetic regardless of the running operator's snooze state.
+  const home = fixtureHome();
+  const r1 = renderOnce(baseFixture, { env: { HOME: home, DISABLE_AUTOUPDATER: '1' } });
   ok('RAT-06 DISABLE_AUTOUPDATER=1 → `cc-autoupd` marker present',
     r1.status === 0 && strip(r1.stdout).includes('cc-autoupd'), true);
   // Explicitly clear DISABLE_AUTOUPDATER in the child — renderOnce spreads
   // ...process.env, so a parent shell that has it set (e.g. an operator on a
   // deliberate CC rollback) would otherwise leak it in and false-fail this
   // "unset" assertion. '' is not '1', so the segment stays absent.
-  const r2 = renderOnce(baseFixture, { env: { DISABLE_AUTOUPDATER: '' } });
+  const r2 = renderOnce(baseFixture, { env: { HOME: home, DISABLE_AUTOUPDATER: '' } });
   ok('RAT-06 DISABLE_AUTOUPDATER unset → `cc-autoupd` marker absent',
     !strip(r2.stdout).includes('cc-autoupd'), true);
 }
