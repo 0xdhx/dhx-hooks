@@ -122,7 +122,8 @@ for c in "ls -la" "npm test" "npm run build" "npm run install" "pip download six
          "npm install foo | tail -5" "npm install > out.txt" "cd app && npm install" \
          "npm install --silent" "pip install --dry-run six" "pip install --help" \
          "npm install --json" "echo \$(npm install)" \
-         "/opt/py/bin/python3 script.py" "/home/u/.venv/bin/pip download six"; do
+         "/opt/py/bin/python3 script.py" "/home/u/.venv/bin/pip download six" \
+         "pip install six 2>&1" "/home/u/.venv/bin/pip install six 2>&1"; do
   [ "$(decision_of "$c")" = "NOOP" ]; ck $? "bypass no-op: $c"
 done
 # Idempotency: an already-wrapped command must not double-wrap.
