@@ -40,19 +40,32 @@ try {
 // --- Model + CCS identity ----------------------------------------------------
 
 // Compact display_name to "<lowercase-letter><version>[+]".
-//   "Opus 4.7 (1M context)" → "o4.7+"
-//   "Opus 4.7"              → "o4.7"
-//   "Sonnet 4.6"            → "s4.6"
-//   "Haiku 4.5"             → "h4.5"
+//   "Opus 4.7 (1M context)"  → "o4.7+"
+//   "Opus 4.7"               → "o4.7"
+//   "Sonnet 4.6"             → "s4.6"
+//   "Haiku 4.5"              → "h4.5"
+//   "claude-opus-4-8[1m]"    → "o4.8+"   (raw model-id, e.g. a /model override)
+//   "claude-sonnet-4-6"      → "s4.6"
+//   "claude-haiku-4-5-20251001" → "h4.5"
 // Lowercase reads quieter next to the dim model color; `+` replaces "(1M)"
 // so the segment stays 5 chars vs the old 10-13. Unrecognized shapes pass
 // through verbatim so we never hide the identity on a new model ship.
+//
+// The raw-model-id branch exists because `/model <id>` overrides make CC ship
+// the literal id (e.g. "claude-opus-4-8[1m]") as display_name instead of the
+// friendly "Opus 4.8" form — without it the segment shows the full 18-char id.
 function compactModel(displayName) {
   if (!displayName) return 'Claude';
-  const m = displayName.match(/^(Opus|Sonnet|Haiku)\s+([\d.]+)/);
-  if (!m) return displayName;
-  const has1M = /\(1M context\)/.test(displayName);
-  return `${m[1][0].toLowerCase()}${m[2]}${has1M ? '+' : ''}`;
+  // 1M-context marker in either form: friendly "(1M context)" or raw id "[1m]".
+  const has1M = /\(1M context\)|\[1m\]/i.test(displayName);
+  // Friendly form: "Opus 4.7 (1M context)".
+  let m = displayName.match(/^(Opus|Sonnet|Haiku)\s+([\d.]+)/);
+  if (m) return `${m[1][0].toLowerCase()}${m[2]}${has1M ? '+' : ''}`;
+  // Raw model-id form: "claude-<family>-<major>-<minor>[...]" (major/minor
+  // hyphen-joined; trailing date suffix / "[1m]" ignored by the un-anchored end).
+  m = displayName.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)/i);
+  if (m) return `${m[1][0].toLowerCase()}${m[2]}.${m[3]}${has1M ? '+' : ''}`;
+  return displayName;
 }
 
 // Effort level → colored braille-density glyph (set B from menu: both-column

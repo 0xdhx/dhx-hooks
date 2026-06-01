@@ -59,6 +59,11 @@ ok('compactModel: Sonnet 4.6 (1M context)', compactModel('Sonnet 4.6 (1M context
 ok('compactModel: unknown shape passes through', compactModel('SomeNewModel 5.0'), 'SomeNewModel 5.0');
 ok('compactModel: empty → Claude', compactModel(''), 'Claude');
 ok('compactModel: null → Claude', compactModel(null), 'Claude');
+// Raw model-id form (a /model <id> override ships the literal id as display_name).
+ok('compactModel: claude-opus-4-8[1m] → o4.8+', compactModel('claude-opus-4-8[1m]'), 'o4.8+');
+ok('compactModel: claude-opus-4-8 (no 1M) → o4.8', compactModel('claude-opus-4-8'), 'o4.8');
+ok('compactModel: claude-sonnet-4-6 → s4.6', compactModel('claude-sonnet-4-6'), 's4.6');
+ok('compactModel: claude-haiku-4-5-20251001 (date suffix) → h4.5', compactModel('claude-haiku-4-5-20251001'), 'h4.5');
 
 // --- § 1b renderEffort + getEffortLevel ------------------------------------
 
