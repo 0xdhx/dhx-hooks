@@ -54,21 +54,30 @@ case "$cmd" in
 esac
 
 # --- Candidate match: a single install-class invocation only. ---
+# The leading char class is (^|[[:space:]]|/): the binary may be bare on PATH
+# OR path-prefixed — `/home/u/.venv/bin/pip install`, `./venv/bin/pip install`
+# (the canonical venv-direct-call pattern, common in scripts/CI/agents that
+# don't rely on shell-activation state). `/` carries the same accepted
+# false-positive tolerance the space anchor already has (e.g. `echo pip
+# install` matches under either); fail-open + exit-code preservation keep it
+# harmless. NOT covered: bare path-invoked yarn-with-no-subcommand
+# (`/usr/bin/yarn` alone) — the bare-yarn matcher below stays ^-anchored;
+# vanishingly rare, deliberately out of scope.
 is_install() {
   local c="$1"
   # npm / pnpm  install|i|ci|add  (word-bounded so `npm info`, `npm init`,
   # `npm test`, `npm run install` do NOT match)
-  printf '%s' "$c" | grep -Eq '(^|[[:space:]])(npm|pnpm)[[:space:]]+(install|i|ci|add)([[:space:]]|$)' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[[:space:]]|/)(npm|pnpm)[[:space:]]+(install|i|ci|add)([[:space:]]|$)' && return 0
   # yarn install | yarn add
-  printf '%s' "$c" | grep -Eq '(^|[[:space:]])yarn[[:space:]]+(install|add)([[:space:]]|$)' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[[:space:]]|/)yarn[[:space:]]+(install|add)([[:space:]]|$)' && return 0
   # bare `yarn` (yarn with no subcommand = install) — whole command is yarn + flags only
   printf '%s' "$c" | grep -Eq '^[[:space:]]*yarn([[:space:]]+-{1,2}[^[:space:]]+)*[[:space:]]*$' && return 0
   # pip / pip3 install
-  printf '%s' "$c" | grep -Eq '(^|[[:space:]])(pip|pip3)[[:space:]]+install([[:space:]]|$)' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[[:space:]]|/)(pip|pip3)[[:space:]]+install([[:space:]]|$)' && return 0
   # uv pip install
-  printf '%s' "$c" | grep -Eq '(^|[[:space:]])uv[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[[:space:]]|/)uv[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
   # python[3][.x] -m pip install
-  printf '%s' "$c" | grep -Eq '(^|[[:space:]])python[0-9.]*[[:space:]]+-m[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[[:space:]]|/)python[0-9.]*[[:space:]]+-m[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
   return 1
 }
 is_install "$cmd" || emit_noop

@@ -110,15 +110,19 @@ has "$rw" 'else cat "$T"';                ck $? "npm install: failure branch cat
 echo "=== rewriter: candidates across managers ==="
 for c in "npm i" "npm ci" "pnpm install" "pnpm add lodash" "yarn" "yarn add react" \
          "pip install requests" "pip3 install -r requirements.txt" \
-         "python3 -m pip install six" "uv pip install ruff"; do
-  [ "$(decision_of "$c")" = "allow" ]; ck $? "candidate fires: $c"
+         "python3 -m pip install six" "uv pip install ruff" \
+         "/home/u/.venv/bin/pip install six" "./venv/bin/pip install -r reqs.txt" \
+         "../env/bin/pip3 install ruff" "/opt/py/bin/python3 -m pip install six" \
+         "/usr/local/bin/npm install"; do
+  [ "$(decision_of "$c")" = "allow" ]; ck $? "candidate fires (path-prefixed ok): $c"
 done
 
 echo "=== rewriter: bypass / no-op cases (emit {}) ==="
 for c in "ls -la" "npm test" "npm run build" "npm run install" "pip download six" \
          "npm install foo | tail -5" "npm install > out.txt" "cd app && npm install" \
          "npm install --silent" "pip install --dry-run six" "pip install --help" \
-         "npm install --json" "echo \$(npm install)"; do
+         "npm install --json" "echo \$(npm install)" \
+         "/opt/py/bin/python3 script.py" "/home/u/.venv/bin/pip download six"; do
   [ "$(decision_of "$c")" = "NOOP" ]; ck $? "bypass no-op: $c"
 done
 # Idempotency: an already-wrapped command must not double-wrap.
