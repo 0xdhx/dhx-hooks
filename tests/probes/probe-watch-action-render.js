@@ -20,7 +20,6 @@
 //   4. FAIL-SILENT — absent / empty / non-JSON watchlist renders nothing + exits 0.
 //   5. NOT BARE IDS — each rendered item carries the copy-ready ack/snooze shortcuts.
 //
-// Backs docs/decisions.md 2026-05-28 watch action-required banner-consumer row.
 // Hermetic: each spawn points DHX_WATCH_DIR at a throwaway mktemp dir holding only a
 // fixtured watchlist.json, and DHX_WATCH_HEALTH_CACHE at a nonexistent path — so the
 // banner reads ONLY the fixture (no live ~/repos/cross-repo/watch, no live health

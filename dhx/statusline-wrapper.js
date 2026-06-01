@@ -839,7 +839,7 @@ function resolveSkillsRoot() {
     candidates.push(process.env.DHX_SKILLS_REPO);
   }
   // Step 2: symlink-derive — realpath dhx-plugin/plugins/dhx/skills → parent.
-  // The symlink resolves to ~/repos/skills/dhx; its PARENT is the repo root.
+  // The symlink resolves to the skills-monorepo dhx; its PARENT is the repo root.
   // The PARENT correction is load-bearing: realpathing the marketplace path
   // alone lands in the hooks repo, not the skills repo. (Verified 2026-05-29.)
   try {
@@ -1034,7 +1034,7 @@ function hashWarnSettings(settingsReal) {
 // anyway, so counting the returned array is free. Both signals feed checkDrift()'s
 // compare — mtime catches new/modified files; count catches deletions that would
 // otherwise shrink the recursive max below the snapshot and silently slip past the
-// strict `>` comparison. See docs/decisions.md 2026-04-18 drift-bundle row.
+// strict `>` comparison.
 //
 // INVARIANT: POSIX directory mtime does NOT bump on descendant writes — only on
 // direct-child add/remove. A plugin version update writing into
@@ -1050,7 +1050,7 @@ function hashWarnSettings(settingsReal) {
 // is shared across all CCS instances, any sibling session's sweep false-positives
 // every running session's drift signal. Filtering affects both mtime and count,
 // so an orphan sweep is invisible to checkDrift while real plugin writes are still
-// caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
+// caught.
 function scanRecursive(dir, keepPredicate) {
   let maxMtime = 0;
   let count = 0;
@@ -1234,7 +1234,6 @@ function enumerateNovelPatterns(pluginsCacheRoot) {
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
 // re-applied by the fork-sync command. See `isGsdDriftFromForkSync()` below
-// and docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
 const GSD_LIVE_ROOT = path.join(os.homedir(), '.claude', 'get-shit-done');
 const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'get-shit-done');
 
@@ -1243,8 +1242,7 @@ const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'g
 // hot-reload note in the wrapper doc for why /effort, /model, /output-style,
 // permission-grant mutations MUST NOT trip drift. All three filesystem trees
 // (agents, gsd, plugins) scan recursively via scanRecursive() — plugins was
-// shallow pre-2026-04-18, missed nested writes. See docs/decisions.md drift-
-// bundle row.
+// shallow pre-2026-04-18, missed nested writes.
 function collectSnapshot(data) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
@@ -1543,8 +1541,7 @@ function checkDrift(data) {
 
     // gsd branch — split mtime and count so the count branch is non-suppressible.
     // A deletion cannot be validated by byte-equal, so the helper is only invoked
-    // when the mtime branch fired alone. See `isGsdDriftFromForkSync` above and
-    // docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
+    // when the mtime branch fired alone. See `isGsdDriftFromForkSync` above.
     const gsdMtimeFired = current.gsd_mtime > snapshot.gsd_mtime;
     const gsdCountFired = current.gsd_count < snapshot.gsd_count;
     let gsdSuppressed = false;
@@ -1744,10 +1741,10 @@ function checkDrift(data) {
 // the warm prefix was last touched on the server, which is what actually
 // keeps the cache TTL alive. Always-on segment: green ≥30m, yellow <30m,
 // orange 208 <15m, red EXPIRED. Default TTL 3600s matches Max plan
-// (verified 2026-04-17, docs/research/economics/session-cost-mechanics.md);
+// (verified 2026-04-17);
 // DHX_CACHE_TTL env overrides for Pro/API (300).
 //
-// Why not mtime: away_summary writes (HP-019 / docs/research/economics/away-summary-billing.md)
+// Why not mtime: away_summary writes (HP-019)
 // bump JSONL mtime without producing a type=assistant entry — and they're
 // billed inference calls. Anchoring on mtime would make the countdown
 // "reset" every ~3-15 min during idle while the user silently pays for

@@ -10,7 +10,7 @@
 # command class; the saving compounds across every cached-prefix re-read.
 #
 # HYBRID design (the key difference from a filter-in-pipe reducer like
-# forgefinder's ff-test-output-filter.sh): this CAPTURES the output to a temp
+# a sibling repo's node:test output-filter): this CAPTURES the output to a temp
 # file and BRANCHES ON THE EXIT CODE, because the exit code is the authoritative
 # success/failure signal and a filter inside a pipe can't see it —
 #   - rc == 0 : pipe the captured output through dhx-pkg-install-summarize.sh

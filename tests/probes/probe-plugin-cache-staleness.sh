@@ -19,7 +19,6 @@
 #       Routine runs are read-only by construction (D-20): write_result_artifact
 #       is reachable only via this subcommand branch.
 #
-# Backs docs/decisions.md Phase 10.1 Plan 1 RED row + HP-020 (read-path finding
 # under empirical test) + HP-025 § Cache-staleness detection (lands in Plan 2).
 # Run: bash tests/probes/probe-plugin-cache-staleness.sh
 set -u
@@ -272,7 +271,7 @@ assert_cache_untouched() {
 }
 
 # ---------------------------------------------------------------------------
-# D-18 subcommand-mode dispatch (mirrors ~/repos/skills/scripts/dhx-sym.sh's
+# D-18 subcommand-mode dispatch (mirrors the skills-monorepo dhx-sym.sh's
 # cmd_* case-dispatch precedent). write_result_artifact is the ONLY
 # artifact-mutating path and is reachable ONLY when "$1" == "write-result";
 # every routine run (no subcommand) falls through to the read-only scenario

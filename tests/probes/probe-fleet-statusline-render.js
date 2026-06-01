@@ -6,7 +6,6 @@
 //   - zero-drift / stale / absent / malformed → segment is SILENT (no token), NEVER a sigil
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md phase-10 SURF-02 render-half row + the D-14 resource-
 // safety + D-03d fail-silent invariants on dhx/statusline-wrapper.js::readFleetFeed.
 // Feed contract producer: cross-repo scripts/fleet/emit-statusline-feed.cjs.
 // Run: node tests/probes/probe-fleet-statusline-render.js

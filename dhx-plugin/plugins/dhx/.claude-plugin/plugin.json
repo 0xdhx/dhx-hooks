@@ -1,6 +1,6 @@
 {
   "name": "dhx",
-  "description": "dhx SessionStart hooks (health-check writes ~/.cache/dhx/health.json drift signals, dirty-tree reports uncommitted changes at session start) AND skills (35 dhx:* slash commands; skills surface symlinked from ~/repos/skills/dhx/). Hooks live in /home/dhx/repos/hooks/dhx/ referenced by absolute path; skills tree symlinked at <plugin>/plugins/dhx/skills -> ~/repos/skills/dhx/. Single source of truth on disk for both.",
+  "description": "dhx SessionStart hooks (health-check writes ~/.cache/dhx/health.json drift signals, dirty-tree reports uncommitted changes at session start) AND skills (35 dhx:* slash commands; skills surface symlinked from <skills-monorepo>/dhx/). Hooks live in /home/dhx/repos/hooks/dhx/ referenced by absolute path; skills tree symlinked at <plugin>/plugins/dhx/skills -> <skills-monorepo>/dhx/. Single source of truth on disk for both.",
   "version": "0.1.4",
   "author": {
     "name": "dhx",

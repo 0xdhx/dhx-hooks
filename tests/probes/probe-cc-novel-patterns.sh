@@ -20,7 +20,6 @@
 # asserts cc-novel-patterns.json is NOT written — a behavioral assertion, not
 # the structural grep fallback.
 #
-# Backs: docs/decisions.md Phase 17 D-13a / D-15 / D-16 / D-22 rows;
 #        REQ STATUSLINE-RAT-04.
 
 set -u

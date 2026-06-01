@@ -213,7 +213,7 @@ cd "$PROJECT_DIR" || exit 0
 # UP from its args/cwd, so bare pytest from the repo root never sees a subdir
 # config — its addopts/markers are silently dropped and a broader/wrong
 # selection runs. These helpers let the gate anchor on the config dir (= pytest
-# rootdir) and run from there. See docs/decisions.md 2026-05-29 row.
+# rootdir) and run from there.
 
 # _has_pytest_cfg DIR — true if DIR holds a recognized pytest config.
 _has_pytest_cfg() {
@@ -319,7 +319,6 @@ fi
 # lives there). RUN_TARGET = optional path arg, relative to RUN_CWD. Reproduces
 # the canonical `cd <config-dir> && <runner> [rel-target]`: `python -m` puts cwd
 # on sys.path, addopts/markers load, .pytest_cache anchors at the rootdir.
-# See docs/decisions.md 2026-05-29 row.
 RUN_CWD="$PROJECT_DIR"
 RUN_TARGET=""
 if [ -n "$TEST_TARGET" ] && [[ "$TEST_TARGET" != /* ]] && [ -d "$TEST_TARGET" ]; then

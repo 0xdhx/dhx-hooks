@@ -37,7 +37,6 @@
 # wall-clock advance flaky; `utimesSync` with an explicit timestamp is the
 # only acceptable approach.
 #
-# Backs: docs/decisions.md Phase 17 D-01 RETAIN row; REQ STATUSLINE-RAT-01.
 
 set -u
 

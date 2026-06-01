@@ -1,6 +1,6 @@
 # tests/probes/
 
-Probe scripts that back the **"Probe evidence"** pointers in `docs/decisions.md` and the closed rows in `docs/backlog.md`.
+Probe scripts that assert runtime invariants for the dhx hook surface.
 
 ## Convention
 
@@ -10,7 +10,7 @@ Naming: `probe-<subject>.{sh,js}`. Use whichever language the subject lives in (
 
 Top-of-file comment should state:
 1. What invariant / behavior this probe exercises.
-2. Which `docs/decisions.md` row or architectural invariant it backs.
+2. Which architectural invariant it backs.
 3. How to run it (`node tests/probes/probe-foo.js` or `bash tests/probes/probe-foo.sh`).
 
 Output: one line per assertion with `OK ` / `FAIL` prefix, ending with a `N passed, M failed` summary. Exit non-zero on any failure so CI can gate on the run.

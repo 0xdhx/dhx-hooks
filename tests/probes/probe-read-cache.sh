@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # probe-read-cache.sh — verify dhx-read-cache.sh partial-detection writer.
 #
-# Backs the 2026-05-24 decisions.md Option C collapse row. After the collapse,
+# After the Option C read-guard collapse,
 # dhx-read-cache.sh records ONLY partial Reads, to a SESSION-SCOPED detection
 # store keyed on session_id ALONE:
 #   ~/.cache/dhx/partial-read-detect-<session_id>.jsonl   entries: {"path":<abs>}

@@ -8,7 +8,6 @@
 # - Output shape: single summary line + action line (total 2 lines when output emitted)
 # - Exit code always 0 (non-blocking)
 #
-# Backs: docs/decisions.md 2026-04-20 dhx-new-milestone-promote-reminder row
 # Run:   bash tests/probes/probe-new-milestone-promote-reminder.sh
 
 # SAFE_FOR_LIVE: yes   (mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation)

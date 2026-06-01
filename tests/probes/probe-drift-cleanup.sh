@@ -14,7 +14,6 @@
 # Fake HOME isolates the cache — no live snapshots touched. /proc is real
 # (can't cheaply stub); live-tick case samples the current system.
 #
-# Backs: docs/decisions.md 2026-04-19 drift-cache orphan-sweep row.
 
 # SAFE_FOR_LIVE: no   (sets `$TMPHOME/.cache/dhx` and runs `dhx-health-check.sh` under HOME=$TMPHOME (sandboxed); but uses HOME override and live `/proc` reads — sandbox confines writes)
 set -u

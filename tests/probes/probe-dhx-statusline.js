@@ -11,10 +11,6 @@
 // Probe pins each transform so a future refactor can't ship a silent
 // miscompute.
 //
-// Pairs with: docs/decisions.md 2026-04-18 statusline-line2 row, and the
-// 2026-04-18 renames/extensions in dhx/dhx-statusline.js (compactModel,
-// getCcsProfile, truncate, getRepoSignals, formatLine2Gsd,
-// formatLine2Signals).
 
 // SAFE_FOR_LIVE: yes   (re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths)
 const fs = require('fs');

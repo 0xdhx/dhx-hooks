@@ -15,8 +15,6 @@
 # sed pattern. Drift between the hook and the test helper has caused prior
 # regressions (production-parity is load-bearing).
 #
-# Backs: docs/decisions.md 2026-04-23 header-fallback h3 overmatch row.
-# Parent report: reports/done/2026-04-23-deferred-check-header-fallback-matches-h3.md
 #
 # Run: bash tests/probes/probe-deferred-check-header-fallback.sh
 
@@ -94,7 +92,7 @@ fi
 # INVARIANT: marker classification is delegated to the canonical script at
 # ~/.claude/dhx-tools/dhx-classify-deferred.sh — sourced once so the probe
 # exercises the exact filter the hook runs. Drift between the canonical
-# script and consumers is caught by ~/repos/skills/tests/probe-classifier-cross-repo.sh.
+# script and consumers is caught by sister probes in the consumer repos.
 CLASSIFIER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-classify-deferred.sh"
 if [[ ! -f "$CLASSIFIER" ]]; then
   echo "FAIL canonical classifier not found at $CLASSIFIER"
@@ -151,7 +149,7 @@ else
 fi
 
 # 9. Negative: `### Theme 6: Cat-4 ephemeral signals (deferred)` must NOT match.
-#    This is the exact line from forgefinder Phase 26 CONTEXT.md that triggered
+#    This is the exact line from a real-world Phase 26 CONTEXT.md that triggered
 #    the 19-phantom-items warning before the fix.
 if echo "### Theme 6: Cat-4 ephemeral signals (deferred)" | grep -qE "$START_PAT"; then
   check "start pattern rejects '### ...(deferred)' subheader (the reported bug)" 0

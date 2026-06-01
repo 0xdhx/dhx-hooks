@@ -11,13 +11,7 @@
 # vs prefix-or-end-of-bullet on the skill, with no static check to catch the
 # drift. This probe is the static check.
 #
-# Sister probe: ~/repos/skills/tests/probe-classifier-cross-repo.sh runs the
-# same kind of structural assertion from the skills-repo side. Either probe
-# alone would catch reintroduction of inline filters; the pair makes the
-# invariant visible from both repos' test suites.
 #
-# Backs: docs/decisions.md 2026-04-27 cross-repo classifier sync row.
-# Parent report: reports/done/2026-04-27-cross-repo-classifier-sync-handoff.md
 #
 # Run: bash tests/probes/probe-deferred-check-canonical-classifier.sh
 
@@ -195,7 +189,7 @@ fi
 #     longer bare-substring-match and silence a marker-less deferred bullet). The
 #     HP-028 invariant this section guards is unchanged: still a single
 #     short-circuiting `-q` command, no `grep -rl … | head -1` pipeline.
-#     See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+#     See the skills-monorepo auto-silence false-positive report (2026-05-22).
 if grep -qE 'grep -rqE[[:space:]]+"\$rid_def_pat"[[:space:]]+"\$project_root/\.planning/backlog/"' "$CLASSIFIER"; then
   check "backlog containment in canonical script uses definition-anchored 'grep -rqE \$rid_def_pat' short-circuit form" 1
 else
@@ -273,7 +267,6 @@ fi
 #       the blocking path; that would silently stop blocking session-end).
 # Marker syntax stays discoverable at /dhx:defer-review or /dhx:capture.
 #
-# Backs: docs/decisions.md Phase 20 block-message legend-removal row
 #        (cites e2bd3df reversal + exact old/new char + approx token counts).
 MSG_BLOCK=$(awk '/^MSG="/{f=1} f{print} f && /"$/ && !/^MSG="/{f=0}' "$HOOK")
 if [[ -z "$MSG_BLOCK" ]]; then
@@ -329,7 +322,6 @@ fi
 # tests/probe-deferred-silence-e2e.sh:81-83 detects the same migration via the
 # HOOK_USES_CANONICAL gate (warn-skip vs full PROBE_MODE).
 #
-# Backs: docs/decisions.md 2026-05-09 silenced-marker canonical-extractor row.
 
 SILENCED_HELPER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-silenced-marker.sh"
 if [[ ! -r "$SILENCED_HELPER" ]]; then
@@ -375,7 +367,6 @@ fi
 # rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
 # Fix B (defense-in-depth): `[ "${COUNT:-0}" -le 0 ] && exit 0` numeric guard.
 #
-# Backs: docs/decisions.md Phase 20 row (count-bug fix).
 
 # 10a. Static: Fix A formula present verbatim (bullet-shape-aware + D-10 `|| true`).
 if grep -qF "printf '%s\n' \"\$UNCAPTURED\" | grep -c '^- ' || true" "$HOOK"; then
@@ -441,7 +432,6 @@ fi
 # count + a positive-count guard before emitting. The whitespace→0 behavioral
 # primitive is already proven in 10d/10e (same formula); 11a-c lock the fallback.
 #
-# Backs: docs/decisions.md Phase 20 code-review-follow-up row (WR-03).
 
 # 11a. Static: header-fallback uses the safe printf|grep -c formula.
 if grep -qF "printf '%s\n' \"\$MD_DEFERRED\" | grep -c '^- ' || true" "$HOOK"; then
@@ -474,7 +464,6 @@ fi
 # citation) — but which carries no Stage-1-recognizable marker — was silenced
 # by the main path but surfaced as a false positive by the header-fallback.
 #
-# Backs: docs/decisions.md 2026-05-27 header-fallback Stage 2 parity row.
 # Parent brief: .planning/backlog/2026-05-22-deferred-check-header-fallback-missing-stage2-autosilence.md
 
 # 12a. Static: check_header_fallback() body contains the second-stage call.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/hooks/pre-commit — tracked pre-commit dispatcher for cross-repo [XR].
 #
-# Ported near-verbatim from ~/repos/skills/scripts/hooks/pre-commit (D-10/D-16).
+# Ported near-verbatim from the skills-monorepo scripts/hooks/pre-commit (D-10/D-16).
 #
 # Runs every executable check under scripts/hooks/pre-commit.d/ in glob order.
 # The first non-zero check blocks the commit; its exit code propagates.

@@ -18,7 +18,7 @@
 #        installed) is non-fatal; emit WARN + exit 0 so the probe doesn't
 #        break sandboxed test envs that lack the skills-repo symlink.
 #
-# Mirrors `~/repos/skills/tests/probe-classifier-cross-repo.sh` discovery +
+# Mirrors the sister classifier-cross-repo probe discovery +
 # assertion shape (Phase 13 D-07).
 #
 # Parameterization (per Phase 13 BACKLOG-INTEGRATION item 4 — sibling-reuse-ready):

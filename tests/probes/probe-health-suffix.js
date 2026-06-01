@@ -6,7 +6,6 @@
 //   - all-five → one suffix per tier (critical + advisory), tokens split correctly
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-04-16 actionable-hints row + 2026-04-17 critical/
 // advisory split row. sym-health.json precedence lives in
 // probe-sym-health-override.js — this file stays scoped to warning-format contract.
 // Run: node tests/probes/probe-health-suffix.js

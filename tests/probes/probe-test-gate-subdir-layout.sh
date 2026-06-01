@@ -3,7 +3,6 @@
 #
 # Regression probe for dhx/dhx-test-gate.sh subdir / monorepo layout handling
 # (subdir/monorepo test-layout contract fix).
-# Backs docs/decisions.md 2026-05-29 row and reports/done/2026-05-29-dhx-test-gate-subdir-test-layout-contract-gap.md.
 #
 # Covers:
 #   - #1 auto-discovery: no root pytest config + a SINGLE unambiguous subdir

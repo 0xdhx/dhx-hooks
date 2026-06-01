@@ -2,7 +2,7 @@
 set -euo pipefail
 # install-hooks.sh — idempotently install cross-repo's [XR] tracked git hooks.
 #
-# Ported verbatim from ~/repos/skills/scripts/install-hooks.sh (D-10) with one
+# Ported verbatim from the skills-monorepo install-hooks.sh (D-10) with one
 # documented self-heal-glob decision (see "Self-heal note" below).
 #
 # Installs:

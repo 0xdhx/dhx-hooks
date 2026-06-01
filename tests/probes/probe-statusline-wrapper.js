@@ -151,8 +151,8 @@ ok('stdin: non-numeric used_percentage skipped → empty',
 // ⌃ (220) when ANY fires. Purely additive — does not replace existing front
 // composition. Color non-collision: 70/220 distinct from critical 208 and
 // advisory red 31. Probe pinned in tests/probes/probe-statusline-wrapper.js
-// per docs/decisions.md 2026-04-26 meta-glyph row (hairline glyphs locked
-// 2026-04-26 — see same-day "meta-glyph hairline glyphs" decisions row).
+// per the meta-glyph design (hairline glyphs locked
+// 2026-04-26).
 
 const GREEN_DOT  = '\x1b[2;38;5;70m∙\x1b[0m';
 const YELLOW_TRI = '\x1b[38;5;220m⌃\x1b[0m';

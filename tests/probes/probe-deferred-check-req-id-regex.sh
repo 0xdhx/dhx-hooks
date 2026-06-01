@@ -20,9 +20,7 @@
 # the regex from the canonical source rather than the hook so the
 # invariant tracks the live definition.
 #
-# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row,
 # extended by the 2026-05-02 auto-silence-extraction row.
-# Parent report: ~/repos/skills/reports/2026-04-20-defer-hook-decision-label-false-positive.md
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 
@@ -95,7 +93,7 @@ done
 # Resolution-axis regression is guarded skills-side by probe-classifier-composition.sh
 # §5 — kept there rather than duplicated here. A future reader who sees extraction
 # accept REVIEW-CODE should NOT mistake it for a leak; see report:
-# ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+# the skills-monorepo auto-silence false-positive report (2026-05-22).
 for token in "REVIEW-CODE" "MILESTONE-AUDIT"; do
   match=$(echo "$token" | grep -oE "$REGEX" | head -1)
   if [[ "$match" == "$token" ]]; then
