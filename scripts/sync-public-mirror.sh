@@ -193,7 +193,7 @@ sed -i 's|forgefinder Phase 26|a real-world Phase 26|' tests/probes/probe-deferr
 
 # Class D (2026-05-31): forgefinder refs in the package-install reducer + its probe
 sed -i "s|forgefinder's ff-test-output-filter\.sh|a sibling repo's node:test output-filter|" dhx/dhx-pkg-install-filter.sh
-sed -i "s|forgefinder ff-test-output-filter\.test\.js|a sibling repo's ff-test-output-filter.test.js|" tests/probes/probe-pkg-install-filter.sh
+sed -i "s|the forgefinder ff-test-output-filter\.test\.js|a sibling repo's ff-test-output-filter.test.js|" tests/probes/probe-pkg-install-filter.sh
 
 # Class E: residual docs/<file>.md cross-references in probe corpus
 # probe-dhx-statusline.js has a "// Pairs with: ..." block (4 lines)
