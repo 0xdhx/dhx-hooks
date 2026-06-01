@@ -191,6 +191,10 @@ sed -i '/^# See docs\/decisions\.md 2026-05-29 row\.$/d' dhx/dhx-test-gate.sh
 sed -i 's|/home/dhx/repos/forgefinder|/home/dhx/repos/acme-app|g' tests/probes/probe-worktree-bash-guard.sh
 sed -i 's|forgefinder Phase 26|a real-world Phase 26|' tests/probes/probe-deferred-check-header-fallback.sh
 
+# Class D (2026-05-31): forgefinder refs in the package-install reducer + its probe
+sed -i "s|forgefinder's ff-test-output-filter\.sh|a sibling repo's node:test output-filter|" dhx/dhx-pkg-install-filter.sh
+sed -i "s|forgefinder ff-test-output-filter\.test\.js|a sibling repo's ff-test-output-filter.test.js|" tests/probes/probe-pkg-install-filter.sh
+
 # Class E: residual docs/<file>.md cross-references in probe corpus
 # probe-dhx-statusline.js has a "// Pairs with: ..." block (4 lines)
 sed -i '/^\/\/ Pairs with: docs\/decisions\.md 2026-04-18 statusline-line2 row, and the$/,/^\/\/ formatLine2Signals)\.$/d' tests/probes/probe-dhx-statusline.js

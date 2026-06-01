@@ -20,7 +20,7 @@
 #               wheel/node-gyp build tracebacks — are exactly the detail you must
 #               not drop, and their cause is an arbitrary block, not a signature).
 # This resolves the tee-to-disk-vs-filter-in-pipe decision for this command
-# class (compact-in-pipe on success, full-on-failure) — see docs/backlog.md.
+# class: compact-in-pipe on success, full-on-failure.
 #
 # Mechanism: CC's PreToolUse input-rewrite contract — hookSpecificOutput
 # .updatedInput.command paired with permissionDecision "allow", applied on
