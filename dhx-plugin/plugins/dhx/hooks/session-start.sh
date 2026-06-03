@@ -40,6 +40,20 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 # RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
 # detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
 node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
+# Fleet CC version-LOCK guard (defense-in-depth for the 2026-05-31 unrequested
+# `claude update` 2.1.153->2.1.159 incident). Sibling to cc-check-update.js above:
+# that hook WARNS on drift from npm-latest; this one ENFORCES the pin by repointing
+# ~/.local/bin/claude back to ~/.ccs/shared/cc-pinned-version on drift (effective
+# NEXT launch — can't swap the already-running process). Cross-repo-owned
+# (scripts/fleet/cc-version-guard.sh), provisioned into ~/.claude/dhx-tools/ by
+# cross-repo's install-dhx-tools.sh — hence the [ -e ] existence guard: a graceful
+# no-op when cross-repo hasn't provisioned the symlink yet, identical shape to
+# dhx-watch-health.cjs above. Filesystem-only (< /dev/null, no stdin). Fail-open
+# (the guard's own `set +e` + trailing || true). stderr advisory stays VISIBLE on
+# drift; SILENT + zero-stdout on the on-pin happy path (no context cost). Placed
+# after the critical health/heal/worktree hooks — belt-and-suspenders, not
+# critical-path. See docs/decisions.md 2026-06-02 cc-version-guard wiring row.
+[ -e ~/.claude/dhx-tools/cc-version-guard.sh ] && bash ~/.claude/dhx-tools/cc-version-guard.sh < /dev/null || true
 # Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh || true
 

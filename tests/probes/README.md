@@ -142,6 +142,7 @@ A probe is a **schema-evolution probe** when it answers "should we migrate this 
 | `probe-backlog-frontmatter-gate.sh` | decisions.md 2026-05-22 backlog-frontmatter-gate enrollment row + INFRA-05 (gate structure + composition with verify-hook-patterns via the run-parts dispatcher; behavioral block/pass in a throwaway mktemp repo) | `bash tests/probes/probe-backlog-frontmatter-gate.sh` |
 | `probe-cc-snooze.js` | decisions.md 2026-05-31 cc-warning-snooze row + docs/statusline-wrapper.md § Snooze (parse / round-trip / expiry / perma / fail-open / formatRemaining + renderer dim-collapse integration) | `node tests/probes/probe-cc-snooze.js` |
 | `probe-pkg-install-filter.sh` | decisions.md 2026-05-31 package-install output-reducer row + HP-040 + HP-041 (summarizer keep/collapse/drop + rewriter candidate/bypass + hybrid end-to-end: success compaction, failure byte-identical passthrough, exit-code preservation) | `bash tests/probes/probe-pkg-install-filter.sh` |
+| `probe-cc-version-guard-wiring.sh` | decisions.md 2026-06-02 cc-version-guard SessionStart wiring row (dispatcher invokes the cross-repo guard via the `~/.claude/dhx-tools/` indirection behind `[ -e ]`/`< /dev/null`/`|| true`, NOT a direct `~/repos/cross-repo/` path; behavioral smoke T1-T4 via override seams) | `bash tests/probes/probe-cc-version-guard-wiring.sh` |
 
 ## Running all probes
 
