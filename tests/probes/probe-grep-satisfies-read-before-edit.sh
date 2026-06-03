@@ -43,12 +43,21 @@
 #
 # OPEN BOUNDARIES (deliberately NOT asserted — no silent caps):
 #   - MULTI-FILE grep (`grep PAT f1 f2`, `grep -r`): the changelog says
-#     "single-file". Expected to NOT satisfy, but unverified. Add a cell + an
-#     assertion once observed on >=2.1.160 if a consumer ever depends on it.
+#     "single-file". OBSERVED 2026-06-03: BLOCK (does NOT satisfy — matches the
+#     "single-file" wording). Recorded in the decisions row + read-guard memory;
+#     not yet exit-asserted here (add a cell if a consumer ever depends on it).
 #   - The OBSERVATIONAL Grep-TOOL cell below characterizes whether CC's own Grep
 #     tool (distinct from a bash `grep` command — the changelog named only the
-#     bash commands) also satisfies the check. Recorded, not asserted, because
-#     no documented expectation exists yet.
+#     bash commands) also satisfies the check. OBSERVED 2026-06-03: BLOCK — the
+#     Grep TOOL does NOT satisfy (a Grep-tool view then Edit with no Read
+#     hard-errored "File has not been read yet"; control no-view Edit also
+#     BLOCKed → trustworthy). Only bash grep/egrep/fgrep COMMANDS satisfy, never
+#     CC's Grep tool. Measured out-of-band via a LIVE-DIR `claude -p` child (no
+#     API key — the native Grep tool is absent from interactive deferred-tools
+#     sessions + subagents, but a standard `claude -p` against the LIVE
+#     CLAUDE_CONFIG_DIR has it + auths via live OAuth; sidesteps the 2026-05-24
+#     sandbox cred-seeding hazard). Cell B still records it; not exit-asserted
+#     (running Cell B needs an API key).
 #
 # METHOD (mirrors the tripwire): drive a real `claude -p` subprocess against a
 # sandbox CLAUDE_CONFIG_DIR over a file created OUT-OF-BAND via printf (NOT the
