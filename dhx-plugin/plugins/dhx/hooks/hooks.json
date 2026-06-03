@@ -24,10 +24,6 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-main-branch-warning.sh\""
-          },
-          {
-            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-verify-drift-gate.sh\"",
             "timeout": 5
           }

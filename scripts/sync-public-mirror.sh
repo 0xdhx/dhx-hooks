@@ -415,7 +415,6 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | Hook | Purpose |
 |------|---------|
 | `dhx-routing.sh` | Detects `/gsd:*` and `/gsd-*` prompts and routes to DHX equivalents (redirect or augment). |
-| `dhx-main-branch-warning.sh` | Warns once per boot when working directly on `main`/`master`. |
 
 ### PreToolUse
 
