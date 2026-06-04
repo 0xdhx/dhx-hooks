@@ -37,6 +37,21 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh 
 # it silent + non-blocking regardless. Filesystem/network-only; no stdin needed.
 [ -e ~/.claude/dhx-tools/dhx-watch-health.cjs ] && node ~/.claude/dhx-tools/dhx-watch-health.cjs >/dev/null 2>&1 || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+# Cross-repo vitals notification (spike-008 PROMOTE verdict; cross-repo
+# scripts/dhx-dashboard.cjs, provisioned into ~/.claude/dhx-tools/ by cross-repo's
+# install-dhx-tools.sh). `notify` emits the dhx_inbox_open WEZTERM BADGE (007's
+# validated SetUserVar shape) EVERY session so a stale badge clears to 0, then a
+# terse SILENT-WHEN-0 vitals banner: GLOBAL cross-repo state (watch overdue/health,
+# sym, crashes, STATE drift/stall across ~/repos/*) — DISTINCT from the digest's
+# cwd-relevant awaiting_us "⚠ Action required" inbox above. Runs AFTER the health
+# recompute (line 38) so it reads a fresh cache. Same dhx-tools indirection +
+# [ -e ] graceful-skip + fail-open shape as dhx-watch-health.cjs and cc-version-guard
+# (docs/decisions.md 2026-06-02): a bare `node <absent-symlink>` exits non-zero, so
+# guard on existence. stdout (badge + banner) flows to the SessionStart surface (NOT
+# redirected — that is how the badge reaches the attached pane; a detached timer
+# cannot deliver it); stderr silenced; < /dev/null (no stdin). See the 2026-06-04
+# dhx-dashboard wiring row in docs/decisions.md; probe-dashboard-notify-wiring.sh.
+[ -e ~/.claude/dhx-tools/dhx-dashboard.cjs ] && node ~/.claude/dhx-tools/dhx-dashboard.cjs notify </dev/null 2>/dev/null || true
 # RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
 # detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
 node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
