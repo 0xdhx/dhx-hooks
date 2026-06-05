@@ -47,7 +47,13 @@ fi
 # following the symlink to ~/.claude.
 missing=0
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-for item in get-shit-done hooks gsd-file-manifest.json gsd-local-patches package.json; do
+# INVARIANT: the gsd runtime item below MUST track the live gsd install dir name.
+# 2026-06-05 `@opengsd/gsd-core@1.3.1` renamed `get-shit-done/` -> `gsd-core/`; the
+# stale `get-shit-done` entry counted a permanently-missing dir and surfaced a false
+# `patches:DRIFT 1 broken symlink` token. A future rename does the same silently —
+# guarded by tests/probes/probe-gsd-roots-resolve.sh. See docs/decisions.md
+# 2026-06-05 gsd-core rename row.
+for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches package.json; do
   p="$config_dir/$item"
   if [[ ! -e "$p" ]]; then
     missing=$((missing + 1))

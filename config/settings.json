@@ -1,5 +1,6 @@
 {
   "cleanupPeriodDays": 9999,
+  "env": {},
   "permissions": {
     "allow": [
       "Read",
@@ -7,6 +8,8 @@
       "WebSearch",
       "Bash(npm view get-shit-done-cc:*)",
       "Bash(npm list -g get-shit-done-cc:*)",
+      "Bash(npm view @opengsd/gsd-core:*)",
+      "Bash(npm list -g @opengsd/gsd-core:*)",
       "Bash(git:*)",
       "Bash(node:*)",
       "Bash(python3:*)",
@@ -146,6 +149,9 @@
       "Bash(get-shit-done-cc:*)",
       "Bash(*npm i*get-shit-done*)",
       "Bash(*npx*get-shit-done*)",
+      "Bash(@opengsd/gsd-core:*)",
+      "Bash(*npm i*gsd-core*)",
+      "Bash(*npx*gsd-core*)",
       "Bash(chmod -R 777 *)",
       "Bash(dd if=*)",
       "Bash(git push --force *)",
@@ -157,6 +163,7 @@
     ],
     "defaultMode": "bypassPermissions"
   },
+  "model": "claude-opus-4-8[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -215,6 +222,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/gsd-graphify-update.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -246,9 +263,35 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-worktree-path-guard.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/dhx/.local/bin/uv run /home/dhx/repos/ttsfilter/src/ttsfilter/app/hook.py",
+            "timeout": 30
+          }
+        ]
       }
     ]
   },
+  "worktree": {
+    "baseRef": "head",
+    "bgIsolation": "none"
+  },
+  "workflowKeywordTriggerEnabled": false,
   "statusLine": {
     "type": "command",
     "command": "node \"$HOME/.claude/hooks/statusline-wrapper.js\"",
@@ -271,6 +314,7 @@
       }
     }
   },
+  "outputStyle": "Dry Blade",
   "effortLevel": "xhigh",
   "awaySummaryEnabled": true,
   "tui": "fullscreen",
@@ -279,6 +323,7 @@
     "mode": "hold"
   },
   "skipDangerousModePermissionPrompt": true,
+  "editorMode": "normal",
   "remoteControlAtStartup": true,
   "agentPushNotifEnabled": false,
   "voiceEnabled": true

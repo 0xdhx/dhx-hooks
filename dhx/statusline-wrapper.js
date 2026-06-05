@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.42.3
+// gsd-hook-version: 1.3.1
 // Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
@@ -1235,8 +1235,17 @@ function enumerateNovelPatterns(pluginsCacheRoot) {
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
 // re-applied by the fork-sync command. See `isGsdDriftFromForkSync()` below
 // and docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
-const GSD_LIVE_ROOT = path.join(os.homedir(), '.claude', 'get-shit-done');
-const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'get-shit-done');
+//
+// INVARIANT: both roots MUST track the live gsd install dir name. 2026-06-05
+// `@opengsd/gsd-core@1.3.1` renamed `get-shit-done/` -> `gsd-core/` (live) and
+// migrated the fork mirror to `gsd-local-patches/gsd-core/` (backup-meta.json
+// keys files as `gsd-core/workflows/*`; correction doc §9.11, commit 387179f).
+// A stale name makes scanRecursive(missing dir) return gsd_mtime/count=0 — the
+// gsd drift trigger then never fires (silent death), exactly the state these
+// constants were in 2026-06-04..06-05. Guarded by
+// tests/probes/probe-gsd-roots-resolve.sh. See docs/decisions.md 2026-06-05 row.
+const GSD_LIVE_ROOT = path.join(os.homedir(), '.claude', 'gsd-core');
+const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'gsd-core');
 
 // Collect current snapshot for all 5 watched paths + version. `settings` is
 // hashed over the WARN-set projection rather than mtime'd — see HP-014's
