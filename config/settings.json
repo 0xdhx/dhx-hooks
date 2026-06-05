@@ -273,6 +273,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"/home/dhx/.ccs/instances/c/hooks/gsd-read-guard.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"/home/dhx/.ccs/instances/c/hooks/gsd-workflow-guard.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
