@@ -145,6 +145,7 @@ A probe is a **version-gated behavior probe** when it asserts a *per-CC-version*
 | `probe-bashrc-wrapper-heal.sh` | decisions.md 2026-04-17 plugin-keys load-gating + bashrc auto-heal row | `bash tests/probes/probe-bashrc-wrapper-heal.sh` |
 | `probe-cache-age-anchor.js` | decisions.md 2026-04-17 statusline cache-age JSONL anchor row + HP-019 | `node tests/probes/probe-cache-age-anchor.js` |
 | `probe-stale-hooks-filter-retired.js` | decisions.md 2026-04-18 stale-hooks-filter retirement row | `node tests/probes/probe-stale-hooks-filter-retired.js` |
+| `probe-gsd-update-cache-name-resolves.js` | decisions.md 2026-06-05 gsd-update cache-name row (renderer resolves the package-namespaced cache filename via package-identity, not a hardcoded generic) | `node tests/probes/probe-gsd-update-cache-name-resolves.js` |
 | `probe-drift-detection.js` | decisions.md 2026-04-18 drift-detection audit row (companion to probe-settings-hash.js + probe-migration.js) | `node tests/probes/probe-drift-detection.js` |
 | `probe-drift-cleanup.sh` | decisions.md 2026-04-19 drift-cache orphan-sweep row (dhx-health-check.sh) | `bash tests/probes/probe-drift-cleanup.sh` |
 | `probe-deferred-check-req-id-regex.sh` | decisions.md 2026-04-20 deferred-check D-NN false-positive row | `bash tests/probes/probe-deferred-check-req-id-regex.sh` |

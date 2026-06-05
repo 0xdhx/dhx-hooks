@@ -452,11 +452,31 @@ function runStatusline() {
     const gsdState = readGsdState(dir) || {};
 
     // GSD update available?
-    // Check shared cache first (#1421), fall back to runtime-specific cache for
-    // backward compatibility with older gsd-check-update.js versions.
+    // The gsd-core checker (gsd-check-update.js) writes a PACKAGE-NAMESPACED
+    // cache filename derived from package-identity.cjs (e.g.
+    // gsd-update-check-opengsd-gsd-core.json), NOT the legacy generic
+    // gsd-update-check.json. Resolve the live name the same way the checker does
+    // so a package rename (get-shit-done-cc → @opengsd/gsd-core, 2026-06-05)
+    // can't strand the renderer on a stale wrong-package cache → false
+    // ⬆ /gsd-update. INVARIANT: this filename MUST track the checker's
+    // package-identity output (see docs/decisions.md 2026-06-05 gsd-update cache
+    // row + probe-gsd-update-cache-name-resolves.js). package-identity sits under
+    // <gsd-core>/bin/lib and is required by ABSOLUTE path — the renderer's
+    // realpath is the repo, not ~/.claude, so a relative require can't reach it.
+    // require failure → legacy generic name (degrades, never throws — fail-open;
+    // missing cache hides the segment, D-13a).
     let gsdUpdate = '';
-    const sharedCacheFile = path.join(homeDir, '.cache', 'gsd', 'gsd-update-check.json');
-    const legacyCacheFile = path.join(claudeDir, 'cache', 'gsd-update-check.json');
+    let updateCacheName = 'gsd-update-check.json';
+    try {
+      const piRel = path.join('gsd-core', 'bin', 'lib', 'package-identity.cjs');
+      const piPath = fs.existsSync(path.join(claudeDir, piRel))
+        ? path.join(claudeDir, piRel)
+        : path.join(homeDir, '.claude', piRel);
+      const pi = require(piPath);
+      if (pi && pi.updateCacheFileName) updateCacheName = pi.updateCacheFileName;
+    } catch (e) { /* package-identity unresolved → legacy generic name */ }
+    const sharedCacheFile = path.join(homeDir, '.cache', 'gsd', updateCacheName);
+    const legacyCacheFile = path.join(claudeDir, 'cache', updateCacheName);
     const cacheFile = fs.existsSync(sharedCacheFile) ? sharedCacheFile : legacyCacheFile;
     if (fs.existsSync(cacheFile)) {
       try {
