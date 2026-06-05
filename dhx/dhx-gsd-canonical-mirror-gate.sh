@@ -5,12 +5,12 @@
 # Blocks (exit 2) edits to canonical-mirror fork-tracked files — the entries in
 # ~/.claude/gsd-local-patches/backup-meta.json `files[]` — when no valid
 # draft-buffer marker is present. Warns (exit 1) on edits to other
-# ~/.claude/get-shit-done/* paths under the same conditions. Silent (exit 0)
+# ~/.claude/gsd-core/* paths under the same conditions. Silent (exit 0)
 # on all other paths and when a valid marker is present.
 #
 # Hot path (per D-07/D-27): a single jq parse extracts `tool_input.file_path`
 # from the stdin envelope, then a `case` path-prefix check exits 0 immediately
-# for writes outside ~/.claude/get-shit-done/. No further jq, no stat — the
+# for writes outside ~/.claude/gsd-core/. No further jq, no stat — the
 # common (non-GSD) write pays only one jq fork. Marker + backup-meta jq reads
 # run ONLY on the rare in-subtree branch.
 #
@@ -41,7 +41,7 @@
 #      It is jq-read once per invocation, ONLY when the target is in the
 #      guarded subtree AND the marker is absent/invalid.
 #   3. Tiered emit: exit 2 for backup-meta members; exit 1 for the broader
-#      ~/.claude/get-shit-done/ subtree; exit 0 silent for non-matching paths
+#      ~/.claude/gsd-core/ subtree; exit 0 silent for non-matching paths
 #      or when a valid marker is present.
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -79,15 +79,20 @@ esac
 
 # D-07 happy path — case-statement path-prefix check; sub-millisecond, no fork,
 # no further jq for non-GSD paths (per D-27 reword).
-GSD_LIVE_ROOT="$HOME/.claude/get-shit-done"
+# INVARIANT (gsd-core 1.3.1, 2026-06-05): this literal MUST track the live gsd
+# runtime dir name. @opengsd/gsd-core@1.3.1 renamed get-shit-done/ → gsd-core/;
+# a stale name points the subtree gate at a MISSING dir, so every write to the
+# live runtime silently passes the case-check → exit 0 → the write-protection
+# gate is dead with no error. probe-gsd-roots-resolve.sh asserts this literal.
+GSD_LIVE_ROOT="$HOME/.claude/gsd-core"
 case "$FILE" in
   "$GSD_LIVE_ROOT/"*) ;;   # in guarded subtree — continue to gate check
   *) exit 0 ;;             # not in subtree — silent pass
 esac
 
 # Derive REL_PATH for backup-meta membership + cp suggestion.
-# e.g. /home/dhx/.claude/get-shit-done/workflows/execute-phase.md
-#   →  get-shit-done/workflows/execute-phase.md
+# e.g. /home/dhx/.claude/gsd-core/workflows/execute-phase.md
+#   →  gsd-core/workflows/execute-phase.md
 REL_PATH="${FILE#$HOME/.claude/}"
 
 # D-08 marker check — single `[ -f ... ]` test gates the hot path; jq parse runs

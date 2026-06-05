@@ -80,7 +80,7 @@ assert "[1g] D-05 header literal (2 file(s) diverged, oldest first)" \
 assert "[1h] D-01 Run to repair footer" \
   bash -c 'echo "$1" | grep -qF "Run to repair:"' _ "$OUTPUT"
 
-CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*get-shit-done/workflows/')
+CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*gsd-core/workflows/')
 assert "[1i] 2 cp lines emitted" \
   bash -c '[ "$1" -eq 2 ]' _ "$CP_COUNT"
 
@@ -109,7 +109,7 @@ assert "[2b] exactly 5 file lines emitted (D-04 cap)" \
 assert "[2c] +1 more truncation indicator present" \
   bash -c 'echo "$1" | grep -qF "+1 more — run /dhx:statusline triad"' _ "$OUTPUT6"
 
-CP_COUNT6=$(echo "$OUTPUT6" | grep -cE '^  cp .*get-shit-done/workflows/')
+CP_COUNT6=$(echo "$OUTPUT6" | grep -cE '^  cp .*gsd-core/workflows/')
 assert "[2d] exactly 5 cp lines emitted" \
   bash -c '[ "$1" -eq 5 ]' _ "$CP_COUNT6"
 

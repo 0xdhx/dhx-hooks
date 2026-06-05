@@ -1,8 +1,14 @@
 #!/bin/bash
 # Probe: the hardcoded gsd-runtime path constants track the live gsd install
-# dir name. Two surfaces hardcode it:
-#   - dhx/statusline-wrapper.js  GSD_LIVE_ROOT / GSD_FORK_ROOT (drift detection)
-#   - dhx/dhx-health-check.sh    symlink-checklist `for item in ...` loop
+# dir name. Six surfaces hardcode it:
+#   - dhx/statusline-wrapper.js          GSD_LIVE_ROOT / GSD_FORK_ROOT (drift detection)
+#   - dhx/dhx-health-check.sh            symlink-checklist `for item in ...` loop
+#   - dhx/dhx-gsd-canonical-mirror-gate.sh  GSD_LIVE_ROOT write-protection subtree
+#   - dhx/dhx-gsd-drift-surface.sh       cp repair-command paths
+#   - scripts/dhx-gsd-triad.sh           LIVE_ROOT/CANONICAL_ROOT defaults + rel-strip dialect
+#   - scripts/dhx-draft-buffer.sh        canonical path-dialect normalizer
+# The first two were fixed 2026-06-05 (the user-visible follow-ups); the latter
+# four are the silently-broken tail migrated by the 2026-06-05 follow-up brief.
 #
 # Failure mode this guards (observed 2026-06-05): `@opengsd/gsd-core@1.3.1`
 # renamed `~/.claude/get-shit-done/` -> `~/.claude/gsd-core/` and migrated the
@@ -19,7 +25,8 @@
 # the named live root + fork mirror actually exist — catches the NEXT rename
 # (source still names the old dir, live dir moved -> red).
 #
-# Backs decisions.md 2026-06-05 "gsd-core 1.3.1 rename — hooks follow-ups" row.
+# Backs decisions.md 2026-06-05 "gsd-core 1.3.1 rename — hooks follow-ups" row
+# AND the 2026-06-05 "gsd-core runtime-surface migration tail" row (4 surfaces).
 # Run: bash tests/probes/probe-gsd-roots-resolve.sh
 # SAFE_FOR_LIVE: yes   (grep-only against in-repo source + read-only dir-exists checks on live ~/.claude; no writes)
 set -uo pipefail
@@ -47,6 +54,41 @@ assert "statusline GSD_FORK_ROOT names 'gsd-local-patches','gsd-core'" "echo \"\
 assert "statusline GSD_FORK_ROOT drops retired 'get-shit-done'" "! echo \"\$FORK_LINE\" | grep -q 'get-shit-done'"
 assert "health-check checklist names 'gsd-core'"              "echo \"\$HEALTH_LOOP\" | grep -q 'gsd-core'"
 assert "health-check checklist drops retired 'get-shit-done'" "! echo \"\$HEALTH_LOOP\" | grep -q 'get-shit-done'"
+
+# --- Static: the 2026-06-05 tail — four runtime surfaces. Target the SPECIFIC
+#     load-bearing literal on each, never the whole file: the gate + triad carry
+#     intentional "renamed get-shit-done → gsd-core" rename-note comments, so a
+#     whole-file negative grep would false-fail. The staleness these guard is
+#     SILENT — the gate would guard a missing dir (write-protection gap), the
+#     triad/draft-buffer/drift-surface would resolve wrong paths with no error. ---
+GATE="$REPO_ROOT/dhx/dhx-gsd-canonical-mirror-gate.sh"
+DRIFT_SURFACE="$REPO_ROOT/dhx/dhx-gsd-drift-surface.sh"
+TRIAD="$REPO_ROOT/scripts/dhx-gsd-triad.sh"
+DRAFT_BUFFER="$REPO_ROOT/scripts/dhx-draft-buffer.sh"
+
+# Gate: the GSD_LIVE_ROOT assignment (not the rename-note comment).
+GATE_ROOT_LINE="$(grep -nE '^GSD_LIVE_ROOT=' "$GATE" || true)"
+assert "gate GSD_LIVE_ROOT names 'gsd-core'"                "echo \"\$GATE_ROOT_LINE\" | grep -q 'gsd-core'"
+assert "gate GSD_LIVE_ROOT drops retired 'get-shit-done'"   "! echo \"\$GATE_ROOT_LINE\" | grep -q 'get-shit-done'"
+
+# Drift-surface: the cp repair-command printf line.
+DRIFT_CP_LINE="$(grep -nF 'printf '\''  cp ~/.claude/' "$DRIFT_SURFACE" || true)"
+assert "drift-surface cp command names 'gsd-core'"          "echo \"\$DRIFT_CP_LINE\" | grep -q 'gsd-core'"
+assert "drift-surface cp command drops 'get-shit-done'"     "! echo \"\$DRIFT_CP_LINE\" | grep -q 'get-shit-done'"
+
+# Triad: the root defaults AND the rel-strip dialect (both load-bearing per D-32).
+TRIAD_ROOT_LINES="$(grep -nE '^(LIVE_ROOT|CANONICAL_ROOT)=' "$TRIAD" || true)"
+TRIAD_STRIP_NEW="$(grep -cF 'rel#gsd-core/' "$TRIAD" || true)"
+TRIAD_STRIP_OLD="$(grep -cF 'rel#get-shit-done/' "$TRIAD" || true)"
+assert "triad LIVE/CANONICAL roots name 'gsd-core'"         "echo \"\$TRIAD_ROOT_LINES\" | grep -q 'gsd-core'"
+assert "triad roots drop retired 'get-shit-done'"           "! echo \"\$TRIAD_ROOT_LINES\" | grep -q 'get-shit-done'"
+assert "triad rel-strip dialect is 'gsd-core/' (both sites)" "[ \"\$TRIAD_STRIP_NEW\" -eq 2 ]"
+assert "triad rel-strip drops 'get-shit-done/'"             "[ \"\$TRIAD_STRIP_OLD\" -eq 0 ]"
+
+# Draft-buffer: fully migrated — no rename-note comment, so whole-file is valid.
+DRAFT_PREPEND="$(grep -cF 'gsd-core/$input' "$DRAFT_BUFFER" || true)"
+assert "draft-buffer prepends canonical 'gsd-core/'"        "[ \"\$DRAFT_PREPEND\" -ge 1 ]"
+assert "draft-buffer drops retired 'get-shit-done'"         "! grep -q 'get-shit-done' \"$DRAFT_BUFFER\""
 
 # --- Live-resolve: only when gsd is installed (manifest is a stable marker) ---
 LIVE_ROOT="$HOME/.claude/gsd-core"

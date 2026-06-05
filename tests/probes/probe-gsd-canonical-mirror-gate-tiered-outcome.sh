@@ -5,7 +5,7 @@
 # outcome (dhx/dhx-gsd-canonical-mirror-gate.sh):
 #   (a) BLOCK  — exit 2 on a backup-meta member with no valid marker
 #   (b) PASS   — exit 0 silent with a valid (unexpired, path-listed) marker
-#   (c) WARN   — exit 1 on a non-backup-meta ~/.claude/get-shit-done/ subtree file
+#   (c) WARN   — exit 1 on a non-backup-meta ~/.claude/gsd-core/ subtree file
 #   (d) happy  — exit 0 silent for a path outside the guarded subtree
 #   (e) EXPIRED — an expired marker (past the D-28 60s grace) is treated as
 #                 absent → falls through to the BLOCK tier
@@ -48,7 +48,7 @@ SESSION_ID="probe-tiered-$$"
 # Fixture backup-meta with a single fork-tracked entry — keeps the probe
 # independent of the live backup-meta.json contents.
 BACKUP_META_FIXTURE="$TMPDIR/backup-meta.json"
-jq -n '{version:1, files:["get-shit-done/workflows/execute-phase.md"]}' > "$BACKUP_META_FIXTURE"
+jq -n '{version:1, files:["gsd-core/workflows/execute-phase.md"]}' > "$BACKUP_META_FIXTURE"
 
 # Marker dir — empty initially (marker-absent path).
 MARKER_DIR="$TMPDIR/markers"
@@ -56,8 +56,8 @@ mkdir -p "$MARKER_DIR"
 MARKER="$MARKER_DIR/draft-buffer-${SESSION_ID}.json"
 
 # Guarded-subtree paths (derived rel path matches backup-meta files[] dialect).
-BACKUP_META_FILE="$HOME/.claude/get-shit-done/workflows/execute-phase.md"
-NON_META_FILE="$HOME/.claude/get-shit-done/workflows/some-non-mirrored-file.md"
+BACKUP_META_FILE="$HOME/.claude/gsd-core/workflows/execute-phase.md"
+NON_META_FILE="$HOME/.claude/gsd-core/workflows/some-non-mirrored-file.md"
 
 run_gate() {
   # $1 = file_path. Emits the gate's combined stdout+stderr; sets global EC.
@@ -86,7 +86,7 @@ assert "[a] BLOCK emits a cp mirror command" \
 # // paths[]) makes the gate exit 0 silent regardless of tier.
 FUTURE=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
 jq -n --arg sid "$SESSION_ID" --arg exp "$FUTURE" \
-  '{session_id:$sid, paths:["get-shit-done/workflows/execute-phase.md"], expires_at:$exp, reason:"probe fixture"}' \
+  '{session_id:$sid, paths:["gsd-core/workflows/execute-phase.md"], expires_at:$exp, reason:"probe fixture"}' \
   > "$MARKER"
 run_gate "$BACKUP_META_FILE"
 assert "[b] valid marker → exit 0" \
@@ -114,7 +114,7 @@ assert "[d] non-GSD path → silent" \
 # // as absent — the gate falls through to the tier it would emit with no marker.
 PAST=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
 jq -n --arg sid "$SESSION_ID" --arg exp "$PAST" \
-  '{session_id:$sid, paths:["get-shit-done/workflows/execute-phase.md"], expires_at:$exp, reason:"probe expired fixture"}' \
+  '{session_id:$sid, paths:["gsd-core/workflows/execute-phase.md"], expires_at:$exp, reason:"probe expired fixture"}' \
   > "$MARKER"
 run_gate "$BACKUP_META_FILE"
 assert "[e] expired marker treated as absent → exit 2" \

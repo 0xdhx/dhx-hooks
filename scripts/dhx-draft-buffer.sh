@@ -7,9 +7,9 @@
 # Exit codes: 0 happy path; 1 on setup failure (missing session file, missing jq, invalid path arg, path-dialect rejection).
 #
 # Dialect contract (per D-23 — see 'Dialect contract' subsection in the body):
-#   Accepts 3 input dialects: canonical 'get-shit-done/...', absolute '$HOME/.claude/get-shit-done/...', bare 'workflows/...'.
+#   Accepts 3 input dialects: canonical 'gsd-core/...', absolute '$HOME/.claude/gsd-core/...', bare 'workflows/...'.
 #   Rejects: absolute paths outside $HOME/.claude/; any '..' traversal segment.
-#   Stores canonical 'get-shit-done/...' form exclusively in the marker paths[] array.
+#   Stores canonical 'gsd-core/...' form exclusively in the marker paths[] array.
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ Usage: scripts/dhx-draft-buffer.sh <add|clear|show> [args]
   add <rel-path> [--reason "<text>"] [--expires <Nh>]
   clear
   show
-Path dialects accepted: 'get-shit-done/X', '$HOME/.claude/get-shit-done/X', 'X' (bare).
+Path dialects accepted: 'gsd-core/X', '$HOME/.claude/gsd-core/X', 'X' (bare).
 Schema documented in docs/hook-dev-guide.md § Marker File Schemas.
 EOF
 }
@@ -42,13 +42,13 @@ EOF
 # ========================================================================
 # Dialect contract (D-23) — see CLI doc string above for summary.
 # normalize_rel_path() input arms:
-#   (a) Starts with literal "get-shit-done/"           → accept as-is
-#   (b) Starts with "$HOME/.claude/get-shit-done/"     → strip "$HOME/.claude/" prefix
-#   (c) No leading "/", no ".." segment, NOT (a)       → prepend "get-shit-done/"
+#   (a) Starts with literal "gsd-core/"           → accept as-is
+#   (b) Starts with "$HOME/.claude/gsd-core/"     → strip "$HOME/.claude/" prefix
+#   (c) No leading "/", no ".." segment, NOT (a)       → prepend "gsd-core/"
 # Rejected (exit 1 with stderr error):
 #   (d) Absolute path NOT under "$HOME/.claude/"
 #   (e) Any segment ".." anywhere in the path
-# Output: canonical "get-shit-done/..." form on stdout (no trailing newline if used in $())
+# Output: canonical "gsd-core/..." form on stdout (no trailing newline if used in $())
 # ========================================================================
 normalize_rel_path() {
   local input="$1"
@@ -67,26 +67,26 @@ normalize_rel_path() {
       echo "ERROR: absolute path outside \$HOME/.claude/ rejected: $input" >&2
       return 1
     fi
-    # Edge: under $HOME/.claude/ but NOT in get-shit-done/ subtree
-    if [[ "$input" != "$HOME/.claude/get-shit-done/"* ]]; then
-      echo "ERROR: path under \$HOME/.claude/ but not in get-shit-done/ subtree: $input" >&2
+    # Edge: under $HOME/.claude/ but NOT in gsd-core/ subtree
+    if [[ "$input" != "$HOME/.claude/gsd-core/"* ]]; then
+      echo "ERROR: path under \$HOME/.claude/ but not in gsd-core/ subtree: $input" >&2
       return 1
     fi
-    # Arm (b): absolute under $HOME/.claude/get-shit-done/ → strip prefix
+    # Arm (b): absolute under $HOME/.claude/gsd-core/ → strip prefix
     printf '%s' "${input#$HOME/.claude/}"
     return 0
   fi
 
-  # Arm (a): canonical form "get-shit-done/..." → accept as-is
+  # Arm (a): canonical form "gsd-core/..." → accept as-is
   case "$input" in
-    get-shit-done/*)
+    gsd-core/*)
       printf '%s' "$input"
       return 0
       ;;
   esac
 
-  # Arm (c): bare relative path → prepend "get-shit-done/"
-  printf '%s' "get-shit-done/$input"
+  # Arm (c): bare relative path → prepend "gsd-core/"
+  printf '%s' "gsd-core/$input"
   return 0
 }
 
@@ -127,7 +127,7 @@ fi
 # terminated or space-separated line (Windows-origin edit, or a future writer
 # change). An unstripped `\r` lands in the marker filename
 # (draft-buffer-<sid>\r.json) — a name the gate at
-# dhx-gsd-canonical-mirror-gate.sh:89 can never reconstruct, so a valid
+# dhx-gsd-canonical-mirror-gate.sh:102 can never reconstruct, so a valid
 # annotation silently fails to suppress the gate. `tr -d '[:space:]'` removes
 # the CR and any stray whitespace. The path-metacharacter guard then matches
 # the gate's own session-id sanitization.

@@ -63,7 +63,7 @@ assert "header reports 1 file(s) diverged" \
   bash -c 'echo "$1" | grep -qF "1 file(s) diverged"' _ "$OUTPUT"
 
 # Exactly 1 cp line — one per rendered file line.
-CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*get-shit-done/workflows/')
+CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*gsd-core/workflows/')
 assert "exactly 1 cp line emitted" \
   bash -c '[ "$1" -eq 1 ]' _ "$CP_COUNT"
 

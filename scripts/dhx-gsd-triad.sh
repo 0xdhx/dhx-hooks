@@ -4,7 +4,7 @@
 # Walks the file set declared in ~/.claude/gsd-local-patches/backup-meta.json (`files` array).
 # For each file, prints sha256 across the three layers:
 #
-#   live      — ~/.claude/get-shit-done/<rel>            (what CC runs)
+#   live      — ~/.claude/gsd-core/<rel>                 (what CC runs)
 #   canonical — ~/.claude/gsd-local-patches/<rel>        (the fork's patched truth)
 #   pristine  — ~/.claude/gsd-pristine/<rel>             (clean upstream baseline, CC 1.40.0+)
 #
@@ -30,11 +30,15 @@ BACKUP_META="$HOME/.claude/gsd-local-patches/backup-meta.json"
 
 # Env overrides (Plan 16-05 probe-triad-duration-enrichment.sh fixture injection):
 #   DHX_DRIFT_CACHE       — defaults to $HOME/.cache/dhx/gsd-drift-first-seen.json
-#   DHX_TRIAD_LIVE_ROOT   — defaults to $HOME/.claude/get-shit-done (per D-32)
-#   DHX_TRIAD_CANONICAL_ROOT — defaults to $HOME/.claude/gsd-local-patches/get-shit-done (per D-32)
+#   DHX_TRIAD_LIVE_ROOT   — defaults to $HOME/.claude/gsd-core (per D-32; gsd-core 1.3.1 rename)
+#   DHX_TRIAD_CANONICAL_ROOT — defaults to $HOME/.claude/gsd-local-patches/gsd-core (per D-32; gsd-core 1.3.1 rename)
 DRIFT_CACHE="${DHX_DRIFT_CACHE:-$HOME/.cache/dhx/gsd-drift-first-seen.json}"
-LIVE_ROOT="${DHX_TRIAD_LIVE_ROOT:-$HOME/.claude/get-shit-done}"
-CANONICAL_ROOT="${DHX_TRIAD_CANONICAL_ROOT:-$HOME/.claude/gsd-local-patches/get-shit-done}"
+# INVARIANT (gsd-core 1.3.1, 2026-06-05): these defaults MUST track the live gsd
+# runtime dir name AND the backup-meta.json files[] dialect (which @opengsd/gsd-core
+# @1.3.1 migrated get-shit-done/* → gsd-core/*). The rel-strip below depends on it.
+# probe-gsd-roots-resolve.sh asserts these literals.
+LIVE_ROOT="${DHX_TRIAD_LIVE_ROOT:-$HOME/.claude/gsd-core}"
+CANONICAL_ROOT="${DHX_TRIAD_CANONICAL_ROOT:-$HOME/.claude/gsd-local-patches/gsd-core}"
 
 # D-26: Surface corrupt cache out-of-band; triad is operator-invoked so a WARN is actionable.
 # The SessionStart emitter (dhx-gsd-drift-surface.sh) stays silent-on-corrupt (HP-015 hot-path discipline).
@@ -78,7 +82,7 @@ hash_or_marker() {
 # days_unresolved <rel> — emit " (first detected: YYYY-MM-DD, N days unresolved)"
 # when DRIFT_CACHE has a matching ISO 8601 timestamp for <rel> and N>=1.
 # Silent (empty output) when cache absent, jq absent, no matching entry, or N<1.
-# <rel> is the cache key — the bare path under get-shit-done/ (e.g. workflows/execute-plan.md).
+# <rel> is the cache key — the bare path under gsd-core/ (e.g. workflows/execute-plan.md).
 days_unresolved() {
   local rel="$1"
   [ -f "$DRIFT_CACHE" ] || return 0
@@ -108,10 +112,17 @@ printf '  %-40s  %-12s  %-12s  %-12s  %s\n' "file" "live" "canonical" "pristine"
 printf '  %-40s  %-12s  %-12s  %-12s  %s\n' "----------------------------------------" "------------" "------------" "------------" "------"
 
 for rel in "${FILES[@]}"; do
-  # gsd_rel — the bare path under get-shit-done/ (drift-cache key dialect).
-  # LIVE_ROOT / CANONICAL_ROOT (D-32) already point at the get-shit-done subtree,
+  # gsd_rel — the bare path under gsd-core/ (drift-cache key dialect; the cache
+  # is keyed bare-rel-under-root, matching this strip — see HP-031).
+  # LIVE_ROOT / CANONICAL_ROOT (D-32) already point at the gsd-core subtree,
   # so resolve files relative to gsd_rel; pristine keeps the prefix-based path.
-  gsd_rel="${rel#get-shit-done/}"
+  # NOTE (gsd-core 1.3.1): backup-meta files[] now reads gsd-core/<rel>, so the
+  # pristine layer resolves to gsd-pristine/gsd-core/<rel>. Until the gsd-core
+  # installer migrates ~/.claude/gsd-pristine/ from its get-shit-done/ subdir to
+  # gsd-core/, pristine reads (missing) → live==canonical rows classify PARTIAL,
+  # not OK(forked). Not papered over with an old-name map: pristine MUST track
+  # the live dialect; the lag is a gsd-core-install concern, not a triad edit.
+  gsd_rel="${rel#gsd-core/}"
   live_hash=$(hash_or_marker "$LIVE_ROOT/$gsd_rel")
   canonical_hash=$(hash_or_marker "$CANONICAL_ROOT/$gsd_rel")
   pristine_hash=$(hash_or_marker "$PRISTINE_PREFIX/$rel")
@@ -146,7 +157,7 @@ if [ "$DIVERGED" -gt 0 ]; then
   echo
   echo "Fix-A: cp the live file(s) to canonical to restore byte-equality:"
   for rel in "${FILES[@]}"; do
-    gsd_rel="${rel#get-shit-done/}"
+    gsd_rel="${rel#gsd-core/}"
     live_hash=$(hash_or_marker "$LIVE_ROOT/$gsd_rel")
     canonical_hash=$(hash_or_marker "$CANONICAL_ROOT/$gsd_rel")
     if [ "$live_hash" != "$canonical_hash" ]; then

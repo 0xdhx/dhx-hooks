@@ -50,7 +50,9 @@ command -v jq >/dev/null 2>&1 || exit 0
 #   1. The SessionStart drift block fires ONCE per session via the session-start.sh
 #      dispatcher (NOT per statusline refresh).
 #   2. ~/.cache/dhx/gsd-drift-first-seen.json persists cross-session, keyed by
-#      relative path under ~/.claude/get-shit-done/.
+#      relative path under ~/.claude/gsd-core/ (gsd-core 1.3.1 rename, 2026-06-05;
+#      the cache-key dialect is the bare rel under the gsd root — unchanged — only
+#      the root dir name flipped get-shit-done → gsd-core).
 #   3. Entries are removed when drift resolves (state-authoritative writer in
 #      statusline-wrapper.js drops non-diverging paths by construction); no TTL.
 #   4. (Inapplicable to this file; declared in the gate hook) The marker file is
@@ -126,7 +128,7 @@ NOW_S=$(date -u +%s)
   for ROW in "${ROWS[@]}"; do
     [ "$i" -ge 5 ] && break
     REL="${ROW%%$'\t'*}"
-    printf '  cp ~/.claude/get-shit-done/%s ~/.claude/gsd-local-patches/get-shit-done/%s\n' "$REL" "$REL"
+    printf '  cp ~/.claude/gsd-core/%s ~/.claude/gsd-local-patches/gsd-core/%s\n' "$REL" "$REL"
     i=$((i + 1))
   done
 } >&2
