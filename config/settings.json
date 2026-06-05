@@ -195,15 +195,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"require(require('path').join(require('os').homedir(),'.claude','scripts','fix-gsd-ccs-paths.js'))\""
-          }
-        ]
-      },
-      {
         "matcher": "Write|Edit",
         "hooks": [
           {
