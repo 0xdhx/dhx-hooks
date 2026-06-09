@@ -136,5 +136,14 @@ test('write-guard: Edit file_path under main-root from worktree is DENIED (D-14)
   assertDeny(fireWrite(WT_CWD, `${MAIN_ROOT}/x`));
 });
 
-// NOTE: the SC3 captured-subagent-fixture assertion is appended by Plan 43-03
-// (after the D-08 operator fire test captures the live hook input) — not here.
+// ── SC3 (D-08 / D-15): captured live subagent fixture — VERSION-WITNESS ──
+test('captured subagent fixture has agent_id + agent_type (SC3 version-witness)', () => {
+  const fx = require('./fixtures/worktree-guard-subagent-fire.json'); // operator-captured, D-08
+  // D-15: VERSION-WITNESS — durably records that CC 2.1.170 emitted subagent context
+  // (agent_id / agent_type) on a PreToolUse:Bash hook at capture time (2026-06-09,
+  // canonical operator session-restart fire). NOT a future-version drift detector: a
+  // static committed fixture's own fields can never "go red" when a future CC changes
+  // runtime behavior — genuine drift detection would require per-version live re-capture.
+  assert.ok(fx.agent_id);
+  assert.ok(fx.agent_type);
+});
