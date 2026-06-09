@@ -113,6 +113,7 @@ asserts row count == file count.
 | `probe-watch-digest.sh` | yes | per-test mktemp_state registry with trap cleanup; no live writes |
 | `probe-watch-health-render.js` | yes | `_make-fake-home` (mktemp + HOME override per spawn) fixtures `dhx-watch-health.json`; spawns the banner (`dhx-watch-digest.sh`, `DHX_WATCH_DIR` pointed at a nonexistent dir) + the statusline wrapper under the fake `$HOME`; never reads or writes live `~/.cache/dhx/` (2026-05-28 watch-health cache consumer render probe) |
 | `probe-worktree-bash-guard.sh` | yes | hook subshell test with synthetic stdin; no real writes (write-attempt strings are blocked by hook before execution) |
+| `probe-worktree-guard-adversarial.test.js` | yes | node:test spawns the bash + write guards in a bash subshell against synthetic stdin; write-attempt command strings are blocked by the hook before any shell execution — no real writes (Phase 43 D-02/D-06/D-10/D-14 adversarial scope + deny-contract suite) |
 | `probe-worktree-write-guard.sh` | yes | hook subshell test with synthetic stdin; assertions on hook exit code only |
 | `probe-writeatomic-leak-cleanup.js` | yes | mkdtempSync fixtures + require of live wrapper's `writeAtomic`; mocks `fs.renameSync` then restores it; no live `~/.cache/dhx` or `~/.claude` writes (IN-03 leaked-tmp cleanup invariant probe) |
 | `probe-safe-for-live-tags.sh` | yes | (D-29 reserved row) read-only grep over repo files; runtime invariant for the audit itself; lands in Task 3 of this plan |

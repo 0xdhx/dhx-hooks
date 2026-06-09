@@ -72,10 +72,16 @@ WT_ROOT=$(echo "$CWD" | sed -E 's|(.*\.claude/worktrees/[^/]+).*|\1|')
 # 2026-04-21). Uniform enforcement intended — a subagent escape is the same
 # violation as a top-level escape. Do NOT add an agent_id short-circuit.
 # File outside worktree → BLOCK
-echo "BLOCKED: file_path escapes worktree boundary (issue #36182)"
-echo "  cwd:       $CWD"
-echo "  file_path: $FILE"
-echo "  worktree:  $WT_ROOT"
-echo ""
-echo "Use a worktree-rooted absolute path, or use a cwd-relative path."
+# --- D-03: structured fail-closed deny (parity with dhx-worktree-bash-guard.sh) ---
+# CC processes JSON only on exit 0; a non-zero exit AFTER emitting deny-JSON is the
+# fail-open trap. Emit-then-exit-0 inside the `if` condition (errexit-exempt); fall
+# CLOSED to exit 2 if the emit fails (still hard-blocks). Nothing runs between a
+# successful printf and exit 0.
+REASON="Worktree-leak guard: Edit/Write file_path escapes the worktree boundary into a main-repo path (issue #36182). cwd=$CWD file_path=$FILE worktree=$WT_ROOT — use a worktree-rooted absolute path, or a cwd-relative path."
+if DENY_JSON=$(jq -cn --arg r "$REASON" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null) \
+   && printf '%s\n' "$DENY_JSON"; then
+  exit 0
+fi
+echo "BLOCKED (fallback): worktree-leak write-guard could not emit structured deny; hard-blocking." >&2
 exit 2

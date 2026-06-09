@@ -111,11 +111,18 @@ if [[ "$ENV_C_MAIN_HIT" != "1" ]]; then
   [[ "$NON_WT_HITS" -gt 0 ]] || exit 0
 fi
 
-echo "BLOCKED: Bash write-verb targets main-repo path from worktree cwd (issue #36182 shell variant)"
-echo "  cwd:         $CWD"
-echo "  worktree:    $WT_ROOT"
-echo "  main-root:   $MAIN_ROOT"
-echo "  command:     $CMD"
-echo ""
-echo "Use a worktree-rooted path, or cd into the target repo explicitly."
+# --- D-03: structured fail-closed deny (PreToolUse permissionDecision) ---
+# CC processes JSON only on exit 0; a non-zero exit AFTER emitting deny-JSON would
+# make CC discard the deny and let the tool THROUGH (the fail-open trap — strictly
+# worse than exit 2). Build the JSON and printf BOTH inside the `if` condition
+# (the test position is exempt from `set -e`), exit 0 immediately on a clean emit,
+# and fall CLOSED to exit 2 if the emit fails (exit 2 still hard-blocks via stderr).
+# Nothing executes between a successful printf and exit 0.
+REASON="Worktree-leak guard: Bash write-verb targets a main-repo path from a worktree cwd (issue #36182 shell variant). cwd=$CWD worktree=$WT_ROOT main-root=$MAIN_ROOT command=$CMD — use a worktree-rooted path, or cd into the target repo explicitly."
+if DENY_JSON=$(jq -cn --arg r "$REASON" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null) \
+   && printf '%s\n' "$DENY_JSON"; then
+  exit 0
+fi
+echo "BLOCKED (fallback): worktree-leak guard could not emit structured deny; hard-blocking." >&2
 exit 2

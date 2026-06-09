@@ -45,10 +45,13 @@ _run() {
 
 _assert_block() {
   local name="$1"
-  if [[ "$RC" == "2" ]] && [[ "$OUT" == *"BLOCKED"* ]]; then
+  # D-03 contract: a block now emits structured permissionDecision:"deny" on stdout
+  # with exit 0 (was: bare "BLOCKED" text + exit 2). The fail-closed fallback is
+  # exit 2, exercised separately by the D-09 emit-failure test, not here.
+  if [[ "$RC" == "0" ]] && [[ "$OUT" == *'"permissionDecision":"deny"'* ]]; then
     echo "OK   $name"; PASSED=$((PASSED + 1))
   else
-    echo "FAIL $name — expected exit 2 + BLOCKED, got rc=$RC"
+    echo "FAIL $name — expected exit 0 + permissionDecision:deny, got rc=$RC"
     echo "     output: $OUT"
     FAILED=$((FAILED + 1))
   fi
