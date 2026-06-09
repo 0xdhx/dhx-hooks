@@ -74,22 +74,42 @@ fi
 
 [[ "$HAS_WRITE_VERB" == "1" ]] || exit 0
 
-# --- Is a main-repo absolute path referenced? ---
-# Escape MAIN_ROOT for regex use (dots, slashes — use fixed-string grep instead)
-if ! grep -qF "$MAIN_ROOT/" <<< "$CMD"; then
-  exit 0
+# --- D-05: env -C <main-root-exact> escape (bare/quoted cwd, relative target) ---
+# The main-root-hit grep below needs "$MAIN_ROOT/"; `env -C <root>` is followed by
+# a SPACE (and the target is relative), so a relative-target write under
+# `env -C <root>` never produces "$MAIN_ROOT/" and evaded detection. Catch
+# `env -C <MAIN_ROOT>` as a bare/quoted directory token (incl. `env -i -C` and
+# multi-space), provided it is NOT the WT_ROOT form. The trailing space|quote|end
+# boundary keeps a sibling repo (/repos/forge vs /repos/forgefinder) from
+# false-matching, and an `env -C <root>/subpath` absolute form stays on the
+# existing path (already caught via the literal "$MAIN_ROOT/").
+ENV_C_MAIN_HIT=0
+MAIN_ESC=$(printf '%s' "$MAIN_ROOT" | sed 's|[.[\*^$/]|\\&|g')
+WT_ESC=$(printf '%s' "$WT_ROOT" | sed 's|[.[\*^$/]|\\&|g')
+if grep -qE "(^|[[:space:]])env([[:space:]]+-[^[:space:]]*)*[[:space:]]+-C[[:space:]]+[\"']?${MAIN_ESC}[\"']?([[:space:]]|\$)" <<< "$CMD" \
+   && ! grep -qE "(^|[[:space:]])env([[:space:]]+-[^[:space:]]*)*[[:space:]]+-C[[:space:]]+[\"']?${WT_ESC}" <<< "$CMD"; then
+  ENV_C_MAIN_HIT=1
 fi
 
-# --- Is that path actually inside the worktree (subpath of MAIN_ROOT but
-#     under WT_ROOT)? If yes, allow — worktree paths are legit targets. ---
-# Heuristic: if every occurrence of MAIN_ROOT/ in the command is immediately
-# followed by ".claude/worktrees/", it's a worktree reference.
-# Count main-root hits that DON'T continue into .claude/worktrees/.
-NON_WT_HITS=$(echo "$CMD" \
-  | grep -oE "$(printf '%s\n' "$MAIN_ROOT/" | sed 's|[.[\*^$/]|\\&|g')[^[:space:]\"\x27]*" \
-  | grep -vcE "\.claude/worktrees/" || true)
+# --- Is a main-repo absolute path referenced? (skip when an env -C main-root hit
+#     already fired — fall straight through to the BLOCK tail) ---
+if [[ "$ENV_C_MAIN_HIT" != "1" ]]; then
+  # Escape MAIN_ROOT for regex use (dots, slashes — use fixed-string grep instead)
+  if ! grep -qF "$MAIN_ROOT/" <<< "$CMD"; then
+    exit 0
+  fi
 
-[[ "$NON_WT_HITS" -gt 0 ]] || exit 0
+  # --- Is that path actually inside the worktree (subpath of MAIN_ROOT but
+  #     under WT_ROOT)? If yes, allow — worktree paths are legit targets. ---
+  # Heuristic: if every occurrence of MAIN_ROOT/ in the command is immediately
+  # followed by ".claude/worktrees/", it's a worktree reference.
+  # Count main-root hits that DON'T continue into .claude/worktrees/.
+  NON_WT_HITS=$(echo "$CMD" \
+    | grep -oE "$(printf '%s\n' "$MAIN_ROOT/" | sed 's|[.[\*^$/]|\\&|g')[^[:space:]\"\x27]*" \
+    | grep -vcE "\.claude/worktrees/" || true)
+
+  [[ "$NON_WT_HITS" -gt 0 ]] || exit 0
+fi
 
 echo "BLOCKED: Bash write-verb targets main-repo path from worktree cwd (issue #36182 shell variant)"
 echo "  cwd:         $CWD"
