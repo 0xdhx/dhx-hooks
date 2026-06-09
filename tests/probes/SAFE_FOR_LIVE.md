@@ -86,6 +86,7 @@ asserts row count == file count.
 | `probe-repair-installed-plugins.sh` | yes | mktemp + fake HOME + fake CLAUDE_CONFIG_DIR; never touches live `~/.claude` or `~/.ccs/shared/`; no claude subprocess, no auth, no network; fixture-only — no live registry mutation (Phase 19 SYM-REPAIR D-10/D-15 repair-action probe; SC2 empirical anchor) |
 | `probe-restart-plugins-stop-hook.sh` | yes | mktemp + HOME=$TMP per scenario; transcript fixtures synthesized in $TMP |
 | `probe-run-probes-convention-a.sh` | yes | per-case mktemp REPO-shaped sandbox; copies `scripts/run-probes.sh` into the tmp tree + plants one fake probe + fixture outcome JSON; never touches the live repo, `~/.claude`, or `~/.cache/dhx` (quick-260526-1qm Convention-A FAIL-gating regression probe) |
+| `probe-session-registry.sh` | yes | drives both registry hooks under a `mktemp` `$HOME` (rows land in the throwaway `$T/.claude/`, never the live registry) + a PATH `tmux` stub (no live tmux server); reads nothing live (2026-06-08 alive-session-recovery registry producer probe) |
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |
 | `probe-sigpipe-pipefail-shapes.sh` | yes | static lint grepping in-repo `dhx/*.sh` for pipeline shapes; no writes |
