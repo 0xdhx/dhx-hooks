@@ -28,11 +28,12 @@
 # partial reads (its hook.sh:53-57) so it only ever saw the STRICT band; capturing the
 # BROAD overlapping-partial band (99% of the token mass per the spike) is the whole point.
 #
-# STATE  (ephemeral, TTL-windowed, session-scoped, pruned):
+# STATE  (ephemeral, TTL-windowed, session-scoped, pruned — fine to reap):
 #   ~/.cache/dhx/read-dedup/<session_id>.jsonl
 #   one record per Read: {"path","start","end","mtime","size","ts"}
-# STATS  (durable measurement dataset — the Phase-1 deliverable):
-#   ~/.cache/dhx/read-dedup-stats.jsonl
+# STATS  (durable measurement dataset — the Phase-1 deliverable; lives OUTSIDE the cache dir):
+#   ~/.local/share/dhx/read-dedup-stats.jsonl  (XDG_DATA_HOME — durable, NOT a reapable cache;
+#   relocated 2026-06-09 after skills probe-dhx-sym-parity.sh unconditional-wiped ~/.cache/dhx — see decisions.md)
 #   one event per detected re-read: {"ts","path","session","event","range":[s,e],
 #       "overlap_lines","overlap_tokens","band"}  (event in strict|broad|new|changed)
 # Token basis: overlap_lines * (file_size/total_lines) / 4 chars/token — the SAME flat
@@ -43,7 +44,8 @@
 #   DHX_READ_DEDUP_TTL=1200       seconds a prior read counts as "still in context"
 #                                 (compaction proxy; re-reads after this are not waste)
 #   DHX_READ_DEDUP_DISABLED=1     disable entirely
-#   DHX_READ_DEDUP_STATE_DIR=...  override cache root (probe/test injection, D-20 convention)
+#   DHX_READ_DEDUP_STATE_DIR=...  override ephemeral cache root (probe/test injection, D-20 convention)
+#   DHX_READ_DEDUP_DATA_DIR=...   override durable STATS data root (probe/test injection, D-20 convention)
 #
 # Fires: PreToolUse on the Read tool. Action: state-write + stats-log only; no stdout,
 # no blocking, never fails the tool call (set -uo, not -e — dhx convention).
@@ -114,10 +116,21 @@ case "$START$END" in *[!0-9]*) exit 0 ;; esac
 NOW=$(date +%s)
 TTL="${DHX_READ_DEDUP_TTL:-1200}"
 
+# Two roots, two lifetimes. STATE is per-session ephemeral and STAYS in the cache dir (fine to
+# reap). STATS is the durable Phase-1 measurement and must NOT live in an XDG *cache* dir —
+# that's semantically reapable (skills probe-dhx-sym-parity.sh unconditional-wiped ~/.cache/dhx
+# 05-25→06-08; cleanupPeriodDays-style sweeps would too). It lives under XDG_DATA_HOME instead.
+# INVARIANT: STATS_FILE's root must differ from the cache/STATE root, so a cache reap cannot take
+# the durable dataset. probe-read-dedup.sh V-DURABLE-SPLIT asserts this (wipes cache, confirms
+# STATS survives). Each root carries its own D-20 fixture-injection override.
 CACHE_ROOT="${DHX_READ_DEDUP_STATE_DIR:-${HOME}/.cache/dhx}"
+DATA_ROOT="${DHX_READ_DEDUP_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/dhx}"
 STATE_DIR="${CACHE_ROOT}/read-dedup"
-STATS_FILE="${CACHE_ROOT}/read-dedup-stats.jsonl"
+STATS_FILE="${DATA_ROOT}/read-dedup-stats.jsonl"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+# Best-effort: STATS append is already `|| true`-guarded, so a DATA_ROOT mkdir failure must NOT
+# kill STATE recording (the hook's core function) — decouple it from the STATE_DIR `|| exit 0`.
+mkdir -p "$DATA_ROOT" 2>/dev/null || true
 STATE_FILE="${STATE_DIR}/${SESSION_ID}.jsonl"
 
 # Once-per-hour housekeeping: drop stale session files (>1d) so the dir stays bounded.

@@ -8,8 +8,9 @@
 # It is LOG-ONLY: emits nothing to Claude (zero context cost + no observer effect on the
 # very re-read behavior it measures). See the hook header + the measurement doc.
 #
-#   STATE: <cache>/read-dedup/<session_id>.jsonl   {"path","start","end","mtime","size","ts"}
-#   STATS: <cache>/read-dedup-stats.jsonl          {ts,path,session,event,range,overlap_lines,overlap_tokens,band}
+#   STATE: <cache>/read-dedup/<session_id>.jsonl   {"path","start","end","mtime","size","ts"}  (ephemeral — reapable)
+#   STATS: <data>/read-dedup-stats.jsonl           {ts,path,session,event,range,overlap_lines,overlap_tokens,band}
+#          (durable — XDG_DATA_HOME, NOT the cache dir; relocated 2026-06-09, see decisions.md)
 #   event ∈ strict | broad | new | changed ;  band ∈ strict | broad | none
 #
 # Asserts:
@@ -24,6 +25,8 @@
 #   V-SANITIZE       empty / path-separator / `..` session_id → exit 0, no file written (D-11)
 #   V-STATE-RECORDED every processed read appends a state record (so future reads detect overlap)
 #   V-REALPATH       a symlinked read path is recorded symlink-resolved (IN-02)
+#   V-DURABLE-SPLIT  STATS lands in the durable data root (NOT the cache root) and SURVIVES a
+#                    wipe of the cache dir — the invariant the 2026-06-09 relocation protects
 #
 # INVARIANT: token magnitude uses the spike's flat chars/4 proxy (overlap bytes ÷ 4) so the
 # live bands are directly comparable to docs/research .../2026-05-24-read-once-token-waste-
@@ -32,14 +35,18 @@
 # Run directly: bash tests/probes/probe-read-dedup.sh
 # Exit 0 = all pass. Nonzero = at least one [FAIL].
 #
-# SAFE_FOR_LIVE: yes   (mktemp cache via DHX_READ_DEDUP_STATE_DIR; all writes contained in $SBX)
+# SAFE_FOR_LIVE: yes   (mktemp cache+data via DHX_READ_DEDUP_STATE_DIR + DHX_READ_DEDUP_DATA_DIR;
+#                       all writes contained in $SBX — both roots are mktemp subdirs)
 set -uo pipefail
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-read-dedup.sh"
 SBX=$(mktemp -d)
 trap 'rm -rf "$SBX"' EXIT
+# Split roots (2026-06-09 relocation): STATE stays in the cache root, STATS moves to the data
+# root. Sibling subdirs under one mktemp $SBX so assertions can PROVE the separation.
 export DHX_READ_DEDUP_STATE_DIR="$SBX/cache"
-STATS="$SBX/cache/read-dedup-stats.jsonl"
+export DHX_READ_DEDUP_DATA_DIR="$SBX/data"
+STATS="$SBX/data/read-dedup-stats.jsonl"
 
 PASS=0; FAIL=0
 ok()   { echo "OK   $1"; PASS=$((PASS+1)); }
@@ -96,14 +103,14 @@ TF2="$SBX/aged.md"; printf 'x%s\n' $(seq 1 100) > "$TF2"
 MT=$(stat -c %Y "$TF2"); SZ=$(stat -c %s "$TF2"); OLD=$(( $(date +%s) - 5000 ))
 printf '{"path":"%s","start":1,"end":2001,"mtime":"%s","size":"%s","ts":%s}\n' "$TF2" "$MT" "$SZ" "$OLD" \
   > "$SBX_T/cache/read-dedup/sidttl.jsonl"
-DHX_READ_DEDUP_STATE_DIR="$SBX_T/cache" mk "$TF2" "sidttl" | DHX_READ_DEDUP_STATE_DIR="$SBX_T/cache" bash "$HOOK"
-chk "V-TTL-WINDOW aged-out prior → no event" "$(wc -l < "$SBX_T/cache/read-dedup-stats.jsonl" 2>/dev/null || echo 0)" "0"
+DHX_READ_DEDUP_STATE_DIR="$SBX_T/cache" mk "$TF2" "sidttl" | DHX_READ_DEDUP_STATE_DIR="$SBX_T/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_T/data" bash "$HOOK"
+chk "V-TTL-WINDOW aged-out prior → no event" "$(wc -l < "$SBX_T/data/read-dedup-stats.jsonl" 2>/dev/null || echo 0)" "0"
 
 # --- V-SANITIZE: unsafe session_ids write nothing, exit 0 ---
 SBX_S="$SBX/san"; export_save="$DHX_READ_DEDUP_STATE_DIR"
 for bad_sid in "" "a/b" ".." "x/../y"; do
   rm -rf "$SBX_S"; mkdir -p "$SBX_S/cache"
-  OUT=$(DHX_READ_DEDUP_STATE_DIR="$SBX_S/cache" mk "$TF" "$bad_sid" | DHX_READ_DEDUP_STATE_DIR="$SBX_S/cache" bash "$HOOK"); RC=$?
+  OUT=$(DHX_READ_DEDUP_STATE_DIR="$SBX_S/cache" mk "$TF" "$bad_sid" | DHX_READ_DEDUP_STATE_DIR="$SBX_S/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_S/data" bash "$HOOK"); RC=$?
   WROTE=$(find "$SBX_S/cache/read-dedup" -type f 2>/dev/null | wc -l)
   if [ "$RC" = "0" ] && [ "${OUT:-}" = "" ] && [ "$WROTE" = "0" ]; then
     ok "V-SANITIZE rejected unsafe session_id [${bad_sid:-<empty>}]"
@@ -116,7 +123,7 @@ export DHX_READ_DEDUP_STATE_DIR="$export_save"
 # --- V-REALPATH: symlinked read path recorded resolved ---
 SBX_R="$SBX/rp"; mkdir -p "$SBX_R/cache"
 LN="$SBX/link.md"; ln -sf "$TF" "$LN"; RP=$(realpath "$LN")
-DHX_READ_DEDUP_STATE_DIR="$SBX_R/cache" mk "$LN" "siderp" | DHX_READ_DEDUP_STATE_DIR="$SBX_R/cache" bash "$HOOK"
+DHX_READ_DEDUP_STATE_DIR="$SBX_R/cache" mk "$LN" "siderp" | DHX_READ_DEDUP_STATE_DIR="$SBX_R/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_R/data" bash "$HOOK"
 REC_PATH=$(tail -1 "$SBX_R/cache/read-dedup/siderp.jsonl" 2>/dev/null | jq -r '.path' 2>/dev/null)
 chk "V-REALPATH path symlink-resolved" "$REC_PATH" "$RP"
 
@@ -125,12 +132,28 @@ chk "V-REALPATH path symlink-resolved" "$REC_PATH" "$RP"
 # NOT the raw interval 200. Guards the pre-fix overcount that inflated the BROAD band.
 SBX_E="$SBX/eof"; mkdir -p "$SBX_E/cache"
 TFE="$SBX/eof.md"; printf 'e%s\n' $(seq 1 300) > "$TFE"
-runE(){ DHX_READ_DEDUP_STATE_DIR="$SBX_E/cache" bash "$HOOK"; }
+runE(){ DHX_READ_DEDUP_STATE_DIR="$SBX_E/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_E/data" bash "$HOOK"; }
 printf '{"tool_name":"Read","session_id":"sideof","tool_input":{"file_path":"%s"}}' "$TFE" | runE
 printf '{"tool_name":"Read","session_id":"sideof","tool_input":{"file_path":"%s","offset":250,"limit":200}}' "$TFE" | runE
-EOF_EV=$(tail -1 "$SBX_E/cache/read-dedup-stats.jsonl" 2>/dev/null)
+EOF_EV=$(tail -1 "$SBX_E/data/read-dedup-stats.jsonl" 2>/dev/null)
 chk "V-EOF-CLAMP event" "$(echo "$EOF_EV" | jq -r '.event')" "broad"
 chk "V-EOF-CLAMP overlap clamped to real lines (51, not raw 200)" "$(echo "$EOF_EV" | jq -r '.overlap_lines')" "51"
+
+# --- V-DURABLE-SPLIT (2026-06-09 relocation): STATS lives in the durable data root and survives
+# a wipe of the cache dir. This is the whole point of the relocation — a reap of the cache dir
+# (skills probe-dhx-sym-parity.sh's unconditional rm -rf, XDG cleanupPeriodDays sweeps) must NOT
+# take the durable measurement dataset with it.
+SBX_D="$SBX/durable"
+TFD="$SBX/durable.md"; printf 'd%s\n' $(seq 1 120) > "$TFD"
+runD(){ DHX_READ_DEDUP_STATE_DIR="$SBX_D/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_D/data" bash "$HOOK"; }
+mkD()  { printf '{"tool_name":"Read","session_id":"sidd","tool_input":{"file_path":"%s"}}' "$TFD"; }
+mkD | runD                         # 1st read → STATE only, no event
+mkD | runD                         # full re-read of unchanged file → STATS event in the DATA root
+chk "V-DURABLE-SPLIT STATS in data root, not cache root" \
+    "$([ -s "$SBX_D/data/read-dedup-stats.jsonl" ] && [ ! -e "$SBX_D/cache/read-dedup-stats.jsonl" ] && echo yes || echo no)" "yes"
+rm -rf "$SBX_D/cache"              # simulate the skills probe's unconditional cache wipe
+chk "V-DURABLE-SPLIT STATS survives a cache-dir wipe" \
+    "$([ -s "$SBX_D/data/read-dedup-stats.jsonl" ] && echo survived || echo gone)" "survived"
 
 echo
 echo "$PASS passed, $FAIL failed"
