@@ -25,8 +25,14 @@
 #
 # Backs: 16-SPEC.md REQ-DRIFT-ACTION-06 + 16-CONTEXT.md decision D-32.
 # Run: bash tests/probes/probe-triad-duration-enrichment.sh
+#
+# 2026-06-08: also fixtures backup-meta.json via DHX_TRIAD_BACKUP_META. The triad sources its
+# tracked-file list (files[]) from the live backup-meta; after the worktree-safety fork was
+# retired (files[] → []), a content-roots-only fixture left the triad exiting at its empty-files[]
+# guard before any DRIFT row (probe went 1/6 red). Staging the file list makes the probe fully
+# self-isolating — green regardless of live fork-retirement state.
 
-# SAFE_FOR_LIVE: yes  (mktemp + DHX_DRIFT_CACHE + DHX_TRIAD_LIVE_ROOT + DHX_TRIAD_CANONICAL_ROOT env overrides; never reads live ~/.claude or the live dhx drift cache)
+# SAFE_FOR_LIVE: yes  (mktemp + DHX_DRIFT_CACHE + DHX_TRIAD_LIVE_ROOT + DHX_TRIAD_CANONICAL_ROOT + DHX_TRIAD_BACKUP_META env overrides; never reads live ~/.claude, the live backup-meta, or the live dhx drift cache)
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -55,11 +61,12 @@ echo "=== triad DRIFT-row duration enrichment (tmpdir-isolated) ==="
 # // INVARIANT: this is a dependency-presence guard, NOT a byte-equality skip.
 # // D-32 forbids skipping when the live trees happen to be byte-equal; it does
 # // NOT forbid skipping when the triad has not yet gained the D-32 contract.
-if ! grep -q 'DHX_TRIAD_LIVE_ROOT' "$TRIAD" 2>/dev/null; then
-  echo "SKIP: scripts/dhx-gsd-triad.sh has no DHX_TRIAD_LIVE_ROOT override yet"
+if ! grep -q 'DHX_TRIAD_BACKUP_META' "$TRIAD" 2>/dev/null; then
+  echo "SKIP: scripts/dhx-gsd-triad.sh has no DHX_TRIAD_BACKUP_META override yet"
   echo "      — the D-32 env overrides + DRIFT-row enrichment ship in Plan 16-04"
-  echo "      (Wave 4). Once 16-04 merges, this probe runs the deterministic"
-  echo "      positive case with no fallback."
+  echo "      (Wave 4); DHX_TRIAD_BACKUP_META was added 2026-06-08 for fork-retirement"
+  echo "      isolation. Once present, this probe runs the deterministic positive case"
+  echo "      with no fallback."
   echo "---"
   echo "0 passed, 0 failed (capability-guard SKIP — awaiting Plan 16-04)"
   exit 0
@@ -78,8 +85,15 @@ CACHE="$TMPDIR/gsd-drift-first-seen.json"
 TEN_DAYS_AGO=$(date -u -d '-10 days' +%Y-%m-%dT%H:%M:%SZ)
 jq -n --arg ts "$TEN_DAYS_AGO" '{"workflows/execute-plan.md": $ts}' > "$CACHE"
 
+# ---- Backup-meta fixture: stage the tracked-file LIST (decoupled from live fork state) ----
+# The triad sources files[] from backup-meta.json. Post-2026-06-05 the live meta is files:[]
+# (worktree-safety fork retired), so without this override the triad exits at its empty-files[]
+# guard before any DRIFT row. The probe must own its file list to stay deterministic.
+META="$TMPDIR/backup-meta.json"
+jq -n '{from_version:"fixture", backed_up_at:"2026-01-01T00:00:00Z", files:["workflows/execute-plan.md"], pristine_hashes:{}}' > "$META"
+
 # ---- Test 1: positive case — deterministic per D-32 (no SKIP fallback) ----
-OUTPUT=$(DHX_DRIFT_CACHE="$CACHE" \
+OUTPUT=$(DHX_DRIFT_CACHE="$CACHE" DHX_TRIAD_BACKUP_META="$META" \
   DHX_TRIAD_LIVE_ROOT="$LIVE_FIXTURE" DHX_TRIAD_CANONICAL_ROOT="$CANONICAL_FIXTURE" \
   bash "$TRIAD" 2>&1)
 
@@ -93,7 +107,7 @@ assert "[1d] days-unresolved suffix present" \
   bash -c 'echo "$1" | grep -qE "[0-9]+ days unresolved"' _ "$OUTPUT"
 
 # ---- Test 2: graceful-degrade — cache absent, same divergent fixture ----
-OUTPUT2=$(DHX_DRIFT_CACHE="/nonexistent-cache.json" \
+OUTPUT2=$(DHX_DRIFT_CACHE="/nonexistent-cache.json" DHX_TRIAD_BACKUP_META="$META" \
   DHX_TRIAD_LIVE_ROOT="$LIVE_FIXTURE" DHX_TRIAD_CANONICAL_ROOT="$CANONICAL_FIXTURE" \
   bash "$TRIAD" 2>&1)
 

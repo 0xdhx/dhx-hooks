@@ -26,12 +26,19 @@
 set -uo pipefail
 
 PRISTINE_PREFIX="$HOME/.claude/gsd-pristine"
-BACKUP_META="$HOME/.claude/gsd-local-patches/backup-meta.json"
+BACKUP_META="${DHX_TRIAD_BACKUP_META:-$HOME/.claude/gsd-local-patches/backup-meta.json}"
 
 # Env overrides (Plan 16-05 probe-triad-duration-enrichment.sh fixture injection):
 #   DHX_DRIFT_CACHE       — defaults to $HOME/.cache/dhx/gsd-drift-first-seen.json
 #   DHX_TRIAD_LIVE_ROOT   — defaults to $HOME/.claude/gsd-core (per D-32; gsd-core 1.3.1 rename)
 #   DHX_TRIAD_CANONICAL_ROOT — defaults to $HOME/.claude/gsd-local-patches/gsd-core (per D-32; gsd-core 1.3.1 rename)
+#   DHX_TRIAD_BACKUP_META — defaults to $HOME/.claude/gsd-local-patches/backup-meta.json (the
+#                           files[] source). Added 2026-06-08: once the worktree-safety fork was
+#                           retired (live backup-meta files[] → []), the probe — which fixtured only
+#                           the live/canonical CONTENT roots, not the file LIST — went red (the triad
+#                           exits at the empty-files[] guard before any DRIFT row). Overriding the
+#                           meta lets the probe stage its own tracked-file list, decoupling it from
+#                           live fork-retirement state.
 DRIFT_CACHE="${DHX_DRIFT_CACHE:-$HOME/.cache/dhx/gsd-drift-first-seen.json}"
 # INVARIANT (gsd-core 1.3.1, 2026-06-05): these defaults MUST track the live gsd
 # runtime dir name AND the backup-meta.json files[] dialect (which @opengsd/gsd-core
@@ -116,12 +123,12 @@ for rel in "${FILES[@]}"; do
   # is keyed bare-rel-under-root, matching this strip — see HP-031).
   # LIVE_ROOT / CANONICAL_ROOT (D-32) already point at the gsd-core subtree,
   # so resolve files relative to gsd_rel; pristine keeps the prefix-based path.
-  # NOTE (gsd-core 1.3.1): backup-meta files[] now reads gsd-core/<rel>, so the
-  # pristine layer resolves to gsd-pristine/gsd-core/<rel>. Until the gsd-core
-  # installer migrates ~/.claude/gsd-pristine/ from its get-shit-done/ subdir to
-  # gsd-core/, pristine reads (missing) → live==canonical rows classify PARTIAL,
-  # not OK(forked). Not papered over with an old-name map: pristine MUST track
-  # the live dialect; the lag is a gsd-core-install concern, not a triad edit.
+  # NOTE (worktree-safety fork retired 2026-06-05): live backup-meta files[] is now []
+  # so this loop does not iterate and the pristine arm below is not reached; the orphan
+  # ~/.claude/gsd-pristine/ tree was deleted alongside the retirement. The pristine arm is
+  # retained for any FUTURE gsd-core fork — should one be tracked, the layer resolves to
+  # gsd-pristine/gsd-core/<rel> and the installer must populate it in the LIVE dir name
+  # (NOT papered over with an old-name map: pristine MUST track the live dialect).
   gsd_rel="${rel#gsd-core/}"
   live_hash=$(hash_or_marker "$LIVE_ROOT/$gsd_rel")
   canonical_hash=$(hash_or_marker "$CANONICAL_ROOT/$gsd_rel")
