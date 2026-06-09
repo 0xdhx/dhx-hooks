@@ -15,7 +15,8 @@
 #   PARTIAL        — live == canonical, but pristine layer differs in an unexpected way
 #                    (e.g., pristine missing on pre-1.40 CC; or canonical lost patch markers)
 #
-# Exit code: 0 if all rows OK; 2 if any row is DRIFT; 1 on setup failure.
+# Exit code: 0 if all rows OK — OR no fork-tracked files (empty files[], the steady
+#            state once every fork is retired); 2 if any row is DRIFT; 1 on setup failure.
 # Backs Problem 3 from reports/2026-05-18-canonical-mirror-drift-from-unmirrored-edit.md.
 #
 # HP-031 declared here because this script CONSUMES the gsd-drift-first-seen.json cache
@@ -68,10 +69,22 @@ if ! command -v sha256sum >/dev/null 2>&1; then
   exit 1
 fi
 
+# Distinguish a corrupt/missing files[] (genuine setup failure → ERROR exit 1) from a
+# VALID but empty files[] (the expected steady state once every fork is retired —
+# backup-meta.files[] → []). The old single guard conflated both into ERROR exit 1, so
+# post-2026-06-05 retirement it surfaced a false ERROR on the normal no-forks-tracked
+# state. jq -e fails (non-zero) on unparseable JSON AND on a non-array/missing .files.
+if ! jq -e '.files | type == "array"' "$BACKUP_META" >/dev/null 2>&1; then
+  echo "ERROR: $BACKUP_META is unparseable or its files[] is not an array." >&2
+  exit 1
+fi
+
 mapfile -t FILES < <(jq -r '.files[]' "$BACKUP_META" 2>/dev/null)
 if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "ERROR: backup-meta.json files[] is empty or unparseable." >&2
-  exit 1
+  # Valid empty files[] — every fork retired, nothing to triage. Not an error.
+  echo "GSD fork-tracked sha256 triad: no fork-tracked files — backup-meta.json files[] is empty."
+  echo "  All forks retired; nothing to triage."
+  exit 0
 fi
 
 FROM_VERSION=$(jq -r '.from_version // "?"' "$BACKUP_META" 2>/dev/null)
