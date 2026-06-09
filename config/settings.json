@@ -139,7 +139,12 @@
       "Bash(rm -f /tmp/*)",
       "Bash(rm /tmp/*)",
       "Skill(deep-research)",
-      "Skill(claude-api)"
+      "Skill(claude-api)",
+      "Bash(npx gsd-core *)",
+      "Read(.planning/*)",
+      "Write(.planning/*)",
+      "Read(STATE.md)",
+      "Write(STATE.md)"
     ],
     "deny": [
       "Read(./.env*)",
@@ -159,7 +164,10 @@
       "Bash(git reset --hard*)",
       "Bash(mkfs *)",
       "Bash(rm -rf /)",
-      "Bash(rm -rf ~)"
+      "Bash(rm -rf ~)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(.secrets)"
     ],
     "defaultMode": "bypassPermissions"
   },
@@ -264,26 +272,6 @@
             "timeout": 5
           }
         ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"/home/dhx/.ccs/instances/c/hooks/gsd-read-guard.js\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash|Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"/home/dhx/.ccs/instances/c/hooks/gsd-workflow-guard.js\"",
-            "timeout": 5
-          }
-        ]
       }
     ],
     "Stop": [
@@ -293,6 +281,49 @@
             "type": "command",
             "command": "/home/dhx/.local/bin/uv run /home/dhx/repos/ttsfilter/src/ttsfilter/app/hook.py",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-context-monitor.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-context-monitor.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-context-monitor.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "config.json",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-config-reload.js\"",
+            "timeout": 8
           }
         ]
       }
@@ -335,6 +366,7 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "editorMode": "normal",
+  "autoCompactEnabled": true,
   "remoteControlAtStartup": true,
   "agentPushNotifEnabled": false,
   "voiceEnabled": true
