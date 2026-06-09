@@ -171,7 +171,6 @@
     ],
     "defaultMode": "bypassPermissions"
   },
-  "model": "claude-opus-4-8[1m]",
   "hooks": {
     "SessionStart": [
       {
