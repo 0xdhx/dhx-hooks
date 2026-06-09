@@ -15,11 +15,6 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-vitals-banner.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-session-registry-start.sh\"",
-            "timeout": 5
           }
         ]
       }
@@ -45,6 +40,11 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-verify-drift-gate.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-session-registry-prompt.sh\"",
             "timeout": 5
           }
         ]
