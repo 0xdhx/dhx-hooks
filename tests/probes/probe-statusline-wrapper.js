@@ -16,7 +16,7 @@
 // regardless of the ambient palette env; assumes the default DHX_CCBURN_RED_AT (90).
 const path = require('path');
 const WRAPPER = path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js');
-const { buildCcburnFromStdin, ccburnPace, ccburnResetSecs, formatBurnDuration, computeMetaGlyph } = require(WRAPPER);
+const { buildCcburnFromStdin, ccburnPace, ccburnResetSecs, formatBurnDuration, computeMetaGlyph, formatBranchSegment } = require(WRAPPER);
 // Pin palette to default + point the override-file at a nonexistent path so the
 // colour assertions are deterministic regardless of the ambient env or any real
 // ~/.config/dhx/ccburn-palette on this machine.
@@ -170,6 +170,26 @@ ok('meta-glyph: null inputs → dim green ∙ (!! coerces)',
 ok('meta-glyph: undefined inputs → dim green ∙',  computeMetaGlyph(undefined, undefined, undefined, 0),  GREEN_DOT);
 // Edge: sigilCount = 0 falsy. 0 → dim green ∙.
 ok('meta-glyph: sigilCount = 0 (zero is falsy) → dim green ∙', computeMetaGlyph('', '', '', 0), GREEN_DOT);
+
+// --- § 5 formatBranchSegment (off-main magenta signal + GSD compaction) ------
+// Line-1 git branch token. On the default branch (main/master) → cyan, full
+// name (calm). Off it → bright magenta `\x1b[35m` as an "off-main" cue; GSD
+// phase lanes compact to gsd/phase-NN[.M] (phase name already on line 2), other
+// long branches truncate at BRANCH_NAME_MAX=20 with `…`. Pure string contract;
+// pairs with docs/decisions.md 2026-06-10 off-main-magenta row + the segment-9 /
+// color-semantics rows in docs/statusline-wrapper.md.
+const CYAN = '\x1b[36m', MAG = '\x1b[35m', RST = '\x1b[0m';
+ok('branch: main → cyan, full',          formatBranchSegment('main'),    `${CYAN}main${RST}`);
+ok('branch: master → cyan, full',        formatBranchSegment('master'),  `${CYAN}master${RST}`);
+ok('branch: gsd/phase-06 lane → magenta, compacted',
+   formatBranchSegment('gsd/phase-06-lifted-regex-corrections-near-miss-test-corpus'),
+   `${MAG}gsd/phase-06${RST}`);
+ok('branch: gsd/phase-24.1 lane → magenta, decimal kept',
+   formatBranchSegment('gsd/phase-24.1-hub-eviction'), `${MAG}gsd/phase-24.1${RST}`);
+ok('branch: long non-gsd → magenta, truncated at 20',
+   formatBranchSegment('feature/really-long-name-here'), `${MAG}feature/really-long…${RST}`);
+ok('branch: short non-main → magenta, full', formatBranchSegment('dev'), `${MAG}dev${RST}`);
+ok('branch: empty → empty',              formatBranchSegment(''),        '');
 
 console.log();
 console.log(`${pass} passed, ${fail} failed`);

@@ -1976,6 +1976,23 @@ function getFirstUserPrompt(data) {
   });
 }
 
+// Branch display + off-main signal. GSD phase lanes compact to gsd/phase-NN[.M]
+// (the phase name already renders on line 2); other long branches truncate at
+// BRANCH_NAME_MAX (mirrors the renderer's NAME_MAX=20). Off the default branch
+// (main/master) → bright magenta as an "off-main" cue; on it → cyan (calm).
+// Pure (no fs, no subprocess) so it is probe-lockable as a string contract.
+const BRANCH_NAME_MAX = 20;
+function formatBranchSegment(branch) {
+  if (!branch) return '';
+  const gsd = branch.match(/^(gsd\/phase-\d+(?:\.\d+)?)/);
+  const display = gsd
+    ? gsd[1]
+    : (branch.length > BRANCH_NAME_MAX ? branch.slice(0, BRANCH_NAME_MAX - 1) + '…' : branch);
+  const onDefault = branch === 'main' || branch === 'master';
+  const color = onDefault ? '\x1b[36m' : '\x1b[35m'; // cyan on main/master, magenta off
+  return `${color}${display}\x1b[0m`;
+}
+
 // Fast git info: branch, dirty count, ahead/behind
 function getGitInfo(cwd) {
   const gitOpts = { cwd, timeout: 2000 };
@@ -1994,8 +2011,8 @@ function getGitInfo(cwd) {
 
     const parts = [];
 
-    // Branch name
-    parts.push(`\x1b[36m${branch}\x1b[0m`);
+    // Branch name — off-main signal + GSD compaction (see formatBranchSegment)
+    parts.push(formatBranchSegment(branch));
 
     // Dirty file count
     const dirty = porcelain ? porcelain.split('\n').filter(Boolean).length : 0;
@@ -2022,6 +2039,11 @@ module.exports = {
   ccburnPace,
   ccburnResetSecs,
   formatBurnDuration,
+  // Branch segment — pure string transform (off-main magenta signal + GSD
+  // phase-lane compaction); exported so probe-statusline-wrapper.js can pin the
+  // branch → colored-display contract deterministically. See docs/decisions.md
+  // 2026-06-10 off-main-magenta row.
+  formatBranchSegment,
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
