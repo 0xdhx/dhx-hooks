@@ -835,6 +835,9 @@ const PRESSURE_STATUSES = new Set(['active', 'needs-verify', 'regressed']);
 function resolveSkillsRoot() {
   const candidates = [];
   // Step 1: env override — enables worktrees, alternate layouts, test harnesses.
+  // Validated candidate, not unconditional: a valid path wins; an invalid value
+  // falls through to Steps 2-3. You cannot force resolveSkillsRoot→null via a bad
+  // DHX_SKILLS_REPO alone — all three tiers must fail accessSync(reports/skills).
   if (process.env.DHX_SKILLS_REPO) {
     candidates.push(process.env.DHX_SKILLS_REPO);
   }
