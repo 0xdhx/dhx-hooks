@@ -28,6 +28,27 @@
 # it. Read-only consumer -- never recomputes action_state/snooze (D-05); does NOT
 # touch the 12-key health cache. Distinct from the edge-triggered digest delta block.
 #
+# ─── Emitted-line contract (CROSS-BOUNDARY — read before changing ANY output line) ───
+# INVARIANT (cross-repo, producer<->consumer): this surfacer's stdout shape is a
+# contract a CONSUMER probe in ANOTHER repo asserts by literal `grep -F`:
+#   ~/repos/cross-repo/scripts/watch/tests/probe-dhx-watch-digest.sh
+# There is NO automated sync across the boundary. A change to any emitted line below
+# silently red-rots that probe with no local signal — exactly how the removed
+# `checker_stale` assertion sat red from the 2026-05-28 migration to 2026-06-10. If you
+# change an emitted line, update the cross-repo probe in the SAME change.
+# The hooks-side canonical pins (own + test this output; cross-repo defers/retires
+# rather than duplicating across the boundary):
+#   tests/probes/probe-watch-health-render.js  — timer_stale / polls_degraded / failing-items
+#   tests/probes/probe-watch-action-render.js  — ⚠ Action required (awaiting_us) inbox
+# Emitted lines (lead token · trigger):
+#   [!] watch checker stale · …    timer_stale verdict   (health cache)
+#   [!] watch polls degraded · …   polls_degraded verdict (health cache)
+#   ⚠ N watch item(s) failing: …   failing_items verdict  (health cache)
+#   ⚠ Action required (N): …       awaiting_us inbox      (watchlist.json)
+#   ⚠ N item(s) closed upstream …  upstream-closed drift  (watchlist.json)
+#   [!] digest_corrupt · …         corrupt digest lines
+#   [M]/[S]/[!]/blank  TAG · #REF · TYPE  + "summary" (rel)  per-event digest delta (2 lines)
+#
 # Suppression: DHX_SKIP_WATCH_DIGEST=1
 # Source-of-truth: ~/repos/hooks/dhx/dhx-watch-digest.sh
 # Symlinked to:   ~/.claude/hooks/dhx-watch-digest.sh (Task 3 of Plan 4)
