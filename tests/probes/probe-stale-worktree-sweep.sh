@@ -15,6 +15,9 @@
 #   Gate 3 phase-lane classify:  commits reachable from another local branch (e.g. a GSD phase lane)
 #                                are flagged "safe to remove" and NAME the branch — but NOT auto-removed.
 #   Gate 3 orphan classify:      commits on no other branch are flagged "real unmerged work".
+#   Adaptive header:             an all-safe set reads "safe to remove" and does NOT claim
+#                                "need manual review"; a mixed set shows a `· N safe · N review`
+#                                tally; safe-to-remove items are grouped before review items.
 #   All pass:                    a locked worktree with no uncommitted changes and a merged base is REMOVED.
 #   Non-locked:                  an unlocked worktree is IGNORED (not swept, not reported).
 #   No-op:                       a repo with no worktrees produces silent exit 0.
@@ -354,6 +357,9 @@ if [[ -d "$WT_K" ]]; then
 else
   echo "FAIL K5: phase-lane worktree was removed"; FAILED=$((FAILED + 1))
 fi
+# Adaptive header: an all-safe set must NOT read "need manual review" (the dissonance fix).
+_assert "K6: all-safe header uses safe-to-remove framing" "safe to remove (work preserved on another branch)" "$OUT"
+_assert_not "K7: all-safe header does NOT claim manual review" "need manual review" "$OUT"
 
 # ------------------------------------------------------------------
 # Scenario L: locked, dead PID, clean tree, DETACHED HEAD ahead of main on no
@@ -382,6 +388,60 @@ if [[ -d "$WT_L" ]]; then
   echo "OK   L5: detached worktree preserved"; PASSED=$((PASSED + 1))
 else
   echo "FAIL L5: detached worktree was removed"; FAILED=$((FAILED + 1))
+fi
+
+# ------------------------------------------------------------------
+# Scenario M: MIXED set — one safe-to-remove worktree (folded into a phase lane)
+# AND one review worktree (real unmerged work on no other branch) in the SAME repo.
+# Asserts the adaptive tally header (· N safe · N review), both verdicts present,
+# safe-before-review grouping, and that NEITHER is auto-removed.
+# ------------------------------------------------------------------
+REPO_M="$TMP/m"
+mkdir -p "$REPO_M" && cd "$REPO_M"
+git init -q -b main
+git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "initial"
+
+# Safe worktree: agent branch with 2 commits, folded into a phase lane
+WT_M_SAFE="$REPO_M/.claude/worktrees/wt-safe"
+mkdir -p "$(dirname "$WT_M_SAFE")"
+git worktree add -q -b agent-m-safe "$WT_M_SAFE"
+( cd "$WT_M_SAFE" && \
+  for n in 1 2; do
+    echo "s$n" > "s$n.txt"; git add "s$n.txt"
+    git -c user.email=t@t -c user.name=t commit -q -m "safe commit $n"
+  done )
+M_SAFE_HEAD=$(git -C "$WT_M_SAFE" rev-parse HEAD)
+git -C "$REPO_M" branch gsd/phase-2-y "$M_SAFE_HEAD"
+echo "claude agent wt-safe (pid $DEAD_PID)" > "$REPO_M/.git/worktrees/wt-safe/locked"
+
+# Review worktree: agent branch with 1 commit, on no other branch
+WT_M_REV="$REPO_M/.claude/worktrees/wt-review"
+git worktree add -q -b agent-m-review "$WT_M_REV"
+( cd "$WT_M_REV" && \
+  echo "r1" > r1.txt && git add r1.txt && \
+  git -c user.email=t@t -c user.name=t commit -q -m "review commit" )
+echo "claude agent wt-review (pid $DEAD_PID)" > "$REPO_M/.git/worktrees/wt-review/locked"
+
+OUT=$(echo "{\"cwd\":\"$REPO_M\"}" | bash "$HOOK" 2>&1)
+_assert "M1: mixed header shows safe count" "1 safe to remove" "$OUT"
+_assert "M2: mixed header shows review count" "1 need review" "$OUT"
+_assert "M3: mixed header uses 'skipped' framing" "stale worktree(s) skipped" "$OUT"
+_assert_not "M3b: mixed header avoids the all-review 'need manual review' line" "need manual review:" "$OUT"
+_assert "M4: safe item names its phase lane" "gsd/phase-2-y" "$OUT"
+_assert "M5: review item flagged real unmerged work" "real unmerged work" "$OUT"
+_assert_not "M6: nothing swept in a mixed skip-only set" "swept" "$OUT"
+# Grouping: the safe block is emitted before the review block.
+M_SAFE_POS=$(echo "$OUT" | grep -n "safe to remove" | tail -1 | cut -d: -f1)
+M_REV_POS=$(echo "$OUT" | grep -n "real unmerged work" | head -1 | cut -d: -f1)
+if [[ -n "$M_SAFE_POS" && -n "$M_REV_POS" && "$M_SAFE_POS" -lt "$M_REV_POS" ]]; then
+  echo "OK   M7: safe items grouped before review items"; PASSED=$((PASSED + 1))
+else
+  echo "FAIL M7: grouping order wrong (safe=$M_SAFE_POS rev=$M_REV_POS)"; FAILED=$((FAILED + 1))
+fi
+if [[ -d "$WT_M_SAFE" && -d "$WT_M_REV" ]]; then
+  echo "OK   M8: both mixed worktrees preserved"; PASSED=$((PASSED + 1))
+else
+  echo "FAIL M8: a mixed worktree was removed"; FAILED=$((FAILED + 1))
 fi
 
 # ------------------------------------------------------------------

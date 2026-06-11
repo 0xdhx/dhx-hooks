@@ -12,6 +12,9 @@
 # (e.g. a GSD phase lane gsd/phase-N-<slug>) are flagged "safe to remove" and name
 # the containing branch; commits on no other branch are "real unmerged work".
 # Auto-removal stays mainline-only — phase-lane merge is advisory, not a sweep trigger.
+# The skip report groups safe-to-remove items first, then review items, and the
+# header tally adapts to the set (all-review / all-safe / mixed) so an all-safe
+# set never reads as "needs manual review".
 #
 # Context: anthropics/claude-code#36182 plus observed CC behavior where the
 # 'locked' file keeps the outer session's PID, so `git worktree remove --force`
@@ -56,8 +59,11 @@ shopt -u nullglob
 [ "${#WT_METAS[@]}" -eq 0 ] && exit 0
 
 SWEPT=0
-SKIPPED=0
-SKIP_REASONS=()
+# Two skip categories drive the adaptive header below: SAFE_REASONS = the hook
+# chose not to act but the work is preserved on another branch (human can remove
+# by hand); REVIEW_REASONS = everything else (data at risk, or broken metadata).
+SAFE_REASONS=()
+REVIEW_REASONS=()
 
 for WT_META in "${WT_METAS[@]}"; do
   WT_NAME=$(basename "$WT_META")
@@ -69,8 +75,7 @@ for WT_META in "${WT_METAS[@]}"; do
 
   # Resolve the working-tree path via the gitdir file (content: path to <worktree>/.git)
   if [ ! -f "$GITDIR_FILE" ]; then
-    SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: no gitdir metadata file")
+    REVIEW_REASONS+=("$WT_NAME: no gitdir metadata file")
     continue
   fi
   WT_GITDIR=$(cat "$GITDIR_FILE" 2>/dev/null)
@@ -85,8 +90,7 @@ for WT_META in "${WT_METAS[@]}"; do
   fi
   # If no parseable PID, we can't determine liveness → skip (safe default)
   if [ -z "$LOCK_PID" ]; then
-    SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: lock has no parseable PID — manual review")
+    REVIEW_REASONS+=("$WT_NAME: lock has no parseable PID — manual review")
     continue
   fi
 
@@ -120,8 +124,7 @@ for WT_META in "${WT_METAS[@]}"; do
       fi
     done <<< "$WT_STATUS"
     if [ "$BLOCKING" -gt 0 ]; then
-      SKIPPED=$((SKIPPED + 1))
-      SKIP_REASONS+=("$WT_NAME: $BLOCKING uncommitted/untracked file(s) — manual review")
+      REVIEW_REASONS+=("$WT_NAME: $BLOCKING uncommitted/untracked file(s) — manual review")
       continue
     fi
   fi
@@ -129,8 +132,7 @@ for WT_META in "${WT_METAS[@]}"; do
   # --- Gate 3: worktree HEAD is ancestor of dev, main, or master ---
   WT_HEAD=$(git -C "$WT_PATH" rev-parse HEAD 2>/dev/null)
   if [ -z "$WT_HEAD" ]; then
-    SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: unreadable HEAD — manual review")
+    REVIEW_REASONS+=("$WT_NAME: unreadable HEAD — manual review")
     continue
   fi
   # Resolve the worktree's own branch up front — needed by both the Gate-3-fail
@@ -175,11 +177,10 @@ for WT_META in "${WT_METAS[@]}"; do
     # the worktree is skipped either way.
     CONTAINING=$(git -C "$CWD" branch --format='%(refname:short)' --contains "$WT_HEAD" 2>/dev/null \
                  | grep -v -x "$WT_BRANCH" | head -3 | paste -sd, -)
-    SKIPPED=$((SKIPPED + 1))
     if [ -n "$CONTAINING" ]; then
-      SKIP_REASONS+=("$WT_NAME: $UNMERGED commit(s), all on $CONTAINING (not yet on main) — safe to remove")
+      SAFE_REASONS+=("$WT_NAME: $UNMERGED commit(s), all on $CONTAINING (not yet on main) — safe to remove")
     else
-      SKIP_REASONS+=("$WT_NAME: $UNMERGED commit(s) on NO other branch — real unmerged work, manual review")
+      REVIEW_REASONS+=("$WT_NAME: $UNMERGED commit(s) on NO other branch — real unmerged work, manual review")
     fi
     continue
   fi
@@ -192,8 +193,7 @@ for WT_META in "${WT_METAS[@]}"; do
     fi
     SWEPT=$((SWEPT + 1))
   else
-    SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: unlock/remove failed")
+    REVIEW_REASONS+=("$WT_NAME: unlock/remove failed")
   fi
 done
 
@@ -201,9 +201,29 @@ done
 if [ "$SWEPT" -gt 0 ]; then
   echo "DHX: swept $SWEPT stale worktree(s)"
 fi
-if [ "$SKIPPED" -gt 0 ]; then
-  echo "⚠ DHX: $SKIPPED stale worktree(s) need manual review:"
-  for R in "${SKIP_REASONS[@]}"; do
+SAFE_N=${#SAFE_REASONS[@]}
+REVIEW_N=${#REVIEW_REASONS[@]}
+TOTAL_SKIPPED=$((SAFE_N + REVIEW_N))
+
+if [ "$TOTAL_SKIPPED" -gt 0 ]; then
+  # Adaptive header — the actionability tally sits at the summary position
+  # (terminal patterns-status "Aggregate Summary Line"), and the wording matches
+  # the set's composition so an all-safe set never reads as "needs manual review".
+  if [ "$SAFE_N" -eq 0 ]; then
+    echo "⚠ DHX: $REVIEW_N stale worktree(s) need manual review:"
+  elif [ "$REVIEW_N" -eq 0 ]; then
+    echo "⚠ DHX: $SAFE_N stale worktree(s) — safe to remove (work preserved on another branch):"
+  else
+    echo "⚠ DHX: $TOTAL_SKIPPED stale worktree(s) skipped · $SAFE_N safe to remove · $REVIEW_N need review"
+  fi
+  # Safe-to-remove items first (grouped), then review items. Each line carries its
+  # own verdict suffix, so grouping is ordering — not load-bearing structure.
+  for R in "${SAFE_REASONS[@]:-}"; do
+    [ -z "$R" ] && continue
+    echo "  - $R"
+  done
+  for R in "${REVIEW_REASONS[@]:-}"; do
+    [ -z "$R" ] && continue
     echo "  - $R"
   done
 fi
