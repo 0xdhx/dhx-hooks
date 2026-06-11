@@ -2,6 +2,15 @@
 # Patterns: HP-017, HP-025, HP-020
 # dhx-plugin-cache-staleness-detector.sh — SessionStart cache-staleness detector (Phase 10.1)
 #
+# RETIRED FROM DISPATCH 2026-06-11: removed from session-start.sh. The cache this
+# watches is metadata-only — HP-020 confirms CC executes the live source manifest
+# AND ${CLAUDE_PLUGIN_ROOT} resolves to the live source dir, so cache staleness is
+# cosmetic and the per-session WARN was noise (it also recurred on every live
+# hooks.json mtime bump — an mtime-comparison treadmill). Script + probe retained
+# as the platform-behavior guard (probe-plugin-cache-staleness.sh still asserts
+# cache_read_path:no). See docs/decisions.md 2026-06-11 detector-retirement row.
+# Re-instate only if a future CC version is observed executing from the cache.
+#
 # Scope:
 #   Compare mtime of $CACHE_ROOT/dhx/<version>/hooks/hooks.json candidates to
 #   the live $LIVE_MANIFEST mtime via `stat -c %Y`. Emit structured stderr

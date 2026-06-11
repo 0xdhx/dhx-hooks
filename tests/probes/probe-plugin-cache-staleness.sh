@@ -383,9 +383,13 @@ assert_cache_untouched "multi-stale"
 # Builds a SANDBOXED copy of the live session-start.sh, neutralizes every
 # live-hook dispatch into an ordering-marker stub (SAFE_FOR_LIVE — no live hook
 # executes), then inserts the detector dispatch line AFTER the registry-heal
-# anchor and BEFORE the stale-worktree-sweep anchor — exactly the D-17
-# dispatcher-only shape Plan 2 lands in the real session-start.sh (NO
-# plugin-manifest 3rd entry). Asserts: dispatcher exits 0 (`|| true` swallows
+# anchor and BEFORE the stale-worktree-sweep anchor.
+# NOTE (2026-06-11): the detector is now RETIRED from the real session-start.sh
+# (docs/decisions.md detector-retirement row) — the live dispatcher no longer
+# contains this line. This scenario INJECTS its own detector dispatch line after
+# the heal anchor (line below) to verify the script-level ordering contract in
+# isolation; it does NOT assert the live dispatcher currently dispatches the
+# detector. The heal/sweep ordering anchors it greps for are still present. Asserts: dispatcher exits 0 (`|| true` swallows
 # detector rc); detector prefix line present (FAILS in RED — detector absent);
 # ordering heal < detector < sweep.
 echo "EXPECT: dispatcher-integration"

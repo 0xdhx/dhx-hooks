@@ -22,12 +22,12 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || 
 # so the heal establishes a valid baseline before downstream checks touch state.
 # No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
 bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
-# Detect plugin cache hooks.json staleness (HP-025 § Cache-staleness detection;
-# HP-020 read-path finding under empirical test). Runs AFTER registry-heal so
-# heal-side baseline is established before staleness comparison fires.
-# Detector is filesystem-only via `stat -c %Y` (no content parse); < /dev/null
-# mirrors heal-hook (no stdin parsing).
-bash /home/dhx/.claude/hooks/dhx-plugin-cache-staleness-detector.sh < /dev/null || true
+# (dhx-plugin-cache-staleness-detector.sh RETIRED from dispatch 2026-06-11. The
+# cache it watched is metadata-only — HP-020 confirms CC executes the live source
+# manifest AND ${CLAUDE_PLUGIN_ROOT} resolves to the live source dir, so a stale
+# cache can never mean "undeployed". The per-session WARN was noise about a
+# non-issue (and recurred on every hooks.json mtime bump). Script + probe kept as
+# the platform-behavior guard. See docs/decisions.md 2026-06-11 retirement row.)
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
 # Watch-health computer (cross-repo D-08/D-10/D-22a): recompute the precomputed
 # health verdict cache BEFORE the digest banner reads it, so the banner consumes a
