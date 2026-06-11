@@ -8,6 +8,10 @@
 #   (3) worktree's branch HEAD is ancestor of dev, main, or master
 # If any gate fails, emits a one-line warning with the reason and skips. Never
 # silent data loss — worst case is a noisy warning that resolves on next session.
+# Gate-3-fail reasons are classified: commits reachable from another local branch
+# (e.g. a GSD phase lane gsd/phase-N-<slug>) are flagged "safe to remove" and name
+# the containing branch; commits on no other branch are "real unmerged work".
+# Auto-removal stays mainline-only — phase-lane merge is advisory, not a sweep trigger.
 #
 # Context: anthropics/claude-code#36182 plus observed CC behavior where the
 # 'locked' file keeps the outer session's PID, so `git worktree remove --force`
@@ -129,26 +133,58 @@ for WT_META in "${WT_METAS[@]}"; do
     SKIP_REASONS+=("$WT_NAME: unreadable HEAD — manual review")
     continue
   fi
+  # Resolve the worktree's own branch up front — needed by both the Gate-3-fail
+  # classification (to exclude self from the containing-branch scan) and the
+  # all-gates-passed cleanup below.
+  WT_BRANCH=$(git -C "$WT_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+  # Build the verified-base list ONCE — only mainline refs that actually exist.
+  # `git rev-list <HEAD> --not dev main master` dies `fatal: ambiguous argument`
+  # → exit 128 → empty stdout (swallowed by 2>/dev/null) → wc -l = 0 (a FALSE
+  # zero) the instant any of dev/main/master is absent — e.g. cross-repo, where
+  # `dev` was folded into `main`. Verify each base before using it as a --not arg.
+  VERIFIED_BASES=()
+  for BASE in dev main master; do
+    git -C "$CWD" rev-parse --verify "$BASE" &>/dev/null && VERIFIED_BASES+=("$BASE")
+  done
 
   MERGED_OK=0
-  for BASE in dev main master; do
-    BASE_HASH=$(git -C "$CWD" rev-parse --verify "$BASE" 2>/dev/null) || continue
-    if git -C "$CWD" merge-base --is-ancestor "$WT_HEAD" "$BASE_HASH" 2>/dev/null; then
+  for BASE in "${VERIFIED_BASES[@]:-}"; do
+    [ -z "$BASE" ] && continue
+    if git -C "$CWD" merge-base --is-ancestor "$WT_HEAD" "$BASE" 2>/dev/null; then
       MERGED_OK=1
       break
     fi
   done
 
   if [ "$MERGED_OK" -ne 1 ]; then
-    # Count commits present on worktree HEAD but not on any mainline base
-    UNMERGED=$(git -C "$CWD" rev-list "$WT_HEAD" --not dev main master 2>/dev/null | wc -l | tr -d ' ')
+    # Count commits present on worktree HEAD but not on any EXISTING mainline base.
+    # Empty base list → nothing is a known-safe base → treat all history as unmerged.
+    if [ "${#VERIFIED_BASES[@]}" -gt 0 ]; then
+      UNMERGED=$(git -C "$CWD" rev-list "$WT_HEAD" --not "${VERIFIED_BASES[@]}" 2>/dev/null | wc -l | tr -d ' ')
+    else
+      UNMERGED=$(git -C "$CWD" rev-list "$WT_HEAD" 2>/dev/null | wc -l | tr -d ' ')
+    fi
+
+    # Phase-lane awareness: under GSD's worktree-per-plan model, agent worktrees
+    # fold into the phase lane (gsd/phase-N-<slug>), NOT main — so a dead-pid
+    # orphan whose work is fully on the lane fails this mainline-only gate every
+    # session until the phase merges to main. Classify WHERE the commits live so
+    # the reviewer gets the one fact they need. Auto-removal stays mainline-only
+    # (a phase branch can still be discarded), so this is message accuracy only —
+    # the worktree is skipped either way.
+    CONTAINING=$(git -C "$CWD" branch --format='%(refname:short)' --contains "$WT_HEAD" 2>/dev/null \
+                 | grep -v -x "$WT_BRANCH" | head -3 | paste -sd, -)
     SKIPPED=$((SKIPPED + 1))
-    SKIP_REASONS+=("$WT_NAME: $UNMERGED unmerged commit(s) — manual review")
+    if [ -n "$CONTAINING" ]; then
+      SKIP_REASONS+=("$WT_NAME: $UNMERGED commit(s), all on $CONTAINING (not yet on main) — safe to remove")
+    else
+      SKIP_REASONS+=("$WT_NAME: $UNMERGED commit(s) on NO other branch — real unmerged work, manual review")
+    fi
     continue
   fi
 
   # --- All 3 gates passed — clean it up ---
-  WT_BRANCH=$(git -C "$WT_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null)
   if git -C "$CWD" worktree unlock "$WT_PATH" 2>/dev/null \
      && git -C "$CWD" worktree remove "$WT_PATH" --force 2>/dev/null; then
     if [ -n "$WT_BRANCH" ] && [ "$WT_BRANCH" != "HEAD" ]; then
