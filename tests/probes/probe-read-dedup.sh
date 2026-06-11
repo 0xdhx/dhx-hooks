@@ -27,6 +27,12 @@
 #   V-REALPATH       a symlinked read path is recorded symlink-resolved (IN-02)
 #   V-DURABLE-SPLIT  STATS lands in the durable data root (NOT the cache root) and SURVIVES a
 #                    wipe of the cache dir — the invariant the 2026-06-09 relocation protects
+#   V-LINECACHE-WRITE a re-read caches the file's line count into the state record (counted once
+#                    per (session,version)); the first read carries no `lines` field
+#   V-LINECACHE-HIT  a cached `lines` on a same-version prior is REUSED, not recounted — a
+#                    poisoned sentinel surfaces in overlap clamping, proving the cache path
+#   V-STATS-ROTATE   the durable stats log over DHX_READ_DEDUP_STATS_MAX_BYTES rotates to a
+#                    single `.jsonl.1` backup during housekeeping; the current log resets
 #
 # INVARIANT: token magnitude uses the spike's flat chars/4 proxy (overlap bytes ÷ 4) so the
 # live bands are directly comparable to docs/research .../2026-05-24-read-once-token-waste-
@@ -154,6 +160,50 @@ chk "V-DURABLE-SPLIT STATS in data root, not cache root" \
 rm -rf "$SBX_D/cache"              # simulate the skills probe's unconditional cache wipe
 chk "V-DURABLE-SPLIT STATS survives a cache-dir wipe" \
     "$([ -s "$SBX_D/data/read-dedup-stats.jsonl" ] && echo survived || echo gone)" "survived"
+
+# --- V-LINECACHE-WRITE: a re-read caches the file's line count into the state record ---
+SBX_LC="$SBX/linecache"; mkdir -p "$SBX_LC/cache"
+TFL="$SBX/lc.md"; printf 'l%s\n' $(seq 1 250) > "$TFL"
+LC_LINES=$(wc -l < "$TFL")
+runLC(){ DHX_READ_DEDUP_STATE_DIR="$SBX_LC/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_LC/data" bash "$HOOK"; }
+mkLC(){ printf '{"tool_name":"Read","session_id":"sidlc","tool_input":{"file_path":"%s"}}' "$TFL"; }
+mkLC | runLC                       # 1st read → state record, NO lines field
+mkLC | runLC                       # re-read → computes + caches lines
+LC_STATE="$SBX_LC/cache/read-dedup/sidlc.jsonl"
+chk "V-LINECACHE-WRITE first-read record carries no lines" \
+    "$(sed -n '1p' "$LC_STATE" 2>/dev/null | jq -r '.lines // "none"')" "none"
+chk "V-LINECACHE-WRITE re-read record caches real line count" \
+    "$(tail -1 "$LC_STATE" 2>/dev/null | jq -r '.lines')" "$LC_LINES"
+
+# --- V-LINECACHE-HIT: a cached `lines` on a same-version prior is REUSED, not recounted ---
+# Poison a prior record with a deliberately wrong count (999 on a 300-line file) at the file's
+# real mtime/size; a full re-read must clamp overlap to the CACHED 999, not recount the real 300.
+# (overlap_lines surfacing 999 can ONLY happen if the cache was consulted — teeth for the reuse.)
+SBX_HIT="$SBX/lchit"; mkdir -p "$SBX_HIT/cache/read-dedup"
+TFH="$SBX/lchit.md"; printf 'h%s\n' $(seq 1 300) > "$TFH"
+HMT=$(stat -c %Y "$TFH"); HSZ=$(stat -c %s "$TFH"); HNOW=$(date +%s)
+printf '{"path":"%s","start":1,"end":2001,"mtime":"%s","size":"%s","ts":%s,"lines":999}\n' \
+    "$TFH" "$HMT" "$HSZ" "$HNOW" > "$SBX_HIT/cache/read-dedup/sidhit.jsonl"
+printf '{"tool_name":"Read","session_id":"sidhit","tool_input":{"file_path":"%s"}}' "$TFH" \
+  | DHX_READ_DEDUP_STATE_DIR="$SBX_HIT/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_HIT/data" bash "$HOOK"
+HIT_EV=$(tail -1 "$SBX_HIT/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-LINECACHE-HIT overlap uses cached 999, not recounted 300" \
+    "$(echo "$HIT_EV" | jq -r '.overlap_lines')" "999"
+
+# --- V-STATS-ROTATE: durable stats log over the size cap rotates to a single .1 backup ---
+SBX_RO="$SBX/rotate"; mkdir -p "$SBX_RO/cache/read-dedup"
+TFRO="$SBX/ro.md"; printf 'r%s\n' $(seq 1 100) > "$TFRO"
+runRO(){ DHX_READ_DEDUP_STATE_DIR="$SBX_RO/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_RO/data" \
+         DHX_READ_DEDUP_STATS_MAX_BYTES=50 bash "$HOOK"; }
+mkRO(){ printf '{"tool_name":"Read","session_id":"sidro","tool_input":{"file_path":"%s"}}' "$TFRO"; }
+mkRO | runRO                       # 1st read (state only; housekeeping writes the marker)
+mkRO | runRO                       # re-read → strict event (~130 B > the 50-B cap)
+rm -f "$SBX_RO/cache/read-dedup/.last-cleanup"   # force housekeeping to re-run next read
+mkRO | runRO                       # housekeeping sees STATS > cap → rotate to .1, then append fresh
+chk "V-STATS-ROTATE .1 backup created when stats exceed cap" \
+    "$([ -s "$SBX_RO/data/read-dedup-stats.jsonl.1" ] && echo yes || echo no)" "yes"
+chk "V-STATS-ROTATE current log reset to a fresh post-rotation event" \
+    "$(wc -l < "$SBX_RO/data/read-dedup-stats.jsonl" 2>/dev/null || echo 0)" "1"
 
 echo
 echo "$PASS passed, $FAIL failed"

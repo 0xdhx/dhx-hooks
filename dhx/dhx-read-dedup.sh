@@ -30,7 +30,9 @@
 #
 # STATE  (ephemeral, TTL-windowed, session-scoped, pruned — fine to reap):
 #   ~/.cache/dhx/read-dedup/<session_id>.jsonl
-#   one record per Read: {"path","start","end","mtime","size","ts"}
+#   one record per Read: {"path","start","end","mtime","size","ts"[,"lines"]}
+#   "lines" (optional) caches the file's line count for THIS version (path+mtime+size) so a
+#   hot re-read file is counted once per (session,version), not on every overlap event.
 # STATS  (durable measurement dataset — the Phase-1 deliverable; lives OUTSIDE the cache dir):
 #   ~/.local/share/dhx/read-dedup-stats.jsonl  (XDG_DATA_HOME — durable, NOT a reapable cache;
 #   relocated 2026-06-09 after skills probe-dhx-sym-parity.sh unconditional-wiped ~/.cache/dhx — see decisions.md)
@@ -46,16 +48,23 @@
 #   DHX_READ_DEDUP_DISABLED=1     disable entirely
 #   DHX_READ_DEDUP_STATE_DIR=...  override ephemeral cache root (probe/test injection, D-20 convention)
 #   DHX_READ_DEDUP_DATA_DIR=...   override durable STATS data root (probe/test injection, D-20 convention)
+#   DHX_READ_DEDUP_STATS_MAX_BYTES=5242880  size cap (bytes) for the durable stats log before it
+#                                 rotates to a single `.jsonl.1` backup (default 5 MiB ≈ weeks)
 #
 # Fires: PreToolUse on the Read tool. Action: state-write + stats-log only; no stdout,
 # no blocking, never fails the tool call (set -uo, not -e — dhx convention).
 #
 # COST NOTE — "log-only" means zero CONTEXT cost, NOT free. Each Read forks ~6 procs
-# (jq×2, realpath, stat×2, grep); a re-read adds a python3 proc + a full-file line count.
-# State files are pruned (TTL + hourly stale-session sweep) but read-dedup-stats.jsonl is
-# append-only and NOT pruned (intended for the bounded Phase-1 window — needs rotation if
-# the hook outlives it). `timeout:5` (manifest) is a kill-switch, not a latency budget.
-# (drain LOW-2, codex 2026-05-25 — Phase-2 follow-ups tracked in the brief §0.)
+# (jq×2, realpath, stat×2, grep); a re-read adds a python3 proc. The full-file line count
+# it needs is cached per (path,mtime,size) in the STATE record, so a hot re-read file is
+# counted ONCE per (session,version) instead of on every overlap event (was a full-file
+# read per re-read — the measurer doing its own re-reads; brief §0 Phase-2 cost item).
+# State files are pruned (TTL + hourly stale-session sweep). The durable read-dedup-stats.jsonl
+# is size-capped: when it exceeds DHX_READ_DEDUP_STATS_MAX_BYTES (default 5 MiB) the hourly
+# housekeeping rotates it to a single `.jsonl.1` backup (bounded at ~2× cap ≈ several weeks of
+# data; older events are dropped — raise the cap if a longer retention window is wanted).
+# `timeout:5` (manifest) is a kill-switch, not a latency budget.
+# (drain LOW-2, codex 2026-05-25 — Phase-2 cost follow-ups landed 2026-06-11; brief §0.)
 
 set -uo pipefail   # NOT -e; a hook error must never fail the user's Read.
 
@@ -127,24 +136,36 @@ CACHE_ROOT="${DHX_READ_DEDUP_STATE_DIR:-${HOME}/.cache/dhx}"
 DATA_ROOT="${DHX_READ_DEDUP_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/dhx}"
 STATE_DIR="${CACHE_ROOT}/read-dedup"
 STATS_FILE="${DATA_ROOT}/read-dedup-stats.jsonl"
+STATS_MAX_BYTES="${DHX_READ_DEDUP_STATS_MAX_BYTES:-5242880}"   # 5 MiB; rotate to .1 above this
+case "$STATS_MAX_BYTES" in ''|*[!0-9]*) STATS_MAX_BYTES=5242880 ;; esac
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 # Best-effort: STATS append is already `|| true`-guarded, so a DATA_ROOT mkdir failure must NOT
 # kill STATE recording (the hook's core function) — decouple it from the STATE_DIR `|| exit 0`.
 mkdir -p "$DATA_ROOT" 2>/dev/null || true
 STATE_FILE="${STATE_DIR}/${SESSION_ID}.jsonl"
 
-# Once-per-hour housekeeping: drop stale session files (>1d) so the dir stays bounded.
+# Once-per-hour housekeeping: drop stale session files (>1d) + size-cap the durable stats log.
 CLEAN_MARKER="${STATE_DIR}/.last-cleanup"
 LAST_CLEAN=$(cat "$CLEAN_MARKER" 2>/dev/null || echo 0); LAST_CLEAN=${LAST_CLEAN:-0}
 case "$LAST_CLEAN" in *[!0-9]*) LAST_CLEAN=0 ;; esac
 if [ $(( NOW - LAST_CLEAN )) -gt 3600 ]; then
   find "$STATE_DIR" -name '*.jsonl' -mtime +1 -delete 2>/dev/null || true
+  # Size-cap the durable, append-only stats log. STATE is pruned by the find above, but STATS
+  # lives under XDG_DATA_HOME (durable by design) so it can't be TTL-reaped — bound it here.
+  # Single-backup rotation: over the cap, the current log becomes the .1 backup (overwriting
+  # any prior .1) and a fresh log starts → bounded at ~2× cap; older events drop.
+  SSIZE=$(stat -c '%s' "$STATS_FILE" 2>/dev/null || echo 0)
+  case "$SSIZE" in ''|*[!0-9]*) SSIZE=0 ;; esac
+  if [ "$SSIZE" -gt "$STATS_MAX_BYTES" ]; then
+    mv -f "$STATS_FILE" "${STATS_FILE}.1" 2>/dev/null || true
+  fi
   printf '%s' "$NOW" > "$CLEAN_MARKER" 2>/dev/null || true
 fi
 
 # --- detect re-read: prior records for THIS path in THIS session ---
 # Fast path: no prior record for the path -> first read -> just record it, no stats event.
 PRIORS=""
+LINES_HINT=""   # set by the re-read branch when python resolves a line count to cache
 if [ -f "$STATE_FILE" ]; then
   PRIORS=$(grep -F "\"path\":\"${RESOLVED}\"" "$STATE_FILE" 2>/dev/null || true)
 fi
@@ -153,7 +174,7 @@ if [ -n "$PRIORS" ] && command -v python3 >/dev/null 2>&1; then
   # python3 owns the interval-union overlap + band classification + token estimate.
   # Script comes via the heredoc (stdin); prior records via $PRIORS_DATA env (so the
   # heredoc and the data don't both contend for stdin); scalars via argv.
-  EVENT_JSON=$(PRIORS_DATA="$PRIORS" python3 - \
+  PY_OUT=$(PRIORS_DATA="$PRIORS" python3 - \
       "$RESOLVED" "$SESSION_ID" "$START" "$END" "$CUR_MTIME" "$CUR_SIZE" "$NOW" "$TTL" <<'PY' 2>/dev/null || true
 import sys, os, json
 path, session = sys.argv[1], sys.argv[2]
@@ -216,11 +237,31 @@ for s, e in intervals:
 # BEFORE counting. (drain catch #MED-1, codex 2026-05-25: the prior post-hoc
 # min(overlap, total_lines) only caught full->full; an EOF-crossing partial like [250,450)
 # on a 300-line file reported 200 overlap lines when ~51 exist, inflating the BROAD band.)
-try:
-    with open(path, "rb") as fh:
-        total_lines = sum(1 for _ in fh) or 1
-except Exception:
-    total_lines = max(int(csize) // 50, 1)  # ~50 B/line fallback
+# The line count is a property of the file VERSION (path+mtime+size). Reuse it from a prior
+# same-version read record that already cached it, so a hot re-read file is counted once per
+# (session,version) — not on every overlap event. (brief §0 Phase-2 cost item: stop the
+# read-waste measurer from doing its own full-file read on each re-read.)
+total_lines = None
+for r in same_ver:
+    cl = r.get("lines")
+    if cl is not None:
+        try:
+            cl = int(cl)
+        except (TypeError, ValueError):
+            cl = None
+        if cl and cl > 0:
+            total_lines = cl
+            break
+if total_lines is None:
+    try:
+        with open(path, "rb") as fh:
+            total_lines = sum(1 for _ in fh) or 1
+    except Exception:
+        total_lines = max(int(csize) // 50, 1)  # ~50 B/line fallback
+# Hand the resolved count back to the shell (first stdout line, stripped before the stats
+# append) so it lands in THIS read's state record and future same-version re-reads hit the
+# cache above instead of re-counting.
+print("#L%d" % total_lines)
 file_end = total_lines + 1   # exclusive upper bound of lines that actually exist
 
 # Lines of the current [cs,ce) already covered by the prior union — every interval
@@ -246,6 +287,21 @@ band = "strict" if (cur_full and prior_full) else "broad"
 emit(band, overlap, overlap_tokens, band)
 PY
   )
+  # python may prepend a `#L<n>` line-count hint as the first stdout line (so bash can cache
+  # it into this read's state record). Split it off; the remainder is the stats event JSON.
+  EVENT_JSON="$PY_OUT"
+  case "$PY_OUT" in
+    '#L'*)
+      first="${PY_OUT%%$'\n'*}"
+      LINES_HINT="${first#\#L}"
+      if [ "$first" = "$PY_OUT" ]; then
+        EVENT_JSON=""                    # hint only, no event line followed
+      else
+        EVENT_JSON="${PY_OUT#*$'\n'}"    # everything after the first newline
+      fi
+      ;;
+  esac
+  case "$LINES_HINT" in ''|*[!0-9]*) LINES_HINT="" ;; esac
   if [ -n "${EVENT_JSON:-}" ]; then
     # WR-01: the JSON is already escaped by python's json.dumps; atomic O_APPEND write.
     printf '%s\n' "$EVENT_JSON" >> "$STATS_FILE" 2>/dev/null || true
@@ -257,9 +313,20 @@ fi
 # prefilter grep above keys on the same `"path":"<realpath>"` shape jq emits.
 # REQ READ-06: bash `>>` is one atomic open(O_APPEND)+write() (< PIPE_BUF); no lock needed
 # (single logical writer per session; concurrent subagent appends stay line-atomic).
-jq -cn --arg path "$RESOLVED" --argjson start "$START" --argjson end "$END" \
-       --arg mtime "$CUR_MTIME" --arg size "$CUR_SIZE" --argjson ts "$NOW" \
-       '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts}' \
-       >> "$STATE_FILE" 2>/dev/null || true
+# Carry the cached line count (LINES_HINT, set on a re-read) into the record so the next
+# same-version re-read reuses it instead of re-counting the whole file. First reads have no
+# hint → no `lines` field (the first re-read computes + caches it).
+if [ -n "${LINES_HINT:-}" ]; then
+  jq -cn --arg path "$RESOLVED" --argjson start "$START" --argjson end "$END" \
+         --arg mtime "$CUR_MTIME" --arg size "$CUR_SIZE" --argjson ts "$NOW" \
+         --argjson lines "$LINES_HINT" \
+         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts,lines:$lines}' \
+         >> "$STATE_FILE" 2>/dev/null || true
+else
+  jq -cn --arg path "$RESOLVED" --argjson start "$START" --argjson end "$END" \
+         --arg mtime "$CUR_MTIME" --arg size "$CUR_SIZE" --argjson ts "$NOW" \
+         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts}' \
+         >> "$STATE_FILE" 2>/dev/null || true
+fi
 
 exit 0
