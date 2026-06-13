@@ -14,6 +14,13 @@
 # wins. Resolver's mtime-newest fallback recovers the right value at synthesis time.
 # Known limitation (R-4 / HP-012): hook does not fire for the session it was
 # installed in — first stamp lands on the next session start.
+# Known limitation (R-5, 2026-06-13 / HP-015 bridge addendum): SessionStart does
+# NOT refresh this stamp for BRIDGED sessions (bridgeSessionId: cse_*) — verified
+# frozen for /home/dhx/repos while >=3 bridge sessions ran for hours. Combined with
+# R-2, a cwd-keyed singleton is the wrong shape for a multi-concurrent + bridge host.
+# Verdict: migrate consumers to the pid-file (<cfg>/sessions/<pid>.json .sessionId,
+# process-bound) and retire this hook — do NOT patch the producer. See
+# docs/decisions.md 2026-06-13 row + docs/backlog.md current-session-stamp-retire-migrate.
 set -euo pipefail
 
 INPUT=$(cat)
