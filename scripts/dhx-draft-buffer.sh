@@ -111,29 +111,42 @@ case "$SUBCMD" in
 esac
 
 # ---------------------------------------------------------------------------
-# Session-id resolution (matches dhx-session-id-stamp.sh writer-side format)
+# Session-id resolution (2026-06-13: per-session via the shared resolver, NOT the
+# retired SessionStart cwd stamp under <cfg>/projects/<encoded-cwd>/). The stamp was
+# a single slot keyed by (config-dir, cwd) — last-writer-wins under same-cwd
+# concurrency (R-2) AND never refreshed for bridged sessions — so it froze on the
+# multi-concurrent + bridge host this marker must work on. See hooks
+# docs/decisions.md 2026-06-13 rows + docs/troubleshooting.md (frozen-stamp section).
 # ---------------------------------------------------------------------------
-ROOT="$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")/projects"
-ENCODED=$(echo "$PWD" | sed 's|/|-|g')
-SESSION_FILE="$ROOT/$ENCODED/.current-session.id"
-
-if [ ! -f "$SESSION_FILE" ]; then
-  echo "ERROR: $SESSION_FILE not found. Start a CC session in this directory first." >&2
+# Source path: CCS points $CLAUDE_CONFIG_DIR at an instance dir with NO dhx-shared,
+# so fall back to the $HOME/.claude/dhx-shared literal (the install symlink target).
+LIB="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dhx-shared/lib/session-identity.sh"
+[ -r "$LIB" ] || LIB="$HOME/.claude/dhx-shared/lib/session-identity.sh"
+# shellcheck source=/dev/null
+[ -r "$LIB" ] && . "$LIB"
+if ! command -v resolve_session_id >/dev/null 2>&1; then
+  echo "ERROR: session-identity resolver unavailable ($LIB). Cannot resolve session." >&2
   exit 1
 fi
 
-# WR-04: strip whitespace/CR from TSV field 1 before use. `cut -f1` returns the
-# whole line (including any trailing `\r`) when the writer emits a CRLF-
-# terminated or space-separated line (Windows-origin edit, or a future writer
-# change). An unstripped `\r` lands in the marker filename
-# (draft-buffer-<sid>\r.json) — a name the gate at
-# dhx-gsd-canonical-mirror-gate.sh:102 can never reconstruct, so a valid
-# annotation silently fails to suppress the gate. `tr -d '[:space:]'` removes
-# the CR and any stray whitespace. The path-metacharacter guard then matches
-# the gate's own session-id sanitization.
-SESSION_ID=$(head -1 "$SESSION_FILE" | cut -f1 | tr -d '[:space:]')
+# INVARIANT (cross-process, cross-repo — buffer↔gate marker-key parity):
+#   resolve_session_id here (via $CLAUDE_CODE_SESSION_ID, else pid-file .sessionId)
+#   MUST equal the value dhx-gsd-canonical-mirror-gate.sh reads from its hook stdin
+#   as `.session_id`. Both sides then build $DRAFT_BUFFER_DIR/draft-buffer-<id>.json.
+#   If they diverge, an operator-authorized edit silently fails to suppress the gate
+#   (the exact 2026-06-13 break this migration closes). Parity holds because CC stamps
+#   ONE session UUID into both the tool-subprocess env (CLAUDE_CODE_SESSION_ID) and the
+#   hook envelope (.session_id) — including bridged sessions, where it is the local
+#   UUID, never bridgeSessionId (verified 2026-06-13 against the UserPromptSubmit
+#   registry + transcript records + pid-file). Enforced by
+#   tests/probes/probe-draft-buffer-gate-key-parity.sh.
+# WR-04: strip stray whitespace/CR before the marker filename is built (defense — a
+# session UUID carries none, but never let one reach draft-buffer-<sid>\r.json, a name
+# the gate can never reconstruct). The metachar guard then mirrors the gate's own
+# session-id sanitization (T-16-06).
+SESSION_ID="$(resolve_session_id | tr -d '[:space:]')"
 if [ -z "$SESSION_ID" ]; then
-  echo "ERROR: $SESSION_FILE has no session_id (TSV field 1 empty)." >&2
+  echo "ERROR: could not resolve live session id (no \$CLAUDE_CODE_SESSION_ID, no readable pid-file). Run inside a Claude Code session." >&2
   exit 1
 fi
 case "$SESSION_ID" in

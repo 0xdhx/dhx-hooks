@@ -98,6 +98,16 @@ REL_PATH="${FILE#$HOME/.claude/}"
 # D-08 marker check — single `[ -f ... ]` test gates the hot path; jq parse runs
 # only on the marker-exists branch. DHX_DRAFT_BUFFER_DIR override lets Plan 5
 # Task 5.3 inject a fixture marker dir for SAFE_FOR_LIVE: yes probe posture.
+#
+# INVARIANT (cross-process, cross-repo — gate↔buffer marker-key parity; this is the
+# READER half; the WRITER is scripts/dhx-draft-buffer.sh):
+#   $SESSION_ID here is this hook's stdin `.session_id`. The buffer resolves the SAME
+#   id out-of-band (it has no stdin envelope) via $CLAUDE_CODE_SESSION_ID / pid-file
+#   .sessionId — see dhx-shared/lib/session-identity.sh. Both build the marker name
+#   below from it; they MUST agree or an operator-authorized edit silently fails to
+#   suppress this gate. CC stamps ONE session UUID into both the hook envelope and the
+#   tool-subprocess env — incl. bridged sessions (local UUID, never bridgeSessionId;
+#   verified 2026-06-13). Enforced by tests/probes/probe-draft-buffer-gate-key-parity.sh.
 DRAFT_BUFFER_DIR="${DHX_DRAFT_BUFFER_DIR:-$HOME/.cache/dhx}"
 MARKER="$DRAFT_BUFFER_DIR/draft-buffer-${SESSION_ID}.json"
 MARKER_VALID=0
