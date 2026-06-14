@@ -10,10 +10,6 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-session-id-stamp.sh\""
-          },
-          {
-            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-vitals-banner.sh\""
           }
         ]

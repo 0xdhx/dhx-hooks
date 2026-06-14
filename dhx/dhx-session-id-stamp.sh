@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# ============================================================================
+# RETIRED FROM MANIFEST (2026-06-13). The SessionStart entry that ran this hook
+# was removed from dhx-plugin/plugins/dhx/hooks/hooks.json — all consumers of the
+# `.current-session.id` stamp it wrote now resolve identity per-session via
+# dhx-shared/lib/session-identity.sh (skills) / scripts/dhx-draft-buffer.sh (this
+# repo). With zero live readers (verified across hooks + skills 2026-06-13), the
+# stamp this writes is inert. Script kept on disk ONE CYCLE for one-line
+# reversibility (re-add the hooks.json entry) per Checkpoint-8 deliberate-retirement
+# (mirrors the dhx-plugin-cache-staleness-detector retirement, docs/decisions.md
+# 2026-06-11). Live unwire takes effect on the operator's next `claude plugin
+# install dhx@dhx-local --scope user` re-cache + `/exit`+resume (HP-012); until then
+# the cached 0.1.x manifest keeps firing this harmlessly. See docs/decisions.md
+# 2026-06-13 retirement row + docs/backlog.md current-session-stamp-retire-migrate.
+# ============================================================================
 # dhx-session-id-stamp.sh — SessionStart hook
 # Patterns: HP-015 (SessionStart provides session_id), HP-017 (plugin manifest)
 #
