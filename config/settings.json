@@ -364,6 +364,7 @@
     "mode": "hold"
   },
   "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
   "editorMode": "normal",
   "autoCompactEnabled": true,
   "remoteControlAtStartup": true,
