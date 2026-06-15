@@ -79,6 +79,29 @@ elif [[ "$(readlink -f "$claude_settings")" != "$(readlink -f "$shared_settings"
   settings_chain="WRONG_TARGET"
 fi
 
+# --- CLAUDE.md symlink integrity ---
+# install.sh (lines 31-34: `for file in CLAUDE.md settings.json … ln -sf`) links
+# $HOME/.claude/CLAUDE.md -> the dotfiles canonical. On 2026-06-15 it was found
+# to be a REGULAR FILE: the symlink had silently broken and live edits piled up
+# in the orphaned file while the versioned dotfiles backup stayed ~8 weeks stale
+# (canonical last touched 2026-04-21). CC reads the regular file fine, so the
+# session still works — this is an ADVISORY drift signal, not a wiring break
+# (tier set in scripts/lib/tiers.json). Fixed-target check mirrors settings_chain
+# above; hardcodes the canonical the way settings_chain hardcodes ~/.ccs/shared.
+# $HOME/.claude (not CLAUDE_CONFIG_DIR) because install.sh links that exact path.
+# Recovery today is re-running dotfiles/install.sh; /dhx:sym repair coverage is a
+# tracked skills-repo follow-on. States: ok | MISSING | REAL_FILE | WRONG_TARGET.
+claude_md_state="ok"
+claude_md="$HOME/.claude/CLAUDE.md"
+claude_md_canonical="$HOME/repos/dotfiles/claude/CLAUDE.md"
+if [[ ! -e "$claude_md" ]]; then
+  claude_md_state="MISSING"
+elif [[ ! -L "$claude_md" ]]; then
+  claude_md_state="REAL_FILE"
+elif [[ "$(readlink -f "$claude_md")" != "$(readlink -f "$claude_md_canonical")" ]]; then
+  claude_md_state="WRONG_TARGET"
+fi
+
 # --- Plugin keys (HP-017 residual risk) ---
 # enabledPlugins["dhx@dhx-local"] + extraKnownMarketplaces["dhx-local"] live in
 # settings.json and are clobber-vulnerable per the 2026-04-16 rewriter
@@ -218,7 +241,7 @@ fi
 # --- Write health cache (atomic via temp + mv) ---
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"claude_md":"$claude_md_state","settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 

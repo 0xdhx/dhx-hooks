@@ -3,7 +3,7 @@
 // files by spawning the wrapper with HOME pointed at a temp dir. Verifies:
 //   - healthy cache → no warning
 //   - each warning class → correct token + ` — /dhx:sym repair` suffix in its tier
-//   - all-five → one suffix per tier (critical + advisory), tokens split correctly
+//   - all-classes → one suffix per tier (critical + advisory), tokens split correctly
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
 // Backs docs/decisions.md 2026-04-16 actionable-hints row + 2026-04-17 critical/
@@ -61,9 +61,21 @@ const cases = [
   { name: 'missing symlinks (2)',
     cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 2, settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
     expectSuffix: 1, expectTokens: ['2 broken symlinks'] },
-  { name: 'all five classes at once (front+tail — 2 suffixes, one per tier)',
-    cache: { worktree_patches: 'REGRESSED', read_guard: 'REGRESSED', missing_symlinks: 3, settings_chain: 'WRONG_TARGET', plugin_keys: 'MISSING', checked: 0 },
-    expectSuffix: 2, expectTokens: ['patches:REGRESSED', 'read-guard:REGRESSED', '3 broken symlinks', 'settings:WRONG_TARGET', 'plugin-keys:MISSING'] },
+  { name: 'claude_md REAL_FILE (symlink replaced by regular file)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 0, claude_md: 'REAL_FILE', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    expectSuffix: 1, expectTokens: ['CLAUDE.md unlinked'] },
+  { name: 'claude_md WRONG_TARGET (symlink points elsewhere)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 0, claude_md: 'WRONG_TARGET', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    expectSuffix: 1, expectTokens: ['CLAUDE.md mislinked'] },
+  { name: 'claude_md MISSING (no file at all)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 0, claude_md: 'MISSING', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    expectSuffix: 1, expectTokens: ['CLAUDE.md missing'] },
+  { name: 'claude_md ok (intact symlink — stays silent)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 0, claude_md: 'ok', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    expectSuffix: 0, expectTokens: [] },
+  { name: 'all classes at once (front+tail — 2 suffixes, one per tier)',
+    cache: { worktree_patches: 'REGRESSED', read_guard: 'REGRESSED', missing_symlinks: 3, claude_md: 'REAL_FILE', settings_chain: 'WRONG_TARGET', plugin_keys: 'MISSING', checked: 0 },
+    expectSuffix: 2, expectTokens: ['patches:REGRESSED', 'read-guard:REGRESSED', '3 broken symlinks', 'CLAUDE.md unlinked', 'settings:WRONG_TARGET', 'plugin-keys:MISSING'] },
   { name: 'legacy schema (no plugin_keys field)',
     cache: { worktree_patches: 'patched', read_guard: 'patched', missing_symlinks: 0, settings_chain: 'ok', checked: 0 },
     expectSuffix: 0, expectTokens: [] },

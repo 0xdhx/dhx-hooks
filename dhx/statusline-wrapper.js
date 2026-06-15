@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.4.4
+// gsd-hook-version: 1.4.5
 // Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
@@ -707,6 +707,21 @@ function readHealthCache(sessionId) {
         worktree_patches: (v) => v && v !== 'patched' ? `patches:${v}` : null,
         read_guard:       (v) => v && v !== 'patched' ? `read-guard:${v}` : null,
         missing_symlinks: (v) => v > 0 ? `${v} broken symlink${v > 1 ? 's' : ''}` : null,
+        // config-symlink integrity: $HOME/.claude/CLAUDE.md drifted off its
+        // dotfiles-canonical symlink (producer: dhx-health-check.sh; states
+        // REAL_FILE | WRONG_TARGET | MISSING). A human phrase (not the raw
+        // state) keeps the advisory tail scannable; unknown states fall back to
+        // `CLAUDE.md:<state>` so a future producer value never renders blank.
+        // Legacy-tolerant `!v || v==='ok'` guard: caches predating this field
+        // flow through to null (no warning, no crash) — same contract as the
+        // hooks_wiring add (2026-04-26). Recovery shares the tier's trailing
+        // `— /dhx:sym repair`; making that command restore config symlinks is a
+        // tracked skills-repo follow-on (interim: re-run dotfiles/install.sh).
+        claude_md:        (v) => {
+          if (!v || v === 'ok') return null;
+          const PHRASE = { REAL_FILE: 'CLAUDE.md unlinked', WRONG_TARGET: 'CLAUDE.md mislinked', MISSING: 'CLAUDE.md missing' };
+          return PHRASE[v] || `CLAUDE.md:${v}`;
+        },
       };
 
       const critical = [];
