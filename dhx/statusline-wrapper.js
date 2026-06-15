@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.4.5
+// gsd-hook-version: 1.4.6
 // Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
@@ -68,7 +68,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('fleet',      readFleetFeed()),
     withSegmentDiag('watch',      readWatchHealth()),
     withSegmentDiag('skillPressure', readSkillPressure()),  // D-01/D-02/D-03: fail-silent, not sigil-generating
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR]) => {
+    withSegmentDiag('wslPressure',   readWslPressure()),    // wsl-pressure cadence alarm: fail-silent, not sigil-generating
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -105,6 +106,10 @@ process.stdin.on('end', () => {
     // skillPressure is fail-silent (D-01): own try/catch → '' on ANY error.
     // Do NOT add to sigilCount — a `⚠ skillPressure?` sigil contradicts fail-silent.
     const skillPressureWarning = unwrap(skillPressureR, () => '');
+    // wsl-pressure is fail-silent like fleet/watch/skillPressure: own try/catch → '' on ANY
+    // error. Deliberately omitted from sigilCount — a `⚠ wslPressure?` sigil would contradict
+    // fail-silent (and the segment already renders its own ⚠ on a real trip).
+    const wslPressureWarning = unwrap(wslPressureR, () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -136,6 +141,11 @@ process.stdin.on('end', () => {
     // keep concerns distinct — drift says "restart", health says "/dhx:sym repair".
     // Order: drift first (session identity), then health (session wiring).
     const front = [];
+    // wsl-pressure (cadence tripwire alarm): RED, placed FIRST — a !! bash-leak trip is
+    // imminent-OOM (wedges the whole box), categorically more severe than the orange-208
+    // advisory members below. Durable: shows until the operator clears the flag. Silent when
+    // no flag exists (readWslPressure returns '').
+    if (wslPressureWarning) front.push(wslPressureWarning);
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
     // Fleet drift (SURF-02): a third orange-208 front member, additive only.
@@ -832,6 +842,28 @@ function readWatchHealth() {
     return `\x1b[38;5;208m${tokens.join(' ')}\x1b[0m`;
   } catch {
     return '';
+  }
+}
+
+// wsl-pressure alarm flag: written by ~/scripts/health/wsl-pressure-check.sh on a
+// `!!` bash-leak trip (>400 bash procs climbing toward the .wslconfig memory ceiling).
+// The flag was write-only until readWslPressure() below became its consumer.
+const WSL_PRESSURE_FLAG = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'wsl-pressure-trip.flag');
+
+// wsl-pressure alarm: consumer for the wsl-pressure.timer tripwire (the flag was
+// write-only until this segment). RED front member — a !! bash-leak trip is imminent-OOM,
+// categorically more severe than the orange-208 advisory members. DURABLE: no staleness
+// window, shown until the operator clears WSL_PRESSURE_FLAG after reading the frozen
+// capture in ~/.local/state/wsl-stack/pressure.log. Fail-silent: any error → ''.
+function readWslPressure() {
+  try {
+    const first = (fs.readFileSync(WSL_PRESSURE_FLAG, 'utf8').split('\n')[0]) || '';
+    // Line 1: "<ISO-ts> !! WSL process-pressure CRITICAL: bash=N (>400) …"
+    const m = first.match(/bash=(\d+)/);
+    const label = m ? `wsl:bash=${m[1]}` : 'wsl:pressure';
+    return `\x1b[31m⚠ ${label}\x1b[0m`;
+  } catch {
+    return ''; // no flag = no trip = silent
   }
 }
 
