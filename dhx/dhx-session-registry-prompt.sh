@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-session-registry-prompt.sh — UserPromptSubmit hook
-# Patterns: HP-008 (UserPromptSubmit provides session_id/cwd + flat transcript_path), HP-017 (plugin manifest)
+# Patterns: HP-008 (UserPromptSubmit session_id/cwd/transcript_path), HP-017 (plugin manifest), HP-043 + HP-044 ($TMUX-absent pane resolution via /proc-ancestry → pane_pid), HP-028 (no `cmd | grep -m` under pipefail — pane map built via here-string)
 #
 # Self-backfill producer for the alive-session recovery registry. Replaces the
 # retired SessionStart `dhx-session-registry-start.sh` (birth capture). On each
@@ -29,8 +29,11 @@
 #   <iso_ts>\tstart\t<uuid>\t<instance>\t<slug>\t<repo>\t<tmux_session>\t<tmux_window>\t<pane_id>
 #
 # Fail-open contract: UserPromptSubmit must NEVER block or slow a prompt. Any
-# error => exit 0 silently. No $TMUX => empty tmux fields (not an error). ONE
-# tmux call max (combined display-message), bounded by `timeout` so a wedged
+# error => exit 0 silently. No $TMUX => resolve the pane by a /proc-ancestry
+# walk (the coord-less backfill — kill-switch DHX_REGISTRY_SKIP_PANE_BACKFILL=1
+# => blank fields, status-quo). ONE tmux call max PER TURN: the $TMUX-present
+# (display-message) and $TMUX-absent (list-panes) branches are MUTUALLY
+# EXCLUSIVE, so no turn ever makes two — each bounded by `timeout` so a wedged
 # tmux server can't hang the turn — mind the 2026-04-26 capture-pane IPC-wedge
 # class. Atomicity: `printf >> file` is an atomic O_APPEND for rows < PIPE_BUF
 # (4096 B); concurrent appends from other sessions cannot interleave. A given
@@ -90,8 +93,22 @@ INSTANCE=$(printf '%s' "${CLAUDE_CONFIG_DIR:-}" | sed -n 's|.*/instances/\([a-z]
 SLUG=$(printf '%s' "$CWD" | sed 's|/|-|g')
 REPO=$(basename "$CWD")
 
-# tmux fields: empty unless under tmux. ONE combined display-message call, bounded
-# by `timeout` so a hung tmux server fails open instead of wedging the turn.
+# tmux fields: resolved two MUTUALLY-EXCLUSIVE ways so "ONE tmux call max per
+# turn" holds (only one branch ever runs); each is `timeout`-bounded → a hung
+# tmux server fails open (blank coords) instead of wedging the turn.
+#   1. $TMUX present → ONE targeted display-message (O(1), the original path).
+#   2. $TMUX ABSENT  → ONE `list-panes -a` + a fork-free /proc-ancestry walk
+#      from this hook ($$) up to a tmux pane_pid. CCS launchers drop $TMUX but
+#      still spawn `claude` as a pane descendant, so ~65% of `start` rows land
+#      here coord-less; this backfills the session/window/pane coords that
+#      /dhx:history `recover`'s frozen-pane-screen join keys on (registry fields
+#      7/8/9). HP-043 (/proc-ancestry primitive) + HP-008 ($$ descends from the
+#      session's `claude`). Idempotency (the line-79 grep) means this runs at
+#      most ONCE per session, so a genuinely pane-less session (a non-tmux bg
+#      job) pays the walk once — never per turn; the row is still written with
+#      blank coords (no retry loop). Kill-switch DHX_REGISTRY_SKIP_PANE_BACKFILL=1
+#      disables branch 2 at runtime (→ status-quo blank coords) for a field
+#      misattribution/regression the `timeout` can't catch — one var, no redeploy.
 TMUX_SESSION=""
 TMUX_WINDOW=""
 PANE_ID=""
@@ -100,6 +117,34 @@ if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   info=$(timeout 2 tmux display-message -p -t "$TMUX_PANE" "$fmt" 2>/dev/null) || info=""
   IFS=$'\t' read -r TMUX_SESSION TMUX_WINDOW PANE_ID <<<"$info"
   PANE_ID="${PANE_ID:-$TMUX_PANE}"
+elif [ -z "${DHX_REGISTRY_SKIP_PANE_BACKFILL:-}" ]; then
+  pane_lines=$(timeout 2 tmux list-panes -a \
+    -F '#{pane_pid}|#{session_name}|#{window_index}|#{pane_id}' 2>/dev/null) || pane_lines=""
+  if [ -n "$pane_lines" ]; then
+    # Map pane_pid -> "session|window|pane" ONCE via a here-string read-loop —
+    # in-shell (the array must survive), and HP-028-safe (NO `cmd | grep -m`:
+    # under pipefail grep's early-exit SIGPIPEs the writer → 141 → a matched
+    # coord would be silently dropped). The walk then does O(1) lookups, fork-free.
+    declare -A _pane_by_pid
+    while IFS='|' read -r _pp _ps _pw _pn; do
+      [ -n "$_pp" ] && _pane_by_pid["$_pp"]="$_ps|$_pw|$_pn"
+    done <<< "$pane_lines"
+    walk=$$
+    guard=0
+    while [ -n "$walk" ] && [ "$walk" != "1" ] && [ "$walk" != "0" ] && [ "$guard" -lt 40 ]; do
+      if [ -n "${_pane_by_pid[$walk]:-}" ]; then
+        IFS='|' read -r TMUX_SESSION TMUX_WINDOW PANE_ID <<< "${_pane_by_pid[$walk]}"
+        break
+      fi
+      # fork-free next-ancestor: ppid is field 2 after the last ') ' in /proc/<walk>/stat.
+      line=""
+      read -r line < "/proc/$walk/stat" 2>/dev/null || break
+      rest="${line##*) }"   # "state ppid pgrp ..."
+      rest="${rest#* }"     # drop state → "ppid pgrp ..."
+      walk="${rest%% *}"    # keep ppid
+      guard=$((guard+1))
+    done
+  fi
 fi
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)

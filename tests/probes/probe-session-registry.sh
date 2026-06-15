@@ -37,6 +37,13 @@
 #  13. backfill fail-open: unparseable JSON => exit 0, no row.
 #  14. schema coexistence: the backfill honors a `start` row already written by
 #      registry-start (shared row schema => no duplicate across the producer swap).
+#  15. pane-walk fallback (2026-06-15): with $TMUX absent, the backfill resolves
+#      the pane by matching a /proc ancestor against `tmux list-panes -a` pane_pids
+#      and writes the resolved session/window/pane coords (was blank) — the
+#      coord-less-row fix recover's frozen-screen join consumes. MUTUALLY EXCLUSIVE
+#      with invariant 1's display-message path (ONE tmux call max per turn).
+#  16. kill-switch: DHX_REGISTRY_SKIP_PANE_BACKFILL=1 disables the pane-walk =>
+#      status-quo blank coords AND no `list-panes` call (runtime-reversible).
 #
 # Backs: docs/decisions.md 2026-06-08 session-registry-producer row +
 #        docs/decisions.md 2026-06-09 UserPromptSubmit-backfill producer-fix row.
@@ -61,11 +68,21 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/.claude" "$T/bin"
 REG="$T/.claude/dhx-session-registry.tsv"
 
-# tmux stub: deterministic combined-format output, no live server needed.
-cat > "$T/bin/tmux" <<'STUB'
+# tmux stub: arg-aware, deterministic, no live server needed.
+#   display-message → a fixed session\twindow\tpane triple ($TMUX-present path).
+#   list-panes -a   → a pane row whose pane_pid is THIS PROBE's pid ($$) — a
+#     guaranteed /proc ancestor of the hook subprocess (the probe spawns the
+#     hook), so the $TMUX-absent pane-walk resolves it deterministically with no
+#     live tmux/pane. Each list-panes call is recorded to $MARK so the
+#     kill-switch's no-call can be asserted. (Walk needs /proc → Linux/WSL2,
+#     same dependency the hook itself carries.)
+MARK="$T/listpanes.calls"
+cat > "$T/bin/tmux" <<STUB
 #!/usr/bin/env bash
-# Echo a fixed session\twindow\tpane triple for `display-message -p ... <fmt>`.
-printf 'stubsess\t7\t%%99\n'
+case "\$*" in
+  *list-panes*) echo called >> "$MARK"; printf '$$|walksess|5|%%88\n' ;;
+  *)            printf 'stubsess\t7\t%%99\n' ;;
+esac
 STUB
 chmod +x "$T/bin/tmux"
 
@@ -214,6 +231,36 @@ echo '{"session_id":"uuid-COEX","cwd":"/home/dhx/repos/hooks"}' \
 echo '{"session_id":"uuid-COEX","cwd":"/home/dhx/repos/hooks"}' \
   | env -i HOME="$T" CLAUDE_CONFIG_DIR="$CCDIR" PATH="/usr/bin:/bin" bash "$P"
 chk "start+backfill same uuid => 1 row" '[ "$(wc -l < "$REG")" = 1 ]'
+
+# ============================================================================
+# Backfill pane-walk fallback: $TMUX-absent coord resolution + kill-switch
+# (2026-06-15). When $TMUX is empty (CCS launchers drop it on ~65% of sessions),
+# resolve the pane by matching a /proc ancestor against `tmux list-panes -a`
+# pane_pids, backfilling the session/window/pane coords /dhx:history `recover`'s
+# frozen-pane-screen join keys on. Kill-switch DHX_REGISTRY_SKIP_PANE_BACKFILL=1
+# reverts to status-quo blank coords with no list-panes call (runtime-reversible).
+# ============================================================================
+
+# --- 18. $TMUX-absent pane-walk: coords backfilled from the /proc-ancestry match ---
+: > "$REG"; : > "$MARK"
+echo '{"session_id":"uuid-WALK","cwd":"/home/dhx/repos/hooks"}' \
+  | env -i HOME="$T" CLAUDE_CONFIG_DIR="$CCDIR" PATH="$T/bin:/usr/bin:/bin" bash "$P"
+row=$(cat "$REG")
+chk "walk row still 9 fields"          '[ "$(awk -F"\t" "{print NF}" <<<"$row")" = 9 ]'
+chk "walk field7 = session (resolved)" '[ "$(cut -f7 <<<"$row")" = walksess ]'
+chk "walk field8 = window (resolved)"  '[ "$(cut -f8 <<<"$row")" = 5 ]'
+chk "walk field9 = pane (resolved)"    '[ "$(cut -f9 <<<"$row")" = "%88" ]'
+chk "walk invoked list-panes"          '[ -s "$MARK" ]'
+
+# --- 19. kill-switch: DHX_REGISTRY_SKIP_PANE_BACKFILL=1 => blank coords, no tmux call ---
+: > "$REG"; : > "$MARK"
+echo '{"session_id":"uuid-KILL","cwd":"/home/dhx/repos/hooks"}' \
+  | env -i HOME="$T" CLAUDE_CONFIG_DIR="$CCDIR" DHX_REGISTRY_SKIP_PANE_BACKFILL=1 PATH="$T/bin:/usr/bin:/bin" bash "$P"
+row=$(cat "$REG")
+chk "killswitch row still 9 fields"    '[ "$(awk -F"\t" "{print NF}" <<<"$row")" = 9 ]'
+chk "killswitch field7 blank"          '[ -z "$(cut -f7 <<<"$row")" ]'
+chk "killswitch field9 blank"          '[ -z "$(cut -f9 <<<"$row")" ]'
+chk "killswitch made NO list-panes call" '[ ! -s "$MARK" ]'
 
 echo "${pass} passed, ${fail} failed"
 [ "$fail" = 0 ]
