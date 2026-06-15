@@ -725,8 +725,8 @@ function readHealthCache(sessionId) {
         // Legacy-tolerant `!v || v==='ok'` guard: caches predating this field
         // flow through to null (no warning, no crash) — same contract as the
         // hooks_wiring add (2026-04-26). Recovery shares the tier's trailing
-        // `— /dhx:sym repair`; making that command restore config symlinks is a
-        // tracked skills-repo follow-on (interim: re-run dotfiles/install.sh).
+        // `— /dhx:sym repair`, which now restores the link (skills 5547627c — a
+        // diverged regular file is backed up + operator-gated, never clobbered).
         claude_md:        (v) => {
           if (!v || v === 'ok') return null;
           const PHRASE = { REAL_FILE: 'CLAUDE.md unlinked', WRONG_TARGET: 'CLAUDE.md mislinked', MISSING: 'CLAUDE.md missing' };

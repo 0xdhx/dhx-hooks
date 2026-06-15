@@ -89,8 +89,8 @@ fi
 # (tier set in scripts/lib/tiers.json). Fixed-target check mirrors settings_chain
 # above; hardcodes the canonical the way settings_chain hardcodes ~/.ccs/shared.
 # $HOME/.claude (not CLAUDE_CONFIG_DIR) because install.sh links that exact path.
-# Recovery today is re-running dotfiles/install.sh; /dhx:sym repair coverage is a
-# tracked skills-repo follow-on. States: ok | MISSING | REAL_FILE | WRONG_TARGET.
+# Recovery: /dhx:sym repair restores the symlink (skills 5547627c; a diverged
+# regular file is backed up + operator-gated). States: ok | MISSING | REAL_FILE | WRONG_TARGET.
 claude_md_state="ok"
 claude_md="$HOME/.claude/CLAUDE.md"
 claude_md_canonical="$HOME/repos/dotfiles/claude/CLAUDE.md"
