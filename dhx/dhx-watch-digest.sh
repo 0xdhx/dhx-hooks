@@ -102,8 +102,16 @@ while IFS= read -r LINE; do
   # Parse the JSON line; on parse failure, count it but skip
   PARSED=$(printf '%s' "$LINE" | jq -c '.' 2>/dev/null) || { CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue; }
   EID=$(printf '%s' "$PARSED" | jq -r '.entry_id // empty' 2>/dev/null)
+  # Narrowed corrupt predicate (surfacing-fidelity brief 2026-06-13): a valid-JSON line whose
+  # entry_id is null/absent is an INTENTIONAL audit non-delta -- the driver (dhx-watch-driver.cjs)
+  # writes ack/snooze events with entry_id:null, outside the checker's D-40 nextEntryId allocator.
+  # Skip it SILENTLY: it is not corrupt, and a null id never advances the pointer, so the OLD
+  # predicate re-warned [!] digest_corrupt every SessionStart forever. Reserve digest_corrupt for
+  # genuine jq-parse failures (above) AND present-but-garbage ids (non-numeric), which stay loud
+  # (AC-B2: narrow the predicate, do not blind it).
   case "$EID" in
-    ''|*[!0-9]*) CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue ;;
+    '')          continue ;;
+    *[!0-9]*)    CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue ;;
   esac
   # Skip if entry_id <= pointer (already surfaced; bash arithmetic is fine for large ints)
   if [ "$EID" -le "$PTR" ]; then
