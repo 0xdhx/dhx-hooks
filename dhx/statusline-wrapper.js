@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.4.6
+// gsd-hook-version: 1.4.5
+//   ^ MIRRORS live gsd-core VERSION (~/.claude/gsd-core/VERSION) — do NOT hand-bump
+//     on wrapper edits. Only /dhx:sym gsd-update (step 9) sets this; it is a
+//     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
+//     overshoots the real gsd-core line (1.4.6 overshot live 1.4.5, 2026-06-15).
+//     Guard: tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
 // Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
