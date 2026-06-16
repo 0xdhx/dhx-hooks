@@ -74,7 +74,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('watch',      readWatchHealth()),
     withSegmentDiag('skillPressure', readSkillPressure()),  // D-01/D-02/D-03: fail-silent, not sigil-generating
     withSegmentDiag('wslPressure',   readWslPressure()),    // wsl-pressure cadence alarm: fail-silent, not sigil-generating
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR]) => {
+    withSegmentDiag('wslProbeBroken', readWslProbeBroken()), // wsl-pressure PROBE-BROKEN (dead-monitor): fail-silent, not sigil-generating
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR, wslProbeBrokenR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -115,6 +116,11 @@ process.stdin.on('end', () => {
     // error. Deliberately omitted from sigilCount — a `⚠ wslPressure?` sigil would contradict
     // fail-silent (and the segment already renders its own ⚠ on a real trip).
     const wslPressureWarning = unwrap(wslPressureR, () => '');
+    // wsl-pressure probe-broken (dead-monitor) is fail-silent exactly like the trip reader:
+    // own try/catch → '' on ANY error. Deliberately omitted from sigilCount — a
+    // `⚠ wslProbeBroken?` sigil would contradict fail-silent (the segment renders its own
+    // ⚠ on a real break, and an absent flag is the healthy/silent state).
+    const wslProbeBrokenWarning = unwrap(wslProbeBrokenR, () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -151,6 +157,14 @@ process.stdin.on('end', () => {
     // advisory members below. Durable: shows until the operator clears the flag. Silent when
     // no flag exists (readWslPressure returns '').
     if (wslPressureWarning) front.push(wslPressureWarning);
+    // wsl-pressure PROBE-BROKEN (dead-monitor): RED, placed SECOND — right after the trip
+    // token. A trip is a confirmed climbing leak with frozen evidence (act now to prevent the
+    // OOM wedge); a broken monitor is the RISK of an undetected leak (fix the probe). The
+    // trip's FIRST placement is a locked do-not-re-litigate decision, so broken slots in
+    // second — and when only broken fires (the common case, no coexisting trip) it renders
+    // first among present front members anyway. Auto-recovers (producer rm's the flag on the
+    // next healthy classify); silent when the monitor is healthy (readWslProbeBroken → '').
+    if (wslProbeBrokenWarning) front.push(wslProbeBrokenWarning);
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
     // Fleet drift (SURF-02): a third orange-208 front member, additive only.
@@ -869,6 +883,29 @@ function readWslPressure() {
     return `\x1b[31m⚠ ${label}\x1b[0m`;
   } catch {
     return ''; // no flag = no trip = silent
+  }
+}
+
+// wsl-pressure PROBE-BROKEN flag: written by ~/scripts/health/wsl-pressure-check.sh when
+// the monitor ITSELF fails (probe errored / bash-count unparseable → exit 3, NO trip flag).
+// The SECOND distinct wsl signal: the trip reader above says "a real leak was detected";
+// this says "the monitor is DEAD — you have no detection at all, drifting blind toward the
+// same OOM ceiling." A dead monitor is a pull-only fault (systemctl / pressure.log / unit
+// failed-state); this surfaces it on the always-visible push surface within ~60s.
+const WSL_PRESSURE_BROKEN_FLAG = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'wsl-pressure-broken.flag');
+
+// wsl-pressure probe-broken alarm. RED — same imminent-OOM severity class as the trip
+// (blind ≥ tripped: a trip means the monitor WORKED). EXISTENCE is the signal (the flag's
+// content is forensic only), mirroring the trip reader's empty-flag handling. AUTO-RECOVERS:
+// the producer rm's this flag on the next healthy classify (ok/warn/crit), so — unlike the
+// durable, operator-cleared trip flag — a recovered monitor self-clears (it is not a forensic
+// artifact). Fail-silent: any error → '' (absent flag = healthy monitor = silent).
+function readWslProbeBroken() {
+  try {
+    fs.accessSync(WSL_PRESSURE_BROKEN_FLAG);
+    return `\x1b[31m⚠ wsl:probe-broken\x1b[0m`;
+  } catch {
+    return ''; // no flag = monitor healthy = silent
   }
 }
 
