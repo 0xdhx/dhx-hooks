@@ -188,7 +188,24 @@ function readGsdState(dir) {
     const candidate = path.join(current, '.planning', 'STATE.md');
     if (fs.existsSync(candidate)) {
       try {
-        return parseStateMd(fs.readFileSync(candidate, 'utf8'));
+        const state = parseStateMd(fs.readFileSync(candidate, 'utf8'));
+        // Prefer the sibling ROADMAP progress table for the milestone phase
+        // count — the STATE progress: block (already parsed into `state`) is
+        // orphan-prone and carries gsd-core's 999/ratchet bugs (see
+        // parseRoadmapProgress). Override only on a successful table parse;
+        // any miss (no ROADMAP, no table, unreadable) keeps the STATE-block
+        // count, so table-less repos behave exactly as before.
+        try {
+          const roadmap = path.join(path.dirname(candidate), 'ROADMAP.md');
+          if (fs.existsSync(roadmap)) {
+            const rp = parseRoadmapProgress(fs.readFileSync(roadmap, 'utf8'));
+            if (rp) {
+              state.completedPhases = rp.completedPhases;
+              state.totalPhases = rp.totalPhases;
+            }
+          }
+        } catch (e) { /* ROADMAP unreadable/malformed — keep STATE-block count */ }
+        return state;
       } catch (e) {
         return null;
       }
@@ -256,6 +273,58 @@ function parseStateMd(content) {
   }
 
   return state;
+}
+
+/**
+ * Derive the active-milestone phase count from the ROADMAP progress table.
+ * Returns { completedPhases, totalPhases } or null when no parseable table.
+ *
+ * Why prefer this over STATE.md's progress: block (see readGsdState): that
+ * block is orphan-prone — only GSD's complete-phase/milestone.complete verb
+ * writes it, so hand-completed phases leave it frozen — and it carries two
+ * gsd-core bugs: it counts 999.x backlog rows into the total, and a
+ * don't-regress ratchet cements a stale-high total. The ROADMAP progress
+ * table is verb-/human-maintained and stays current.
+ *
+ * Reach is narrow BY DESIGN: only a minority of repos maintain this table
+ * (most keep only the `- [x] Phase N` checkbox list, which cannot be reliably
+ * scoped to the active milestone across differing heading conventions). The
+ * table is the one ROADMAP structure that IS reliably active-scoped, so it's
+ * the right primary where present; everything else falls back to STATE.
+ *
+ * Mirrors gsd-core's deriveProgressFromRoadmap (phase-lifecycle.cjs) table-
+ * location regex, but scopes counting to the located table and applies the
+ * ^999 backlog exclusion init.cjs:1211 uses (`!/^999(?:\.|$)/`) — which the
+ * gsd-core derive omits (the upstream bug this read-time fix also references).
+ */
+function parseRoadmapProgress(content) {
+  // Locate the active progress table. If archived-milestone tables are also
+  // present, anchor on the **Active milestone:** marker that precedes the live
+  // one; otherwise take the first table.
+  const tableRe = /\|\s*Phase\s*\|[^|]*\|[^|]*Status[^|]*\|[^|]*Completed[^|]*\|[\s\S]*?(?=\n\n|\n##|$)/i;
+  let scope = content;
+  const activeIdx = content.search(/\*\*Active milestone:/i);
+  if (activeIdx !== -1) scope = content.slice(activeIdx);
+  const m = scope.match(tableRe) || content.match(tableRe);
+  if (!m) return null;
+
+  // ^999 backlog-row predicate — the table-row form of init.cjs:1211's
+  // !/^999(?:\.|$)/. A leading phase cell of 999 or 999.x is a backlog row,
+  // not a milestone phase, so it counts toward neither numerator nor total.
+  const is999 = (row) => /^\|\s*999(?:\.|\s|\|)/.test(row);
+
+  let total = 0;
+  let completed = 0;
+  for (const row of m[0].split('\n')) {
+    if (!/^\|\s*\d/.test(row)) continue;   // data row: leading pipe + phase number
+    if (is999(row)) continue;              // exclude 999.x backlog rows
+    total++;
+    // Columns: | Phase | Plans Complete | Status | Completed | → split[3] = Status
+    const statusCell = (row.split('|')[3] || '').trim();
+    if (/^Complete$/i.test(statusCell)) completed++;
+  }
+  if (total === 0) return null;
+  return { completedPhases: completed, totalPhases: total };
 }
 
 // --- Line 2 assembly ---------------------------------------------------------
@@ -701,7 +770,7 @@ function runStatusline() {
 
 // Export helpers for unit tests. Harmless when run as a script.
 module.exports = {
-  readGsdState, parseStateMd, formatGsdState,
+  readGsdState, parseStateMd, parseRoadmapProgress, formatGsdState,
   compactModel, getCcsProfile,
   renderEffort,
   EFFORT_RENDER,
