@@ -344,14 +344,21 @@
     "typescript-lsp@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "playground@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": true,
-    "dhx@dhx-local": true
+    "document-skills@anthropic-agent-skills": false,
+    "dhx@dhx-local": true,
+    "llm-wiki@llm-wiki": true
   },
   "extraKnownMarketplaces": {
     "dhx-local": {
       "source": {
         "source": "directory",
         "path": "/home/dhx/repos/hooks/dhx-plugin"
+      }
+    },
+    "llm-wiki": {
+      "source": {
+        "source": "github",
+        "repo": "praneybehl/llm-wiki-plugin"
       }
     }
   },
