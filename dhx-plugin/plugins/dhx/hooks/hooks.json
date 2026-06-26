@@ -170,6 +170,11 @@
           {
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-source-write-flag.sh\""
+          },
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/dhx-statemd-phase-line-lint.js\"",
+            "timeout": 5
           }
         ]
       },
