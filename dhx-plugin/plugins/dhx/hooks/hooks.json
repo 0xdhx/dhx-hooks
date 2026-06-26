@@ -252,6 +252,17 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-read-dedup-compact-marker.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

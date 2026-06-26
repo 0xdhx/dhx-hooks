@@ -30,14 +30,32 @@
 #
 # STATE  (ephemeral, TTL-windowed, session-scoped, pruned — fine to reap):
 #   ~/.cache/dhx/read-dedup/<session_id>.jsonl
-#   one record per Read: {"path","start","end","mtime","size","ts"[,"lines"]}
+#   one record per Read: {"path","start","end","mtime","size","ts","seq"[,"lines"]}
 #   "lines" (optional) caches the file's line count for THIS version (path+mtime+size) so a
 #   hot re-read file is counted once per (session,version), not on every overlap event.
+#   "seq" (Phase-2a) is the read's 1-based ordinal in this session (intervening-read proxy for
+#   the compaction reconciliation — gap_reads on an event = cur_seq − prior_seq).
+#   Two sibling subtrees under the same per-session cache root (Phase-2a, both reapable):
+#     read-dedup/content/<session_id>/<path-sha1>     one size-capped content snapshot per
+#       (session,path), overwritten each read → a later `changed` re-read diffs against the prior
+#       version to size diff_tokens (DHX_READ_DEDUP_SNAPSHOT_MAX_BYTES cap; large thrash-class files skipped).
+#     read-dedup/compaction/<session_id>.jsonl        per-session {ts,trigger} markers appended by the
+#       companion PreCompact hook dhx-read-dedup-compact-marker.sh (the compaction_since_prior signal).
 # STATS  (durable measurement dataset — the Phase-1 deliverable; lives OUTSIDE the cache dir):
 #   ~/.local/share/dhx/read-dedup-stats.jsonl  (XDG_DATA_HOME — durable, NOT a reapable cache;
 #   relocated 2026-06-09 after skills probe-dhx-sym-parity.sh unconditional-wiped ~/.cache/dhx — see decisions.md)
 #   one event per detected re-read: {"ts","path","session","event","range":[s,e],
-#       "overlap_lines","overlap_tokens","band"}  (event in strict|broad|new|changed)
+#       "overlap_lines","overlap_tokens","band",  (event in strict|broad|new|changed)
+#       "gap_s","gap_reads","compaction_since_prior",  (Phase-2a, ALL events: gap to most-recent prior read in
+#         seconds / in reads; whether a compaction marker fell between that prior read and now. gap_reads=-1 ⇒
+#         prior record predates the seq field.)
+#       ... and on `changed` events only (Phase-2a diff-substitute sizing — issue #1 of the 2026-06-25 council):
+#       "full_tokens","diff_tokens","prior_full","prior_snapshot_available"}  (full re-read cost size/4;
+#         real unified-diff cost of the prior→current version; was the prior read full [1,2001); was a content
+#         snapshot of the prior version available to diff. diff_tokens=-1 ⇒ no snapshot, unsized.)
+#   ADDITIVE schema: Phase-2a added fields only — existing fields (event/range/overlap_tokens/band) keep their
+#   meaning (changed events still carry overlap_tokens:0 — zero UNCHANGED overlap is correct; the win lives in
+#   the new full_tokens/diff_tokens pair), so the pre-enrichment window stays parseable alongside the new one.
 # Token basis: overlap_lines * (file_size/total_lines) / 4 chars/token — the SAME flat
 # chars/4 proxy the cross-repo spike used, so the live bands are directly comparable.
 # NEVER touches Boucle's ~/.claude/read-once/stats.jsonl (the preserved BEFORE baseline).
@@ -50,6 +68,9 @@
 #   DHX_READ_DEDUP_DATA_DIR=...   override durable STATS data root (probe/test injection, D-20 convention)
 #   DHX_READ_DEDUP_STATS_MAX_BYTES=5242880  size cap (bytes) for the durable stats log before it
 #                                 rotates to a single `.jsonl.1` backup (default 5 MiB ≈ weeks)
+#   DHX_READ_DEDUP_SNAPSHOT_MAX_BYTES=262144  Phase-2a: max file size (bytes) to content-snapshot for
+#                                 changed-band diff sizing (default 256 KiB — captures the edit-verify
+#                                 target population; excludes the gold.md/plan-phase thrash class).
 #
 # Fires: PreToolUse on the Read tool. Action: state-write + stats-log only; no stdout,
 # no blocking, never fails the tool call (set -uo, not -e — dhx convention).
@@ -138,11 +159,27 @@ STATE_DIR="${CACHE_ROOT}/read-dedup"
 STATS_FILE="${DATA_ROOT}/read-dedup-stats.jsonl"
 STATS_MAX_BYTES="${DHX_READ_DEDUP_STATS_MAX_BYTES:-5242880}"   # 5 MiB; rotate to .1 above this
 case "$STATS_MAX_BYTES" in ''|*[!0-9]*) STATS_MAX_BYTES=5242880 ;; esac
+SNAP_MAX_BYTES="${DHX_READ_DEDUP_SNAPSHOT_MAX_BYTES:-262144}"  # 256 KiB; skip content snapshot above this
+case "$SNAP_MAX_BYTES" in ''|*[!0-9]*) SNAP_MAX_BYTES=262144 ;; esac
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 # Best-effort: STATS append is already `|| true`-guarded, so a DATA_ROOT mkdir failure must NOT
 # kill STATE recording (the hook's core function) — decouple it from the STATE_DIR `|| exit 0`.
 mkdir -p "$DATA_ROOT" 2>/dev/null || true
 STATE_FILE="${STATE_DIR}/${SESSION_ID}.jsonl"
+
+# Phase-2a sibling paths (both under the reapable per-session cache root, NOT the durable data root).
+# COMPACT_FILE: per-session compaction-marker log written by the companion PreCompact hook
+#   (dhx-read-dedup-compact-marker.sh). The python branch reads it for `compaction_since_prior`.
+#   INVARIANT: marker + reader MUST agree on this path — both derive it from STATE_DIR/compaction/<sid>,
+#   and both honor DHX_READ_DEDUP_STATE_DIR for fixture injection (probe-read-dedup.sh V-COMPACT-* assert it).
+# SNAP_FILE: ONE content snapshot per (session,path), keyed on the canonical realpath via sha1 (avoids
+#   path-separator filenames). Overwritten at the end of each read (size-capped) so a later `changed`
+#   re-read can diff the prior version. Empty if no hasher is available → snapshot silently disabled.
+COMPACT_DIR="${STATE_DIR}/compaction"
+COMPACT_FILE="${COMPACT_DIR}/${SESSION_ID}.jsonl"
+CONTENT_DIR="${STATE_DIR}/content/${SESSION_ID}"
+SNAP_HASH=$(printf '%s' "$RESOLVED" | { sha1sum 2>/dev/null || md5sum 2>/dev/null; } | awk '{print $1}')
+case "$SNAP_HASH" in ''|*[!0-9a-fA-F]*) SNAP_FILE="" ;; *) SNAP_FILE="${CONTENT_DIR}/${SNAP_HASH}.snap" ;; esac
 
 # Once-per-hour housekeeping: drop stale session files (>1d) + size-cap the durable stats log.
 CLEAN_MARKER="${STATE_DIR}/.last-cleanup"
@@ -150,6 +187,10 @@ LAST_CLEAN=$(cat "$CLEAN_MARKER" 2>/dev/null || echo 0); LAST_CLEAN=${LAST_CLEAN
 case "$LAST_CLEAN" in *[!0-9]*) LAST_CLEAN=0 ;; esac
 if [ $(( NOW - LAST_CLEAN )) -gt 3600 ]; then
   find "$STATE_DIR" -name '*.jsonl' -mtime +1 -delete 2>/dev/null || true
+  # Phase-2a: reap stale content snapshots (not *.jsonl, so the line above misses them) + empty session
+  # dirs. Compaction markers ARE *.jsonl under STATE_DIR → already reaped by the find above.
+  find "$STATE_DIR/content" -type f -mtime +1 -delete 2>/dev/null || true
+  find "$STATE_DIR/content" -type d -empty -delete 2>/dev/null || true
   # Size-cap the durable, append-only stats log. STATE is pruned by the find above, but STATS
   # lives under XDG_DATA_HOME (durable by design) so it can't be TTL-reaped — bound it here.
   # Single-backup rotation: over the cap, the current log becomes the .1 backup (overwriting
@@ -161,6 +202,14 @@ if [ $(( NOW - LAST_CLEAN )) -gt 3600 ]; then
   fi
   printf '%s' "$NOW" > "$CLEAN_MARKER" 2>/dev/null || true
 fi
+
+# Phase-2a: this read's 1-based session ordinal = (prior reads of ALL paths) + 1. Recorded in the state
+# record (`seq`) so a future event can log gap_reads = cur_seq − prior_seq (intervening-read proxy).
+SEQ=0
+[ -f "$STATE_FILE" ] && SEQ=$(wc -l < "$STATE_FILE" 2>/dev/null || echo 0)
+SEQ=${SEQ:-0}
+case "$SEQ" in *[!0-9]*) SEQ=0 ;; esac
+SEQ=$(( SEQ + 1 ))
 
 # --- detect re-read: prior records for THIS path in THIS session ---
 # Fast path: no prior record for the path -> first read -> just record it, no stats event.
@@ -175,12 +224,20 @@ if [ -n "$PRIORS" ] && command -v python3 >/dev/null 2>&1; then
   # Script comes via the heredoc (stdin); prior records via $PRIORS_DATA env (so the
   # heredoc and the data don't both contend for stdin); scalars via argv.
   PY_OUT=$(PRIORS_DATA="$PRIORS" python3 - \
-      "$RESOLVED" "$SESSION_ID" "$START" "$END" "$CUR_MTIME" "$CUR_SIZE" "$NOW" "$TTL" <<'PY' 2>/dev/null || true
-import sys, os, json
+      "$RESOLVED" "$SESSION_ID" "$START" "$END" "$CUR_MTIME" "$CUR_SIZE" "$NOW" "$TTL" \
+      "$SNAP_FILE" "$COMPACT_FILE" "$SEQ" <<'PY' 2>/dev/null || true
+import sys, os, json, difflib
 path, session = sys.argv[1], sys.argv[2]
 cs, ce = int(sys.argv[3]), int(sys.argv[4])
 cmtime, csize = sys.argv[5], sys.argv[6]
 now, ttl = int(sys.argv[7]), int(sys.argv[8])
+# Phase-2a argv: snapshot path (may be ""), compaction-marker path, this read's session ordinal.
+snap_file = sys.argv[9] if len(sys.argv) > 9 else ""
+compact_file = sys.argv[10] if len(sys.argv) > 10 else ""
+try:
+    cur_seq = int(sys.argv[11])
+except (IndexError, ValueError):
+    cur_seq = -1
 
 priors = []
 for line in os.environ.get("PRIORS_DATA", "").splitlines():
@@ -205,17 +262,80 @@ if not priors:
 most_recent = max(priors, key=lambda r: int(r.get("ts", 0)))
 changed = (str(most_recent.get("mtime")) != str(cmtime)) or (str(most_recent.get("size")) != str(csize))
 
-def emit(event, overlap_lines, overlap_tokens, band):
-    print(json.dumps({
+# --- Phase-2a universal fields (every re-read event carries these) ---
+prior_ts = int(most_recent.get("ts", 0))
+gap_s = now - prior_ts   # seconds since the most-recent prior read of this path (Guard-1 <120s slice)
+
+# gap_reads: intervening reads since that prior (the proxy compaction signal). -1 if the prior record
+# predates the seq field (pre-enrichment window) or this read's seq is unknown.
+ms_seq = most_recent.get("seq")
+try:
+    gap_reads = cur_seq - int(ms_seq) if (cur_seq >= 0 and ms_seq is not None) else -1
+except (TypeError, ValueError):
+    gap_reads = -1
+
+# compaction_since_prior: did a PreCompact marker land between the prior read and now? The companion
+# hook appends {ts,trigger} per session; here we only need the boolean (the gate is "no-compaction-since").
+compaction_since_prior = False
+if compact_file:
+    try:
+        with open(compact_file) as fh:
+            for ln in fh:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    m = json.loads(ln)
+                except Exception:
+                    continue
+                mts = int(m.get("ts", 0))
+                if prior_ts < mts <= now:
+                    compaction_since_prior = True
+                    break
+    except Exception:
+        pass
+
+def emit(event, overlap_lines, overlap_tokens, band, extra=None):
+    rec = {
         "ts": now, "path": path, "session": session, "event": event,
         "range": [cs, ce], "overlap_lines": overlap_lines,
         "overlap_tokens": overlap_tokens, "band": band,
-    }, separators=(",", ":")))
+        "gap_s": gap_s, "gap_reads": gap_reads,
+        "compaction_since_prior": compaction_since_prior,
+    }
+    if extra:
+        rec.update(extra)
+    print(json.dumps(rec, separators=(",", ":")))
 
 if changed:
-    # Re-read of a genuinely changed file = legitimate (new content). Not waste.
-    # (Phase 2 may diff-serve these; Phase 1 just records the class.)
-    emit("changed", 0, 0, "none")
+    # Re-read of a genuinely CHANGED file. Not unchanged-overlap waste — but the diff-substitute target
+    # (the 2026-06-25 council's Guard 2). Size it: full_tokens = full re-read cost (size/4, spike-basis);
+    # diff_tokens = real unified-diff cost prior→current IF a snapshot of the prior version was cached.
+    # overlap_tokens stays 0 (zero UNCHANGED overlap is correct; the win is full−diff). The check-in reads
+    # the fraction clearing predicted-full ≥~1500 / diff ≤~700 / prior-full-cached / no-compaction-since.
+    full_tokens = int(round(int(csize) / 4)) if csize else 0
+    # prior_full: was a FULL read [1,2001) of the prior version cached (so a diff would reconstruct it)?
+    old_ver = [r for r in priors
+               if str(r.get("mtime")) == str(most_recent.get("mtime"))
+               and str(r.get("size")) == str(most_recent.get("size"))]
+    prior_full = any(int(r.get("start", 0)) == 1 and int(r.get("end", 0)) == 2001 for r in old_ver)
+    diff_tokens = -1            # sentinel: not sized (no usable prior snapshot)
+    snapshot_available = False
+    if snap_file and os.path.exists(snap_file):
+        try:
+            with open(snap_file, "r", errors="replace") as fh:
+                old_lines = fh.readlines()
+            with open(path, "r", errors="replace") as fh:
+                new_lines = fh.readlines()
+            diff_bytes = sum(len(x) for x in difflib.unified_diff(old_lines, new_lines, n=3))
+            diff_tokens = int(round(diff_bytes / 4))
+            snapshot_available = True
+        except Exception:
+            pass
+    emit("changed", 0, 0, "none", extra={
+        "full_tokens": full_tokens, "diff_tokens": diff_tokens,
+        "prior_full": prior_full, "prior_snapshot_available": snapshot_available,
+    })
     sys.exit(0)
 
 # Unchanged file: union the ranges of prior reads of THIS version (same mtime+size).
@@ -319,14 +439,23 @@ fi
 if [ -n "${LINES_HINT:-}" ]; then
   jq -cn --arg path "$RESOLVED" --argjson start "$START" --argjson end "$END" \
          --arg mtime "$CUR_MTIME" --arg size "$CUR_SIZE" --argjson ts "$NOW" \
-         --argjson lines "$LINES_HINT" \
-         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts,lines:$lines}' \
+         --argjson seq "$SEQ" --argjson lines "$LINES_HINT" \
+         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts,seq:$seq,lines:$lines}' \
          >> "$STATE_FILE" 2>/dev/null || true
 else
   jq -cn --arg path "$RESOLVED" --argjson start "$START" --argjson end "$END" \
          --arg mtime "$CUR_MTIME" --arg size "$CUR_SIZE" --argjson ts "$NOW" \
-         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts}' \
+         --argjson seq "$SEQ" \
+         '{path:$path,start:$start,end:$end,mtime:$mtime,size:$size,ts:$ts,seq:$seq}' \
          >> "$STATE_FILE" 2>/dev/null || true
+fi
+
+# Phase-2a: snapshot current content for changed-band diff sizing. One file per (session,path),
+# overwritten each read so a later `changed` re-read diffs against THIS (the now-prior) version. Size-
+# capped (the edit-verify target is small; the thrash-class large files are skipped, logged downstream as
+# prior_snapshot_available:false). INVARIANT: SNAP_FILE keys on the same RESOLVED realpath as the records.
+if [ -n "${SNAP_FILE:-}" ] && [ "${CUR_SIZE:-0}" -le "$SNAP_MAX_BYTES" ]; then
+  mkdir -p "$CONTENT_DIR" 2>/dev/null && cp -f "$RESOLVED" "$SNAP_FILE" 2>/dev/null || true
 fi
 
 exit 0

@@ -8,10 +8,14 @@
 # It is LOG-ONLY: emits nothing to Claude (zero context cost + no observer effect on the
 # very re-read behavior it measures). See the hook header + the measurement doc.
 #
-#   STATE: <cache>/read-dedup/<session_id>.jsonl   {"path","start","end","mtime","size","ts"}  (ephemeral — reapable)
-#   STATS: <data>/read-dedup-stats.jsonl           {ts,path,session,event,range,overlap_lines,overlap_tokens,band}
+#   STATE: <cache>/read-dedup/<session_id>.jsonl   {"path","start","end","mtime","size","ts","seq"[,"lines"]}  (ephemeral — reapable)
+#   STATS: <data>/read-dedup-stats.jsonl           {ts,path,session,event,range,overlap_lines,overlap_tokens,band,
+#          gap_s,gap_reads,compaction_since_prior[,full_tokens,diff_tokens,prior_full,prior_snapshot_available]}
 #          (durable — XDG_DATA_HOME, NOT the cache dir; relocated 2026-06-09, see decisions.md)
 #   event ∈ strict | broad | new | changed ;  band ∈ strict | broad | none
+#   Phase-2a (2026-06-25 council telemetry): gap_s/gap_reads/compaction_since_prior on every event;
+#     the changed-only quad (full_tokens/diff_tokens/prior_full/prior_snapshot_available) sizes the
+#     diff-substitute guard. Companion: dhx-read-dedup-compact-marker.sh (PreCompact) writes the markers.
 #
 # Asserts:
 #   V-LOG-ONLY       every invocation: empty stdout, exit 0 (no advisory, never blocks)
@@ -33,6 +37,17 @@
 #                    poisoned sentinel surfaces in overlap clamping, proving the cache path
 #   V-STATS-ROTATE   the durable stats log over DHX_READ_DEDUP_STATS_MAX_BYTES rotates to a
 #                    single `.jsonl.1` backup during housekeeping; the current log resets
+#   --- Phase-2a telemetry (2026-06-25 council; sizes the two substitutive guards) ---
+#   V-SEQ-RECORD     each state record carries a 1-based session ordinal `seq`
+#   V-GAP-S/READS    a re-read event carries gap_s (≥0) + gap_reads (cur_seq − prior_seq) + compaction_since_prior
+#   V-CHANGED-SIZING a changed re-read with a cached prior snapshot logs full_tokens>0, real diff_tokens
+#                    (< full_tokens — the substitute win), prior_full, prior_snapshot_available; overlap_tokens stays 0
+#   V-CHANGED-NOSNAP a changed re-read over the snapshot cap → prior_snapshot_available:false, diff_tokens:-1
+#                    (unsized), full_tokens still sized; no snapshot file written
+#   V-COMPACT-MARKER the PreCompact companion writes {ts,trigger}; defaults absent trigger→"unknown";
+#                    sanitizes empty/path-sep/`..` session_id (D-11); log-only (empty stdout, exit 0)
+#   V-COMPACT-SINCE  a marker with ts in (prior_read_ts, now] → compaction_since_prior:true; a marker
+#                    predating the prior read → false (the cross-process INVARIANT between the two hooks)
 #
 # INVARIANT: token magnitude uses the spike's flat chars/4 proxy (overlap bytes ÷ 4) so the
 # live bands are directly comparable to docs/research .../2026-05-24-read-once-token-waste-
@@ -204,6 +219,96 @@ chk "V-STATS-ROTATE .1 backup created when stats exceed cap" \
     "$([ -s "$SBX_RO/data/read-dedup-stats.jsonl.1" ] && echo yes || echo no)" "yes"
 chk "V-STATS-ROTATE current log reset to a fresh post-rotation event" \
     "$(wc -l < "$SBX_RO/data/read-dedup-stats.jsonl" 2>/dev/null || echo 0)" "1"
+
+# ============================ Phase-2a telemetry (2026-06-25 council) ============================
+
+# --- V-SEQ-RECORD + V-GAP-S/READS: state records carry seq; re-read events carry the gap fields ---
+SBX_SQ="$SBX/seq"; mkdir -p "$SBX_SQ/cache"
+TFS="$SBX/seq.md"; printf 's%s\n' $(seq 1 150) > "$TFS"
+runSQ(){ DHX_READ_DEDUP_STATE_DIR="$SBX_SQ/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_SQ/data" bash "$HOOK"; }
+mkSQ(){ printf '{"tool_name":"Read","session_id":"sidsq","tool_input":{"file_path":"%s"}}' "$TFS"; }
+mkSQ | runSQ; sleep 1; mkSQ | runSQ      # read 1 (seq 1, no event) → read 2 (seq 2, strict event)
+SQ_STATE="$SBX_SQ/cache/read-dedup/sidsq.jsonl"
+chk "V-SEQ-RECORD first record seq=1"  "$(sed -n '1p' "$SQ_STATE" 2>/dev/null | jq -r '.seq')" "1"
+chk "V-SEQ-RECORD second record seq=2" "$(sed -n '2p' "$SQ_STATE" 2>/dev/null | jq -r '.seq')" "2"
+SQ_EV=$(tail -1 "$SBX_SQ/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-GAP-S present on strict event (≥0)" \
+    "$(echo "$SQ_EV" | jq -r 'if (.gap_s != null and .gap_s >= 0) then "yes" else "no" end')" "yes"
+chk "V-GAP-READS strict re-read gap_reads=1" "$(echo "$SQ_EV" | jq -r '.gap_reads')" "1"
+chk "V-GAP compaction_since_prior false (no marker)" "$(echo "$SQ_EV" | jq -r '.compaction_since_prior')" "false"
+
+# --- V-CHANGED-SIZING: changed re-read with a cached prior snapshot → full + real diff sized ---
+SBX_CS="$SBX/chsize"; mkdir -p "$SBX_CS/cache"
+TFC="$SBX/chsize.md"; printf 'orig%s\n' $(seq 1 200) > "$TFC"
+runCS(){ DHX_READ_DEDUP_STATE_DIR="$SBX_CS/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_CS/data" bash "$HOOK"; }
+mkCS(){ printf '{"tool_name":"Read","session_id":"sidcs","tool_input":{"file_path":"%s"}}' "$TFC"; }
+mkCS | runCS                              # full read v1 → snapshot cached
+sleep 1; printf 'orig%s\n' $(seq 1 205) > "$TFC"   # +5 lines → small diff vs full
+mkCS | runCS                              # changed re-read → sized
+CS_EV=$(tail -1 "$SBX_CS/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-CHANGED-SIZING event"                       "$(echo "$CS_EV" | jq -r '.event')" "changed"
+chk "V-CHANGED-SIZING full_tokens > 0"             "$(echo "$CS_EV" | jq -r 'if .full_tokens > 0 then "yes" else "no" end')" "yes"
+chk "V-CHANGED-SIZING prior_snapshot_available"    "$(echo "$CS_EV" | jq -r '.prior_snapshot_available')" "true"
+chk "V-CHANGED-SIZING prior_full"                  "$(echo "$CS_EV" | jq -r '.prior_full')" "true"
+chk "V-CHANGED-SIZING diff_tokens sized & < full (the substitute win)" \
+    "$(echo "$CS_EV" | jq -r 'if (.diff_tokens >= 0 and .diff_tokens < .full_tokens) then "yes" else "no" end')" "yes"
+chk "V-CHANGED-SIZING overlap_tokens stays 0 (additive: zero UNCHANGED overlap)" \
+    "$(echo "$CS_EV" | jq -r '.overlap_tokens')" "0"
+
+# --- V-CHANGED-NOSNAP: changed re-read over the snapshot cap → unsized diff, full still sized ---
+SBX_NS="$SBX/nosnap"; mkdir -p "$SBX_NS/cache"
+TFN="$SBX/nosnap.md"; printf 'big%s\n' $(seq 1 200) > "$TFN"
+runNS(){ DHX_READ_DEDUP_STATE_DIR="$SBX_NS/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_NS/data" \
+         DHX_READ_DEDUP_SNAPSHOT_MAX_BYTES=10 bash "$HOOK"; }   # 10 B cap → every file skipped
+mkNS(){ printf '{"tool_name":"Read","session_id":"sidns","tool_input":{"file_path":"%s"}}' "$TFN"; }
+mkNS | runNS                              # full read v1 → snapshot SKIPPED (over cap)
+sleep 1; printf 'big%s\n' $(seq 1 210) > "$TFN"
+mkNS | runNS                              # changed re-read → no snapshot to diff
+NS_EV=$(tail -1 "$SBX_NS/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-CHANGED-NOSNAP prior_snapshot_available false (over cap)" "$(echo "$NS_EV" | jq -r '.prior_snapshot_available')" "false"
+chk "V-CHANGED-NOSNAP diff_tokens unsized sentinel -1"           "$(echo "$NS_EV" | jq -r '.diff_tokens')" "-1"
+chk "V-CHANGED-NOSNAP full_tokens still sized (>0)"              "$(echo "$NS_EV" | jq -r 'if .full_tokens > 0 then "yes" else "no" end')" "yes"
+chk "V-CHANGED-NOSNAP no content snapshot written (over cap)"    "$(find "$SBX_NS/cache/read-dedup/content" -type f 2>/dev/null | wc -l)" "0"
+
+# --- V-COMPACT-MARKER: the PreCompact companion writes {ts,trigger}; defaults + sanitizes ---
+MARKER="/home/dhx/repos/hooks/dhx/dhx-read-dedup-compact-marker.sh"
+SBX_CM="$SBX/cmark"; mkdir -p "$SBX_CM/cache"
+runCM(){ DHX_READ_DEDUP_STATE_DIR="$SBX_CM/cache" bash "$MARKER"; }
+OUT=$(printf '{"session_id":"sidcm","trigger":"manual","hook_event_name":"PreCompact"}' | runCM); RC=$?
+chk "V-COMPACT-MARKER stdout-empty (log-only)" "${OUT:-<empty>}" "<empty>"
+chk "V-COMPACT-MARKER exit-0" "$RC" "0"
+CM_FILE="$SBX_CM/cache/read-dedup/compaction/sidcm.jsonl"
+chk "V-COMPACT-MARKER trigger recorded" "$(tail -1 "$CM_FILE" 2>/dev/null | jq -r '.trigger')" "manual"
+chk "V-COMPACT-MARKER ts numeric"       "$(tail -1 "$CM_FILE" 2>/dev/null | jq -r 'if (.ts|type)=="number" then "yes" else "no" end')" "yes"
+printf '{"session_id":"sidcm2"}' | runCM   # absent trigger → "unknown"
+chk "V-COMPACT-MARKER absent trigger → unknown" "$(tail -1 "$SBX_CM/cache/read-dedup/compaction/sidcm2.jsonl" 2>/dev/null | jq -r '.trigger')" "unknown"
+for bad_sid in "" "a/b" ".."; do
+  rm -rf "$SBX_CM/cache/read-dedup/compaction"
+  printf '{"session_id":"%s","trigger":"auto"}' "$bad_sid" | runCM
+  chk "V-COMPACT-MARKER sanitize [${bad_sid:-<empty>}] writes nothing" \
+      "$(find "$SBX_CM/cache/read-dedup/compaction" -type f 2>/dev/null | wc -l)" "0"
+done
+
+# --- V-COMPACT-SINCE: the cross-process INVARIANT — marker in (prior_ts, now] flips the flag ---
+SBX_CSN="$SBX/csince"; mkdir -p "$SBX_CSN/cache/read-dedup/compaction"
+TFCS="$SBX/csince.md"; printf 'c%s\n' $(seq 1 120) > "$TFCS"
+runCSN(){ DHX_READ_DEDUP_STATE_DIR="$SBX_CSN/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_CSN/data" bash "$HOOK"; }
+mkCSN(){ printf '{"tool_name":"Read","session_id":"sidcsn","tool_input":{"file_path":"%s"}}' "$TFCS"; }
+mkCSN | runCSN                            # 1st read at T1
+sleep 1; printf '{"ts":%s,"trigger":"auto"}\n' "$(date +%s)" > "$SBX_CSN/cache/read-dedup/compaction/sidcsn.jsonl"  # marker T2
+sleep 1; mkCSN | runCSN                   # re-read at T3 → marker T2 ∈ (T1,T3]
+CSN_EV=$(tail -1 "$SBX_CSN/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-COMPACT-SINCE marker between prior read and now → true" "$(echo "$CSN_EV" | jq -r '.compaction_since_prior')" "true"
+# negative teeth: a marker PREDATING the prior read must NOT count
+SBX_CN2="$SBX/csince2"; mkdir -p "$SBX_CN2/cache/read-dedup/compaction"
+TFC2="$SBX/csince2.md"; printf 'c%s\n' $(seq 1 120) > "$TFC2"
+printf '{"ts":%s,"trigger":"manual"}\n' "$(( $(date +%s) - 100 ))" > "$SBX_CN2/cache/read-dedup/compaction/sidcn2.jsonl"
+runCN2(){ DHX_READ_DEDUP_STATE_DIR="$SBX_CN2/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_CN2/data" bash "$HOOK"; }
+mkCN2(){ printf '{"tool_name":"Read","session_id":"sidcn2","tool_input":{"file_path":"%s"}}' "$TFC2"; }
+mkCN2 | runCN2                            # 1st read AFTER the stale marker
+sleep 1; mkCN2 | runCN2                   # re-read → stale marker predates prior read → false
+CN2_EV=$(tail -1 "$SBX_CN2/data/read-dedup-stats.jsonl" 2>/dev/null)
+chk "V-COMPACT-SINCE marker predating prior read → false" "$(echo "$CN2_EV" | jq -r '.compaction_since_prior')" "false"
 
 echo
 echo "$PASS passed, $FAIL failed"
