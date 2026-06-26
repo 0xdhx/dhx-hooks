@@ -1454,6 +1454,26 @@ function isGsdDriftFromForkSync(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = G
   }
 }
 
+// Cross-session GSD-drift persistence in whole days: the MAX age across every
+// still-diverging file's first-seen timestamp in gsd-drift-first-seen.json (ISO
+// 8601 values — the same cache the triad's days_unresolved() and the SessionStart
+// drift block read). Returns 0 for an empty/invalid cache, unparseable values, or
+// any age under a day, so the statusline render gates the (Nd) token on >= 1
+// (mirrors the triad's N >= 1 gate). Pure + exported for probe coverage
+// (probe-drift-detection.js scenario [18]). Drift-duration-render todo (2026-06-25);
+// backs Problem 2 in reports/2026-05-18-canonical-mirror-drift-from-unmirrored-edit.md.
+function gsdDriftPersistenceDays(firstSeenCache, nowMs = Date.now()) {
+  if (!firstSeenCache || typeof firstSeenCache !== 'object') return 0;
+  let oldestMs = Infinity;
+  for (const iso of Object.values(firstSeenCache)) {
+    const t = new Date(iso).getTime();
+    if (!Number.isNaN(t) && t < oldestMs) oldestMs = t;
+  }
+  if (oldestMs === Infinity) return 0;
+  const days = Math.floor((nowMs - oldestMs) / 86_400_000);
+  return days > 0 ? days : 0;
+}
+
 // Sibling to isGsdDriftFromForkSync — when the boolean says "fire", this walks the
 // same tree and accumulates the list of newer-than-snapshot files that broke
 // byte-equality. Used by checkDrift() to (a) inject diverging-file detail into
@@ -1748,22 +1768,13 @@ function checkDrift(data) {
       return resolve('');
     }
 
-    // Drift detected — age from snapshot file's own mtime (≈ session start)
-    let ageMs = 0;
-    try {
-      ageMs = Date.now() - fs.statSync(snapshotFile).mtimeMs;
-    } catch { /* fallback to 0 */ }
-
-    let ageStr;
-    if (ageMs < 60 * 1000) {
-      ageStr = '<1m';
-    } else if (ageMs < 60 * 60 * 1000) {
-      ageStr = `${Math.floor(ageMs / (60 * 1000))}m`;
-    } else {
-      const h = Math.floor(ageMs / (60 * 60 * 1000));
-      const m = Math.floor((ageMs % (60 * 60 * 1000)) / (60 * 1000));
-      ageStr = `${h}h ${m}m`;
-    }
+    // Drift detected. The old session-age token (time since the snapshot mtime)
+    // was dropped 2026-06-25: it re-baselined every session and ACTIVELY under-
+    // stated how long a drift had persisted — the exact blind spot behind the
+    // 2026-05-12 6-day mask. The visible segment now carries the cross-session
+    // persistence (Nd) from gsd-drift-first-seen.json instead (gsdPersistDays,
+    // computed below). See docs/decisions.md 2026-06-25 row + the drift-duration-
+    // render todo.
 
     // Gsd-trigger detail injection (Problem 2 in reports/2026-05-18-canonical-
     // mirror-drift-from-unmirrored-edit.md). Only meaningful when the gsd mtime
@@ -1773,6 +1784,7 @@ function checkDrift(data) {
     // missing or zero-length list).
     let gsdDetail = '';
     let gsdDiverging = null;
+    let gsdPersistDays = 0;   // cross-session drift persistence in days; 0 = sub-day or no cache
     if (triggers.includes('gsd') && gsdMtimeFired && !gsdCountFired) {
       gsdDiverging = collectGsdDriftDivergingFiles(snapshot);
       const named = gsdDiverging.filter(d => d.path);
@@ -1830,13 +1842,22 @@ function checkDrift(data) {
           newCache[p] = existingCache[p] || now;   // preserve first-seen; stamp on first detection
         }
 
+        // newCache is the authoritative preserved-or-fresh first-seen per still-
+        // diverging path — the exact input for the visible persistence (Nd) token.
+        // Computed before writeAtomic so a write failure still surfaces the age.
+        gsdPersistDays = gsdDriftPersistenceDays(newCache);
+
         fs.mkdirSync(cacheDir, { recursive: true });
         writeAtomic(cacheFile, newCache);
       } catch { /* cache failure must not affect drift detection */ }
     }
 
     const triggersStr = triggers.map(t => t === 'gsd' ? `gsd${gsdDetail}` : t).join('+');
-    resolve(`\x1b[38;5;208m⚠ restart ${triggersStr} (${ageStr})\x1b[0m`);
+    // Persistence (Nd) gated on >= 1 day (mirrors the triad's N >= 1 gate): a
+    // fresh same-session drift shows no duration; a genuinely persisted one flags
+    // its age. gsdPersistDays is 0 for any non-gsd-only / count-branch / sub-day case.
+    const driftAge = gsdPersistDays >= 1 ? ` (${gsdPersistDays}d)` : '';
+    resolve(`\x1b[38;5;208m⚠ restart ${triggersStr}${driftAge}\x1b[0m`);
   });
 }
 
@@ -2138,6 +2159,8 @@ module.exports = {
   checkPluginRegistry,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
+  // Cross-session drift persistence (Nd) — drift-duration-render (2026-06-25)
+  gsdDriftPersistenceDays,
   // RAT-04 novel-pattern detector (Phase 17 Plan 01)
   enumerateNovelPatterns,
   // scanRecursive export (D-20) — required by Plan 04's residual-signal probe;

@@ -27,6 +27,8 @@
 //      (single-shot consumption, surgical scope, per-session keying)
 //  16. .in_use/<pid> path-segment filter (CC session-lifetime lock noise)
 //  17. Drift-debug breadcrumb for plugins trigger (forensic shortcut)
+//  18. gsdDriftPersistenceDays: cross-session drift persistence (Nd) render
+//      + the >=1d gate (drift-duration-render, 2026-06-25)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -46,7 +48,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { hashWarnSettings } = require('../../dhx/statusline-wrapper.js');
+const { hashWarnSettings, gsdDriftPersistenceDays } = require('../../dhx/statusline-wrapper.js');
 
 // --- Reimplemented helpers (mirror statusline-wrapper.js:scanRecursive) ---
 // Probe duplicates the scanner locally — same pattern as probe-migration.js —
@@ -114,14 +116,6 @@ function checkDriftLogic(current, snapshot) {
       current.plugins_count < snapshot.plugins_count) triggers.push('plugins');
   if (current.version !== snapshot.version) triggers.push('version');
   return triggers;
-}
-
-function formatAge(ageMs) {
-  if (ageMs < 60 * 1000) return '<1m';
-  if (ageMs < 60 * 60 * 1000) return `${Math.floor(ageMs / (60 * 1000))}m`;
-  const h = Math.floor(ageMs / (60 * 60 * 1000));
-  const m = Math.floor((ageMs % (60 * 60 * 1000)) / (60 * 1000));
-  return `${h}h ${m}m`;
 }
 
 // --- Temp fixtures ---
@@ -318,7 +312,10 @@ const baseSnap = snap();
     triggers.length === 1 && triggers[0] === 'version');
 }
 
-// --- 8. Trigger label formatting + age format ---
+// --- 8. Trigger label formatting (multi-trigger join). The session-age format
+// assertions ([8b/c/d]) were retired 2026-06-25 when the session-age token was
+// dropped from the render (it re-baselined per session and understated drift
+// persistence); the render now carries cross-session persistence — see [18]. ---
 {
   const multi = {
     ...baseSnap,
@@ -330,10 +327,6 @@ const baseSnap = snap();
   const joined = triggers.join('+');
   assert('[8a] multi-trigger joins with + in snapshot-key order',
     joined === 'agents+settings+gsd');
-
-  assert('[8b] age <60s → <1m', formatAge(30_000) === '<1m');
-  assert('[8c] age 14min → 14m', formatAge(14 * 60_000) === '14m');
-  assert('[8d] age 2h13m → "2h 13m"', formatAge(2 * 60 * 60_000 + 13 * 60_000) === '2h 13m');
 }
 
 // --- 9. Deletion-only change: count branch catches shrinkage ---
@@ -1087,6 +1080,47 @@ const baseSnap = snap();
     fired2 === true && linesAfter.length === 2 &&
     parsed2 && parsed2.max_path === triggerFile2 &&
     firedSame === false && linesPostNoDrift === linesPreNoDrift);
+}
+
+// --- 18. gsdDriftPersistenceDays: cross-session drift persistence (Nd) render ---
+//
+// Backs the 2026-06-25 drift-duration-render change: the statusline ⚠ segment
+// drops the misleading session-age token and instead surfaces the MAX days any
+// still-diverging file has been unresolved, read from gsd-drift-first-seen.json
+// (ISO 8601 values). Tests the REAL exported wrapper helper (not a local mirror)
+// + the >=1d render gate. Backs docs/decisions.md 2026-06-25 row + closes the
+// at-a-glance half of Problem 2 (reports/2026-05-18-canonical-mirror-drift-...).
+{
+  const DAY = 86_400_000;
+  const now = Date.UTC(2026, 5, 25, 12, 0, 0);   // fixed anchor — no Date.now() flake
+  const iso = (ms) => new Date(ms).toISOString();
+
+  // The render gate the wrapper applies: ` (Nd)` only when persistence >= 1 day.
+  const renderToken = (cache) => {
+    const d = gsdDriftPersistenceDays(cache, now);
+    return d >= 1 ? ` (${d}d)` : '';
+  };
+
+  assert('[18a] empty cache → 0 days (no token)',
+    gsdDriftPersistenceDays({}, now) === 0 && renderToken({}) === '');
+  assert('[18b] null / non-object cache → 0 (fail-safe)',
+    gsdDriftPersistenceDays(null, now) === 0 && gsdDriftPersistenceDays('x', now) === 0);
+  assert('[18c] single entry 6 days old → 6',
+    gsdDriftPersistenceDays({ 'workflows/execute-phase.md': iso(now - 6 * DAY) }, now) === 6);
+  assert('[18d] MAX age across entries (oldest wins), not min/avg',
+    gsdDriftPersistenceDays({
+      'a.md': iso(now - 2 * DAY),
+      'b.md': iso(now - 9 * DAY),
+      'c.md': iso(now - 5 * DAY),
+    }, now) === 9);
+  assert('[18e] sub-day age → 0, gate suppresses the token',
+    gsdDriftPersistenceDays({ 'a.md': iso(now - 12 * 60 * 60 * 1000) }, now) === 0 &&
+    renderToken({ 'a.md': iso(now - 12 * 60 * 60 * 1000) }) === '');
+  assert('[18f] unparseable values ignored (no NaN poisoning); all-bad → 0',
+    gsdDriftPersistenceDays({ 'a.md': 'not-a-date', 'b.md': iso(now - 3 * DAY) }, now) === 3 &&
+    gsdDriftPersistenceDays({ 'a.md': 'not-a-date' }, now) === 0);
+  assert('[18g] render gate: >=1d emits " (Nd)" in the exact wrapper format',
+    renderToken({ 'a.md': iso(now - 6 * DAY) }) === ' (6d)');
 }
 
 // --- Cleanup + summary ---
