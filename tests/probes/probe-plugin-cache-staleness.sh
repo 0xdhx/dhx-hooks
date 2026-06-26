@@ -29,7 +29,16 @@ set -u
 # script). `git rev-parse --show-toplevel` returns the worktree's toplevel.
 PROBE_REPO_ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || echo "/home/dhx/repos/hooks")
 HOOK="$PROBE_REPO_ROOT/dhx/dhx-plugin-cache-staleness-detector.sh"
-RESULT_ARTIFACT="$PROBE_REPO_ROOT/.planning/phases/10.1-plugin-cache-hooks-json-staleness-detector/10.1-D-01-RESULT.md"
+# RESULT_ARTIFACT is the probe's OWN recorded empirical observation (written by
+# the `write-result` subcommand below) — test data the probe owns, not a living
+# planning artifact. It lives in tests/probes/fixtures/ (beside
+# dhx-cache-probe-marker.sh) so milestone archival of .planning/phases/ can't
+# desync it: the original lived at .planning/phases/10.1-.../10.1-D-01-RESULT.md
+# until the v1.3 cleanup moved it to .planning/milestones/v1.3-phases/..., which
+# 404'd the hardcoded read and FAILed the empirical-arm scenario on every
+# probe-touching commit (2026-06-25 archival-path-desync fix — docs/decisions.md).
+# The archived copy stays put as the phase's historical decision-provenance record.
+RESULT_ARTIFACT="$PROBE_REPO_ROOT/tests/probes/fixtures/10.1-D-01-RESULT.md"
 LIVE_DISPATCHER="$PROBE_REPO_ROOT/dhx-plugin/plugins/dhx/hooks/session-start.sh"
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT

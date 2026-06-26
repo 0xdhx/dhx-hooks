@@ -154,7 +154,7 @@ bash tests/probes/probe-plugin-cache-staleness.sh write-result \\
 
 === Step 10 — verify artifact + re-run probe ===
 
-ls -la .planning/phases/10.1-plugin-cache-hooks-json-staleness-detector/10.1-D-01-RESULT.md
+ls -la tests/probes/fixtures/10.1-D-01-RESULT.md   # write-result's target — the probe-owned fixture
 bash tests/probes/probe-plugin-cache-staleness.sh    # empirical-arm should now PASS
 
 === Cleanup (when done) ===
