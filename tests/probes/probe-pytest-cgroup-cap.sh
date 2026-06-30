@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# probe-pytest-cgroup-cap.sh
+#
+# Deterministic regression probe for dhx/dhx-pytest-cgroup-cap.sh (DHX-7
+# mid-session pytest OOM cap). Covers, with NO real systemd-run invocation:
+#   - classifier — pytest-as-command (positive) vs pytest-as-argument (negative)
+#   - rewrite shape — systemd-run --user --scope + MemoryMax + MemorySwapMax=0,
+#     the ORIGINAL command preserved inside `bash -c '…'`, NO RuntimeMaxSec by
+#     default (memory-only)
+#   - quoting — a single-quoted -k expression survives (rewrite parses + the
+#     reconstructed inner argv is byte-identical to the original)
+#   - config — DHX_PYTEST_CAP_MEM overrides the ceiling; DHX_PYTEST_CAP_RUNTIME
+#     opts a runtime cap back in
+#   - fail-open — empty command / bad JSON / already-wrapped / host lacks
+#     systemd-run  → emits {} (run unchanged)
+#
+# The cap actually FIRING (exit 137 on a real memory-hungry pytest) is the
+# companion e2e probe (probe-pytest-cgroup-cap-e2e.sh, SAFE_FOR_LIVE: no).
+#
+# Backs:
+#   - docs/decisions.md — 2026-06-30 DHX-7 mid-session pytest cgroup-cap row
+#   - docs/hook-patterns.md — HP-003 (PreToolUse:Bash fires for subagent calls),
+#     HP-041 (updatedInput rewrite), HP-045 (cgroup MemoryMax → 137)
+#   - .planning/backlog/shipped/2026-06-30-test-gate-cgroup-cap-mid-session-pytest-oom-design.md
+#
+# Run: bash tests/probes/probe-pytest-cgroup-cap.sh
+#
+# SAFE_FOR_LIVE: yes  (no real systemd-run: a PATH stub satisfies the
+#                      availability check so only the rewritten STRING is
+#                      asserted, never executed; fixtures + stub bins live under
+#                      a per-run mktemp dir; never reads/writes live ~/.cache/dhx,
+#                      ~/.claude, or any user systemd state.)
+# RUNTIME: ~1s
+
+set -u
+
+HOOK="/home/dhx/repos/hooks/dhx/dhx-pytest-cgroup-cap.sh"
+TMP=$(mktemp -d /tmp/probe-pytest-cgroup-cap.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+
+PASS=0
+FAIL=0
+
+# --- Stub PATH where dhx_cgroup_available() returns true (no real systemd). ---
+AVAIL_BIN="$TMP/avail-bin"
+mkdir -p "$AVAIL_BIN"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$AVAIL_BIN/systemd-run"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$AVAIL_BIN/systemctl"
+chmod +x "$AVAIL_BIN/systemd-run" "$AVAIL_BIN/systemctl"
+
+# --- Stub PATH WITHOUT systemd-run (mirrors host tools, omits the one binary)
+# so dhx_cgroup_available() returns false → fail-open. ---
+NO_SYSTEMD_BIN="$TMP/no-systemd-bin"
+mkdir -p "$NO_SYSTEMD_BIN"
+for tool in jq bash sh sed grep tr cat env dirname printf head tail awk cut; do
+  resolved=$(command -v "$tool" 2>/dev/null) || continue
+  ln -sf "$resolved" "$NO_SYSTEMD_BIN/$tool"
+done   # deliberately NOT linking systemd-run
+
+# run_hook CMD_JSON [extra-env KEY=VAL ...] — fires the hook with the AVAIL stub
+# prepended to PATH; captures HOOK_OUT. The first arg is a full stdin JSON string.
+HOOK_OUT=""
+run_hook() {
+  local json="$1"; shift
+  local env_args=("PATH=$AVAIL_BIN:$PATH")
+  [ "$#" -gt 0 ] && env_args+=("$@")
+  HOOK_OUT=$(printf '%s' "$json" | env "${env_args[@]}" bash "$HOOK" 2>/dev/null)
+}
+
+# extract the rewritten command (empty if {} / no rewrite)
+rewritten_cmd() { jq -r '.hookSpecificOutput.updatedInput.command // empty' <<< "$HOOK_OUT" 2>/dev/null; }
+
+assert_rewritten() {  # LABEL  ORIGINAL_CMD
+  local label="$1" orig="$2" rc
+  rc=$(rewritten_cmd)
+  if [ -z "$rc" ]; then
+    echo "FAIL $label (expected a rewrite, got: $HOOK_OUT)"; FAIL=$((FAIL+1)); return
+  fi
+  local ok=1
+  grep -Eq 'systemd-run --user --scope' <<< "$rc" || ok=0
+  grep -Eq 'MemoryMax=' <<< "$rc"                  || ok=0
+  grep -Eq 'MemorySwapMax=0' <<< "$rc"             || ok=0
+  grep -Fq "bash -c '" <<< "$rc"                   || ok=0
+  grep -Fq "$orig" <<< "$rc"                       || ok=0
+  if [ "$ok" -eq 1 ]; then echo "OK   $label"; PASS=$((PASS+1))
+  else echo "FAIL $label (rewrite missing an expected token): $rc"; FAIL=$((FAIL+1)); fi
+}
+
+assert_noop() {  # LABEL
+  local label="$1"
+  if [ "$HOOK_OUT" = "{}" ]; then echo "OK   $label"; PASS=$((PASS+1))
+  else echo "FAIL $label (expected {}, got: $HOOK_OUT)"; FAIL=$((FAIL+1)); fi
+}
+
+# ----------------------------------------------------------------------------
+# Positive — pytest is the command being run → rewrite.
+# ----------------------------------------------------------------------------
+run_hook '{"tool_input":{"command":"pytest"}}';                         assert_rewritten "[1] bare pytest" "pytest"
+run_hook '{"tool_input":{"command":"pytest tests/ -n4"}}';              assert_rewritten "[2] pytest + xdist args" "pytest tests/ -n4"
+run_hook '{"tool_input":{"command":"python -m pytest tests/test_x.py"}}'; assert_rewritten "[3] python -m pytest" "python -m pytest tests/test_x.py"
+run_hook '{"tool_input":{"command":"python3 -m pytest"}}';              assert_rewritten "[4] python3 -m pytest" "python3 -m pytest"
+run_hook '{"tool_input":{"command":".venv/bin/python -m pytest"}}';     assert_rewritten "[5] venv python -m pytest" ".venv/bin/python -m pytest"
+run_hook '{"tool_input":{"command":".venv/bin/pytest -q"}}';            assert_rewritten "[6] path-prefixed pytest" ".venv/bin/pytest -q"
+run_hook '{"tool_input":{"command":"uv run pytest -q"}}';               assert_rewritten "[7] uv run pytest" "uv run pytest -q"
+run_hook '{"tool_input":{"command":"poetry run pytest"}}';              assert_rewritten "[8] poetry run pytest" "poetry run pytest"
+run_hook '{"tool_input":{"command":"uv run python -m pytest"}}';        assert_rewritten "[9] uv run python -m pytest" "uv run python -m pytest"
+run_hook '{"tool_input":{"command":"cd sub && pytest tests/"}}';        assert_rewritten "[10] cd subdir && pytest" "cd sub && pytest tests/"
+run_hook '{"tool_input":{"command":"PYTHONPATH=. pytest"}}';            assert_rewritten "[11] env-prefixed pytest" "PYTHONPATH=. pytest"
+
+# ----------------------------------------------------------------------------
+# Negative — pytest appears only as an argument / substring → no-op.
+# ----------------------------------------------------------------------------
+run_hook '{"tool_input":{"command":"pip install pytest"}}';             assert_noop "[12] pip install pytest"
+run_hook '{"tool_input":{"command":"pip install pytest-xdist"}}';       assert_noop "[13] pip install pytest-xdist"
+run_hook '{"tool_input":{"command":"grep pytest foo.txt"}}';            assert_noop "[14] grep pytest"
+run_hook '{"tool_input":{"command":"echo run pytest now"}}';            assert_noop "[15] echo pytest"
+run_hook '{"tool_input":{"command":"cat pytest.ini"}}';                 assert_noop "[16] cat pytest.ini"
+run_hook '{"tool_input":{"command":"git commit -m \"fix pytest flake\""}}'; assert_noop "[17] pytest in commit msg"
+run_hook '{"tool_input":{"command":"npm test"}}';                       assert_noop "[18] npm test"
+run_hook '{"tool_input":{"command":"make test"}}';                      assert_noop "[19] make test (Makefile-indirect — fail-safe uncapped)"
+
+# ----------------------------------------------------------------------------
+# Quoting — single-quoted -k expression survives the rewrite intact.
+# ----------------------------------------------------------------------------
+run_hook "{\"tool_input\":{\"command\":\"pytest -k 'foo or bar'\"}}"
+RC=$(rewritten_cmd)
+if [ -n "$RC" ] && bash -n <<< "$RC" 2>/dev/null; then
+  echo "OK   [20] quoted -k expr → rewrite is syntactically valid"; PASS=$((PASS+1))
+else
+  echo "FAIL [20] quoted -k expr rewrite failed to parse: $RC"; FAIL=$((FAIL+1))
+fi
+# A non-pytest command that merely contains an uppercase PYTEST token in an
+# argument is not rewritten (sanity — argv round-trip under a real cap is proven
+# by the e2e probe).
+run_hook '{"tool_input":{"command":"printf %s PYTEST_MARKER_42"}}'
+assert_noop "[21] non-pytest printf is not rewritten (sanity)"
+
+# ----------------------------------------------------------------------------
+# Config — memory override + runtime opt-in.
+# ----------------------------------------------------------------------------
+run_hook '{"tool_input":{"command":"pytest"}}' "DHX_PYTEST_CAP_MEM=2G"
+RC=$(rewritten_cmd)
+if grep -Eq 'MemoryMax=2G' <<< "$RC"; then echo "OK   [22] DHX_PYTEST_CAP_MEM=2G honored"; PASS=$((PASS+1))
+else echo "FAIL [22] mem override not applied: $RC"; FAIL=$((FAIL+1)); fi
+
+run_hook '{"tool_input":{"command":"pytest"}}'
+RC=$(rewritten_cmd)
+if grep -Eq 'RuntimeMaxSec' <<< "$RC"; then echo "FAIL [23] default must NOT set RuntimeMaxSec: $RC"; FAIL=$((FAIL+1))
+else echo "OK   [23] memory-only by default (no RuntimeMaxSec)"; PASS=$((PASS+1)); fi
+
+run_hook '{"tool_input":{"command":"pytest"}}' "DHX_PYTEST_CAP_RUNTIME=30"
+RC=$(rewritten_cmd)
+if grep -Eq 'RuntimeMaxSec=30s' <<< "$RC"; then echo "OK   [24] DHX_PYTEST_CAP_RUNTIME=30 opts a runtime cap in"; PASS=$((PASS+1))
+else echo "FAIL [24] runtime opt-in not applied: $RC"; FAIL=$((FAIL+1)); fi
+
+# ----------------------------------------------------------------------------
+# Fail-open.
+# ----------------------------------------------------------------------------
+run_hook '{"tool_input":{"command":""}}';                               assert_noop "[25] empty command → {}"
+run_hook 'not valid json at all';                                       assert_noop "[26] bad JSON → {}"
+run_hook '{"tool_input":{"command":"systemd-run --user --scope -- pytest"}}'; assert_noop "[27] already cgroup-wrapped → {}"
+run_hook '{"tool_input":{"command":"MemoryMax-mention pytest"}}';       assert_noop "[28] MemoryMax substring bypass → {}"
+
+# Host lacks systemd-run → even a real pytest command is left unchanged.
+HOOK_OUT=$(printf '%s' '{"tool_input":{"command":"pytest"}}' \
+  | env "PATH=$NO_SYSTEMD_BIN" bash "$HOOK" 2>/dev/null)
+assert_noop "[29] no systemd-run on PATH → fail-open {}"
+
+# ----------------------------------------------------------------------------
+echo
+echo "$PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028
+# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Cgroup wrap (2026-05-03): when systemd-run + active user@.service are
@@ -340,7 +340,7 @@ elif [ -n "$DISCOVERED_ROOTDIR" ]; then
   RUN_CWD="$PROJECT_DIR/$DISCOVERED_ROOTDIR"
 fi
 
-# --- Cgroup wrap factory ---
+# --- Cgroup wrap factory (single-sourced via dhx-cgroup-cap.sh) ---
 # MemoryMax + MemorySwapMax=0 → SIGKILL/exit 137 on overrun (MemoryMax alone
 # is advisory on hosts with swap available — verified empirically on this
 # WSL2 host; see reports/2026-05-03-test-gate-collection-cost.md). RuntimeMaxSec
@@ -353,16 +353,18 @@ fi
 # would obscure which surface fired. Plugin manifest's `timeout: 300` is the
 # defense-in-depth layer for hosts where neither cgroup nor RuntimeMaxSec
 # applies.
+#
+# The cap construction lives in dhx-cgroup-cap.sh (sourced from this hook's own
+# dir — the symlink dir in live, the repo dir under the probe) so the gate and
+# the mid-session interceptor (dhx-pytest-cgroup-cap.sh, DHX-7) share ONE wrap
+# source and can't copy-drift. The mapfile'd token array with the runtime budget
+# present is byte-for-byte what this block built inline before the extraction.
+# If the lib is absent/truncated or the host lacks support, CGROUP_PREFIX stays
+# empty → bare invocation (unchanged fail-open behavior).
 CGROUP_PREFIX=()
-if command -v systemd-run >/dev/null 2>&1 && \
-   systemctl --user is-active default.target >/dev/null 2>&1; then
-  CGROUP_PREFIX=(
-    systemd-run --user --scope --quiet
-    -p "MemoryMax=$TEST_BUDGET_MEM"
-    -p "MemorySwapMax=0"
-    -p "RuntimeMaxSec=${TEST_BUDGET_TIME}s"
-    --
-  )
+_CAP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dhx-cgroup-cap.sh"
+if [ -f "$_CAP_LIB" ] && . "$_CAP_LIB" 2>/dev/null && dhx_cgroup_available; then
+  mapfile -t CGROUP_PREFIX < <(dhx_cgroup_prefix_tokens "$TEST_BUDGET_MEM" "$TEST_BUDGET_TIME")
 fi
 
 # --- Helper: compose argv with cgroup prefix + runner + optional target +

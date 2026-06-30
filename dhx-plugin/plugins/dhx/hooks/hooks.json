@@ -120,6 +120,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-pytest-cgroup-cap.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-pkg-install-filter.sh\"",
             "timeout": 5
           },
