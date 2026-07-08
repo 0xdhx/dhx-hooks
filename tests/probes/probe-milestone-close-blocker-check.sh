@@ -8,12 +8,21 @@
 #   POSITIVE (expect block JSON):
 #     [Aa]    STATE.md status=verifying + 1 row in BACKLOG.md ## Milestone Close
 #             + 0 todos → block JSON, MC_BACKLOG_COUNT=1, MC_TODO_COUNT=0
+#             (also exercises HP-048 fail-safe: setup_fixture STATE.md has no
+#             progress: block → verifying falls through and fires)
 #     [Ab]    STATE.md status=milestone-shipped + 0 BACKLOG rows + 2 todos with
 #             urgency: milestone-close → block JSON, MC_TODO_COUNT=2 (D-04 cascade)
 #     [Aa+v]  STATE.md status=verifying + 1 row under bare `## Milestone Close`
 #             + 1 row under em-dash `## Milestone Close — v1.3` → TOTAL=2
 #             (D-08 dual-form pattern)
+#     [Af]    status=verifying + progress completed_phases==total_phases (5/5)
+#             + 1 BACKLOG row → block JSON (HP-048 genuine-close: phases done)
+#     [Ag]    status=verifying + NO progress: block + 1 todo → block JSON
+#             (HP-048 fail-safe: unparseable progress fails toward firing)
 #   NEGATIVE (expect silent exit + zero stderr per D-11):
+#     [Ae]    status=verifying + progress completed_phases<total_phases (2/5)
+#             + 1 BACKLOG row → silent (HP-048 parallel mid-milestone false-fire
+#             suppression; report 2026-07-08)
 #     [Ac]    status=planning + items present in both surfaces → silent
 #     [Ad]    status=executing + items present in both surfaces → silent
 #     [i]     status=verifying + items + stdin.stop_hook_active=true → silent
@@ -346,6 +355,76 @@ EOF
 # No BACKLOG.md, no pending/ entries — totals must be 0
 run_hook_with_input "$FIX_VI"
 assert_silent_no_stderr "[vi] done/archived urgency items NOT counted → silent (D-15 -maxdepth 1)"
+
+# --- HP-048 parallel-execution discriminator (report 2026-07-08) ---
+# `verifying` is a PHASE-level status; under parallel execution it lands
+# mid-milestone. The hook gates the verifying case on the STATE `progress:`
+# counter so it fires only when phases are complete; an absent/unparseable
+# progress block fails toward firing.
+
+# [Ae] verifying + completed_phases(2) < total_phases(5) → silent (the fix) ---
+FIX_AE_DIR="$TMP/Ae/.planning"
+mkdir -p "$FIX_AE_DIR/todos/pending"
+cat > "$FIX_AE_DIR/STATE.md" <<'EOF'
+---
+status: verifying
+milestone: v1.8
+progress:
+  total_phases: 5
+  completed_phases: 2
+  total_plans: 3
+  completed_plans: 3
+  percent: 40
+---
+
+# State
+EOF
+printf '%s' "$BACKLOG_1_ROW" > "$FIX_AE_DIR/BACKLOG.md"
+run_hook_with_input "$FIX_AE_DIR"
+assert_silent_no_stderr "[Ae] verifying + 2/5 phases (parallel mid-milestone) → silent (HP-048)"
+
+# [Af] verifying + completed_phases(5) == total_phases(5) → block JSON (genuine close) ---
+FIX_AF_DIR="$TMP/Af/.planning"
+mkdir -p "$FIX_AF_DIR/todos/pending"
+cat > "$FIX_AF_DIR/STATE.md" <<'EOF'
+---
+status: verifying
+milestone: v1.8
+progress:
+  total_phases: 5
+  completed_phases: 5
+  total_plans: 3
+  completed_plans: 3
+  percent: 100
+---
+
+# State
+EOF
+printf '%s' "$BACKLOG_1_ROW" > "$FIX_AF_DIR/BACKLOG.md"
+run_hook_with_input "$FIX_AF_DIR"
+assert_block_json "[Af] verifying + 5/5 phases (genuine close) → block JSON (HP-048)"
+
+# [Ag] verifying + NO progress: block → block JSON (fail toward firing) ---
+# The `..._plans:` lines are deliberately absent too — asserts the awk anchor
+# on `..._phases:` doesn't false-match and that a bare frontmatter still fires.
+FIX_AG_DIR="$TMP/Ag/.planning"
+mkdir -p "$FIX_AG_DIR/todos/pending"
+cat > "$FIX_AG_DIR/STATE.md" <<'EOF'
+---
+status: verifying
+milestone: v1.8
+---
+
+# State (no progress: block — older STATE.md / pre-progress-counter repo)
+EOF
+cat > "$FIX_AG_DIR/todos/pending/todo-1.md" <<'EOF'
+---
+urgency: milestone-close
+---
+content
+EOF
+run_hook_with_input "$FIX_AG_DIR"
+assert_block_json "[Ag] verifying + absent progress block → block JSON (HP-048 fail-safe)"
 
 # --- Summary ---
 echo

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-milestone-close-blocker-check.sh — Stop hook
-# Patterns: HP-002 (loop-prevention), HP-009 (block JSON), HP-017 (plugin-manifest), HP-020 (Stop plugin-hosted)
+# Patterns: HP-002 (loop-prevention), HP-009 (block JSON), HP-017 (plugin-manifest), HP-020 (Stop plugin-hosted), HP-048 (STATE progress-block phase-completion)
 # Surfaces open `urgency: milestone-close` items as session-end blockers.
 # Compose-pair: /dhx:audit checkpoint 11 (model-side calibration, opt-in)
 # + this hook (deterministic backstop). See docs/decisions.md 2026-05-18 row.
@@ -9,6 +9,14 @@
 # 10-repo empirical anchor — `audit`/`complete` are never written by
 # gsd-tools.cjs:358 despite spec recommendation; frontmatter-isolated parse
 # prevents body-text false-positive per D-16).
+#
+# Parallel-execution discriminator (HP-048; report 2026-07-08): `verifying` is a
+# PHASE-level status GSD writes on every linear current_phase completion, so under
+# PARALLEL milestone execution it lands mid-milestone and the D-01 proxy false-fires
+# on every Stop. The `verifying` branch is therefore gated on the STATE `progress:`
+# counter — suppressed ONLY when it positively confirms phases remain
+# (completed_phases < total_phases). `milestone-shipped` never suppresses; an absent
+# or unparseable progress block fails toward firing (silent risks missing a blocker).
 #
 # Surface scan:
 #   - BACKLOG.md `## Milestone Close[…]` group via awk header pattern
@@ -38,16 +46,32 @@ if [ -z "$CWD" ]; then exit 0; fi
 if [ ! -d "$CWD/.planning" ]; then exit 0; fi
 
 # Trigger gate (D-01 + D-16): frontmatter-isolated status check.
-# The `n==1` awk band restricts the grep to the first --- … --- YAML
+# The `n==1` awk band restricts the parse to the first --- … --- YAML
 # frontmatter block — prevents body-text false-positives where STATE.md
 # prose contains phrases like "current status: verifying" outside frontmatter.
+# Frontmatter is captured once and reused for the status check AND the
+# progress-block parse below.
 # Use process-substitution + grep `<` (NOT `cmd | grep`) per HP-028: keeps
 # the LHS out of any future pipefail watch (probe-sigpipe-pipefail-shapes.sh).
 STATE_FILE="$CWD/.planning/STATE.md"
 if [ ! -f "$STATE_FILE" ]; then exit 0; fi
+FRONTMATTER=$(awk '/^---$/{n++; next} n==1{print}' "$STATE_FILE" 2>/dev/null)
 if ! grep -qE '^status:[[:space:]]+(verifying|milestone-shipped)\b' \
-     < <(awk '/^---$/{n++; next} n==1{print}' "$STATE_FILE" 2>/dev/null); then
+     < <(printf '%s\n' "$FRONTMATTER"); then
   exit 0
+fi
+
+# Parallel-execution discriminator (HP-048). Suppress the `verifying` case ONLY when
+# the STATE `progress:` counter positively confirms phases remain. `milestone-shipped`
+# skips this block entirely (unambiguous close). Absent/unparseable progress → both
+# vars empty → condition false → fall through and fire (fail toward the blocker).
+# awk numeric extract: anchor on `..._phases:` (NOT `..._plans:`) then strip non-digits.
+if grep -qE '^status:[[:space:]]+verifying\b' < <(printf '%s\n' "$FRONTMATTER"); then
+  COMPLETED_PHASES=$(awk '/^[[:space:]]*completed_phases:[[:space:]]*[0-9]+/{v=$0; gsub(/[^0-9]/,"",v); print v; exit}' <<< "$FRONTMATTER")
+  TOTAL_PHASES=$(awk '/^[[:space:]]*total_phases:[[:space:]]*[0-9]+/{v=$0; gsub(/[^0-9]/,"",v); print v; exit}' <<< "$FRONTMATTER")
+  if [ -n "$COMPLETED_PHASES" ] && [ -n "$TOTAL_PHASES" ] && [ "$COMPLETED_PHASES" -lt "$TOTAL_PHASES" ]; then
+    exit 0
+  fi
 fi
 
 # Surface A: BACKLOG.md ## Milestone Close group (D-08 dual-form header pattern)
