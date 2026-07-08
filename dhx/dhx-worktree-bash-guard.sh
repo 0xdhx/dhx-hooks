@@ -34,6 +34,18 @@
 #   - heredoc redirects tokenized across shell expansion
 #   - node/ruby/perl -e with fs.writeFile / File.write / open(w)
 # The resolver-level fix upstream is the proper solution; this is a band-aid.
+#
+# ⚠ LOAD-BEARING GAP — do NOT widen the literal `grep -qF "$MAIN_ROOT/"` (line ~98)
+# to resolve variables without an exemption path. A variable-held absolute path
+# ($VAR) currently passes because the literal $MAIN_ROOT/ string is absent from the
+# command text — the same escape shape as the D-05 env-C branch already closed. But
+# the skills-repo `/dhx:test` CAPTURE-drain (REMED-07) DEPENDS on this gap: it does a
+# DELIBERATE, correct worktree→main-repo append via `cat "$tmp" >> "$CAPTURE_ABS"`.
+# Closing the variable gap would block that legitimate write (a false-positive on an
+# intended cross-tree write). Before widening: allowlist the intended target, or give
+# the drain a guard-approved cross-tree affordance. Scope note: `git` is NOT a write-
+# verb here, so git-safe / `git -C "$ROOT"` are unaffected either way.
+# Full analysis: reports/2026-07-08-worktree-bash-guard-gap-is-loadbearing-for-deliberate-cross-tree-writes.md
 
 set -euo pipefail
 
