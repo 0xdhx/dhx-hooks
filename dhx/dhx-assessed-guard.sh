@@ -6,6 +6,17 @@
 # [captured], [existing], [tracked] are fine — they have verifiable backing.
 # [assessed] means "intentionally not captured" and requires human judgment.
 #
+# Detection is position-anchored (CL-H.assessed-guard fix, 2026-07-07): a
+# marker counts only at a deferred-item bullet position — the final bracketed
+# token at end of line (the dominant field shape; stacked trailing markers
+# allowed), or bullet-leading. Both positions mirror the classifier
+# (skills/scripts/dhx-classify-deferred.sh :92 end_marker_re, :155-160
+# first_body checks). The bare token in prose or a code example does NOT
+# count. Accepted residuals: a prose line that ENDS with a bracketed
+# [assessed…] token still counts (indistinguishable from a real marking
+# without deeper parsing), and fenced-code lines shaped like real markings
+# still count (no fence parsing in a per-call hook).
+#
 # Exception: if a deferred review session is active (marker from Stop hook),
 # the agent is presumably following the one-at-a-time protocol with the user.
 # The guard allows [assessed] writes during active review.
@@ -32,32 +43,59 @@ case "$FILE_PATH" in
   *) exit 0 ;;
 esac
 
-# Detect if [assessed] is being added
+# count_assessed — count lines carrying a position-anchored [assessed marker
+# (stdin → count on stdout). grep -c prints the count even on zero matches;
+# its nonzero exit is deliberately unchecked — the `|| echo 0` it replaces
+# double-emitted "0\n0" on zero-match files, erroring the -gt test to false,
+# so the FIRST [assessed] written into an existing CONTEXT.md never blocked.
+count_assessed() {
+  grep -cE '^[[:space:]]*[-*+][[:space:]]+\[assessed|\[assessed[^]]*\]([[:space:]]*\[[^]]*\])*[[:space:]]*$'
+}
+
+# Detect if a position-anchored [assessed marker is being added
 ADDING_ASSESSED=false
 
 if [ "$TOOL" = "Edit" ]; then
   OLD=$(echo "$INPUT" | jq -r '.tool_input.old_string // empty')
   NEW=$(echo "$INPUT" | jq -r '.tool_input.new_string // empty')
-  # Adding [assessed] if it's in new but not in old
-  if grep -q '\[assessed' <<< "$NEW" && ! grep -q '\[assessed' <<< "$OLD"; then
-    ADDING_ASSESSED=true
+  if [ -f "$FILE_PATH" ] && [ -n "$OLD" ]; then
+    # Edit fragments start mid-line, so the anchors can't run on them
+    # directly (a fragment replacing just "[captured: x]" with "[assessed]"
+    # carries no bullet prefix). Reconstruct the effective post-edit content
+    # — old_string is an exact on-disk substring — and compare anchored
+    # counts on whole content.
+    FILE_CONTENT=$(cat "$FILE_PATH")
+    REPLACE_ALL=$(echo "$INPUT" | jq -r '.tool_input.replace_all // false')
+    if [ "$REPLACE_ALL" = "true" ]; then
+      NEW_CONTENT=${FILE_CONTENT//"$OLD"/"$NEW"}
+    else
+      NEW_CONTENT=${FILE_CONTENT/"$OLD"/"$NEW"}
+    fi
+    OLD_N=$(count_assessed <<< "$FILE_CONTENT")
+    NEW_N=$(count_assessed <<< "$NEW_CONTENT")
+    if [ "$NEW_N" -gt "$OLD_N" ]; then
+      ADDING_ASSESSED=true
+    fi
+  else
+    # Fallback (file unreadable / empty old_string): pre-anchoring fragment
+    # check, unanchored on purpose — a prose false positive in this rare
+    # path beats a silent bypass (Q2 decision, 2026-07-07).
+    if grep -q '\[assessed' <<< "$NEW" && ! grep -q '\[assessed' <<< "$OLD"; then
+      ADDING_ASSESSED=true
+    fi
   fi
 fi
 
 if [ "$TOOL" = "Write" ]; then
   CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // empty')
-  # Compare assessed count: new content vs file on disk
+  NEW_N=$(count_assessed <<< "$CONTENT")
   if [ -f "$FILE_PATH" ]; then
-    OLD_COUNT=$(grep -c '\[assessed' "$FILE_PATH" 2>/dev/null || echo 0)
-    NEW_COUNT=$(echo "$CONTENT" | grep -c '\[assessed' || echo 0)
-    if [ "$NEW_COUNT" -gt "$OLD_COUNT" ]; then
-      ADDING_ASSESSED=true
-    fi
+    OLD_N=$(count_assessed < "$FILE_PATH")
   else
-    # New file with assessed markers
-    if grep -q '\[assessed' <<< "$CONTENT"; then
-      ADDING_ASSESSED=true
-    fi
+    OLD_N=0
+  fi
+  if [ "$NEW_N" -gt "$OLD_N" ]; then
+    ADDING_ASSESSED=true
   fi
 fi
 

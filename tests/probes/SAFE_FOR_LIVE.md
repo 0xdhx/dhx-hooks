@@ -21,6 +21,7 @@ asserts row count == file count.
 | Probe | SAFE_FOR_LIVE | Reason |
 |-------|---------------|--------|
 | `probe-agent-leak-check.sh` | no | writes baselines under live `$HOME/.cache/dhx/` (session-tag prefixed + trap cleanup, but writes hit the live cache directory) |
+| `probe-assessed-guard-position-anchoring.sh` | yes | hook subshell with synthetic stdin against mktemp fixture CONTEXT.md files; the review-marker exception cell writes/removes a `/tmp` marker keyed to the fixture cwd's md5 (cannot collide with a live session cwd hash); no live repo, `.planning/`, or config writes (2026-07-07 CL-H.assessed-guard position-anchoring probe) |
 | `probe-backlog-frontmatter-gate.sh` | yes | structural checks are read-only grep/readlink against in-repo files; behavioral block/pass cells run entirely inside a throwaway mktemp git repo (copies the dispatcher + 10- leaf + validator, installs a sandbox symlink); never mutates the live repo index, history, or `.git/hooks` (260522-ib4 backlog-frontmatter-gate convention enrollment probe) |
 | `probe-backlog-vocab-check.sh` | yes | fixture-only mktemp repo (`.planning/MILESTONES.md` + `STATE.md` + a few briefs across top-level and terminal subdirs); stdin-simulated JSON to the hook; reads live `~/.claude/dhx-tools/backlog-regen.cjs` via `--check` against the throwaway tree but never touches the live `.planning/` directory (2026-05-27 backlog `target_milestone` value-enum write-time advisory probe) |
 | `probe-bashrc-wrapper-heal.sh` | yes | grep-only against live `~/.bashrc` and in-repo files; no writes |
