@@ -50,8 +50,12 @@ done
 [ -z "$VISION_FILE" ] && exit 0
 
 # Check if DESIGN-VISION.md has locked values (filled table rows, not just comments)
-# A locked value is a table row with a pipe-delimited hex code
-HAS_LOCKED=$(grep -cP '^\|[^|]+\|[^|]*#[0-9a-fA-F]{3,8}' "$VISION_FILE" 2>/dev/null || echo "0")
+# A locked value is a table row with a pipe-delimited hex code.
+# grep -c prints the count even on zero matches; its nonzero exit is
+# deliberately unchecked — the `|| echo "0"` it replaces double-emitted
+# "0\n0" on zero-match files, erroring the -eq test to false, so an
+# unlocked DESIGN-VISION.md scaffolded z-gsdui anyway.
+HAS_LOCKED=$(grep -cP '^\|[^|]+\|[^|]*#[0-9a-fA-F]{3,8}' "$VISION_FILE" 2>/dev/null)
 [ "$HAS_LOCKED" -eq 0 ] && exit 0
 
 # Side effect: create z-gsdui if it doesn't exist
