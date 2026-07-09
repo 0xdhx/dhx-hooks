@@ -63,6 +63,7 @@ asserts row count == file count.
 | `probe-health-sh-tiering.sh` | no | mktemp + fake HOME; uses stub-leaf-tool fixtures (Wave 2 tag preserved) |
 | `probe-health-suffix.js` | yes | uses `_make-fake-home` (mktemp + HOME override per spawn); fully sandboxed |
 | `probe-hooks-wiring.sh` | yes | mktemp + full env-var override (HOME, DHX_HOOKS_MANIFEST, DHX_HOOKS_REPO_ROOT, DHX_HOOKS_INSTALL_DIR); never touches live repo |
+| `probe-inception-posture.sh` | yes | read-only grep over in-repo hooks.json + hook source, plus fixture-JSON piped to the hook subshell (hook only reads stdin, writes JSON to stdout); no file, cache, or config writes (2026-07-09 dhx-inception-posture build-posture-injection probe) |
 | `probe-install-plugin-idempotency.sh` | no | mktemp + fake HOME confines writes; invokes install-plugin.sh subprocess against fake CCS topology (Wave 1 tag preserved) |
 | `probe-install-plugin-multi-instance.sh` | no | mktemp + fake HOME confines writes; invokes install-plugin.sh subprocess against fake CCS topology (Wave 1 tag preserved) |
 | `probe-installed-plugins-badjson-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 BADJSON branch supersession probe — D-07a) |
