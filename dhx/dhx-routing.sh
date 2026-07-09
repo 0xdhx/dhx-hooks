@@ -10,7 +10,12 @@ INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-USER_PROMPT=$(echo "$INPUT" | jq -r '.user_prompt // empty')
+# HP-008: the submitted prompt arrives in `.prompt` (NOT `.user_prompt`, which
+# was read here from the d2bada5 migration until 2026-07-09 — CC never sends
+# that field, so the case-dispatch below matched nothing and the hook was a
+# silent no-op for the repo's entire life). See docs/decisions.md 2026-07-09
+# dhx-routing-user-prompt-field row + tests/probes/probe-routing.sh.
+USER_PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 
 # Fast exit for non-GSD prompts — match both colon and hyphen formats
 case "$USER_PROMPT" in
