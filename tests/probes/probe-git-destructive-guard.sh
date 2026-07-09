@@ -281,6 +281,110 @@ _assert_allow "53: --force-with-lease=ref after refspec (substring trap)"
 _run "$CWD" "git commit -m '+fixup'"
 _assert_allow "54: git commit -m (not push subcommand)"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ADD ARM (2026-07-09) — whole-index sweep on a DECLARED shared primary
+# ═══════════════════════════════════════════════════════════════════════════
+# These are the FIRST assertions in this probe to exercise `is_primary()`. The
+# clean/checkout/switch arms have shipped since 2026-05-25 with zero coverage of
+# that predicate; the fixtures below finally give it some, as a side effect of
+# covering the add arm.
+#
+# THE COUNTER CASE IS THE POINT. `is_primary()` returns 0 for ANY primary — solo
+# repos included (verified 2026-07-09). Gating the add arm on it alone would refuse
+# `git add -A` in all 16 non-shared repos, reproducing the very over-block that
+# rules out a `Bash(git add -A*)` deny string. Case 58 (undeclared primary → ALLOW)
+# is the regression guard for that. If it ever flips to BLOCK, the arm has silently
+# become a fleet-wide deny.
+#
+# Fixtures are throwaway `git init` trees under mktemp. The hook only ever runs
+# `git rev-parse` (read-only) against them; nothing touches the real repo, so the
+# SAFE_FOR_LIVE: yes claim above still holds.
+
+_D=$(mktemp -d)
+trap 'rm -rf "$_D"' EXIT
+
+_mkrepo() {  # _mkrepo <dir> <config-json>
+  git init -q -b main "$1" 2>/dev/null
+  git -C "$1" -c user.email=p@p -c user.name=p commit -q --allow-empty -m init 2>/dev/null
+  mkdir -p "$1/.planning"
+  printf '%s\n' "$2" > "$1/.planning/config.json"
+}
+
+_mkrepo "$_D/shared" '{"shared_primary": true}'
+_mkrepo "$_D/solo"   '{}'
+_mkrepo "$_D/legacy" '{"primary_must_stay_on_main": true}'
+git -C "$_D/shared" worktree add -q "$_D/lane" -b lane 2>/dev/null
+mkdir -p "$_D/norepo"
+
+# Run the hook with its process cwd inside <dir> — the only way to test a BARE
+# `git add -A` (no cd/-C redirection), which is the common accident shape.
+_run_in() {
+  local cwd="$1" cmd="$2"
+  local input
+  input=$(jq -cn --arg c "$cwd" --arg x "$cmd" '{cwd:$c,tool_input:{command:$x}}')
+  OUT=$(cd "$cwd" && echo "$input" | bash "$HOOK" 2>&1)
+  RC=$?
+}
+
+# ── MOTIVATING: the sweep must be refused on a declared shared primary ───────
+_run_in "$_D/shared" "git add -A"
+_assert_block "55: bare 'add -A' in a declared shared primary"
+
+_run "$CWD" "cd $_D/shared && git add -A"
+_assert_block "56: cd-redirected 'add -A' (bypass #1 — no deny string can see this)"
+
+_run "$CWD" "git -C $_D/shared add -A"
+_assert_block "57: -C-redirected 'add -A' (bypass #2 — leading-token redirection)"
+
+_run_in "$_D/shared" "git add --all"
+_assert_block "58: '--all' long form"
+
+_run_in "$_D/shared" "git add --no-ignore-removal"
+_assert_block "59: '--no-ignore-removal' (third git synonym for -A)"
+
+_run_in "$_D/shared" "git add -Av"
+_assert_block "60: single-dash cluster '-Av' containing A"
+
+_run_in "$_D/legacy" "git add -A"
+_assert_block "61: legacy 'primary_must_stay_on_main' key (binder parity)"
+
+_run "$CWD" "cd $_D/lane && git -C $_D/shared add -A"
+_assert_block "62: from a lane, redirected AT the shared primary (composed -C)"
+
+_run_subagent "$CWD" "cd $_D/shared && git add -A"
+_assert_block "63: subagent Bash call hits the add arm too (HP-003 v2)"
+
+# ── COUNTER: everything else must stay allowed ───────────────────────────────
+_run_in "$_D/lane" "git add -A"
+_assert_allow "64: 'add -A' inside a worktree lane (own index — safe, common)"
+
+_run_in "$_D/solo" "git add -A"
+_assert_allow "65: 'add -A' in an UNDECLARED primary (the over-block guard — see header)"
+
+_run_in "$_D/shared" "git add -A --dry-run"
+_assert_allow "66: ALLOW-FIRST '--dry-run' stages nothing"
+
+_run_in "$_D/shared" "git add -nA"
+_assert_allow "67: ALLOW-FIRST dry-run inside a cluster ('-nA')"
+
+_run_in "$_D/shared" "git add -- -A"
+_assert_allow "68: '-- -A' is a pathspec named -A, not a flag"
+
+_run_in "$_D/shared" "git add -- src/foo.ts docs/bar.md"
+_assert_allow "69: scoped 'add -- <paths>' — the sanctioned form"
+
+_run_in "$_D/shared" "git add -N newfile.txt"
+_assert_allow "70: '-N' intent-to-add is not '-A' (case-sensitive cluster match)"
+
+_run_in "$_D/shared" "git add -A --ignore-removal"
+_assert_allow "71: '--ignore-removal' negates an earlier -A (git last-wins)"
+
+_run_in "$_D/norepo" "git add -A"
+_assert_allow "72: not a repo — fail-open, nothing to corrupt"
+
+_run_in "$_D/shared" "git worktree add ../x -b y"
+_assert_allow "73: 'worktree add' subcommand is 'worktree', never 'add'"
+
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "$PASSED passed, $FAILED failed"

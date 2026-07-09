@@ -106,10 +106,40 @@
 #   consumed/retained by the skipper before landing on the subcommand) — a
 #   future editor must not mis-handle the collision.
 #
+# The `add` arm is scoped to GITDIR==COMMON *and* a DECLARED shared primary:
+#   - add : BLOCK the whole-index sweep (`-A` / `--all` / `--no-ignore-removal`
+#           — three git synonyms — incl. single-dash clusters like `-Av`) when
+#           effective == COMMON *and* the effective repo's
+#           `.planning/config.json` declares `shared_primary` (or the legacy
+#           `primary_must_stay_on_main`). ALLOW-FIRST `-n`/`--dry-run`.
+#
+# WHY THE add ARM IS DECLARATION-GATED AND THE OTHERS ARE NOT (the over-block
+# trap): `checkout -b` in a primary is wrong in EVERY repo — the sanctioned
+# alternative (`worktree add -b`) is always available, so `is_primary()` alone is
+# the right predicate. `git add -A` is the OPPOSITE: in a solo repo the primary is
+# exactly where you are supposed to run it. Gating the add arm on `is_primary()`
+# alone would refuse it in all 16 non-shared repos — which is precisely the
+# over-block that rules out a `Bash(git add -A*)` deny string, reproduced one layer
+# down. Verified 2026-07-09: `is_primary()` reads only git state and returns 0 for
+# ANY primary, solo or shared. The discriminator for THIS hazard is
+# writer-concurrency, and only the repo can declare that.
+#
+# Keyed on `shared_primary` ALONE — never the (shared_primary x branching_strategy)
+# pair. Concurrency of writers is orthogonal to branching strategy; pairing them
+# would exempt the ONE repo that declares the flag today (`~/repos/cross-repo`,
+# which sets `git.branching_strategy: phase`). That decoupling is the whole finding
+# of skills `docs/decisions/2026-07-09-commit-mode-branching-none-scoped.md`.
+#
+# KNOWN RESIDUAL (deliberate, not an oversight): `git add .` from the repo root is
+# an equivalent sweep but is NOT blocked — from a subdirectory it is legitimately
+# scoped, so a whole-token match would false-positive. Named paths remain the rule;
+# see `docs/backlog.md`.
+#
 # `--` PATHSPEC GUARD: every arm STOPS flag interpretation at the first bare
 # `--` token; anything after `--` is a pathspec, never a flag. So
-# `git clean -- -f` (pathspec literally `-f`) is NOT a force flag, and
-# `git checkout -- -b` is NOT a branch-create.
+# `git clean -- -f` (pathspec literally `-f`) is NOT a force flag,
+# `git checkout -- -b` is NOT a branch-create, and `git add -- -A` stages a
+# pathspec literally named `-A`.
 #
 # (GUARD-03 / AUTHZ-01 / D-06 lineage. The full both-backend command matrix
 # incl. these bypass forms is re-asserted by the XR-32 enrollment canary; this
@@ -144,7 +174,7 @@
 #   4. Skip git global options to find the subcommand, RETAINING the ordered
 #      prefix (-C path, --git-dir[=], --work-tree[=], -c k=v / -c<k=v>, ...).
 #      Arg-takers consume the next token.
-#   5. Dispatch on the subcommand: push / reset / clean / checkout / switch.
+#   5. Dispatch on the subcommand: push / reset / clean / checkout / switch / add.
 #
 # Known v1 false-positives (acceptable; widen if observed):
 #   - Quoted positional args containing literal `+`/colons (e.g.,
@@ -207,6 +237,37 @@ is_primary() {
   abs_real=$(readlink -f "$absdir" 2>/dev/null || echo "$absdir")
   common_real=$(readlink -f "$commondir" 2>/dev/null || echo "$commondir")
   [[ "$abs_real" == "$common_real" ]]
+}
+
+# declares_shared_primary <running-cwd> <global-prefix-token...> — true (return 0)
+# when the EFFECTIVE post-redirection repo declares itself a shared working tree in
+# its `.planning/config.json`. Resolves the effective toplevel by replaying the SAME
+# (cdopt, global-prefix) pair `is_primary` uses, so a redirected
+# `git -C <shared> add -A` reads <shared>'s config, not the hook's cwd config.
+#
+# The key expression MIRRORS the four dhx skill binders byte-for-byte
+# (`dhx/{discuss,disc-test}/references/discuss-finalize.md`, `dhx/review/references/
+# review-workflow.md`, `dhx/test/SKILL.md`), which resolve SHARED_PRIMARY as
+# `c.shared_primary || c.primary_must_stay_on_main || false`. jq's `//` treats
+# `false` as empty and falls through, giving the same short-circuit as JS `||` —
+# intentional parity. If the two ever diverge, the hook blocks a staging op the
+# skills think is fine (or the reverse), which is worse than either behavior alone.
+#
+# FAIL-OPEN by design: no repo (bare gitdir, non-repo target), no
+# `.planning/config.json`, unparseable JSON, or an undeclared repo all return 1 =>
+# ALLOW. A repo that has not declared writer-concurrency is not this arm's concern,
+# and `git add -A` cannot corrupt a tree nobody else is writing.
+declares_shared_primary() {
+  local run_cwd="$1"; shift
+  local -a gp=("$@")
+  local -a cdopt=()
+  [[ -n "$run_cwd" ]] && cdopt=(-C "$run_cwd")
+  local toplevel
+  toplevel=$(git "${cdopt[@]}" "${gp[@]}" rev-parse --path-format=absolute --show-toplevel 2>/dev/null) || return 1
+  [[ -n "$toplevel" ]] || return 1
+  local cfg="$toplevel/.planning/config.json"
+  [[ -f "$cfg" ]] || return 1
+  jq -e '(.shared_primary // .primary_must_stay_on_main // false) == true' "$cfg" >/dev/null 2>&1
 }
 
 # is_redirected <global-prefix-token...> — the reset truth-table predicate:
@@ -486,10 +547,63 @@ inspect_segment() {
       return 0
       ;;
 
+    add)
+      # ── ADD arm — block the whole-index sweep on a DECLARED shared primary ───
+      # `git add -A` stages EVERY change in the tree, including files a concurrent
+      # session staged but has not yet committed. On a shared working tree the index
+      # is shared state, so the next `git commit` in EITHER session carries the
+      # other's work. Two documented incidents on `~/repos/skills` (2026-06-04,
+      # 9 files; 2026-07-07, 4 files). Disjoint file sets do NOT protect you.
+      #
+      # Synonyms per git-add(1): `-A`, `--all`, `--no-ignore-removal` are the same
+      # flag; `--no-all` / `--ignore-removal` negate it (last-wins, as git does).
+      # ALLOW-FIRST `-n`/`--dry-run` (stages nothing) mirrors the clean arm's
+      # discipline. Stop flag-interpretation at `--`.
+      local all_state=0 all_tok="" has_dryrun=0 seen_ddash=0
+      local j=$i
+      while [[ $j -lt ${#tokens[@]} ]]; do
+        local t="${tokens[$j]}"
+        if [[ $seen_ddash -eq 0 && "$t" == "--" ]]; then
+          seen_ddash=1; j=$((j + 1)); continue
+        fi
+        if [[ $seen_ddash -eq 0 ]]; then
+          case "$t" in
+            # Negators first — they win when they appear later (git's last-wins).
+            --no-all|--ignore-removal) all_state=0 ;;
+            -A|--all|--no-ignore-removal) all_state=1; all_tok="$t" ;;
+            -n|--dry-run) has_dryrun=1 ;;
+            -*)
+              # Single-dash cluster (`-Av`, `-vA`, `-nA`). The ^-[a-zA-Z]+$ guard
+              # means `--all` cannot reach here. Case-SENSITIVE on purpose: `-N`
+              # (intent-to-add) contains no `A`, and `-N` is not a sweep.
+              if [[ "$t" =~ ^-[a-zA-Z]+$ ]]; then
+                [[ "$t" == *A* ]] && { all_state=1; all_tok="$t"; }
+                [[ "$t" == *n* ]] && has_dryrun=1
+              fi
+              ;;
+          esac
+        fi
+        j=$((j + 1))
+      done
+      # ALLOW-FIRST: an explicit dry-run stages nothing regardless.
+      [[ $has_dryrun -eq 1 ]] && return 0
+      [[ $all_state -eq 1 ]] || return 0
+      # BOTH predicates, in this order: primary-ness is cheap and rules out lanes
+      # (where `add -A` is safe and common); the declaration is what separates a
+      # SHARED primary from the 16 solo primaries where `add -A` is routine.
+      if is_primary "$RUNNING_CWD" "${global_prefix[@]}" \
+         && declares_shared_primary "$RUNNING_CWD" "${global_prefix[@]}"; then
+        BLOCK_REASON="'add $all_tok' stages the WHOLE index on a declared shared primary (sweeps a concurrent session's staged-but-uncommitted work into your next commit)"
+        return 1
+      fi
+      return 0
+      ;;
+
     *)
       # Not a subcommand this hook gates (incl. `worktree`, which does NOT route
       # through checkout/switch — `worktree add -b lane` is the sanctioned
-      # creation path and is UNAFFECTED).
+      # creation path and is UNAFFECTED; its first token is `worktree`, not `add`,
+      # so the add arm above never sees it).
       return 0
       ;;
   esac
@@ -509,7 +623,7 @@ This guard closes the SYNTACTIC bypasses that prefix-anchored deny strings
 structurally cannot see — force-push via +refspec / -f, and (AUTHZ-01)
 redirected 'reset --hard'/'clean -f' aimed at the shared common gitdir plus
 off-base 'checkout -b'/'switch -c' in the primary that retarget the shared
-HEAD symref.
+HEAD symref, plus a whole-index 'add -A' on a declared shared primary.
 
 Safe alternatives:
   - force-push:        --force-with-lease (or --force-if-includes)
@@ -518,6 +632,9 @@ Safe alternatives:
                        concurrent session)
   - in-lane reset:     run a BARE 'git reset --hard' inside your own lane (the
                        redirected -C/--git-dir/cd form is what is blocked here)
+  - staging:           git add -- <path> [<path>...]   (name every path; on a
+                       shared tree 'add -A' also stages whatever a concurrent
+                       session left in the index, and your next commit takes it)
 
 If this command is genuinely correct, invoke git directly outside Claude's
 Bash tool. This guard is an accident tripwire for the shared working tree,
