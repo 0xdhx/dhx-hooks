@@ -181,6 +181,25 @@
 #     `git push origin "+special-tag"`). v1 whitespace tokenizer doesn't
 #     unquote; the `+` still looks like a refspec. Rare in practice.
 #
+# KNOWN v1 FALSE-NEGATIVE — COMMAND SUBSTITUTION (every arm, not just `add`):
+#   A `git` invocation inside `$(...)` or backticks is INVISIBLE to this hook. Step 3
+#   requires the segment's FIRST token to be `git`; in `echo "x $(git add -A) y"` the
+#   first token is `echo`, so the segment is allowed and bash then runs `git add -A`
+#   anyway. Verified 2026-07-09 for all four shapes — `echo "\`git add -A\`"`,
+#   `echo "$(git add -A)"`, `cd <shared> && echo "\`git add -A\`"`, `FOO=$(git add -A)`
+#   — and it applies equally to the pre-existing checkout/switch/clean/reset arms
+#   (`echo "\`git checkout -b x\`"` also slips through). It is NOT specific to the add arm.
+#
+#   Found the hard way: a session writing `echo "  \`git add -A\` -> rc=$?"` as a LABEL
+#   accidentally executed it against the skills primary. It staged nothing only because
+#   the tree happened to be clean at that instant. This is precisely the accident class
+#   the guard exists for, arriving through the one door it does not watch.
+#
+#   Fixing it needs a real shell tokenizer (or a bash `-n`-style parse), which the HP-037
+#   anchor deliberately scoped out. Until then this is a documented hole, not a covered
+#   case — do NOT read a green probe run as coverage of it.
+#   Tracked: docs/backlog.md `command-substitution-blind-spot`.
+#
 # HP-028 discipline: all command inspection uses here-strings (`<<<`),
 # never `cmd | grep -q`.
 
