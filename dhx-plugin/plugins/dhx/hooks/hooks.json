@@ -139,7 +139,7 @@
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use-gh-issue-create.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use-gh-issue-write.sh\"",
             "timeout": 5
           },
           {
