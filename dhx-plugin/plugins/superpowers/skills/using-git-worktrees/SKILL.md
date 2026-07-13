@@ -1,6 +1,6 @@
 ---
 name: using-git-worktrees
-description: Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback
+description: Internal to the /dhx:quick heavy chain — invoked by name from writing-plans / subagent-driven-development / executing-plans. Not for standalone triggering; worktree isolation outside the chain goes through /dhx:worktree or EnterWorktree (shared-tree lane rules apply).
 ---
 
 # Using Git Worktrees

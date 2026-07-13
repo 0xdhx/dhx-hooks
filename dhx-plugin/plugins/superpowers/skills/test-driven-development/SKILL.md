@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Use when implementing any feature or bugfix, before writing implementation code
+description: Internal to the /dhx:quick heavy chain — invoked by name from subagent-driven-development and systematic-debugging. Not for standalone triggering.
 ---
 
 # Test-Driven Development (TDD)

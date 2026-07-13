@@ -1,6 +1,6 @@
 ---
 name: finishing-a-development-branch
-description: Use when implementation is complete, all tests pass, and you need to decide how to integrate the work - guides completion of development work by presenting structured options for merge, PR, or cleanup
+description: Internal to the /dhx:quick heavy chain — invoked by name from subagent-driven-development / executing-plans as the closeout step. Not for standalone triggering; branch integration outside the chain follows repo lane rules.
 ---
 
 # Finishing a Development Branch

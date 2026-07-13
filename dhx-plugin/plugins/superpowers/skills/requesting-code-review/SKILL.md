@@ -1,6 +1,6 @@
 ---
 name: requesting-code-review
-description: Use when completing tasks, implementing major features, or before merging to verify work meets requirements
+description: Internal to the /dhx:quick heavy chain — invoked by name from subagent-driven-development to dispatch a reviewer. Not for standalone triggering.
 ---
 
 # Requesting Code Review
