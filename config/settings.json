@@ -330,7 +330,8 @@
     "refreshInterval": 60
   },
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": false,
+    "superpowers@dhx-local": true,
     "playwright@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,

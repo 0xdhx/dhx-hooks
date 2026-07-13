@@ -1,0 +1,16 @@
+{
+  "name": "superpowers",
+  "description": "Hook-strip fork of superpowers@claude-plugins-official 5.1.0 (MIT, Jesse Vincent — LICENSE alongside). Carries the 10-skill transitive closure that dhx skills invoke by name (/dhx:worktree preflight, /dhx:quick heavy route, /dhx:drain review discipline, explain/help debug routing): using-git-worktrees, writing-plans, subagent-driven-development, executing-plans, finishing-a-development-branch, receiving/requesting-code-review, test-driven-development, verification-before-completion, systematic-debugging. Drops hooks/ (the per-context-window using-superpowers mandate injection, ~1,400 tok) and the 4 skills outside the closure (using-superpowers, brainstorming, dispatching-parallel-agents, writing-skills). Plugin name kept as 'superpowers' so existing superpowers:<skill> references resolve unchanged — do NOT re-enable the official plugin alongside this one (namespace collision).",
+  "version": "5.1.0-dhx.1",
+  "author": {
+    "name": "dhx",
+    "email": "darkhawkx@gmail.com"
+  },
+  "homepage": "https://github.com/obra/superpowers",
+  "keywords": [
+    "superpowers",
+    "fork",
+    "hook-strip",
+    "skills"
+  ]
+}
