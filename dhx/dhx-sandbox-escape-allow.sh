@@ -12,7 +12,7 @@
 #
 # Shape additions route through /dhx:hooks modify (this is a security allowlist — gate
 # logic, full engage protocol). Detection/recommendation of new shapes belongs to the
-# /dhx:permissions session audit (lane pending: docs/prompts/ handoff in this repo).
+# /dhx:permissions session audit (lane pending: skills-repo docs/prompts/ handoff).
 # Design notes + citations:
 #   ~/repos/cross-repo/docs/research/2026-07-13-claude-code-sandbox-network-prompt-friction.md
 set -euo pipefail
