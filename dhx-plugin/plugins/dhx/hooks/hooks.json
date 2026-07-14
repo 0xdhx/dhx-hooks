@@ -151,6 +151,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-worktree-bash-guard.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-sandbox-escape-allow.sh\"",
+            "timeout": 5
           }
         ]
       },
