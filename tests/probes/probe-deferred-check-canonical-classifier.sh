@@ -369,17 +369,25 @@ fi
 # See reports/done/2026-05-12-dhx-deferred-check-fires-on-empty-uncaptured.md.
 #
 # Fix A (D-01 + D-10 errexit-safety): the count formula is bullet-shape-aware
-# AND errexit-safe — `printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true`.
-# `printf` does not append a phantom newline for empty input; `grep -c '^- '`
-# counts only classifier bullets; the trailing `|| true` neutralizes grep's
-# rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
+# AND errexit-safe — `printf '%s\n' "$UNCAPTURED" | grep -cE '<bullet-shape>' || true`.
+# `printf` does not append a phantom newline for empty input; the grep counts only
+# classifier bullets; the trailing `|| true` neutralizes grep's rc=1-on-zero-matches
+# so a future `set -e` cannot crash the hook.
 # Fix B (defense-in-depth): `[ "${COUNT:-0}" -le 0 ] && exit 0` numeric guard.
 #
-# Backs: docs/decisions.md Phase 20 row (count-bug fix).
+# 2026-07-14 — the bullet shape is now `^[[:space:]]*[-*+][[:space:]]+` (ERE), adopted
+# verbatim from dhx-assessed-guard.sh:52. The prior `^- ` was BOTH indent-blind AND
+# separator-blind: `classify_deferred_lines` matches `/^[ \t]*-[ \t]/` and emits the
+# bullet with its ORIGINAL indent preserved (`print first_line`), so an indented bullet
+# ("  - item") or a tab-separated one ("-\titem") counted 0 — and Fix B's `-le 0` guard
+# then exited the hook SILENTLY on a genuine unassessed item. The defense-in-depth guard
+# was the bypass. Section 13 is the behavioral leg that would have caught it.
+#
+# Backs: docs/decisions.md Phase 20 row (count-bug fix) + 2026-07-14 bullet-shape row.
 
 # 10a. Static: Fix A formula present verbatim (bullet-shape-aware + D-10 `|| true`).
-if grep -qF "printf '%s\n' \"\$UNCAPTURED\" | grep -c '^- ' || true" "$HOOK"; then
-  check "hook count formula is errexit-safe Fix A (printf|grep -c '^- '|| true)" 1
+if grep -qF "printf '%s\n' \"\$UNCAPTURED\" | grep -cE '^[[:space:]]*[-*+][[:space:]]+' || true" "$HOOK"; then
+  check "hook count formula is errexit-safe Fix A (printf|grep -cE bullet-shape|| true)" 1
 else
   check "hook count formula missing errexit-safe Fix A — count-bug not fixed" 0
 fi
@@ -389,6 +397,16 @@ if grep -qF 'echo "$UNCAPTURED" | wc -l' "$HOOK"; then
   check "old buggy 'echo \$UNCAPTURED | wc -l' formula still present — must be removed" 0
 else
   check "old buggy 'echo \$UNCAPTURED | wc -l' formula removed" 1
+fi
+
+# 10b'. Static: the indent-blind `grep -c '^- '` shape is gone from BOTH count sites.
+#       It is the 2026-07-14 silent-bypass shape — an anchored literal-space match against
+#       a producer that emits indented and tab-separated bullets. Zero occurrences allowed.
+INDENT_BLIND=$(grep -cF "grep -c '^- '" "$HOOK" || true)
+if [[ "${INDENT_BLIND:-0}" -eq 0 ]]; then
+  check "indent-blind \`grep -c '^- '\` count shape removed from both paths" 1
+else
+  check "indent-blind \`grep -c '^- '\` still present ($INDENT_BLIND site(s)) — silent-bypass shape" 0
 fi
 
 # 10c. Static: Fix B numeric guard present.
@@ -430,6 +448,39 @@ else
   check "behavioral: 2 real bullets → count $REAL_COUNT (expected 2)" 0
 fi
 
+# 10g. Behavioral: the count formula the HOOK actually runs must honor the producer's
+#      bullet grammar on EVERY axis `classify_deferred_lines` accepts (`/^[ \t]*-[ \t]/`):
+#      leading indent AND a tab as the post-dash separator. Extracted live from the hook
+#      so this cannot drift from the shipped formula — a hard-coded regex here would pass
+#      while the hook stayed broken, which is exactly how the 2026-07-14 bypass survived.
+#
+#      This is the leg that would have caught it: pre-fix, `^- ` scored indented=0 and
+#      tab=0, the `-le 0` guard fired, and the Stop hook exited silently on a genuine
+#      unassessed deferred item.
+HOOK_BULLET_RE=$(grep -oE "grep -cE '[^']+'" "$HOOK" | head -1 | sed -E "s/^grep -cE '//; s/'$//")
+if [[ -z "$HOOK_BULLET_RE" ]]; then
+  check "could not extract the hook's live bullet-count regex — count formula shape changed" 0
+else
+  FLUSH_C=$(printf '%s\n' "- flush-left bullet"          | grep -cE "$HOOK_BULLET_RE" || true)
+  INDENT_C=$(printf '%s\n' "  - indented bullet"          | grep -cE "$HOOK_BULLET_RE" || true)
+  TAB_C=$(printf -- '-\ttab-separated bullet\n'           | grep -cE "$HOOK_BULLET_RE" || true)
+  EMPTY_C=$(printf '%s\n' ""                              | grep -cE "$HOOK_BULLET_RE" || true)
+  WS_C=$(printf '%s\n' "   "                              | grep -cE "$HOOK_BULLET_RE" || true)
+
+  if [[ "$FLUSH_C" == "1" && "$INDENT_C" == "1" && "$TAB_C" == "1" ]]; then
+    check "behavioral: hook's live count regex honors the producer's bullet grammar (flush/indent/tab all → 1)" 1
+  else
+    check "behavioral: hook count regex is bullet-shape-blind — flush=$FLUSH_C indent=$INDENT_C tab=$TAB_C (expected 1/1/1). An unmarked deferred item in a shape the classifier EMITS counts 0 → the \`-le 0\` guard exits the Stop hook SILENTLY." 0
+  fi
+
+  # The D-01/D-10 phantom-count property must survive the shape widening.
+  if [[ "$EMPTY_C" == "0" && "$WS_C" == "0" ]]; then
+    check "behavioral: widened bullet shape preserves D-01 phantom-count guard (empty=0, whitespace=0)" 1
+  else
+    check "behavioral: widened bullet shape REGRESSED D-01 — empty=$EMPTY_C whitespace=$WS_C (expected 0/0)" 0
+  fi
+fi
+
 # --- Section 11: header-fallback count is empty/whitespace-safe (WR-03) ---
 #
 # Phase 20 code-review follow-up (20-REVIEW.md WR-03): check_header_fallback()
@@ -443,9 +494,11 @@ fi
 #
 # Backs: docs/decisions.md Phase 20 code-review-follow-up row (WR-03).
 
-# 11a. Static: header-fallback uses the safe printf|grep -c formula.
-if grep -qF "printf '%s\n' \"\$MD_DEFERRED\" | grep -c '^- ' || true" "$HOOK"; then
-  check "header-fallback count formula is errexit-safe (printf|grep -c '^- '|| true)" 1
+# 11a. Static: header-fallback uses the safe printf|grep -cE formula, same bullet shape
+#      as the main path (2026-07-14 — the indent/separator-blind `^- ` was cloned here
+#      by WR-03, so the silent bypass existed in BOTH paths).
+if grep -qF "printf '%s\n' \"\$MD_DEFERRED\" | grep -cE '^[[:space:]]*[-*+][[:space:]]+' || true" "$HOOK"; then
+  check "header-fallback count formula is errexit-safe (printf|grep -cE bullet-shape|| true)" 1
 else
   check "header-fallback count formula missing safe form — WR-03 not fixed" 0
 fi
@@ -557,6 +610,117 @@ if [[ "$survived_stage1" == "3" ]]; then
   check "negative control: Stage 1 alone leaves all 3 bullets unsilenced — Stage 2 is what silences the REQ-ID + dated-filename items" 1
 else
   check "negative control failed: Stage 1 alone produced $survived_stage1 bullets (expected 3) — fixture or classifier drift. Output: $HF_STAGE1_ONLY" 0
+fi
+
+# --- Section 13: end-to-end — an INDENTED unmarked bullet must BLOCK (2026-07-14) ---
+#
+# The bypass this section exists to prevent, in full:
+#
+#   $UNCAPTURED = "  - Indented deferred item, unmarked, genuine future work"
+#     :232  [ -z "$UNCAPTURED" ] && exit 0     → passes (output is NON-empty)
+#     :239  COUNT=$(… | grep -c '^- ')         → 0     ← indent-blind
+#     :242  [ "${COUNT:-0}" -le 0 ] && exit 0  → FIRES → hook exits SILENTLY
+#
+# `classify_deferred_lines` matches `/^[ \t]*-[ \t]/` (indent-tolerant) and emits the
+# surviving bullet with its ORIGINAL indent preserved. The hook counted with `^- `
+# (indent-intolerant). The two disagreed, and Fix B's defense-in-depth numeric guard
+# absorbed the disagreement — turning a safety net INTO a live bypass of the shipped
+# Stop-hook backstop, on a genuine unassessed item.
+#
+# Sections 10a/10g pin the formula and its shape. THIS section proves the user-visible
+# contract: the hook actually emits `decision: block`. A static pin alone re-freezes
+# whatever string is there; the behavioral leg is what makes the probe a test.
+#
+# Backs: docs/decisions.md 2026-07-14 bullet-shape row.
+# Source: docs/prompts/done/2026-07-14-deferred-check-indent-blind-count-prompt.md
+
+TMP_FIXTURE_E2E=$(mktemp -d /tmp/probe-deferred-e2e-indent.XXXXXX)
+trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF" "$TMP_FIXTURE_E2E"' EXIT
+
+mkdir -p "$TMP_FIXTURE_E2E/.planning/phases/01-indent-bypass"
+E2E_CTX="$TMP_FIXTURE_E2E/.planning/phases/01-indent-bypass/01-CONTEXT.md"
+
+# No STATE.md → PHASE_ALLOWLIST stays empty → the hook takes the unfiltered
+# `ls -t | head -1` discovery path and lands on this CONTEXT.md.
+#
+# Bullet shapes below are BOTH legal producer output (classify_deferred_lines accepts
+# `/^[ \t]*-[ \t]/`), carry NO silencing marker, and have NO Stage-2 durable-home signal
+# (no resolvable REQ-ID, no dated .md citation) — so both MUST survive to the count.
+run_e2e_hook() {
+  local ctx_body="$1"
+  cat > "$E2E_CTX" <<EOF
+# Phase 01 — indent bypass e2e
+
+<deferred>
+$ctx_body
+</deferred>
+EOF
+  jq -n --arg c "$TMP_FIXTURE_E2E" '{cwd: $c, stop_hook_active: false}' \
+    | bash "$HOOK" 2>/dev/null || true
+}
+
+# 13a. Behavioral e2e: a single INDENTED unmarked bullet must produce decision:block.
+E2E_INDENT=$(run_e2e_hook '  - Indented deferred item, unmarked, genuine future work')
+if printf '%s' "$E2E_INDENT" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  check "e2e: indented unmarked deferred bullet → decision:block (silent-bypass closed)" 1
+else
+  check "e2e: indented unmarked deferred bullet did NOT block — hook exited silently on a genuine unassessed item. Hook output: [${E2E_INDENT:-<empty>}]" 0
+fi
+
+# 13b. Behavioral e2e: the block message must report a NON-ZERO item count. Guards the
+#      half-fix where the shape widens but the count line still under-reports.
+E2E_COUNT=$(printf '%s' "$E2E_INDENT" | jq -r '.reason // ""' 2>/dev/null \
+  | grep -oE '[0-9]+ unassessed item' | grep -oE '^[0-9]+' || true)
+if [[ "${E2E_COUNT:-0}" -ge 1 ]]; then
+  check "e2e: block message reports COUNT >= 1 for the indented bullet (got $E2E_COUNT)" 1
+else
+  check "e2e: block message reported COUNT=${E2E_COUNT:-0} (expected >=1) — count line under-reports" 0
+fi
+
+# 13c. Behavioral e2e: TAB-after-dash is the second axis of the same bug. The classifier
+#      accepts `-\titem`; a literal-space count shape (`^[[:space:]]*- `) still scores it 0.
+#      This is why the fix adopts dhx-assessed-guard.sh:52's `[[:space:]]+` character class
+#      rather than a literal space.
+E2E_TAB=$(run_e2e_hook "$(printf -- '-\tTab-separated deferred item, unmarked, genuine future work')")
+if printf '%s' "$E2E_TAB" | jq -e '.decision == "block"' >/dev/null 2>&1; then
+  check "e2e: tab-after-dash unmarked deferred bullet → decision:block (separator axis closed)" 1
+else
+  check "e2e: tab-after-dash unmarked bullet did NOT block — separator-blind count. Hook output: [${E2E_TAB:-<empty>}]" 0
+fi
+
+# 13d. Negative control: an indented bullet carrying a silencing marker must NOT block.
+#      Without this, 13a-13c could pass on a hook that blocks unconditionally — the widened
+#      count must still respect the marker protocol, not merely count more things. Both
+#      marker positions are exercised (prefix and end-of-bullet).
+#
+# FIXTURE NOTE — the end-of-bullet variant carries a deliberate blank line before
+# `</deferred>`. That is NOT cosmetic, and it is not this hook's bug:
+# classify_deferred_lines treats ANY non-blank line as a continuation line of the open
+# bullet (awk `{ if (have_bullet) last_body = $0 }`), so the `</deferred>` CLOSING TAG is
+# swallowed as the final bullet's logical last line — and the end-of-bullet marker check
+# (`last_body ~ end_marker_re`) then tests the TAG instead of the marker. Net effect: an
+# end-of-bullet marker on the LAST bullet of a <deferred> block does not silence unless a
+# blank line separates it from the tag. That is a live producer-side (skills-owned) false
+# POSITIVE — orthogonal to the false NEGATIVE this section covers, and out of scope here
+# (the classifier is probe-pinned and skills-owned; see the prompt's "Do NOT change the
+# emit shape of classify_deferred_lines from this repo").
+# Filed: ~/repos/skills/reports/2026-07-14-classify-deferred-closing-tag-eats-end-of-bullet-marker.md
+# Blank-lining the fixture isolates THIS section to the count-shape change under test;
+# without it the control fails for a reason that has nothing to do with the count.
+# When that fix lands, DROP the blank line here — the control gets strictly stronger.
+E2E_MARKED_PREFIX=$(run_e2e_hook '  - [captured: backlog] Indented deferred item')
+if [[ -z "$E2E_MARKED_PREFIX" ]]; then
+  check "negative control: indented bullet with PREFIX marker → no block (marker protocol intact)" 1
+else
+  check "negative control FAILED: prefix-marked indented bullet still blocked — widened count over-matches. Output: [$E2E_MARKED_PREFIX]" 0
+fi
+
+E2E_MARKED_END=$(run_e2e_hook '  - Indented deferred item [captured: backlog]
+')
+if [[ -z "$E2E_MARKED_END" ]]; then
+  check "negative control: indented bullet with END-OF-BULLET marker → no block (marker protocol intact)" 1
+else
+  check "negative control FAILED: end-marked indented bullet still blocked — widened count over-matches. Output: [$E2E_MARKED_END]" 0
 fi
 
 echo

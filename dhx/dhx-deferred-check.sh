@@ -143,7 +143,11 @@ check_header_fallback() {
     # "1 deferred item(s)" header-fallback warning. Count classifier bullets with
     # the same errexit-safe formula as the main UNCAPTURED path, and guard on a
     # positive count before emitting the warning.
-    COUNT=$(printf '%s\n' "$MD_DEFERRED" | grep -c '^- ' || true)
+    #
+    # The bullet shape is the canonical one — see the main-path count (~line 245)
+    # for why `^- ` was a silent bypass. WR-03 cloned the broken shape here, so the
+    # bypass existed in BOTH paths; it is fixed in both, together.
+    COUNT=$(printf '%s\n' "$MD_DEFERRED" | grep -cE '^[[:space:]]*[-*+][[:space:]]+' || true)
     [ "${COUNT:-0}" -le 0 ] && exit 0
     jq -n --arg msg "WARNING: ${COUNT} deferred item(s) found under markdown headers in ${file} but the <deferred> section is empty or missing. Items may not be tracked. Run /dhx:defer-review to inspect." \
       '{"decision": "block", "reason": $msg}'
@@ -233,10 +237,28 @@ if [ -z "$UNCAPTURED" ]; then exit 0; fi
 
 # Count — Fix A (D-01/D-10): bullet-shape-aware + errexit-safe. `echo|wc -l`
 # appended a phantom newline → 1 for empty/whitespace-only input (the phantom
-# "1 unassessed item(s)" block). `printf` + `grep -c '^- '` counts only
+# "1 unassessed item(s)" block). `printf` + a bullet-shape `grep -cE` counts only
 # classifier bullets (0 for empty/whitespace); trailing `|| true` neutralizes
 # grep's rc=1-on-zero-matches so a future `set -e` cannot crash the hook.
-COUNT=$(printf '%s\n' "$UNCAPTURED" | grep -c '^- ' || true)
+#
+# BULLET SHAPE (2026-07-14): `^[[:space:]]*[-*+][[:space:]]+` — adopted verbatim from
+# dhx-assessed-guard.sh's count_assessed(), the one component that had the bullet shape
+# right. The prior `^- ` was a SILENT BYPASS of this Stop hook. classify_deferred_lines
+# matches `/^[ \t]*-[ \t]/` and emits the surviving bullet with its ORIGINAL indent
+# preserved (`print first_line`), so a producer-legal bullet — indented ("  - item", a
+# nested list under a subsection) or tab-separated ("-\titem") — counted 0. Fix B's `-le 0`
+# guard below then fired and the hook exited SILENTLY on a genuine unassessed item: the
+# defense-in-depth guard WAS the bypass. Counting is the enforcement; a count that doesn't
+# honor the producer's grammar is not a weaker gate, it is no gate.
+#
+# INVARIANT: this shape must remain a superset of what classify_deferred_lines can EMIT
+# (canonical: ~/.claude/dhx-tools/dhx-classify-deferred.sh). It is currently a strict
+# superset — the `[-*+]` arm is inert, since the classifier matches `-` bullets only. That
+# arm is deliberate forward-compat: the classifier's `*`/`+` gap is filed skills-side
+# (docs/prompts/… deferred-gate-phantom-extractor-and-bullet-model), and when it lands this
+# count needs no edit. Narrowing the shape back toward the producer reopens the bypass.
+# Backed by tests/probes/probe-deferred-check-canonical-classifier.sh §10g + §13.
+COUNT=$(printf '%s\n' "$UNCAPTURED" | grep -cE '^[[:space:]]*[-*+][[:space:]]+' || true)
 # Fix B (D-01): defense-in-depth numeric guard — if any future regression leaks
 # past the line-215 `-z` check, exit silently before rendering a 0-item block.
 [ "${COUNT:-0}" -le 0 ] && exit 0
