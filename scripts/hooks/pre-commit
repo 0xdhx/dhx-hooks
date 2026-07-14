@@ -13,9 +13,12 @@
 #
 # The check-path scripts/hooks/pre-commit.d/10-backlog-frontmatter.sh is the
 # D-16 canonical convention path — identical across skills + cross-repo so the
-# fleet scan (Phase 06 Plan 03) detects it uniformly. Content differs (skills
-# delegates to its engine; cross-repo is self-contained over the repo-local
-# parse-frontmatter.cjs per D-02), but the detected path matches.
+# fleet scan (Phase 06 Plan 03) detects it uniformly. Do NOT infer per-repo leaf
+# CONTENT from this comment: an earlier claim here ("skills delegates to its
+# engine") went stale and was falsified 2026-07-13 (skills' live leaf is the
+# scaffold's self-contained variant). Provenance is decided by diffing the live
+# file against the scaffold payload, never by comment (drain catch #1, codex
+# 2026-07-13 — see the fleet-roll brief's preflight).
 #
 # Escape hatch: `git commit --no-verify` skips all checks (standard git).
 
