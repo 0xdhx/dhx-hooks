@@ -42,14 +42,17 @@
 #   block, not silent drift). Generation runs in --emit mode (side-effect-free,
 #   stdout; shipped skills-side 2026-07-13): git-free fs walks over the bare
 #   materialized tree, which is tracked-only by construction — an untracked/
-#   gitignored draft brief never enters the staged-view generation (the working-tree
-#   regen the fix prints DOES read drafts; the diagnosis note surfaces that
-#   divergence, and the skills-side tracked-set-read fast-follow brief owns the real
-#   fix). --emit is also the H1 closure (drain review 2026-07-13): it NEVER creates
-#   a field-review-candidate brief and NEVER emits the would-created row — so an
-#   aggregate staged with a dangling candidate row (brief left untracked after the
-#   write regen created it) no longer false-PASSes; it BLOCKS until the candidate
-#   brief is staged too (the untracked-drafts note below names it).
+#   gitignored draft brief never enters the staged-view generation. As of the
+#   skills-side tracked-set read (2026-07-14) the working-tree regen the printed fix
+#   runs ALSO enumerates via `git ls-files`, so an untracked draft no longer enters
+#   THAT aggregate either: the two views converge, and the section-A diagnosis note
+#   below now flags only unstaged CONTENT edits to tracked files (still divergent —
+#   the regen reads working-tree bytes, the gate reads staged blobs). --emit is also
+#   the H1 closure (drain review 2026-07-13): it NEVER creates a field-review-candidate
+#   brief and NEVER emits the would-created row; and the tracked-set read closes the
+#   WRITE side too (the candidate the write regen creates is untracked → never rowed
+#   in), so following the printed fix at the field-review threshold now CONVERGES
+#   instead of wedging on a dangling candidate row.
 #
 #   The `Last updated: <date>` header stamp is NORMALIZED out of every generated-vs-
 #   blob comparison — a date-only difference is not drift (else any brief-touching
@@ -225,22 +228,24 @@ emit_capped_diff() {   # $1 = old file, $2 = new file
 } >&2
 
 # Self-diagnose the shared-tree wedges that make the printed working-tree fix loop
-# (mirrors the index gate's two notes, plus the untracked-draft divergence specific
-# to backlog-regen's working-tree read). Diagnosis-only — never changes block/allow.
+# (mirrors the index gate's two notes). Diagnosis-only — never changes block/allow.
 feeding_paths=(.planning/backlog/ .planning/BACKLOG.md
   .planning/MILESTONES.md .planning/ROADMAP.md .planning/STATE.md reports/skills/)
 
-# (A) unstaged working-tree edits + untracked draft briefs — the working-tree regen
-# reads both; the gate reads only staged blobs.
+# (A) unstaged working-tree EDITS to tracked feeding files — the working-tree regen
+# reads working-tree CONTENT, the gate reads staged blobs, so a tracked brief edited
+# but not staged still diverges. Untracked DRAFTS no longer diverge: since 2026-07-14
+# backlog-regen enumerates via `git ls-files`, excluding an untracked draft from the
+# working-tree aggregate exactly as this staged view does (the tracked-set read closed
+# that half — so this note dropped its untracked-files leg).
 divergent="$(git diff --name-only -- "${feeding_paths[@]}" 2>/dev/null || true)"
-untracked="$(git ls-files --others --exclude-standard -- .planning/backlog/ reports/skills/ 2>/dev/null || true)"
-if [ -n "$divergent$untracked" ]; then
+if [ -n "$divergent" ]; then
   {
-    echo "  note: the working-tree regen and this staged-view check can diverge — a peer"
-    echo "        session's WIP below is read by the regen but not by the gate, which can"
-    echo "        wedge the fix above. Stage/revert/track them, or: git commit --no-verify"
-    [ -n "$divergent" ] && { echo "        unstaged edits:"; printf '%s\n' "$divergent" | sed 's/^/          /'; }
-    [ -n "$untracked" ] && { echo "        untracked (drafts the regen WOULD index):"; printf '%s\n' "$untracked" | sed 's/^/          /'; }
+    echo "  note: the working-tree regen and this staged-view check can diverge on UNSTAGED"
+    echo "        EDITS to the tracked files below — the regen reads their working-tree content,"
+    echo "        the gate reads staged blobs, which can wedge the fix above. Stage/revert them,"
+    echo "        or: git commit --no-verify"
+    printf '%s\n' "$divergent" | sed 's/^/          /'
   } >&2
 fi
 
