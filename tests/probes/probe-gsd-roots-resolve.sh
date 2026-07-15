@@ -71,6 +71,16 @@ GATE_ROOT_LINE="$(grep -nE '^GSD_LIVE_ROOT=' "$GATE" || true)"
 assert "gate GSD_LIVE_ROOT names 'gsd-core'"                "echo \"\$GATE_ROOT_LINE\" | grep -q 'gsd-core'"
 assert "gate GSD_LIVE_ROOT drops retired 'get-shit-done'"   "! echo \"\$GATE_ROOT_LINE\" | grep -q 'get-shit-done'"
 
+# Gate prefix-managed arms (2026-07-15 widen): the case arms MUST track
+# gsd-core's GSD_PREFIX_MANAGED_DIRS contract (gsd-tools.cjs — agents/skills/
+# commands iterated with startsWith('gsd-')). A dropped or renamed arm silently
+# reopens the agents/-blind-spot class: the write passes the case-check with no
+# error. Grep the case-arm PATTERNS (quoted literals), not comments.
+for dir in agents skills commands; do
+  GATE_ARM_COUNT="$(grep -cF "\"\$HOME/.claude/$dir/gsd-\"*" "$GATE" || true)"
+  assert "gate guards prefix-managed arm '$dir/gsd-*'" "[ \"$GATE_ARM_COUNT\" -ge 1 ]"
+done
+
 # Drift-surface: the cp repair-command printf line.
 DRIFT_CP_LINE="$(grep -nF 'printf '\''  cp ~/.claude/' "$DRIFT_SURFACE" || true)"
 assert "drift-surface cp command names 'gsd-core'"          "echo \"\$DRIFT_CP_LINE\" | grep -q 'gsd-core'"
@@ -97,6 +107,13 @@ FORK_ROOT="$FORK_PARENT/gsd-core"
 
 if [[ -e "$HOME/.claude/gsd-file-manifest.json" ]]; then
   assert "live gsd runtime dir resolves ($LIVE_ROOT)" "[[ -d \"$LIVE_ROOT\" ]]"
+  # Prefix-managed arms point at a real population (catches a gsd-side layout
+  # move: arm still matches the OLD path while the live files migrated →
+  # gate silently guards nothing there). agents/ and skills/ are always
+  # populated on an installed gsd; commands/ is profile-staged (may be empty),
+  # so it gets no live-population assertion.
+  assert "live agents/gsd-* population exists" "compgen -G \"$HOME/.claude/agents/gsd-*\" >/dev/null"
+  assert "live skills/gsd-* population exists" "compgen -G \"$HOME/.claude/skills/gsd-*\" >/dev/null"
   # Fork mirror is optional infrastructure; only assert if the fork tree exists.
   if [[ -d "$FORK_PARENT" ]]; then
     assert "live fork mirror resolves ($FORK_ROOT)" "[[ -d \"$FORK_ROOT\" ]]"

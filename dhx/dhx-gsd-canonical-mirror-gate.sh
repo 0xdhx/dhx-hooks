@@ -2,7 +2,9 @@
 # dhx-gsd-canonical-mirror-gate.sh — PreToolUse hook (Write|Edit matcher)
 # Patterns: HP-007, HP-009, HP-015, HP-031
 #
-# Guards direct Edit/Write under ~/.claude/gsd-core/ against unmirrored drift.
+# Guards direct Edit/Write to gsd-managed files against unmirrored drift:
+# the ~/.claude/gsd-core/ subtree plus the prefix-managed dirs gsd-update
+# also clobbers — ~/.claude/{agents,skills,commands}/gsd-* (added 2026-07-15).
 # With a READABLE backup-meta.json, blocks (exit 2) every in-subtree edit that
 # lacks a valid draft-buffer marker: registered `files[]` members are flagged
 # load-bearing, all other in-subtree paths as unmirrored work-in-progress
@@ -92,10 +94,27 @@ esac
 # a stale name points the subtree gate at a MISSING dir, so every write to the
 # live runtime silently passes the case-check → exit 0 → the write-protection
 # gate is dead with no error. probe-gsd-roots-resolve.sh asserts this literal.
+#
+# INVARIANT (prefix-managed dirs, 2026-07-15): the three gsd-* arms below MUST
+# track gsd-core's GSD_PREFIX_MANAGED_DIRS contract (gsd-tools.cjs ~:2353 —
+# agents/skills/commands iterated with `startsWith('gsd-')`; verified against
+# gsd-core@1.6.1). gsd-update overwrites (agents) or sweep-DELETES (skills,
+# commands) exactly these prefix-matched entries, so an unmirrored direct edit
+# there is clobbered on update just like an in-subtree edit — the 2026-07-15
+# agents/ blind-spot closure (dotfiles c91968f registered the first fork-tracked
+# agent; this gate arm makes the discipline reach it). REL_PATH derivation,
+# backup-meta membership, and the draft-buffer escape valve are prefix-agnostic
+# and work unchanged for these arms. NOT guarded (naming is mixed/unprefixed —
+# needs manifest-derived matching, tracked separately): ~/.claude/hooks/,
+# ~/.claude/scripts/. probe-gsd-roots-resolve.sh asserts all three arm literals;
+# probe-gsd-canonical-mirror-gate-tiered-outcome.sh pins block + dhx-* pass.
 GSD_LIVE_ROOT="$HOME/.claude/gsd-core"
 case "$FILE" in
-  "$GSD_LIVE_ROOT/"*) ;;   # in guarded subtree — continue to gate check
-  *) exit 0 ;;             # not in subtree — silent pass
+  "$GSD_LIVE_ROOT/"*) ;;                 # in guarded subtree — continue to gate check
+  "$HOME/.claude/agents/gsd-"*) ;;       # gsd-shipped agent (34 live) — overwritten on update
+  "$HOME/.claude/skills/gsd-"*) ;;       # gsd-shipped skill dir — sweep-dir prune on update
+  "$HOME/.claude/commands/gsd-"*) ;;     # gsd-staged command — sweep-dir prune on update
+  *) exit 0 ;;             # not gsd-managed — silent pass
 esac
 
 # Derive REL_PATH for backup-meta membership + cp suggestion.

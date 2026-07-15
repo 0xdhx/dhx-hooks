@@ -28,6 +28,12 @@
 #                           to see it fail:  GATE=<old> bash <this probe>
 #   (h) ABSENT            — a missing backup-meta (fresh install) → WARN/exit 1,
 #                           the one surviving WARN tier
+#   (i)-(m) prefix-arms   — 2026-07-15 widen to ~/.claude/{agents,skills,
+#                           commands}/gsd-* (GSD_PREFIX_MANAGED_DIRS parity):
+#                           member block on the agents/ dialect (i), dhx-*
+#                           same-dir precision control passes (j), skills/
+#                           commands block (k)/(l), marker escape valve honors
+#                           the agents/ rel dialect (m)
 #
 # Backs: 16-SPEC.md REQ-DRIFT-ACTION-03 acceptance criteria (a)-(e), extended
 # (f)-(h) for the 2026-07-14 corrupt/parseable-empty split + block-all ratify.
@@ -72,8 +78,10 @@ echo "    GATE=$GATE"
 SESSION_ID="probe-tiered-$$"
 
 # Fixture backup-metas — keep the probe independent of the live backup-meta.json.
-BACKUP_META_POPULATED="$TMPDIR/backup-meta-populated.json"  # one registered member
-jq -n '{version:1, files:["gsd-core/workflows/execute-phase.md"]}' > "$BACKUP_META_POPULATED"
+# Populated fixture carries one gsd-core member AND one agents/ member so the
+# 2026-07-15 prefix-arm cases (i)-(m) can exercise membership on the new dialect.
+BACKUP_META_POPULATED="$TMPDIR/backup-meta-populated.json"
+jq -n '{version:1, files:["gsd-core/workflows/execute-phase.md","agents/gsd-ui-auditor.md"]}' > "$BACKUP_META_POPULATED"
 BACKUP_META_EMPTY="$TMPDIR/backup-meta-empty.json"          # parseable []  (live steady state)
 jq -n '{version:1, files:[]}' > "$BACKUP_META_EMPTY"
 BACKUP_META_CORRUPT="$TMPDIR/backup-meta-corrupt.json"      # truncated / unreadable JSON
@@ -201,6 +209,60 @@ assert "[h] absent backup-meta → exit 1 (WARN, fresh-install advisory)" \
   bash -c '[ "$1" = "1" ]' _ "$EC"
 assert "[h] absent → 'WARN:' message" \
   bash -c 'echo "$1" | grep -qF "WARN:"' _ "$OUT"
+
+# ════ 2026-07-15 prefix-managed arms (agents/skills/commands gsd-*) ════
+# // INVARIANT: the gate's guarded surface includes the GSD_PREFIX_MANAGED_DIRS
+# // arms — ~/.claude/{agents,skills,commands}/gsd-* — with IDENTICAL tier
+# // behavior to the gsd-core/ subtree (block-all, membership picks message,
+# // marker escape valve honors the agents/... rel-path dialect). A dhx-*
+# // agent in the SAME directory must stay unguarded (precision control).
+
+# ---- Case (i): BLOCK/member on the agents/ dialect — registered fork-tracked agent ----
+rm -f "$MARKER"
+run_gate "$HOME/.claude/agents/gsd-ui-auditor.md" "$BACKUP_META_POPULATED"
+assert "[i] agents/ member (gsd-ui-auditor) w/o marker → exit 2" \
+  bash -c '[ "$1" = "2" ]' _ "$EC"
+assert "[i] agents/ member → 'load-bearing' message" \
+  bash -c 'echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+assert "[i] agents/ member → cp command targets gsd-local-patches/agents/" \
+  bash -c 'echo "$1" | grep -qF "gsd-local-patches/agents/gsd-ui-auditor.md"' _ "$OUT"
+
+# ---- Case (j): PRECISION negative-control — dhx-* agent in the same dir passes ----
+# // INVARIANT: the arm is the gsd- PREFIX, not the agents/ DIRECTORY. User
+# // agents (dhx-*) share ~/.claude/agents/ by design (D-08 namespace split)
+# // and must never block. This case fails if the arm ever widens to the dir.
+run_gate "$HOME/.claude/agents/dhx-coupling-verifier.md" "$BACKUP_META_POPULATED"
+assert "[j] agents/dhx-* (user agent, same dir) → exit 0" \
+  bash -c '[ "$1" = "0" ]' _ "$EC"
+assert "[j] agents/dhx-* → silent" \
+  bash -c '[ -z "$1" ]' _ "$OUT"
+
+# ---- Case (k): BLOCK/non-member on skills/gsd-* (sweep-DELETE surface) ----
+run_gate "$HOME/.claude/skills/gsd-capture/SKILL.md" "$BACKUP_META_POPULATED"
+assert "[k] skills/gsd-* w/o marker → exit 2 (block-all)" \
+  bash -c '[ "$1" = "2" ]' _ "$EC"
+assert "[k] skills/gsd-* → 'no live fork patch' message (non-member)" \
+  bash -c 'echo "$1" | grep -qF "no live fork patch"' _ "$OUT"
+
+# ---- Case (l): BLOCK/non-member on commands/gsd-* (profile-staged surface) ----
+run_gate "$HOME/.claude/commands/gsd-plan.md" "$BACKUP_META_POPULATED"
+assert "[l] commands/gsd-* w/o marker → exit 2 (block-all)" \
+  bash -c '[ "$1" = "2" ]' _ "$EC"
+
+# ---- Case (m): escape-valve parity — valid marker on the agents/ rel dialect ----
+# // INVARIANT: the draft-buffer marker suppresses the gate for agents/... rel
+# // paths exactly as for gsd-core/... ones (REL_PATH strip is prefix-agnostic;
+# // the operator-authorized-edit valve must not be subtree-only).
+FUTURE=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg sid "$SESSION_ID" --arg exp "$FUTURE" \
+  '{session_id:$sid, paths:["agents/gsd-ui-auditor.md"], expires_at:$exp, reason:"probe agents-dialect fixture"}' \
+  > "$MARKER"
+run_gate "$HOME/.claude/agents/gsd-ui-auditor.md" "$BACKUP_META_POPULATED"
+assert "[m] valid marker on agents/ dialect → exit 0" \
+  bash -c '[ "$1" = "0" ]' _ "$EC"
+assert "[m] valid marker on agents/ dialect → silent" \
+  bash -c '[ -z "$1" ]' _ "$OUT"
+rm -f "$MARKER"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
