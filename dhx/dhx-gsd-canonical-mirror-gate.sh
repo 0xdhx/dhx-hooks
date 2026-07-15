@@ -2,11 +2,15 @@
 # dhx-gsd-canonical-mirror-gate.sh — PreToolUse hook (Write|Edit matcher)
 # Patterns: HP-007, HP-009, HP-015, HP-031
 #
-# Blocks (exit 2) edits to canonical-mirror fork-tracked files — the entries in
-# ~/.claude/gsd-local-patches/backup-meta.json `files[]` — when no valid
-# draft-buffer marker is present. Warns (exit 1) on edits to other
-# ~/.claude/gsd-core/* paths under the same conditions. Silent (exit 0)
-# on all other paths and when a valid marker is present.
+# Guards direct Edit/Write under ~/.claude/gsd-core/ against unmirrored drift.
+# With a READABLE backup-meta.json, blocks (exit 2) every in-subtree edit that
+# lacks a valid draft-buffer marker: registered `files[]` members are flagged
+# load-bearing, all other in-subtree paths as unmirrored work-in-progress
+# (block-all steady state, ratified 2026-07-14 — post-fork-retirement an empty
+# `files[]` is the norm, so any direct edit is unmirrored WIP; the membership
+# split now selects only the message, not block-vs-warn). A corrupt/unreadable
+# backup-meta fails safe to BLOCK; an ABSENT backup-meta (fresh install) warns
+# (exit 1). Silent (exit 0) outside the subtree and when a valid marker present.
 #
 # Hot path (per D-07/D-27): a single jq parse extracts `tool_input.file_path`
 # from the stdin envelope, then a `case` path-prefix check exits 0 immediately
@@ -37,12 +41,16 @@
 # INVARIANT (HP-031 — gate hook is the marker-reader half; cross-decl site #3):
 #   1. The draft-buffer marker file is the runtime escape valve. A single
 #      `[ -f "$MARKER" ]` test gates the hot path BEFORE any jq parse of it.
-#   2. backup-meta.json `files[]` is the authoritative BLOCK-tier path set.
-#      It is jq-read once per invocation, ONLY when the target is in the
-#      guarded subtree AND the marker is absent/invalid.
-#   3. Tiered emit: exit 2 for backup-meta members; exit 1 for the broader
-#      ~/.claude/gsd-core/ subtree; exit 0 silent for non-matching paths
-#      or when a valid marker is present.
+#   2. backup-meta.json `files[]` is the registered fork-patch set, jq-read
+#      once per invocation, ONLY when the target is in the guarded subtree AND
+#      the marker is absent/invalid. Membership selects the block MESSAGE
+#      (load-bearing member vs unmirrored non-member), not block-vs-warn —
+#      under the block-all steady state both tiers exit 2.
+#   3. Tiered emit (block-all steady state, ratified 2026-07-14): exit 2 for
+#      ANY in-subtree path when backup-meta is readable (member or not) or
+#      corrupt (fail-safe); exit 1 ONLY when backup-meta is absent
+#      (fresh-install advisory); exit 0 silent for non-subtree paths or a
+#      valid marker.
 # ────────────────────────────────────────────────────────────────────────────
 
 set -uo pipefail   # NOT -e: must tolerate jq failures in the optional marker-read path
@@ -133,36 +141,57 @@ fi
 # D-09 backup-meta tier selection — jq-read once. DHX_BACKUP_META override lets
 # Plan 5 Task 5.3 inject a fixture backup-meta for SAFE_FOR_LIVE: yes posture.
 #
-# WR-02 fail-safe: "backup-meta absent" and "backup-meta present-but-unreadable"
-# are DISTINCT states and must NOT both collapse to the WARN tier.
-#   - absent  → legitimate (fresh install, fork mirror not yet installed) → WARN
-#   - present but jq yields zero files[] → anomaly (truncated/corrupt file, or
-#     a non-atomic /gsd:update rewrite caught mid-flight) → fail safe to BLOCK.
-# Silently downgrading an unreadable backup-meta to WARN is exactly how the
-# 2026-05-15 unmirrored-edit incident slips through; treat it as BLOCK.
+# THREE distinct backup-meta states, kept distinct ON PURPOSE. They used to
+# collapse: `jq -r '.files[]' 2>/dev/null` yields EMPTY both when the JSON is
+# unreadable AND when it parses cleanly to `[]`, so a `[ -z "$META_FILES" ]`
+# test could not tell a corrupt file from the legitimate post-retirement
+# steady state — and blocked both under the SAME "load-bearing" message.
+# `jq -e '.files | type == "array"'` splits them: exit 0 only when `.files`
+# parses to an array; exit 1/>1 on corruption, a missing `.files` key, or a
+# non-array value (see the probe's negative control).
+#
+#   - absent                → legitimate (fresh install, fork mirror not yet
+#                             installed) → WARN (advisory; don't obstruct a
+#                             not-yet-set-up host).
+#   - present, .files NOT a parseable array → WR-02 fail-safe → BLOCK.
+#                             Silently downgrading an unreadable backup-meta is
+#                             exactly how the 2026-05-15 unmirrored-edit incident
+#                             slips through; the mirror state is unverifiable.
+#   - present, .files a parseable array → block-all by design (ratified
+#                             2026-07-14, see docs/decisions.md). Membership
+#                             selects only the MESSAGE, not block-vs-warn:
+#                               · member of files[] → "load-bearing" (accurate).
+#                               · non-member (incl. the EMPTY-files[] steady
+#                                 state) → "no live fork patch registered". With
+#                                 no live patches, every direct ~/.claude/gsd-core/
+#                                 edit is unmirrored WIP — the CLAUDE.md
+#                                 mirror-canonical discipline verbatim. The
+#                                 draft-buffer marker is the sanctioned escape
+#                                 valve (checked above, before this block).
 BACKUP_META="${DHX_BACKUP_META:-$HOME/.claude/gsd-local-patches/backup-meta.json}"
-TIER="WARN"
-EXIT_CODE=1
+EXIT_CODE=1          # default: backup-meta absent → fresh-install advisory (WARN)
+REASON="WARN: edit of $REL_PATH may cause canonical-mirror drift (backup-meta not installed; advisory)."
 if [ -f "$BACKUP_META" ]; then
-  META_FILES=$(jq -r '.files[]' "$BACKUP_META" 2>/dev/null)
-  if [ -z "$META_FILES" ]; then
-    # present but unreadable/empty/truncated — fail safe, do NOT downgrade to WARN
-    TIER="BLOCKED"
+  if ! jq -e '.files | type == "array"' "$BACKUP_META" >/dev/null 2>&1; then
+    # present but unreadable / corrupt / missing-key / non-array — WR-02 fail-safe.
     EXIT_CODE=2
-  elif printf '%s\n' "$META_FILES" | grep -Fxq "$REL_PATH"; then
-    TIER="BLOCKED"
+    REASON="BLOCKED: edit of $REL_PATH — backup-meta.json unreadable/corrupt; failing safe (mirror state unverifiable)."
+  else
+    # parseable array → block-all; membership only picks the message.
+    META_FILES=$(jq -r '.files[]' "$BACKUP_META" 2>/dev/null)
     EXIT_CODE=2
+    if printf '%s\n' "$META_FILES" | grep -Fxq "$REL_PATH"; then
+      REASON="BLOCKED: edit of $REL_PATH bypasses canonical mirror (load-bearing GSD fork-tracked file)."
+    else
+      REASON="BLOCKED: edit of $REL_PATH bypasses canonical mirror (no live fork patch registered — unmirrored edit under managed ~/.claude/gsd-core/)."
+    fi
   fi
 fi
 
-# D-10 tiered stderr emit
+# D-10 stderr emit — tier-specific first line (REASON) + shared remediation body.
 CANONICAL="$HOME/.claude/gsd-local-patches/$REL_PATH"
 {
-  if [ "$TIER" = "BLOCKED" ]; then
-    echo "BLOCKED: edit of $REL_PATH bypasses canonical mirror (load-bearing GSD fork-tracked file)."
-  else
-    echo "WARN: edit of $REL_PATH may cause canonical-mirror drift (mirror policy advisory; not load-bearing)."
-  fi
+  echo "$REASON"
   echo "Either annotate the draft buffer first:"
   echo "  scripts/dhx-draft-buffer.sh add $REL_PATH --reason \"<why>\""
   echo "Or mirror after editing:"
