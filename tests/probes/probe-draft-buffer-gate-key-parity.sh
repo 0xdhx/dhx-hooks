@@ -21,8 +21,13 @@
 #     $CLAUDE_CODE_SESSION_ID == hook-stdin .session_id (incl. bridged sessions, where
 #     it is the local UUID, never bridgeSessionId). Verified 2026-06-13 against the
 #     UserPromptSubmit registry + transcript records + pid-file — NOT hermetically
-#     re-derivable (it would need a live bridged session), so it is asserted by
-#     evidence in the doc, and this probe assumes it via the shared-S construction.
+#     re-derivable (it would need a live bridged session), so THIS hermetic probe
+#     assumes it via the shared-S construction. DIRECTLY CAPTURED 2026-07-15 on a
+#     real bridged session (bridgeSessionId `session_*` flavor, 0 transcript
+#     bridge-session entries) and now guarded, in any live session's run, by the
+#     live-observer companion probe-session-id-env-stdin-parity.sh (env ==
+#     registry-captured real stdin == pid-file .sessionId, ≠ bridgeSessionId). See
+#     docs/decisions.md 2026-07-15 escape-valve-under-bridge capture row + HP-043.
 #
 # Run: bash tests/probes/probe-draft-buffer-gate-key-parity.sh
 # Exit: 0 all pass; 1 any fail; 0-with-SKIP when the shared resolver lib is absent
