@@ -171,6 +171,7 @@
     ],
     "defaultMode": "bypassPermissions"
   },
+  "model": "claude-fable-5[1m]",
   "hooks": {
     "SessionStart": [
       {
@@ -332,13 +333,14 @@
   "enabledPlugins": {
     "superpowers@claude-plugins-official": false,
     "superpowers@dhx-local": true,
-    "playwright@claude-plugins-official": true,
+    "playwright@claude-plugins-official": false,
     "typescript-lsp@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "playground@claude-plugins-official": true,
     "document-skills@anthropic-agent-skills": false,
     "dhx@dhx-local": true,
-    "llm-wiki@llm-wiki": true
+    "llm-wiki@llm-wiki": true,
+    "chrome-devtools-mcp@chrome-devtools-plugins": true
   },
   "extraKnownMarketplaces": {
     "dhx-local": {
@@ -352,10 +354,16 @@
         "source": "github",
         "repo": "praneybehl/llm-wiki-plugin"
       }
+    },
+    "chrome-devtools-plugins": {
+      "source": {
+        "source": "directory",
+        "path": "/home/dhx/repos/chrome-devtools-mcp-fork"
+      }
     }
   },
   "outputStyle": "Dry Blade",
-  "effortLevel": "xhigh",
+  "effortLevel": "medium",
   "awaySummaryEnabled": true,
   "tui": "fullscreen",
   "voice": {
