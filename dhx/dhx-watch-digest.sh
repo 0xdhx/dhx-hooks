@@ -292,9 +292,17 @@ if [ -f "$WATCHLIST" ]; then
   if [ "$ACTION_COUNT" -gt 0 ]; then
     # SAME predicate as the count select above -- keep the two textually identical
     # (the probe asserts count and render together so divergence is caught). Renders
-    # an actionable-inbox row per item (tag · labels · url) + copy-ready ack/snooze
-    # shortcuts -- the driver subcommands `ack <id>` / `snooze <id> 8h`, which users
-    # invoke via /dhx:watch -- never bare ids.
+    # an actionable-inbox row per item (tag · labels · url · polled-age) + copy-ready
+    # ack/snooze shortcuts -- the driver subcommands `ack <id>` / `snooze <id> 8h`,
+    # which users invoke via /dhx:watch -- never bare ids.
+    #
+    # The `· polled Xh ago` suffix is POLL freshness (last_checked_at), NOT action
+    # age -- it dates the row's labels/state so a poll-stale row self-discounts
+    # instead of reading as a live demand. D-13 fail-silent: the same fractional-
+    # second strip as the snooze gate above (producer stamps ms-precision ISO;
+    # jq-1.7 fromdateiso8601 throws on it), whole pipe wrapped in (..)? // null so
+    # a missing/malformed/non-string last_checked_at renders the row bare, never
+    # throws. Display-only (D-05) -- read from disk, no recompute, no poll.
     ACTION_ROWS=$(jq -r '.items[]
       | select(.status == "active"
           and .action_state == "awaiting_us"
@@ -304,6 +312,12 @@ if [ -f "$WATCHLIST" ]; then
       | "    " + .tag
         + (((.last_seen_labels // []) | .[0:3] | join(", ")) as $lbl | if $lbl == "" then "" else " · " + $lbl end)
         + " · " + .url
+        + ((((.last_checked_at | sub("\\.[0-9]+";"") | fromdateiso8601)? // null) as $polled
+            | if $polled == null then ""
+              else (((now - $polled) | if . < 0 then 0 else . end) as $s
+                | if $s < 3600 then " · polled \($s / 60 | floor)m ago"
+                  else " · polled \($s / 3600 | floor)h ago" end)
+              end))
         + "\n      › /dhx:watch ack " + .id + " · snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
     ACTION_BLOCK="⚠ Action required (${ACTION_COUNT}):
 ${ACTION_ROWS}

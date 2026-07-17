@@ -19,6 +19,10 @@
 //      is a renderer; the gate-confirm guard lives in the driver/skill, not here).
 //   4. FAIL-SILENT — absent / empty / non-JSON watchlist renders nothing + exits 0.
 //   5. NOT BARE IDS — each rendered item carries the copy-ready ack/snooze shortcuts.
+//   6. POLL-AGE SUFFIX — a parseable last_checked_at renders "· polled Xh ago" /
+//      "Xm ago" (ms-precision ISO exercised — the producer's real format, which
+//      needs the fractional-second strip before fromdateiso8601); a missing or
+//      malformed last_checked_at renders the row BARE (fail-silent, never throws).
 //
 // Backs docs/decisions.md 2026-05-28 watch action-required banner-consumer row.
 // Hermetic: each spawn points DHX_WATCH_DIR at a throwaway mktemp dir holding only a
@@ -159,6 +163,35 @@ for (const c of SILENT_CASES) {
   check('(5) renders copy-ready snooze shortcut', r.stdout.includes('snooze shortcut-1 8h'), `out=${j(r.stdout)}`);
   check('(5) renders the url (openable identity)',
     r.stdout.includes('https://github.com/o/r/issues/1'), `out=${j(r.stdout)}`);
+}
+
+// ── (6) POLL-AGE SUFFIX — last_checked_at freshness age, D-13 fail-silent ──
+{
+  // 9h ago, ms-precision ISO (toISOString) — the producer's real format; proves the
+  // fractional-second strip works (without it, fromdateiso8601 throws on every real
+  // timestamp and the suffix never renders).
+  const nineH = new Date(Date.now() - 9 * 3600 * 1000).toISOString();
+  const rH = runBanner([item({ id: 'age-hours', last_checked_at: nineH })]);
+  check('(6) renders hour-granularity poll age (ms-precision ISO parsed)',
+    rH.stdout.includes('· polled 9h ago'), `out=${j(rH.stdout)}`);
+
+  // 12m ago → minute granularity below the 1h threshold.
+  const twelveM = new Date(Date.now() - 12 * 60 * 1000).toISOString();
+  const rM = runBanner([item({ id: 'age-minutes', last_checked_at: twelveM })]);
+  check('(6) renders minute-granularity poll age under 1h',
+    rM.stdout.includes('· polled 12m ago'), `out=${j(rM.stdout)}`);
+
+  // Missing field → row renders bare, no suffix (fail-silent leg).
+  const rNone = runBanner([item({ id: 'age-absent' })]);
+  check('(6) missing last_checked_at → row renders bare (no "polled")',
+    rNone.status === 0 && rNone.stdout.includes('age-absent') && !rNone.stdout.includes('polled'),
+    `status=${rNone.status} out=${j(rNone.stdout)}`);
+
+  // Malformed field → same bare render, banner never throws.
+  const rBad = runBanner([item({ id: 'age-malformed', last_checked_at: 'not-a-date' })]);
+  check('(6) malformed last_checked_at → row renders bare + exit 0',
+    rBad.status === 0 && rBad.stdout.includes('age-malformed') && !rBad.stdout.includes('polled'),
+    `status=${rBad.status} out=${j(rBad.stdout)}`);
 }
 
 console.log('');
