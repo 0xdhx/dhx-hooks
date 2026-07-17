@@ -4,11 +4,16 @@
 # Exercises dhx/dhx-new-milestone-promote-reminder.sh invariants:
 # - Skill filter: only gsd-new-milestone triggers output
 # - Precondition guards: missing .planning/, missing PROJECT.md, unparseable version → silent
-# - Count partitioning: `next` vs `next+[1-3]` tracked separately
+# - Count partitioning: `next` vs `next+[1-3]` vs stale-version tracked separately
+# - Stale semantics: version tag <= $VERSION counted (<=, not <, because the hook
+#   fires BEFORE /gsd-new-milestone rewrites PROJECT.md — $VERSION is the CLOSING
+#   milestone); future tags never counted; per-component compare (v1.10 > v1.9);
+#   bare major (v2) treated as v2.0; non-version tags (post-1) ignored
 # - Output shape: single summary line + action line (total 2 lines when output emitted)
 # - Exit code always 0 (non-blocking)
 #
 # Backs: docs/decisions.md 2026-04-20 dhx-new-milestone-promote-reminder row
+#        + 2026-07-16 stale-version count row
 # Run:   bash tests/probes/probe-new-milestone-promote-reminder.sh
 
 # SAFE_FOR_LIVE: yes   (mktemp dirs passed as `cwd` in hook stdin JSON; hook reads only via cwd; no HOME mutation)
@@ -94,6 +99,54 @@ OUT=$(run "$TMP")
 EXPECTED="Milestone v1.5 declared. 2 'next' + 1 'next+N' backlog brief(s) ready for promotion.
 Run /dhx:backlog promote-next to reassign frontmatter."
 check "A5 mixed counts output" "$EXPECTED" "$OUT"
+rm -rf "$TMP"
+
+# --- Assertion 7: Stale-only fires — the failure shape from the driving brief ---
+# Zero next-tagged briefs; equal-to-closing and below tags counted, future not.
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v1.4"
+add_brief "$TMP" "a.md" "v1.4"   # equal to closing milestone → stale (<=)
+add_brief "$TMP" "b.md" "v1.3"   # below → stale
+add_brief "$TMP" "c.md" "v2.0"   # future → never counted
+OUT=$(run "$TMP")
+EXPECTED="Milestone v1.4 declared. 2 stale-version backlog brief(s) ready for promotion.
+Run /dhx:backlog promote-next to reassign frontmatter."
+check "A7 stale-only fires (equal+below counted, future not)" "$EXPECTED" "$OUT"
+rm -rf "$TMP"
+
+# --- Assertion 8: Per-component compare — v1.10 > v1.9, not string/decimal ---
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v1.9"
+add_brief "$TMP" "a.md" "v1.10"  # numerically ABOVE v1.9 → not stale
+add_brief "$TMP" "b.md" "v1.9"   # equal → stale
+OUT=$(run "$TMP")
+EXPECTED="Milestone v1.9 declared. 1 stale-version backlog brief(s) ready for promotion.
+Run /dhx:backlog promote-next to reassign frontmatter."
+check "A8 per-component compare (v1.10 not stale at v1.9)" "$EXPECTED" "$OUT"
+rm -rf "$TMP"
+
+# --- Assertion 9: Bare major tag + non-version tags ---
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v2.1"
+add_brief "$TMP" "a.md" "v2"      # bare major = v2.0 <= v2.1 → stale
+add_brief "$TMP" "b.md" "post-1"  # not a version tag → ignored
+add_brief "$TMP" "c.md" "v1.2.3"  # three components — outside pattern → ignored
+OUT=$(run "$TMP")
+EXPECTED="Milestone v2.1 declared. 1 stale-version backlog brief(s) ready for promotion.
+Run /dhx:backlog promote-next to reassign frontmatter."
+check "A9 bare-major counted, non-version tags ignored" "$EXPECTED" "$OUT"
+rm -rf "$TMP"
+
+# --- Assertion 10: All three counts compose in one summary line ---
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v1.5"
+add_brief "$TMP" "a.md" "next"
+add_brief "$TMP" "b.md" "next+2"
+add_brief "$TMP" "c.md" "v1.5"
+OUT=$(run "$TMP")
+EXPECTED="Milestone v1.5 declared. 1 'next' + 1 'next+N' + 1 stale-version backlog brief(s) ready for promotion.
+Run /dhx:backlog promote-next to reassign frontmatter."
+check "A10 mixed three-way compositional line" "$EXPECTED" "$OUT"
 rm -rf "$TMP"
 
 # --- Assertion 6: Exit code is 0 across all scenarios ---
