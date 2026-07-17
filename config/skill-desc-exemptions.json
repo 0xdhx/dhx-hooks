@@ -10,5 +10,20 @@
       "reason": "required by convention — why the exemption exists"
     }
   },
-  "exemptions": []
+  "exemptions": [
+    {
+      "slug": "playground",
+      "source": "claude-plugins-official",
+      "max_chars": 300,
+      "approved": "2026-07-17",
+      "reason": "Official-plugin cache, 268ch (18 over); clobbered on update — not worth an upstream PR"
+    },
+    {
+      "slug": "llm-wiki",
+      "source": "llm-wiki",
+      "max_chars": 1000,
+      "approved": "2026-07-17",
+      "reason": "Third-party github plugin (praneybehl/llm-wiki-plugin); enabled only in ~/repos/personal via project settings — spend accepted there, disabled fleet-wide otherwise"
+    }
+  ]
 }

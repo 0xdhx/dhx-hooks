@@ -1,6 +1,6 @@
 ---
 name: using-git-worktrees
-description: Internal to the /dhx:quick heavy chain — invoked by name from writing-plans / subagent-driven-development / executing-plans. Not for standalone triggering; worktree isolation outside the chain goes through /dhx:worktree or EnterWorktree (shared-tree lane rules apply).
+description: Internal to the /dhx:quick heavy chain — invoked by name from writing-plans / executing-plans; not for standalone triggering. Standalone worktree isolation goes through /dhx:worktree or EnterWorktree.
 ---
 
 # Using Git Worktrees
