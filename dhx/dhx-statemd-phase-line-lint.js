@@ -20,17 +20,21 @@
 // equals the frontmatter `current_phase`. A lint that fired on the forward
 // transition would train the operator to ignore it — worse than no lint.
 //
-// MIRROR PROVENANCE (gsd-core 1.6.0 — re-verify on gsd-core bumps):
-//   parseProsePhaseField  @ ~/.claude/gsd-core/bin/lib/state.cjs:1126
+// MIRROR PROVENANCE (gsd-core 1.7.0 — re-verify on gsd-core bumps):
+//   parsePhaseFromProse   @ ~/.claude/gsd-core/bin/lib/phase-id.cjs:281 (canonical,
+//                           #2121/#2125; state.cjs:1100 parseProsePhaseField is now
+//                           a one-line delegation to it)
 //   stateExtractField     @ ~/.claude/gsd-core/bin/lib/state-document.cjs:60
-//   stripFrontmatter      @ ~/.claude/gsd-core/bin/lib/state.cjs:1526
+//   stripFrontmatter      @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs:536 (moved
+//                           from state.cjs in the #2143 dedup; byte-identical logic)
 //   extractFrontmatter    @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs (scalar form)
-// The three regexes below are COPIED VERBATIM — the lint MUST agree with the
+// The regexes below are COPIED VERBATIM — the lint MUST agree with the
 // reader it protects. Do NOT "improve" them (e.g. teach dashName to accept `--`):
 // any divergence makes the lint disagree with the very harvest it warns about.
 // tests/probes/probe-statemd-phase-line-lint.js asserts the copies still match
-// the live state.cjs source (skips when gsd-core is absent) — a gsd-core bump
-// that changes the regex flips that assertion red, forcing a re-verify.
+// the live gsd-core source per-module (skips when gsd-core is absent) — a
+// gsd-core bump that changes or moves them flips that assertion red, forcing a
+// re-verify (fired 2026-07-16 on the 1.6.0→1.7.0 #2125 rewrite, as designed).
 //
 // CHANNEL (dual, per HP-038/HP-039): stderr (human, terminal) + stdout JSON
 // {hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext}} (Claude
@@ -38,16 +42,22 @@
 
 'use strict';
 
-// ── MIRROR: gsd-core parseProsePhaseField (state.cjs:1126) — VERBATIM ──────────
+// ── MIRROR: gsd-core parsePhaseFromProse (phase-id.cjs:281) — VERBATIM ─────────
 // Paren-over-dash precedence; reject-guard drops bare status tokens. The dash
 // branch matches the em-dash `—` (U+2014) ONLY — `--` is intentionally not a
 // name separator here (it falls through to the paren, exactly as gsd-core reads).
+// #2111/#2125: the phase token is ANCHORED to the start of the value (after an
+// optional `Phase ` label and optional project-code prefix), so a narrative line
+// like `Milestone v0.5 complete` or a bold-marked `**1 of 4 CLOSED**` yields
+// { phase: null } instead of mining a stray numeral. Name quantifiers are
+// length-capped {1,200} upstream (regex-backtracking DoS hardening).
 function parseProsePhaseField(value) {
   if (!value)
     return { phase: null, name: null };
-  const phaseMatch = value.match(/\b(\d+[A-Z]?(?:\.\d+)*)\b/i);
-  const parenName = value.match(/\(([^)]+)\)/);
-  const dashName = value.match(/—\s*([^(\n]+?)(?:\s*\(|$)/);
+  const str = String(value);
+  const phaseMatch = str.match(/^\s*(?:Phase\s+)?(?:[A-Z][A-Z0-9_]*-)?(\d+[A-Z]?(?:\.\d+)*)\b/i);
+  const parenName = str.match(/\(([^)]{1,200})\)/);
+  const dashName = str.match(/—\s*([^(\n]{1,200}?)(?:\s*\(|$)/);
   const rawName = parenName?.[1] ?? dashName?.[1] ?? null;
   const name = rawName && !/^(?:complete|executing|not started)$/i.test(rawName.trim())
     ? rawName.trim()
@@ -91,7 +101,7 @@ function stateExtractField(content, fieldName) {
   return null;
 }
 
-// ── MIRROR: gsd-core stripFrontmatter (state.cjs:1526) — VERBATIM ──────────────
+// ── MIRROR: gsd-core stripFrontmatter (frontmatter.cjs:536) — VERBATIM ─────────
 function stripFrontmatter(content) {
   let result = content;
   while (true) {
@@ -133,12 +143,15 @@ function extractFrontmatterScalar(content, key) {
 }
 
 // ── Phase-number normalization + alignment ────────────────────────────────────
-// Normalize both sides through the SAME digit-run regex gsd-core uses for the
-// prose phase, so `XR-32` → `32`, `03.1` → `03.1`, `Milestone v1.4` → `1.4`.
+// Normalize both sides through the SAME anchored token regex gsd-core uses for
+// prose AND frontmatter phase values (state.cjs:2825 runs frontmatter `Current
+// Phase` raws through parsePhaseFromProse too), so `XR-32` → `32`,
+// `03.1` → `03.1` — and junk like `Milestone v1.4` → null (no longer `1.4`),
+// which lands on Gate 1's suppress side, matching gsd-core's own #905 guard.
 function normalizePhaseToken(value) {
   if (value == null)
     return null;
-  const m = String(value).match(/\b(\d+[A-Z]?(?:\.\d+)*)\b/i);
+  const m = String(value).match(/^\s*(?:Phase\s+)?(?:[A-Z][A-Z0-9_]*-)?(\d+[A-Z]?(?:\.\d+)*)\b/i);
   return m ? m[1] : null;
 }
 

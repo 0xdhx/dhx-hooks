@@ -104,6 +104,24 @@ const CASES = [
     content: '## Current Position\n\nPhase: 21 (Baseball/Softball Pipeline Extraction) -- second of 4 in v2.2\n',
     warn: false },
 
+  // ---- Anchored-parser cases (gsd-core 1.7.0 #2111/#2125 — added 2026-07-16) ----
+  // Old unanchored regex mined a stray numeral from these ("v1.8" → "8",
+  // "**1 …" → "1") which could coincidentally align with the frontmatter and
+  // false-warn; the anchored parser yields phase:null → Gate 1 suppresses,
+  // matching gsd-core's own #905 preserve-guard.
+  { name: 'PASS anchored: milestone line w/ paren aside, fm coincidentally "aligned" (old parser would false-warn)',
+    content: STATE(8, 'curated-name',
+      'Phase: Milestone v1.8 complete (junk aside)'),
+    warn: false },
+  { name: 'PASS anchored: bold-marker phase line w/ mismatched paren (old parser would false-warn)',
+    content: STATE(1, 'Submission Pipeline',
+      'Phase: **1 of 4 CLOSED** (Some Aside) — wrap-up notes.'),
+    warn: false },
+  { name: 'WARN anchored: project-code prefix still parses at aligned phase (positive control)',
+    content: STATE(32, 'curated-name',
+      'Phase: XR-32 — real-name (aside text)'),
+    warn: true },
+
   // ---- PASS — frontmatter name absent / null ----
   { name: 'PASS frontmatter current_phase_name: null + bold no-number prose (alembic)',
     content: STATE(58, 'null', '**Phase:** none active — between milestones.'),
@@ -201,25 +219,46 @@ try {
 }
 
 // ── 4. Mirror-drift detector against live gsd-core (SKIP when absent) ──────────
-// The three parseProsePhaseField regexes + reject-guard are COPIED from gsd-core
-// (state.cjs:1126). If a gsd-core bump rewrites them, the lint silently disagrees
-// with the reader it protects — these assertions go red and force a re-verify.
-// (parseProsePhaseField is the report's load-bearing mirror; stateExtractField is
-// also mirrored verbatim but the drift detector focuses on the parser.)
-const GSD_STATE = path.join(os.homedir(), '.claude/gsd-core/bin/lib/state.cjs');
-const STATE_LITERALS = [
-  String.raw`/\b(\d+[A-Z]?(?:\.\d+)*)\b/i`,
-  String.raw`/\(([^)]+)\)/`,
-  '/—\\s*([^(\\n]+?)(?:\\s*\\(|$)/',
-  String.raw`/^(?:complete|executing|not started)$/i`,
+// Every mirrored literal is pinned against the gsd-core module that OWNS it
+// (gsd-core 1.7.0 homes). Widened 2026-07-16 after the #2125 rewrite moved the
+// parser regexes to phase-id.cjs and the #2143 dedup moved stripFrontmatter to
+// frontmatter.cjs — the old parser-only, state.cjs-only pins missed the
+// stripFrontmatter move entirely. If a gsd-core bump changes OR moves any of
+// these, the assertion goes red and forces a re-verify of the lint's mirrors.
+// NOTE: pin strings for template-literal sources use single quotes so `${…}`
+// stays a literal byte sequence (no interpolation outside backticks).
+const GSD_LIB = path.join(os.homedir(), '.claude/gsd-core/bin/lib');
+const MIRROR_PINS = [
+  // parsePhaseFromProse — the load-bearing parser mirror (anchored token,
+  // length-capped names, status reject-guard)
+  ['phase-id.cjs', String.raw`/^\s*(?:Phase\s+)?(?:[A-Z][A-Z0-9_]*-)?(\d+[A-Z]?(?:\.\d+)*)\b/i`],
+  ['phase-id.cjs', String.raw`/\(([^)]{1,200})\)/`],
+  ['phase-id.cjs', '/—\\s*([^(\\n]{1,200}?)(?:\\s*\\(|$)/'],
+  ['phase-id.cjs', String.raw`/^(?:complete|executing|not started)$/i`],
+  // state.cjs parseProsePhaseField must still DELEGATE to the canonical parser —
+  // a re-inlined divergent regex would keep the phase-id pins green while the
+  // actual STATE.md reader drifts.
+  ['state.cjs', 'return parsePhaseFromProse(value);'],
+  // stateExtractField precedence chain (bold → plain → pipe-table)
+  ['state-document.cjs', '\\\\*\\\\*${escaped}:\\\\*\\\\*[ \\\\t]*(.+)'],
+  ['state-document.cjs', '^${escaped}:[ \\\\t]*(.+)'],
+  ['state-document.cjs', '^(\\\\|[ \\\\t]*)(${escapedFieldName})([ \\\\t]*\\\\|[ \\\\t]*)([^|\\\\n]*?)([ \\\\t]*\\\\|[ \\\\t]*)$'],
+  // stripFrontmatter (frontmatter.cjs since #2143) + scalar quote-strip
+  ['frontmatter.cjs', String.raw`/^\s*---\r?\n[\s\S]*?\r?\n---\s*/`],
+  ['frontmatter.cjs', String.raw`/^["']|["']$/g`],
 ];
-if (fs.existsSync(GSD_STATE)) {
-  const src = fs.readFileSync(GSD_STATE, 'utf8');
-  for (const lit of STATE_LITERALS) {
-    ok(src.includes(lit), `gsd-core state.cjs still contains mirrored literal ${lit}`);
+if (fs.existsSync(GSD_LIB)) {
+  const srcCache = new Map();
+  for (const [mod, lit] of MIRROR_PINS) {
+    const p = path.join(GSD_LIB, mod);
+    if (!srcCache.has(p))
+      srcCache.set(p, fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
+    const src = srcCache.get(p);
+    ok(src !== null && src.includes(lit),
+      `gsd-core ${mod} still contains mirrored literal ${lit}`);
   }
 } else {
-  skip('gsd-core state.cjs absent — parseProsePhaseField drift check skipped');
+  skip('gsd-core lib dir absent — mirror drift check skipped');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────
