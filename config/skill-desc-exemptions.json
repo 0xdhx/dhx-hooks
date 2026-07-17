@@ -1,0 +1,14 @@
+{
+  "_schema": {
+    "doc": "Skill-description budget exemption registry (SPEC 4.4 — cross-repo docs/prompts/2026-07-17-skill-description-token-contract-SPEC.md). USER-EDITED ONLY: the delta auditor (dhx/dhx-skill-desc-audit.cjs) and the skills-repo collector READ this file and never write it. For skills that cannot carry desc-budget frontmatter (plugin caches clobbered on update; gsd tree rewritten by installer).",
+    "entry": {
+      "slug": "required — skill slug as the collector reports it",
+      "source": "optional — substring match against the collector source (e.g. 'chrome-devtools-plugins'); omit to match the slug in any source",
+      "max_chars": "required — approved cap; validity = slug(+source) + max_chars (approves context SPEND, not exact prose)",
+      "last_reviewed_sha256": "optional — sha256 of the normalized description at approval; a mismatch triggers a ONE-TIME re-review notice (never invalidates the exemption); refresh it to acknowledge a content change",
+      "approved": "required by convention — ISO date of user approval",
+      "reason": "required by convention — why the exemption exists"
+    }
+  },
+  "exemptions": []
+}

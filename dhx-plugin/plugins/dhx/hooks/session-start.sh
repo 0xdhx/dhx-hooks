@@ -37,6 +37,13 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh 
 # it silent + non-blocking regardless. Filesystem/network-only; no stdin needed.
 [ -e ~/.claude/dhx-tools/dhx-watch-health.cjs ] && node ~/.claude/dhx-tools/dhx-watch-health.cjs >/dev/null 2>&1 || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+# Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
+# description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
+# via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one
+# compact block per new/changed budget violation; fail-open with a consecutive-
+# failures counter — never blocks session start. The [ -e ] shape isn't needed here:
+# the chain script itself no-ops when its worker symlink is unprovisioned.
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-skill-desc-audit.sh || true
 # NOTE: cross-repo vitals do NOT belong here. The dispatcher's children emit PLAIN
 # stdout (→ model context only); the badge OSC is unrenderable from a hook. The
 # vitals BANNER is a SEPARATE SessionStart hook emitting a JSON {systemMessage}
