@@ -205,6 +205,7 @@ function readGsdState(dir) {
             }
           }
         } catch (e) { /* ROADMAP unreadable/malformed — keep STATE-block count */ }
+        refineDiscussStatus(state, path.dirname(candidate));
         return state;
       } catch (e) {
         return null;
@@ -215,6 +216,34 @@ function readGsdState(dir) {
     current = parent;
   }
   return null;
+}
+
+/**
+ * Downgrade `planning` to `discuss` when the current phase has no CONTEXT.md.
+ *
+ * dhx-side refinement: GSD's own vocabulary has no discuss stage — its
+ * `planning` status is set at phase transition and spans everything from
+ * "phase just transitioned" to "PLAN.md ready". dhx runs /dhx:discuss before
+ * /gsd-plan-phase, and its canonical artifact is the phase's
+ * phases/{N}-<slug>/{N}-CONTEXT.md. So `planning` with no CONTEXT.md means
+ * the actionable next step is discuss, not plan.
+ *
+ * Existence check only — content is not validated (a partial CONTEXT.md
+ * reads as discussed). An unscaffolded phase (no phases/{N}-<slug> dir) also
+ * reads as discuss: discuss is the step that scaffolds it. Any FS error
+ * keeps `planning` — the refinement never invents a state on bad reads.
+ */
+function refineDiscussStatus(state, planningDir) {
+  if (state.status !== 'planning' || !state.phaseNum) return state;
+  try {
+    const phasesDir = path.join(planningDir, 'phases');
+    const prefix = `${state.phaseNum}-`;
+    const entry = fs.readdirSync(phasesDir).find(d => d.startsWith(prefix));
+    const hasContext = !!entry && fs.readdirSync(path.join(phasesDir, entry))
+      .some(f => f.endsWith('-CONTEXT.md') || f === 'CONTEXT.md');
+    if (!hasContext) state.status = 'discuss';
+  } catch (e) { /* phases/ absent or unreadable — keep planning */ }
+  return state;
 }
 
 /**
@@ -333,6 +362,7 @@ function parseRoadmapProgress(content) {
 // visible (dim gray) rather than swallowing them.
 const STATUS_RENDER = {
   executing: { short: 'exec', color: '\x1b[33m' },       // yellow — active
+  discuss:   { short: 'disc', color: '\x1b[35m' },       // magenta — pre-shaping (no CONTEXT.md yet)
   planning:  { short: 'plan', color: '\x1b[36m' },       // cyan — shaping
   complete:  { short: 'done', color: '\x1b[32m' },       // green — settled
   archived:  { short: 'done', color: '\x1b[32m' },
@@ -771,6 +801,7 @@ function runStatusline() {
 // Export helpers for unit tests. Harmless when run as a script.
 module.exports = {
   readGsdState, parseStateMd, parseRoadmapProgress, formatGsdState,
+  refineDiscussStatus,
   compactModel, getCcsProfile,
   renderEffort,
   EFFORT_RENDER,

@@ -29,6 +29,7 @@ const {
   EFFORT_RENDER,
   truncate, findRepoRoot, getRepoSignals,
   parseStateMd, formatLine2Gsd, formatLine2Signals,
+  refineDiscussStatus,
 } = require(SCRIPT);
 
 let pass = 0;
@@ -407,6 +408,31 @@ ok('e2e: renderer line 2 does NOT emit signals (wrapper owns)', strip(hLine2 || 
 
 // Clean up e2e tmux stub after all renderWithFixtures calls complete.
 fs.rmSync(e2eStubDir, { recursive: true, force: true });
+
+// --- refineDiscussStatus: planning → discuss when no CONTEXT.md -------------
+// dhx-side stage refinement (2026-07-18): GSD's `planning` status cannot
+// distinguish "not yet discussed" from "ready to plan"; the phase CONTEXT.md
+// (written by /dhx:discuss) is the canonical discuss-has-run signal.
+{
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-disc-'));
+  const phaseDir = path.join(t, 'phases', '48-closer-ruling');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  const mk = (status, phaseNum) => ({ status, phaseNum });
+  ok('discuss: planning + no CONTEXT.md → discuss',
+     refineDiscussStatus(mk('planning', '48'), t).status, 'discuss');
+  fs.writeFileSync(path.join(phaseDir, '48-CONTEXT.md'), '');
+  ok('discuss: planning + CONTEXT.md present → stays planning',
+     refineDiscussStatus(mk('planning', '48'), t).status, 'planning');
+  ok('discuss: unscaffolded phase (no phases/49-* dir) → discuss',
+     refineDiscussStatus(mk('planning', '49'), t).status, 'discuss');
+  ok('discuss: decimal phase does not inherit parent phase CONTEXT (48.1 vs 48-)',
+     refineDiscussStatus(mk('planning', '48.1'), t).status, 'discuss');
+  ok('discuss: non-planning status untouched',
+     refineDiscussStatus(mk('executing', '48'), t).status, 'executing');
+  ok('discuss: phases/ dir absent → keeps planning (no false alarm on bad reads)',
+     refineDiscussStatus(mk('planning', '48'), path.join(t, 'nope')).status, 'planning');
+  fs.rmSync(t, { recursive: true, force: true });
+}
 
 // --- Summary ----------------------------------------------------------------
 
