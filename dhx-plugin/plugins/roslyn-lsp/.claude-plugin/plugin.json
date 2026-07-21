@@ -1,0 +1,17 @@
+{
+  "name": "roslyn-lsp",
+  "description": "C# language server via Microsoft's official roslyn-language-server (dotnet global tool, .NET 10). Replaces the official csharp-lsp plugin (csharp-ls broken on this box — see cross-repo docs/research/2026-07-20-csharp-ls-install-hang.md). Never enable alongside csharp-lsp: one plugin must own .cs.",
+  "version": "0.1.0",
+  "author": {
+    "name": "dhx",
+    "email": "darkhawkx@gmail.com"
+  },
+  "lspServers": {
+    "roslyn": {
+      "command": "/home/dhx/repos/hooks/dhx-plugin/plugins/roslyn-lsp/bin/roslyn-lsp.sh",
+      "extensionToLanguage": {
+        ".cs": "csharp"
+      }
+    }
+  }
+}

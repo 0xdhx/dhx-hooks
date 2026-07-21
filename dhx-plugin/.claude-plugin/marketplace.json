@@ -20,12 +20,22 @@
     },
     {
       "name": "superpowers",
-      "description": "Hook-strip fork of superpowers@claude-plugins-official 5.1.0 — the 10-skill closure dhx skills invoke by name, minus the SessionStart mandate injection. Keeps the 'superpowers' plugin name so superpowers:<skill> references resolve unchanged; never enable alongside the official plugin.",
+      "description": "Hook-strip fork of superpowers@claude-plugins-official 5.1.0 \u2014 the 10-skill closure dhx skills invoke by name, minus the SessionStart mandate injection. Keeps the 'superpowers' plugin name so superpowers:<skill> references resolve unchanged; never enable alongside the official plugin.",
       "author": {
         "name": "dhx",
         "email": "darkhawkx@gmail.com"
       },
       "source": "./plugins/superpowers",
+      "category": "development"
+    },
+    {
+      "name": "roslyn-lsp",
+      "description": "C# LSP via Microsoft's official roslyn-language-server (user-local .NET 10 tool). Replaces broken csharp-ls; never enable alongside csharp-lsp@claude-plugins-official.",
+      "author": {
+        "name": "dhx",
+        "email": "darkhawkx@gmail.com"
+      },
+      "source": "./plugins/roslyn-lsp",
       "category": "development"
     }
   ]
