@@ -130,7 +130,10 @@ function findRepoRoot(dir) {
 // render nothing on line 2, so empty repos pay nothing for this read.
 // Convention asymmetry: reports/ + backlog/ use flat-active with archived
 // siblings (reports/done/, backlog/shipped/ etc.); todos/ uses nested
-// pending/ for active with done/ + completed/ as archived siblings.
+// pending/ for active with completed/ as the archived sibling (GSD-core
+// canonical — `bin/lib/commands.cjs cmdTodoComplete` writes there). `done/`
+// is a retired GSD name that may still exist in older repos; neither
+// archive dir is counted here, so both are inert for this reader.
 function getRepoSignals(dir) {
   const counts = { reports: 0, todos: 0, backlog: 0 };
   const root = findRepoRoot(dir);

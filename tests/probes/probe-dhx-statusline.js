@@ -170,6 +170,7 @@ try {
   fs.mkdirSync(path.join(tmp, 'reports'));
   fs.mkdirSync(path.join(tmp, 'reports', 'done'));
   fs.mkdirSync(path.join(tmp, '.planning', 'todos', 'pending'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.planning', 'todos', 'completed'), { recursive: true });
   fs.mkdirSync(path.join(tmp, '.planning', 'todos', 'done'), { recursive: true });
   fs.mkdirSync(path.join(tmp, '.planning', 'backlog'), { recursive: true });
 
@@ -178,9 +179,13 @@ try {
   // done/ files don't count
   fs.writeFileSync(path.join(tmp, 'reports', 'done', 'old.md'), '');
   fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'pending', 't1.md'), '');
-  // todos/done/ files MUST NOT count — convention asymmetry vs reports/
-  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'done', 'old1.md'), '');
-  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'done', 'old2.md'), '');
+  // Archived todos MUST NOT count — convention asymmetry vs reports/.
+  // completed/ is the canonical archive dir (GSD-core cmdTodoComplete writes
+  // there); done/ is the retired GSD name still present in older repos.
+  // Both are seeded so the exclusion is locked for either layout.
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'completed', 'old1.md'), '');
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'completed', 'old2.md'), '');
+  fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'done', 'legacy1.md'), '');
   // top-level .planning/todos/*.md is NOT counted (archived sibling pattern)
   fs.writeFileSync(path.join(tmp, '.planning', 'todos', 'stale-flat.md'), '');
   fs.writeFileSync(path.join(tmp, '.planning', 'backlog', 'b1.md'), '');
