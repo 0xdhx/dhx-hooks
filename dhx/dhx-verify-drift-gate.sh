@@ -215,7 +215,41 @@ fi
 # it is milestone-cumulative (total_plans/completed_plans span the whole
 # milestone, not this phase), so `completed_plans < total_plans` is true for
 # nearly every in-progress milestone and would mis-fire Exit-A on every phase.
-# The #PLAN-vs-#SUMMARY count mirrors `gsd-sdk phase-plan-index` has_summary.
+#
+# The #PLAN-vs-#SUMMARY comparison is a CARDINALITY count — NOT the per-plan
+# pairing `gsd-tools phase-plan-index` uses for `has_summary` / `incomplete[]`.
+# This comment used to claim the two mirror each other. They never did (the
+# claim was false at ship, 2026-05-15, not broken by a later GSD release), and
+# the gap is not closable here:
+#
+# DO NOT "FIX" THIS TO PAIRING — verified 2026-07-22 against gsd-core 1.8.0.
+# A 555-phase-dir fleet scan (19 repos, live + milestone archives) ran the real
+# `phase-plan-index` CLI against this cardinality count. They agree on 549 and
+# diverge on 6 — and CARDINALITY IS THE CORRECT SIDE ON 4:
+#   pairing wrong — filename drift: alembic v3.0/48 (`01-PLAN.md` +
+#     `48-01-SUMMARY.md`), cross-repo XR-24 (`02/03-PLAN.md` +
+#     `24-02/24-03-SUMMARY.md`), relater v0.40/12.1 (`12.1-0N-PLAN.md` +
+#     `0N-SUMMARY.md`); plus forgefinder v1.4/25, where
+#     extractCanonicalPlanId("25-02-GAPS-SUMMARY.md") collapses to "25-02" and
+#     falsely marks the unsummarized `25-02-PLAN.md` complete.
+#   cardinality wrong — stray summary masks a real gap: alembic v2.0/32 (rollup
+#     `32-SUMMARY.md` pads 5 real summaries to 6, hiding unsummarized `32-06`),
+#     relater v0.40/12.4 (`12.4-07/08-SUMMARY.md` have no plans, hiding
+#     unsummarized `12.4-06`).
+#
+# The two failure classes are STRUCTURALLY INDISTINGUISHABLE on disk: each is
+# exactly k summaries with no matching plan + k plans with no matching summary.
+# `alembic 32` and `cross-repo XR-24` have the same directory shape and opposite
+# correct answers. No filename-level rule — cardinality, pairing, or hybrid —
+# separates them: cardinality assumes drift, pairing assumes strays, and each is
+# wrong precisely where its assumption fails. Delegating to phase-plan-index
+# would fix 2 dirs and break 4.
+#
+# Tolerated because this is a MESSAGE-ACCURACY signal only. Step 7 emits
+# decision:block on BOTH branches — Exit-A picks which reason text, never
+# whether to block. A wrong verdict costs one misleading recovery hint, not a
+# missed gate. Probe scenarios [18]/[19] lock both shapes; full evidence in
+# docs/decisions.md 2026-07-22 row.
 EXIT_A_DETECTED=0
 # grep exit codes are tri-valued: 0 = match, 1 = no match, 2 = error
 # (unreadable file, mid-write truncation). This `if` intentionally collapses

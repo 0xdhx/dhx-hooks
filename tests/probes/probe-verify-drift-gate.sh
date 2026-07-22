@@ -12,6 +12,9 @@
 #
 # Exit-A detection is PHASE-SCOPED: an unfinished `- [ ]` checkbox in any phase
 # PLAN.md, OR a phase PLAN.md with no matching SUMMARY.md (#SUMMARY < #PLAN).
+# That second signal is a CARDINALITY count, not `phase-plan-index` per-plan
+# pairing — scenarios [18]/[19] lock the accepted divergence between the two
+# (see the hook's Step 6 banner and the docs/decisions.md 2026-07-22 row).
 # It deliberately ignores STATE.md `progress.*` — those counts are
 # milestone-cumulative, not phase-scoped. Scenario 10 is the regression test
 # for that distinction (the D-06 design flaw the Task 5.5 live-fire surfaced).
@@ -542,6 +545,89 @@ PAYLOAD=$(build_payload "/dhx:test 99")
 OUTPUT=$(run_hook "$PAYLOAD")
 assert_blocks_contains "[17c] UAT.md complete but no routing marker → fall through to Exit-A (structural marker required)" \
   "$OUTPUT" "Phase has incomplete plans"
+
+# --- Scenarios [18]/[19]: cardinality-vs-pairing divergence (2026-07-22) ------
+#
+# CHARACTERIZATION TESTS, not bug reproductions. They lock a deliberately
+# ACCEPTED trade-off, so they pass against the hook as it stands — there is no
+# behavioural fix they precede. Their job is to make the next session that tries
+# to "fix" Step 6 into per-plan pairing watch [19] go red.
+#
+# [18] and [19] build directories with the SAME structural shape — k summaries
+# with no matching plan + k plans with no matching summary — and OPPOSITE
+# correct answers. [18] is genuinely incomplete (a rollup summary masks an
+# unexecuted plan); [19] is genuinely complete (the filenames merely drifted).
+# The hook returns the same verdict for both because no filename-level rule can
+# tell them apart. [18] is the accepted-WRONG case; [19] the accepted-RIGHT one.
+# Real-world sources: alembic v2.0/32 + relater v0.40/12.4 ([18]);
+# cross-repo XR-24 + relater v0.40/12.1 + alembic v3.0/48 ([19]).
+
+# [18] = stray rollup summary masks an unsummarized plan (alembic-32 shape).
+# 2 plans (12-01, 12-02), 2 summaries — but one is the phase-level rollup
+# `12-SUMMARY.md`, so plan 12-02 is unexecuted while cardinality reads 2 == 2.
+# ACCEPTED-WRONG: the operator gets the short reason when the three-step
+# ("run /gsd-execute-phase first") would have been correct.
+refresh_fixtures 12-test false false false
+cat > "$TMP/.planning/phases/12-test/12-02-PLAN.md" <<EOF
+# Plan
+some task
+EOF
+cat > "$TMP/.planning/phases/12-test/12-SUMMARY.md" <<EOF
+# Phase 12 rollup
+status: COMPLETE
+EOF
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+if jq -e '.decision == "block" and ((.reason | contains("Phase has incomplete plans")) | not)' \
+     <<< "$OUTPUT" >/dev/null 2>&1; then
+  echo "OK   [18] rollup summary masks unsummarized plan → Exit-A does NOT fire (accepted-WRONG; cardinality 2==2)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [18] expected block without Exit-A wording, got: $(printf '%s' "$OUTPUT" | head -c 200)"
+  FAIL=$((FAIL + 1))
+fi
+
+# [18b] = negative control for [18]. Identical dir MINUS the rollup summary →
+# cardinality 1 < 2 → Exit-A fires. Proves the rollup is what flips the verdict
+# and that [18] is not passing vacuously.
+refresh_fixtures 12-test false false false
+cat > "$TMP/.planning/phases/12-test/12-02-PLAN.md" <<EOF
+# Plan
+some task
+EOF
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+assert_blocks_contains "[18b] control: same dir minus the rollup → Exit-A fires (cardinality 1<2)" \
+  "$OUTPUT" "Phase has incomplete plans"
+
+# [19] = prefix drift, phase genuinely complete (XR-24 / relater-12.1 shape).
+# 2 plans (12-01, 12-02) and 2 summaries (01-, 02-) whose stems do not match any
+# plan. Cardinality 2 == 2 → no Exit-A, which is CORRECT: both plans executed.
+# Per-plan pairing would report both plans incomplete and fire Exit-A wrongly —
+# this assertion is the guard that goes red if Step 6 is switched to pairing.
+refresh_fixtures 12-test false true false
+cat > "$TMP/.planning/phases/12-test/12-02-PLAN.md" <<EOF
+# Plan
+some task
+EOF
+cat > "$TMP/.planning/phases/12-test/01-SUMMARY.md" <<EOF
+# Summary
+plan complete
+EOF
+cat > "$TMP/.planning/phases/12-test/02-SUMMARY.md" <<EOF
+# Summary
+plan complete
+EOF
+PAYLOAD=$(build_payload "/dhx:test 12")
+OUTPUT=$(run_hook "$PAYLOAD")
+if jq -e '.decision == "block" and ((.reason | contains("Phase has incomplete plans")) | not)' \
+     <<< "$OUTPUT" >/dev/null 2>&1; then
+  echo "OK   [19] prefix-drifted summaries, phase complete → Exit-A does NOT fire (accepted-RIGHT; pairing would mis-fire)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [19] expected block without Exit-A wording, got: $(printf '%s' "$OUTPUT" | head -c 200)"
+  FAIL=$((FAIL + 1))
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"
