@@ -54,8 +54,8 @@
 #   - `gh issue create --title x --body y`            (canonical create)
 #   - `gh issue comment 123 --body y`                 (canonical comment / reply path)
 #   - `gh api repos/o/r/issues/1/comments -X POST`    (raw-API detour; also --method POST,
-#     and the `pulls` variant — zero legitimate consumers across ~/repos/skills/dhx and
-#     ~/repos/cross-repo/scripts as of 2026-07-21, so covering it costs nothing)
+#     and the `pulls` variant — zero legitimate consumers across the skills-monorepo
+#     dhx skills and the cross-repo script trees as of 2026-07-21, so it costs nothing)
 #   - `bash -c '…'` wrappers, pipes, leading/trailing whitespace
 # NOT COVERED — deliberate non-goals, each with a live legitimate consumer that a deny
 # would break (do NOT "close the gap" without reading these first):

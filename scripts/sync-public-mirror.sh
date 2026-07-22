@@ -279,6 +279,16 @@ fi
 # self-documents but doesn't leak the local-disk layout.
 sed -i 's|~/repos/skills/dhx/|<skills-monorepo>/dhx/|g' dhx-plugin/plugins/dhx/.claude-plugin/plugin.json
 
+# Class F (2026-07-21): generalized skills-path sweep — same residual-catcher role the
+# Class D/E sweeps play. Any remaining `repos/skills` (prose pointer, report citation,
+# or a live fallback path like install-hooks.sh's git-safe.sh lookup) becomes
+# `repos/<skills-monorepo>`, the alias the plugin-manifest rule above established.
+# The angle bracket matters: the verify greps `/repos/(skills|forgefinder)` as a
+# SUBSTRING, so a plausible-looking alias such as `repos/skills-monorepo` would still
+# trip it — `<skills-monorepo>` does not.
+grep -rlI "repos/skills" . --exclude-dir=.git 2>/dev/null \
+  | xargs -r sed -i 's|repos/skills|repos/<skills-monorepo>|g'
+
 # tests/probes/probe-plugin-cache-staleness.sh:275 — single-line comment
 # citing the skills-repo's dhx-sym.sh dispatch pattern. Narrow path-only
 # rewrite preserves the 2-line genitive grammar (line 275 ends in "'s",
