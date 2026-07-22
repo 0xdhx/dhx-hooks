@@ -1,6 +1,7 @@
 {
   "cleanupPeriodDays": 9999,
   "env": {},
+  "includeGitInstructions": false,
   "permissions": {
     "allow": [
       "Read",
@@ -83,11 +84,11 @@
       "Edit",
       "Glob",
       "Grep",
-      "Write(.planning/**)",
-      "Write(docs/**)",
-      "Write(tests/**)",
-      "Write(scripts/**)",
-      "Write(pyproject.toml)",
+      "Edit(.planning/**)",
+      "Edit(docs/**)",
+      "Edit(tests/**)",
+      "Edit(scripts/**)",
+      "Edit(pyproject.toml)",
       "Agent",
       "Skill(gsd-*)",
       "Skill(dhx:*)",
@@ -101,7 +102,7 @@
       "Bash(claude:*)",
       "Skill(keybindings-help)",
       "Bash(gh:*)",
-      "Write(~/.ccs/**)",
+      "Edit(~/.ccs/**)",
       "Skill(check-account)",
       "Skill(audit-session)",
       "Skill(simplify)",
@@ -142,9 +143,9 @@
       "Skill(claude-api)",
       "Bash(npx gsd-core *)",
       "Read(.planning/*)",
-      "Write(.planning/*)",
       "Read(STATE.md)",
-      "Write(STATE.md)"
+      "Edit(STATE.md)",
+      "Edit(.planning/*)"
     ],
     "deny": [
       "Read(./.env*)",
@@ -172,6 +173,47 @@
     "defaultMode": "bypassPermissions"
   },
   "model": "claude-fable-5[1m]",
+  "deniedMcpServers": [
+    {
+      "serverName": "claude.ai Desktop Commander Remote"
+    },
+    {
+      "serverName": "claude.ai Google Drive"
+    },
+    {
+      "serverName": "claude.ai Mermaid Chart"
+    },
+    {
+      "serverName": "claude.ai Gmail"
+    },
+    {
+      "serverName": "claude.ai Google Calendar"
+    },
+    {
+      "serverName": "claude.ai deepwiki"
+    },
+    {
+      "serverName": "claude.ai notebooklm"
+    },
+    {
+      "serverName": "claude.ai notion-fast-p"
+    },
+    {
+      "serverName": "claude.ai supermemory"
+    },
+    {
+      "serverName": "claude.ai memory"
+    },
+    {
+      "serverName": "claude.ai Notion"
+    },
+    {
+      "serverName": "claude.ai Microsoft 365"
+    },
+    {
+      "serverName": "claude.ai Superhuman Mail"
+    }
+  ],
   "hooks": {
     "SessionStart": [
       {
@@ -339,8 +381,10 @@
     "playground@claude-plugins-official": true,
     "document-skills@anthropic-agent-skills": false,
     "dhx@dhx-local": true,
-    "llm-wiki@llm-wiki": true,
-    "chrome-devtools-mcp@chrome-devtools-plugins": true
+    "llm-wiki@llm-wiki": false,
+    "chrome-devtools-mcp@chrome-devtools-plugins": true,
+    "csharp-lsp@claude-plugins-official": false,
+    "roslyn-lsp@dhx-local": true
   },
   "extraKnownMarketplaces": {
     "dhx-local": {
@@ -363,7 +407,7 @@
     }
   },
   "outputStyle": "Dry Blade",
-  "effortLevel": "medium",
+  "effortLevel": "high",
   "awaySummaryEnabled": true,
   "tui": "fullscreen",
   "voice": {
