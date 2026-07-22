@@ -15,24 +15,31 @@
 #   - an unrecognized argument REFUSES (exit 2) rather than falling through to a publish
 #   - a typo'd flag (`--dryrun`, `--dry_run`) hits the refusal, NOT the publish path
 #   - --push does reach the push (proved against a temp BARE repo, never the real remote)
-#   - DRY_RUN=0 env still publishes (the automation path), DRY_RUN=<junk> rehearses
+#   - env DRY_RUN can only push the mode TOWARD rehearsal; publishing needs argv --push
+#   - contradictory flags (--dry-run --push, either order) REFUSE instead of last-wins
+#   - a set-but-EMPTY PUBLIC_REMOTE refuses instead of defaulting to production
+#   - the probe process CANNOT authenticate to the production remote at all [20]
 #
 # INVARIANT (cross-file contract): the sibling convention lint
 # probe-publisher-scripts-rehearse-by-default.sh asserts this shape for EVERY publisher
 # in scripts/ — this probe is the deep check for one script, that one is the sweep.
 #
-# NOTE: the --push case redirects PUBLIC_REMOTE to a local bare repo via the env
-# override the script already honors. It never contacts github.com. If that override is
-# ever removed, this probe MUST be reworked, not "fixed" by pointing at the real remote.
+# NOTE: the --push case redirects PUBLIC_REMOTE to a local bare repo AND runs under a
+# credential lockout (see CAPABILITY LOCKOUT below) so a push to github.com cannot
+# authenticate even if the override is lost. It does still make read-only HTTPS GETs:
+# the script's step-6 permalink check hits raw.githubusercontent.com with hardcoded URLs
+# that PUBLIC_REMOTE does not redirect (Codex review finding 11). Read-only, but the
+# containment claim must be stated accurately rather than as "no network".
 #
 # Backs: docs/decisions.md 2026-07-21 sync-mirror publish-gate row.
 #
 # Run: bash tests/probes/probe-sync-mirror-publish-gate.sh
 #
-# SAFE_FOR_LIVE: yes   (the only push target is a mktemp bare repo passed through
-#                       PUBLIC_REMOTE; no network, no writes to the source repo, no
-#                       contact with git@github.com:0xdhx/dhx-hooks.git. Runs are
-#                       confined to a mktemp dir removed on EXIT.)
+# SAFE_FOR_LIVE: yes   (push target is a mktemp bare repo + a git credential lockout that
+#                       makes authenticating to github.com impossible for this process
+#                       and its children; no writes to the source repo; runs confined to
+#                       a mktemp dir removed on EXIT. NOT "no network": step 6 issues
+#                       read-only raw.githubusercontent.com GETs — see the NOTE above.)
 
 set -uo pipefail
 
@@ -47,11 +54,31 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# EVERY invocation in this file is bound to a local fixture remote. There is no
-# assertion for which contacting github.com is acceptable, including the ones that only
-# read a banner — see the _mode() note below for what happened when that was not true.
+# --- CAPABILITY LOCKOUT (Codex adversarial review 2026-07-21, findings 1 + 4) ---------
+# Binding PUBLIC_REMOTE per-invocation is a CONVENTION, and conventions are what failed
+# twice. The review's decisive point: safety still depended on mutable code-under-test
+# honoring an environment seam. Two concrete refutations it produced —
+#   (a) rename PUBLIC_REMOTE in the publisher and forget the probe: assertion [19] stays
+#       green (every caller still spells the old name), the publisher ignores it, and the
+#       end-to-end --push force-pushes PRODUCTION before [17] fails. A publisher-only
+#       commit does not even run this suite (verify-hook-patterns.sh:318 triggers on
+#       dhx/*.js + tests/probes/ only), so the rename lands unguarded.
+#   (b) `PUBLIC_REMOTE="$SAFE_REMOTE" true; bash "$SCRIPT" --push` passes the lexical
+#       self-lint while the script receives no override at all.
+# So: revoke the CAPABILITY. Every git child of this probe runs with an ssh command that
+# cannot authenticate to anything. The local fixture is a filesystem path and needs no
+# ssh, so the fixture keeps working while a push to github.com fails at auth — even if
+# every override, flag, and lint in this file were deleted.
+export GIT_SSH_COMMAND='ssh -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o IdentityAgent=none -o BatchMode=yes -o ConnectTimeout=5'
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=/bin/true
+export GIT_CONFIG_NOSYSTEM=1
+
+# EVERY invocation in this file is ALSO bound to a local fixture remote — belt to the
+# lockout's braces, not a substitute for it.
 SAFE_REMOTE="$TMP/safe-remote.git"
 git init --bare -q "$SAFE_REMOTE"
+export PUBLIC_REMOTE="$SAFE_REMOTE"   # inherited by every child, independent of line spelling
 
 # Fail closed if the fixture is not local. A probe that silently loses its override is
 # the exact shape that force-pushed production on 2026-07-21.
@@ -79,14 +106,15 @@ _assert() { # $1 label, $2 expected, $3 actual
 # --- Static assertions on the gate's shape ---------------------------------
 # Cheap, and they fail loudly if the default is flipped back by an edit that never
 # runs the expensive paths below.
-_assert "[1] default is rehearse (DRY_RUN defaults to 1)" "yes" \
-  "$(grep -qE '^DRY_RUN="\$\{DRY_RUN:-1\}"' "$SCRIPT" && echo yes || echo no)"
-_assert "[2] --push is the only argv path that clears it" "yes" \
-  "$(grep -qE '^\s*--push\)\s*DRY_RUN=0;' "$SCRIPT" && echo yes || echo no)"
+_assert "[1] DRY_RUN is initialized safe, unconditionally" "yes" \
+  "$(grep -qE '^DRY_RUN=1 ' "$SCRIPT" && echo yes || echo no)"
+_assert "[2] --push is the ONLY thing that clears it" "yes" \
+  "$([ "$(grep -cE '^\[ "\$SAW_PUSH_FLAG" = "1" \] && DRY_RUN=0' "$SCRIPT")" = "1" ] \
+      && echo yes || echo no)"
 _assert "[3] unknown args exit 2 (no fall-through)" "yes" \
   "$(grep -qE 'exit 2 ;;' "$SCRIPT" && echo yes || echo no)"
-_assert "[4] normalization: anything but explicit 0 rehearses" "yes" \
-  "$(grep -qE '^\[ "\$DRY_RUN" = "0" \] \|\| DRY_RUN=1' "$SCRIPT" && echo yes || echo no)"
+_assert "[4] env can only push the mode TOWARD rehearsal" "yes" \
+  "$(grep -qE '^\s+1\) DRY_RUN=1 ;;' "$SCRIPT" && echo yes || echo no)"
 
 # --- Mode banner: what the operator sees BEFORE the work starts ------------
 # The incident turned on there being no way to tell a rehearsal from a publish until
@@ -143,9 +171,12 @@ _env_mode() { # $1 DRY_RUN value -> "DRY" | "LIVE" | "?"
     *) echo "?" ;;
   esac
 }
-_assert "[13] DRY_RUN=0 (automation path) publishes" "LIVE" "$(_env_mode 0)"
-_assert "[14] DRY_RUN=junk rehearses (not treated as 'set therefore live')" "DRY" \
-  "$(_env_mode junk)"
+# [13]/[14] previously asserted that `DRY_RUN=0` PUBLISHES. Codex finding 2 refuted that
+# as a design: an exported 0 from an unrelated command hours earlier turned a BARE
+# invocation into a force-push, and the banner then lied ("--push given"). The env path
+# was removed rather than documented; these now assert the removal. See [26]/[27].
+_assert "[13] DRY_RUN=0 does NOT publish (env publish path removed)" "DRY" "$(_env_mode 0)"
+_assert "[14] DRY_RUN=junk rehearses" "DRY" "$(_env_mode junk)"
 
 # --- End-to-end: rehearsal pushes NOTHING, --push pushes SOMETHING ----------
 # Both run the full pipeline against a temp bare repo standing in for the mirror.
@@ -177,12 +208,47 @@ for token in forgefinder "repos/skills"; do
   _assert "[18/$token] published tree carries no '$token'" "0" "$HITS"
 done
 
+# --- Capability lockout is real, not decorative -----------------------------
+# Prove the probe cannot authenticate to the production host even when explicitly aimed
+# at it. This is the assertion that survives a renamed env var, a fooled lexical lint, or
+# a deleted override — the three ways the review broke the convention-only design.
+# (Read-only: a failed auth handshake, no ref update attempted.)
+AUTH_OUT=$(git ls-remote git@github.com:0xdhx/dhx-hooks.git 2>&1; echo "rc=$?")
+_assert "[20] probe process CANNOT authenticate to the production remote" "yes" \
+  "$(grep -q 'rc=0' <<< "$AUTH_OUT" && echo no || echo yes)"
+
 # --- Self-lint: no invocation in THIS file may see the default remote --------
 # The 2026-07-21 production push came from three assertions in this very file that
 # invoked the script without a PUBLIC_REMOTE override. Asserting it structurally beats
 # remembering it: every line that runs the script must also bind the remote.
 UNGUARDED=$(grep -n 'bash "\$SCRIPT"' "$0" | grep -vc 'PUBLIC_REMOTE=')
-_assert "[19] every script invocation in this probe binds PUBLIC_REMOTE" "0" "$UNGUARDED"
+_assert "[21] every script invocation in this probe binds PUBLIC_REMOTE" "0" "$UNGUARDED"
+
+# --- --print-mode is genuinely side-effect-free (Codex finding 10) -----------
+# The claim was "parse-only"; the first version ran repo discovery and created a temp dir
+# before exiting, and no assertion checked either. Verify BOTH: no build dir is left
+# behind, and the fixture remote is untouched by a print-mode LIVE-mode invocation.
+BUILD_BEFORE=$(ls -d /tmp/dhx-hooks-public-* 2>/dev/null | wc -l)
+FIX_BEFORE=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)
+( cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" bash "$SCRIPT" --push --print-mode >/dev/null 2>&1 )
+BUILD_AFTER=$(ls -d /tmp/dhx-hooks-public-* 2>/dev/null | wc -l)
+FIX_AFTER=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)
+_assert "[22] --print-mode leaves no build dir" "$BUILD_BEFORE" "$BUILD_AFTER"
+_assert "[23] --print-mode does not touch the remote" "$FIX_BEFORE" "$FIX_AFTER"
+
+# --- Contradictory flags refuse (Codex finding 7) ---------------------------
+RC_CONFLICT=$( cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" bash "$SCRIPT" --dry-run --push >/dev/null 2>&1; echo $? )
+_assert "[24] --dry-run --push refuses (no last-flag-wins)" "2" "$RC_CONFLICT"
+RC_CONFLICT2=$( cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" bash "$SCRIPT" --push --dry-run >/dev/null 2>&1; echo $? )
+_assert "[25] --push --dry-run refuses (order-independent)" "2" "$RC_CONFLICT2"
+
+# --- env DRY_RUN can only push TOWARD rehearsal (Codex finding 2) -----------
+_assert "[26] env DRY_RUN=0 does NOT publish on a bare invocation" "DRY" "$(_env_mode 0)"
+_assert "[27] env DRY_RUN=1 still rehearses" "DRY" "$(_env_mode 1)"
+
+# --- set-but-empty override refuses rather than defaulting to production ----
+RC_EMPTY=$( cd "$REPO" && PUBLIC_REMOTE="" bash "$SCRIPT" --push --print-mode >/dev/null 2>&1; echo $? )
+_assert "[28] PUBLIC_REMOTE set-but-empty refuses" "2" "$RC_EMPTY"
 
 echo "---"
 echo "$PASSED passed, $FAILED failed"

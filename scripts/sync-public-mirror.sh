@@ -40,53 +40,78 @@ set -euo pipefail
 # cannot pass argv; it is deliberately the awkward spelling, not the default.
 # Regression-guarded by tests/probes/probe-sync-mirror-publish-gate.sh — if someone
 # flips the default back, that probe goes red before the mirror moves.
-DRY_RUN="${DRY_RUN:-1}"
+# Codex adversarial review 2026-07-21 (findings C5, C1-order, C2-parse-only, empty-override)
+# closed four holes that survived the first fix:
+#   - `export DRY_RUN=0` made a BARE invocation publish, and the banner still claimed
+#     "(--push given)" — a lying banner on the exact surface built to stop a lie.
+#     The env var can now only push the mode toward REHEARSE; publishing requires argv.
+#   - `--dry-run --push` published (last flag won), so a wrapper appending --push could
+#     defeat a caller explicitly asking to rehearse. Conflicting mode flags now REFUSE.
+#   - `--print-mode` was not parse-only: it ran repo discovery and created a temp dir
+#     before exiting. It now exits before any filesystem or git work.
+#   - `PUBLIC_REMOTE=""` (set-but-empty) fell through `:-` to the PRODUCTION remote.
+#     Set-but-empty is now a refusal, not a silent promotion to production.
+DRY_RUN=1                 # always start safe; argv is the only way to change it
+SAW_DRY_FLAG=0
+SAW_PUSH_FLAG=0
 PRINT_MODE=0
+case "${DRY_RUN_ENV:-${DRY_RUN:-}}" in
+  # Env may only ever push toward rehearsal. `DRY_RUN=0` is deliberately NOT a publish
+  # path: an exported 0 from an unrelated command hours earlier must not turn a bare
+  # invocation into a force-push. Automation publishes by passing --push, like a human.
+  1) DRY_RUN=1 ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run|-n) DRY_RUN=1; shift ;;
-    --push)       DRY_RUN=0; shift ;;   # the ONLY argv path to a live force-push
-    # Parse-only introspection: resolve the mode, print it, exit BEFORE any clone,
-    # filter, scrub, or push. Exists so the argument-parsing contract can be tested
-    # without executing the pipeline. Added 2026-07-21 after the regression probe for
-    # that very contract tested the LIVE banner by running the LIVE path — and
-    # force-pushed the production mirror from inside a pre-commit hook. A gate whose
-    # test has to perform the dangerous act to observe the gate is not testable; give
-    # the test a side-effect-free way to ask.
+    --dry-run|-n) SAW_DRY_FLAG=1; shift ;;
+    --push)       SAW_PUSH_FLAG=1; shift ;;
     --print-mode) PRINT_MODE=1; shift ;;
     -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
     *)
       echo "REFUSE: unrecognized argument '$1'." >&2
-      echo "        Usage: $0 [--push] [--dry-run|-n]" >&2
+      echo "        Usage: $0 [--push] [--dry-run|-n] [--print-mode]" >&2
       echo "        Default is a REHEARSAL; --push is required to publish." >&2
       echo "        Refusing rather than falling through — see the 2026-07-21" >&2
       echo "        incident note above." >&2
       exit 2 ;;
   esac
 done
-[ "$DRY_RUN" = "0" ] || DRY_RUN=1   # normalize: anything not an explicit 0 rehearses
-export DRY_RUN
 
-REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
+if [ "$SAW_DRY_FLAG" = "1" ] && [ "$SAW_PUSH_FLAG" = "1" ]; then
+  echo "REFUSE: --dry-run and --push are contradictory; refusing to guess." >&2
+  echo "        (Last-flag-wins would let a wrapper append --push and silently" >&2
+  echo "        override a caller that explicitly asked to rehearse.)" >&2
+  exit 2
+fi
+[ "$SAW_PUSH_FLAG" = "1" ] && DRY_RUN=0
+
+# Destination resolution. Set-but-EMPTY is a refusal: `${PUBLIC_REMOTE:-<production>}`
+# would treat it as unset and quietly aim at production — the shape that turns a
+# half-applied test override into a live publish.
+if [ "${PUBLIC_REMOTE+set}" = "set" ] && [ -z "$PUBLIC_REMOTE" ]; then
+  echo "REFUSE: PUBLIC_REMOTE is set but empty. Refusing to fall back to the" >&2
+  echo "        production remote — an emptied override is a bug, not a default." >&2
+  exit 2
+fi
 PUBLIC_REMOTE="${PUBLIC_REMOTE:-git@github.com:0xdhx/dhx-hooks.git}"
 TAG_VERSION="${TAG_VERSION:-v0.2.0}"
-BUILD_DIR=$(mktemp -d -t dhx-hooks-public-XXXXXX)
-trap 'rm -rf "$BUILD_DIR"' EXIT
 
-# Say which mode is running, up front and unmissably — the incident above turned on the
-# operator having no way to tell a rehearsal from a publish until after the fact.
+# Say which mode is running, up front and unmissably, and say it TRUTHFULLY — the
+# banner must name the reason it believes it is publishing.
 if [ "$DRY_RUN" = "1" ]; then
   echo "[sync] MODE: DRY RUN (default) — nothing will be pushed to $PUBLIC_REMOTE"
 else
   echo "[sync] MODE: LIVE PUBLISH (--push given) — will FORCE-PUSH $PUBLIC_REMOTE"
 fi
 
-# --print-mode exits HERE — before the clone, the filter, the scrub, and the push.
-if [ "$PRINT_MODE" = "1" ]; then
-  trap - EXIT
-  rm -rf "$BUILD_DIR"
-  exit 0
-fi
+# --print-mode exits HERE — before repo discovery, before mktemp, before any git call.
+# Parse-only means parse-only; the first version of this exit ran `rev-parse` and
+# created a temp dir first, which made "side-effect-free" an overstatement.
+[ "$PRINT_MODE" = "1" ] && exit 0
+
+REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
+BUILD_DIR=$(mktemp -d -t dhx-hooks-public-XXXXXX)
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
 echo "[sync] REPO_ROOT=$REPO_ROOT"
 echo "[sync] BUILD_DIR=$BUILD_DIR"
@@ -726,13 +751,40 @@ fi
 
 echo "[sync] pushing to $PUBLIC_REMOTE..."
 git remote add public "$PUBLIC_REMOTE" 2>/dev/null || git remote set-url public "$PUBLIC_REMOTE"
-git push --force public HEAD:main >/dev/null 2>&1
+
+# --- Lease protection (Codex review finding 9) -----------------------------
+# A bare `--force` overwrites whatever is on the remote, including a legitimate update
+# made by someone else WHILE this run was filtering and scrubbing (that takes minutes).
+# Both parties can have passed --push and the result still be unintended. Fetch the
+# current remote tip and stake a lease on it: if main moved under us, the push refuses
+# and the operator re-runs against the new state.
+REMOTE_MAIN=$(git ls-remote public refs/heads/main 2>/dev/null | cut -f1)
+if [ -n "$REMOTE_MAIN" ]; then
+  git fetch --quiet public refs/heads/main 2>/dev/null || true
+  if ! git push --force-with-lease="refs/heads/main:$REMOTE_MAIN" public HEAD:main >/dev/null 2>&1; then
+    echo "[sync] FAIL: lease refused — public main moved during this run (expected $REMOTE_MAIN)." >&2
+    echo "[sync]       Nothing was published. Re-run to rebuild against the new remote state." >&2
+    exit 1
+  fi
+else
+  # Empty remote (first publish / fixture): no tip to stake a lease on.
+  git push --force public HEAD:main >/dev/null 2>&1
+fi
+MAIN_PUBLISHED=1   # from here on, main IS public — see the tag-failure branch below
 
 # Tag if absent (idempotent — `git tag` exits non-zero if tag already exists locally)
 if ! git rev-parse "$TAG_VERSION" >/dev/null 2>&1; then
   git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION"
 fi
-git push --force public "$TAG_VERSION" >/dev/null 2>&1
+# Partial-publish honesty (Codex review finding 8): main and the tag are two separate
+# pushes. If the tag push fails, `set -e` would exit non-zero with main ALREADY public —
+# and any caller reading "non-zero" as "nothing published" inherits exactly the
+# false-confidence shape of the timeout that caused incident 2. Say it out loud.
+if ! git push --force public "$TAG_VERSION" >/dev/null 2>&1; then
+  echo "[sync] WARN: tag push failed, but MAIN IS ALREADY PUBLISHED at $(git rev-parse HEAD)." >&2
+  echo "[sync]       This run's non-zero exit does NOT mean 'nothing was published'." >&2
+  exit 1
+fi
 
 # --- 6. Verify permalinks --------------------------------------------------
 echo "[sync] verifying permalinks (HTTP 200)..."

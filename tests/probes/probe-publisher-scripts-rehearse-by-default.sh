@@ -7,8 +7,8 @@
 # INVARIANT: for each script matching a publish verb (`git push`, `gh issue create`,
 # `gh issue comment`, `gh pr create`, `gh release create`, `gh api …POST`), the file must
 # contain BOTH:
-#   (a) a rehearse-by-default gate  — `DRY_RUN="${DRY_RUN:-1}"` or an equivalent
-#       default-safe assignment, and
+#   (a) a rehearse-by-default gate  — an unconditional `DRY_RUN=1` or the
+#       `DRY_RUN="${DRY_RUN:-1}"` default form, and
 #   (b) an explicit publish opt-in  — a `--push` / `--publish` / `--live` argv case.
 #
 # Why a lint and not a note in a doc: the 2026-07-21 incident was not caused by anyone
@@ -20,6 +20,21 @@
 #
 # Adding a legitimately-exempt script: add it to EXEMPT below WITH a reason. An exemption
 # is a decision, so it should read like one.
+#
+# KNOWN LIMIT — read before trusting a green (Codex adversarial review 2026-07-21,
+# finding 5). This lint proves TOKEN CO-LOCATION, not CONTROL FLOW. This synthetic file
+# passes every assertion while publishing unconditionally:
+#
+#     DRY_RUN="${DRY_RUN:-1}"
+#     case "$1" in --push) DRY_RUN=0 ;; esac
+#     git push --force public HEAD:main      # <-- never consults DRY_RUN
+#
+# Proving the gate DOMINATES every publish path needs shell tokenization + reachability,
+# which is out of scope here for the same reason HP-037 scoped it out of the destructive
+# guard. So: a green means "the shape is present", never "the gate is wired". The deep
+# behavioral proof for the one publisher that exists lives in
+# probe-sync-mirror-publish-gate.sh, and any NEW publisher needs its own equivalent —
+# this lint's job is to make a missing gate loud, not to certify a present one.
 #
 # Backs: docs/decisions.md 2026-07-21 sync-mirror publish-gate row.
 #
@@ -64,7 +79,11 @@ _is_exempt() { # $1 repo-relative path
   esac
 }
 
-PUBLISH_VERB='git[[:space:]]+push|gh[[:space:]]+issue[[:space:]]+(create|comment)|gh[[:space:]]+pr[[:space:]]+create|gh[[:space:]]+release[[:space:]]+create|gh[[:space:]]+api.*(-X|--method)[[:space:]]+POST'
+# Widened after Codex adversarial review 2026-07-21 (finding 6): the first version
+# required an ADJACENT `git push`, so the ordinary `git -C <path> push` spelling — and
+# every non-git publisher — was invisible. A lint that silently matches nothing looks
+# exactly like a lint that passes.
+PUBLISH_VERB='git([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+push|gh[[:space:]]+issue[[:space:]]+(create|comment)|gh[[:space:]]+pr[[:space:]]+(create|comment)|gh[[:space:]]+release[[:space:]]+create|gh[[:space:]]+api.*(-X|--method)[[:space:]]+POST|npm[[:space:]]+publish|twine[[:space:]]+upload|curl[^|]*(api\\.github\\.com|-X[[:space:]]+(POST|PUT|PATCH))'
 
 # Only lines that would EXECUTE the verb — a comment mentioning `git push` is prose, not
 # a publish. Strips leading-# and leading-// lines before matching.
@@ -74,7 +93,14 @@ _publisher_files() {
     if grep -vE '^[[:space:]]*(#|//)' "$REPO/$f" 2>/dev/null | grep -qE "$PUBLISH_VERB"; then
       echo "$f"
     fi
-  done < <(cd "$REPO" && git ls-files 'scripts/*.sh' 'dhx/*.sh' 'dhx-plugin/**/*.sh' 2>/dev/null)
+  # Glob widened per finding 6 — nested paths and non-.sh publishers were invisible to
+  # the original three patterns. Scope stays the PRODUCTION trees (scripts/, dhx/,
+  # dhx-plugin/): `tests/` is deliberately excluded as a class, because a probe that
+  # exercises a publish verb against a fixture under a credential lockout is asserting
+  # ABOUT publishing, not publishing. Demanding a rehearse-default there would be a
+  # category error that trains people to add decorative gates to satisfy a linter.
+  done < <(cd "$REPO" && git ls-files 'scripts/*' 'dhx/*' 'dhx-plugin/*' 2>/dev/null \
+             | grep -E '\.(sh|bash|py|js|cjs|mjs)$' 2>/dev/null)
 }
 
 FOUND=0
@@ -86,7 +112,9 @@ while IFS= read -r f; do
   fi
   FOUND=$((FOUND + 1))
 
-  HAS_DEFAULT=$(grep -qE 'DRY_RUN="\$\{DRY_RUN:-1\}"|DRY_RUN=\$\{DRY_RUN:-1\}' "$REPO/$f" \
+  # Accepts either safe-init shape: an unconditional `DRY_RUN=1` (what the mirror script
+  # uses now that the env publish path was removed) or the `${DRY_RUN:-1}` default form.
+  HAS_DEFAULT=$(grep -qE '^[[:space:]]*DRY_RUN=("?\$\{DRY_RUN:-1\}"?|1([[:space:]]|$))' "$REPO/$f" \
                   && echo yes || echo no)
   _assert "[$f] rehearses by default (DRY_RUN defaults to 1)" "yes" "$HAS_DEFAULT"
 
