@@ -553,16 +553,34 @@ assert_blocks_contains "[17c] UAT.md complete but no routing marker → fall thr
 # behavioural fix they precede. Their job is to make the next session that tries
 # to "fix" Step 6 into per-plan pairing watch [19] go red.
 #
-# [18] and [19] build directories with the SAME structural shape — k summaries
-# with no matching plan + k plans with no matching summary — and OPPOSITE
-# correct answers. [18] is genuinely incomplete (a rollup summary masks an
-# unexecuted plan); [19] is genuinely complete (the filenames merely drifted).
-# The hook returns the same verdict for both because no filename-level rule can
-# tell them apart. [18] is the accepted-WRONG case; [19] the accepted-RIGHT one.
-# Real-world sources: alembic v2.0/32 + relater v0.40/12.4 ([18]);
-# cross-repo XR-24 + relater v0.40/12.1 + alembic v3.0/48 ([19]).
+# [18] and [19] build directories with the SAME FILENAME-LEVEL shape — k
+# summaries with no matching plan + k plans with no matching summary — and
+# opposite correct answers. The hook returns the same verdict for both, because
+# no filename-level rule can tell them apart. (Frontmatter CAN: a summary's
+# `plan:` key, a plan's `files_modified`. Parsing it is out of scope here — see
+# the hook's Step 6 banner.)
+#
+# ATTRIBUTION DISCIPLINE — read before citing these as real-world classes:
+#   [19] is OBSERVED. Real instances: cross-repo XR-24, relater v0.40/12.1,
+#     alembic v3.0/48 — all genuinely complete, all cardinality-RIGHT.
+#   [18] is HYPOTHETICAL. It has NO confirmed real-world instance. An earlier
+#     version of this comment attributed it to alembic v2.0/32 and relater
+#     v0.40/12.4; both attributions were WRONG — in each the "stray" summary is
+#     a plan's declared output (`32-06-PLAN.md` files_modified names
+#     `32-SUMMARY.md`; `12.4-VERIFICATION.md` reconciles PLAN-06 as executed),
+#     so the hook is RIGHT on both. Corrected 2026-07-22 after external review.
+#   The one OBSERVED cardinality-wrong dir is forgefinder v1.4/25, and it is the
+#     OPPOSITE direction from [18] (Exit-A over-fires on a complete phase), so
+#     [18] is not its regression test either.
+#
+# Both scenarios remain worth keeping: [19] is the guard that reddens if Step 6
+# is switched to pairing, and [18] pins the accepted behaviour for a shape that
+# is constructible even if unobserved. Neither is reachable in the gate's real
+# firing domain — every observed divergence sits in a phase that HAS a
+# VERIFICATION.md, so the hook exits at Step 5 before Exit-A runs.
 
-# [18] = stray rollup summary masks an unsummarized plan (alembic-32 shape).
+# [18] = stray rollup summary masks an unsummarized plan (HYPOTHETICAL shape —
+# no confirmed real-world instance; see the attribution note above).
 # 2 plans (12-01, 12-02), 2 summaries — but one is the phase-level rollup
 # `12-SUMMARY.md`, so plan 12-02 is unexecuted while cardinality reads 2 == 2.
 # ACCEPTED-WRONG: the operator gets the short reason when the three-step
@@ -580,7 +598,7 @@ PAYLOAD=$(build_payload "/dhx:test 12")
 OUTPUT=$(run_hook "$PAYLOAD")
 if jq -e '.decision == "block" and ((.reason | contains("Phase has incomplete plans")) | not)' \
      <<< "$OUTPUT" >/dev/null 2>&1; then
-  echo "OK   [18] rollup summary masks unsummarized plan → Exit-A does NOT fire (accepted-WRONG; cardinality 2==2)"
+  echo "OK   [18] rollup summary masks unsummarized plan → Exit-A does NOT fire (hypothetical accepted-WRONG; cardinality 2==2)"
   PASS=$((PASS + 1))
 else
   echo "FAIL [18] expected block without Exit-A wording, got: $(printf '%s' "$OUTPUT" | head -c 200)"

@@ -223,33 +223,49 @@ fi
 # the gap is not closable here:
 #
 # DO NOT "FIX" THIS TO PAIRING — verified 2026-07-22 against gsd-core 1.8.0.
-# A 555-phase-dir fleet scan (19 repos, live + milestone archives) ran the real
-# `phase-plan-index` CLI against this cardinality count. They agree on 549 and
-# diverge on 6 — and CARDINALITY IS THE CORRECT SIDE ON 4:
-#   pairing wrong — filename drift: alembic v3.0/48 (`01-PLAN.md` +
-#     `48-01-SUMMARY.md`), cross-repo XR-24 (`02/03-PLAN.md` +
-#     `24-02/24-03-SUMMARY.md`), relater v0.40/12.1 (`12.1-0N-PLAN.md` +
-#     `0N-SUMMARY.md`); plus forgefinder v1.4/25, where
-#     extractCanonicalPlanId("25-02-GAPS-SUMMARY.md") collapses to "25-02" and
-#     falsely marks the unsummarized `25-02-PLAN.md` complete.
-#   cardinality wrong — stray summary masks a real gap: alembic v2.0/32 (rollup
-#     `32-SUMMARY.md` pads 5 real summaries to 6, hiding unsummarized `32-06`),
-#     relater v0.40/12.4 (`12.4-07/08-SUMMARY.md` have no plans, hiding
-#     unsummarized `12.4-06`).
+# The decisive fact is about REACHABILITY, not about which oracle is better:
 #
-# The two failure classes are STRUCTURALLY INDISTINGUISHABLE on disk: each is
-# exactly k summaries with no matching plan + k plans with no matching summary.
-# `alembic 32` and `cross-repo XR-24` have the same directory shape and opposite
-# correct answers. No filename-level rule — cardinality, pairing, or hybrid —
-# separates them: cardinality assumes drift, pairing assumes strays, and each is
-# wrong precisely where its assumption fails. Delegating to phase-plan-index
-# would fix 2 dirs and break 4.
+#   EVERY measured disagreement is in a phase that HAS a VERIFICATION.md, so the
+#   hook already exited at Step 5 and never reached this code. Inside the gate's
+#   actual firing domain (VERIFICATION.md ABSENT) the fleet scan found ZERO
+#   disagreements. Swapping or supplementing the oracle here would arbitrate a
+#   case that has never occurred where this code runs.
+#
+# Measurement: the real `phase-plan-index` CLI run once per phase dir over the
+# whole fleet (~555 dirs, live + milestone archives). Agreement on all but 6, and
+# on those 6 CARDINALITY IS THE CORRECT SIDE ON 5, adjudicated against on-disk
+# evidence (not filenames):
+#   cardinality right — filename drift only; each summary's own frontmatter names
+#     its plan (`plan: NN`): alembic v3.0/48, cross-repo XR-24, relater v0.40/12.1.
+#   cardinality right — the "stray" summary IS a plan's declared output:
+#     alembic v2.0/32 (`32-06-PLAN.md` files_modified lists `32-SUMMARY.md`),
+#     relater v0.40/12.4 (`12.4-VERIFICATION.md` reconciles PLAN-06 as executed).
+#   cardinality wrong — the ONLY one: forgefinder v1.4/25 fires Exit-A on a phase
+#     that is `status: passed`, because `25-02-PLAN.md` has no `25-02-SUMMARY.md`
+#     while `25-02-GAPS-SUMMARY.md` records plan 02 as completed input. Pairing
+#     happens to be right here, but only via an id-collision bug
+#     (extractCanonicalPlanId("25-02-GAPS-SUMMARY.md") -> "25-02").
+#
+# No FILENAME-LEVEL rule separates the classes — cardinality assumes drift,
+# pairing assumes strays, each is wrong where its assumption fails. Frontmatter
+# DOES separate them (summary `plan:`, plan `files_modified`), but parsing it is
+# out of scope for a latency-bound fail-open hook on a message-only branch.
+# (An earlier version of this block claimed the classes were "structurally
+# indistinguishable on disk" and scored the split 4-2. Both were wrong: the
+# frontmatter signal exists, and three dirs were misadjudicated by reading
+# filenames alone. Corrected 2026-07-22 after external review.)
 #
 # Tolerated because this is a MESSAGE-ACCURACY signal only. Step 7 emits
 # decision:block on BOTH branches — Exit-A picks which reason text, never
 # whether to block. A wrong verdict costs one misleading recovery hint, not a
-# missed gate. Probe scenarios [18]/[19] lock both shapes; full evidence in
-# docs/decisions.md 2026-07-22 row.
+# missed gate; and the one wrong-hint case self-corrects (`/gsd-execute-phase`
+# on a complete phase reports completeness). Probe scenarios [18]/[19] lock the
+# shapes; full evidence in docs/decisions.md 2026-07-22 rows.
+#
+# IF THIS EVER CHANGES: the trigger to revisit is a LIVE phase with NO
+# VERIFICATION.md that also carries plan/summary naming drift — i.e. a real
+# in-domain occurrence. Frontmatter tiebreak (bash, no node) is the fix to reach
+# for then. Do not build it before that trigger fires.
 EXIT_A_DETECTED=0
 # grep exit codes are tri-valued: 0 = match, 1 = no match, 2 = error
 # (unreadable file, mid-write truncation). This `if` intentionally collapses
