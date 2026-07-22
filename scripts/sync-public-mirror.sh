@@ -17,11 +17,44 @@
 # Patterns: HP-007, HP-017
 set -euo pipefail
 
+# --- 0. Argument parsing ---------------------------------------------------
+# INCIDENT 2026-07-21: this script accepted `DRY_RUN=1` as an env var ONLY and had NO
+# argument parsing at all. `bash sync-public-mirror.sh --dry-run` therefore ran the FULL
+# LIVE PATH — force-pushing the public mirror — while printing nothing to contradict the
+# operator's belief that it was a rehearsal. That is exactly what happened: two
+# unintended force-pushes to 0xdhx/dhx-hooks. A flag that silently does the opposite of
+# what it says is worse than no flag.
+# Two rules now hold: `--dry-run` is a REAL flag, and an UNRECOGNIZED argument is a hard
+# refusal (never a silent live run — the failure mode must not be "publish anyway").
+DRY_RUN="${DRY_RUN:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run|-n) DRY_RUN=1; shift ;;
+    --push)       DRY_RUN="";  shift ;;   # explicit opt-in to the live push
+    -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
+    *)
+      echo "REFUSE: unrecognized argument '$1'." >&2
+      echo "        Usage: $0 [--dry-run|-n] [--push]   (env DRY_RUN=1 also works)" >&2
+      echo "        Refusing rather than falling through to a LIVE force-push of" >&2
+      echo "        the public mirror — see the 2026-07-21 incident note above." >&2
+      exit 2 ;;
+  esac
+done
+export DRY_RUN
+
 REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
 PUBLIC_REMOTE="${PUBLIC_REMOTE:-git@github.com:0xdhx/dhx-hooks.git}"
 TAG_VERSION="${TAG_VERSION:-v0.2.0}"
 BUILD_DIR=$(mktemp -d -t dhx-hooks-public-XXXXXX)
 trap 'rm -rf "$BUILD_DIR"' EXIT
+
+# Say which mode is running, up front and unmissably — the incident above turned on the
+# operator having no way to tell a rehearsal from a publish until after the fact.
+if [ "$DRY_RUN" = "1" ]; then
+  echo "[sync] MODE: DRY RUN — nothing will be pushed to $PUBLIC_REMOTE"
+else
+  echo "[sync] MODE: LIVE PUBLISH — will FORCE-PUSH $PUBLIC_REMOTE (pass --dry-run to rehearse)"
+fi
 
 echo "[sync] REPO_ROOT=$REPO_ROOT"
 echo "[sync] BUILD_DIR=$BUILD_DIR"
