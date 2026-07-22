@@ -18,13 +18,14 @@
 # This leaf makes that drift UNCOMMITTABLE, with the exact fix in the block message.
 #
 # DESIGN — staged-view DELTA-check, auto-CHECK never auto-regen:
-#   The initiating prompt (docs/prompts/2026-07-13-backlog-autoregen-precommit-hook-
-#   prompt.md) proposed an auto-regen + `git add` leaf; that design is REJECTED on
-#   the trap-table §8 evidence (docs/research/2026-07-10-shell-git-os-gotchas.md):
+#   The initiating prompt (cross-repo:docs/prompts/done/2026-07-13-backlog-autoregen-
+#   precommit-hook-prompt.md) proposed an auto-regen + `git add` leaf; that design is
+#   REJECTED on the trap-table §8 evidence
+#   (cross-repo:docs/research/2026-07-10-shell-git-os-gotchas.md):
 #   a pre-commit `git add` during a scoped `git commit -- <paths>` leaks the blob
 #   into the commit AND resets the real index underneath — three-way `MM` corruption
-#   on the repo's dominant commit shape. Decision record: docs/decisions.md
-#   § "BACKLOG.md freshness gate" (2026-07-13).
+#   on the repo's dominant commit shape. Decision record:
+#   cross-repo:docs/decisions.md § "BACKLOG.md freshness gate" (2026-07-13).
 #
 #   Like the index gate, this leaf materializes the STAGED tree and regenerates the
 #   aggregate there, so only content THIS commit stages is judged; and it blocks only

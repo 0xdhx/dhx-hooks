@@ -43,12 +43,12 @@ command -v node >/dev/null 2>&1 || {
 # inline loop so 10- and 20-conventions share one implementation).
 # --- INLINED materialize-staged-tree helper (foreign-tree self-containment) ---
 # AUTO-GENERATED into the scaffold payload by generate-payload.sh via
-# inline-helper.cjs, from scripts/hooks/lib/materialize-staged-tree.sh. Do NOT
-# hand-edit — edit the source helper and regenerate. (The cross-repo source leaf
-# SOURCES this helper; the scaffold inlines it because a target repo has no
-# scripts/hooks/lib/ to source from. Logic is byte-identical; only the
-# dependency is internalized — the parallel of inline-validator.cjs.)
-# scripts/hooks/lib/materialize-staged-tree.sh
+# inline-helper.cjs, from cross-repo:scripts/hooks/lib/materialize-staged-tree.sh.
+# Do NOT hand-edit — edit the source helper and regenerate. (The cross-repo source
+# leaf SOURCES this helper; the scaffold inlines it because a target repo has no
+# copy of cross-repo:scripts/hooks/lib/ to source from. Logic is byte-identical;
+# only the dependency is internalized — the parallel of inline-validator.cjs.)
+# cross-repo:scripts/hooks/lib/materialize-staged-tree.sh
 #
 # Shared pre-commit helper — materialize STAGED blobs into a throwaway temp tree
 # so a leaf validates the staged *commit* content, not the working-tree files
