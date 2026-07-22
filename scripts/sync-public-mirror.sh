@@ -8,7 +8,8 @@
 #   3. Deterministic scrub pass on cross-references to private paths
 #      (Class A: probe Backs comments; B/C/D: dhx + statusline-wrapper)
 #   4. Add/update public README, CHANGELOG, LICENSE
-#   5. Force-push to git@github.com:0xdhx/dhx-hooks.git
+#   5. Force-push to git@github.com:0xdhx/dhx-hooks.git (with --force-with-lease;
+#      only on --push, and normally reached via the publish-mirror workflow, not locally)
 #   6. Verify a sample of permalinks resolve HTTP 200
 #
 # Idempotent — safe to re-run. Re-runs republish the public-side history
@@ -36,10 +37,18 @@ set -euo pipefail
 #   3. An UNRECOGNIZED argument is a hard refusal. The failure mode must never be
 #      "publish anyway."
 #
-# `DRY_RUN=0` (env) is honored as a non-interactive publish path for automation that
-# cannot pass argv; it is deliberately the awkward spelling, not the default.
-# Regression-guarded by tests/probes/probe-sync-mirror-publish-gate.sh — if someone
-# flips the default back, that probe goes red before the mirror moves.
+# There is NO env publish path. `DRY_RUN=0` used to be one; the Codex review below
+# showed an exported 0 from an unrelated earlier command turned a BARE invocation into a
+# force-push, so env may now only push the mode toward rehearsal. Automation publishes by
+# passing --push, like a human. Regression-guarded by
+# tests/probes/probe-sync-mirror-publish-gate.sh — if someone flips the default back or
+# restores the env path, that probe goes red before the mirror moves.
+#
+# The SANCTIONED publish path is now the `publish-mirror` GitHub Actions workflow
+# (.github/workflows/publish-mirror.yml, 2026-07-22): the deploy key lives in GitHub's
+# secret store, and the publish job waits on a required reviewer approving in a browser —
+# a human channel no local process can drive. A local `--push` still works and is
+# BREAK-GLASS; the banner says so on every live run.
 # Codex adversarial review 2026-07-21 (findings C5, C1-order, C2-parse-only, empty-override)
 # closed four holes that survived the first fix:
 #   - `export DRY_RUN=0` made a BARE invocation publish, and the banner still claimed
@@ -102,6 +111,13 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "[sync] MODE: DRY RUN (default) — nothing will be pushed to $PUBLIC_REMOTE"
 else
   echo "[sync] MODE: LIVE PUBLISH (--push given) — will FORCE-PUSH $PUBLIC_REMOTE"
+  # The sanctioned publish path is the `publish-mirror` GitHub Actions workflow, where the
+  # credential lives in GitHub's secret store and a reviewer approves in a browser. A local
+  # --push is BREAK-GLASS: it works (the operator's own key can push their own repo), but it
+  # carries no human gate beyond this line. Say so, every time.
+  if [ -z "${GITHUB_ACTIONS:-}" ]; then
+    echo "[sync]       ^ local break-glass publish. Sanctioned path: gh workflow run publish-mirror.yml -f publish=true"
+  fi
 fi
 
 # --print-mode exits HERE — before repo discovery, before mktemp, before any git call.
