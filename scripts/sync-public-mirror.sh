@@ -591,6 +591,7 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | `dhx-agent-leak-snapshot.sh` | `Agent` | Captures pre-dispatch `git status` baseline for paired post-check (subagent-leak detection). |
 | `dhx-poll-guard.sh` | `Read` | Rate-limits busy-polling on background-task output files (escalating cooldowns). |
 | `dhx-read-cache.sh` | `Read` | Records partial Reads (offset/limit) to a session-scoped detection store (`~/.cache/dhx/partial-read-detect-<session_id>.jsonl`) keyed on session_id; feeds the read-guard's PARTIAL-READ NOTE. |
+| `dhx-read-dedup.sh` | `Read` | Content-dedup measurement + Guard-2 short-TTL strict deny: logs re-read bands per (session, agent) to a durable stats file, and DENIES a full→full unchanged re-read <120s after a prior full read in the same agent context (no compaction since) — the content is still in context; the deny reason substitutes for the re-read. Kill-switch `DHX_READ_DEDUP_DENY_DISABLED=1`. |
 
 ### PostToolUse
 

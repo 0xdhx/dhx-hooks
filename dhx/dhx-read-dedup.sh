@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dhx-read-dedup.sh — PreToolUse:Read hook (content-dedup re-read MEASUREMENT, log-only)
+# dhx-read-dedup.sh — PreToolUse:Read hook (content-dedup measurement + Guard-2 short-TTL strict deny)
 # Patterns: HP-003, HP-007, HP-036
 #
 # WHAT: the read-once restoration (brief 2026-05-24-read-once-content-dedup-restoration,
@@ -8,19 +8,34 @@
 # token-waste measurement + community web research (docs/research/2026-05-25-read-once-
 # community-signal.md) resolved the build/no-build gate as BUILD, warn-mode-first.
 #
-# PHASE 1 (this file): LOG-ONLY. Records every Read's line-range per session, detects
-# overlapping re-reads of UNCHANGED files, classifies them into the spike's bands
-# (STRICT full->full / BROAD overlapping-partial / NEW no-overlap / CHANGED), and logs
-# one event per re-read to a durable stats file. It emits NOTHING to Claude's context
-# (always exit 0, no stdout) — for two reasons:
-#   (1) "don't cost attention that doesn't pay its weight" — an advisory on every re-read
-#       (~232/day broad-band) would make the hook the leak it measures;
-#   (2) OBSERVER EFFECT — an advisory changes Claude's re-read behavior, tainting the very
-#       measurement we are taking. Log-only is a clean observational study of natural
-#       re-read behavior in the AFTER (unguarded) window.
-# PHASE 2 (data-gated follow-up): selective warn + diff advisory for the high-value cases
-# the Phase-1 data identifies (large full->full unchanged re-reads; diff-mode for edit-
-# verify loops). PHASE 3 (if ever): narrow deny. See the brief §6/§7 + decisions.md.
+# PHASE 1 (2026-05-25 → 2026-07-22): LOG-ONLY measurement. Records every Read's line-range
+# per (session, agent), detects overlapping re-reads of UNCHANGED files, classifies them
+# into the spike's bands (STRICT full->full / BROAD overlapping-partial / NEW no-overlap /
+# CHANGED), and logs one event per re-read to a durable stats file.
+#
+# PHASE 2 / GUARD 2 (ENFORCING since 2026-07-22 — the Phase-2a check-in's precommitted
+# SHIP verdict; decisions.md 2026-07-22 row): the SHORT-TTL STRICT DENY. A full->full
+# re-read of an UNCHANGED file, < DHX_READ_DEDUP_DENY_GAP (120s) after a prior full read
+# IN THE SAME AGENT CONTEXT, with no compaction marker in between, is DENIED via
+# permissionDecision:"deny" — the content is still in active context; the deny reason IS
+# the substitute (points at the earlier read; council 2026-06-25: additive advisories are
+# net-negative, only block-and-substitute pays). Everything outside that gate passes
+# through untouched and is logged exactly as Phase 1 did. Zero-blind-work by construction:
+# no compaction plausibly lands inside 120s, and the marker check is belt-and-braces.
+# The changed-file diff-substitute (Guard 1) was CLOSED on the same check-in data (25%
+# gate rate vs >=40%; ~273K tok/mo vs >=1.5M) — do not add it back without new data.
+#
+# PER-AGENT KEYING (2026-07-22, operator-ratified): subagent tool calls fire this hook
+# with the PARENT's session_id but their own agent_id (HP-003 propagation matrix). STATE
+# is keyed per (session_id, agent): parent store stays <sid>.jsonl (continuity), subagents
+# get <sid>.agent-<agent_id>.jsonl. A parent-then-subagent read pair is therefore NEVER a
+# strict double-read (the subagent's context genuinely lacks the file — denying it would
+# be the 2026-04-15-class blind-work FP); a double-read WITHIN one agent's context still
+# denies. Compaction markers + content snapshots stay session-scoped (markers only ADD
+# conservatism → allow; snapshots are Guard-1 telemetry, closed, cross-agent overwrite
+# tolerated). Stats events carry an "agent" field ("main" or the agent_id) so post-ship
+# telemetry sizes the real per-agent deny rate (the pre-ship 79/wk figure was
+# agent-merged — an upper bound; no silent control arm, operator call 2026-07-22).
 #
 # BORROWED (Boucle tools/read-once + community): hit/changed event model, mtime+TTL
 # compaction-awareness (READ_ONCE_TTL=1200 -> DHX_READ_DEDUP_TTL), offset/limit range
@@ -63,7 +78,12 @@
 # Config (env):
 #   DHX_READ_DEDUP_TTL=1200       seconds a prior read counts as "still in context"
 #                                 (compaction proxy; re-reads after this are not waste)
-#   DHX_READ_DEDUP_DISABLED=1     disable entirely
+#   DHX_READ_DEDUP_DISABLED=1     disable entirely (measurement AND deny)
+#   DHX_READ_DEDUP_DENY_DISABLED=1  kill-switch for the Guard-2 deny only (measurement
+#                                 keeps logging; strict events log as "strict", not "deny")
+#   DHX_READ_DEDUP_DENY_GAP=120   Guard-2 window: a full->full unchanged re-read within
+#                                 this many seconds of the prior full read (same agent,
+#                                 no compaction since) is denied
 #   DHX_READ_DEDUP_STATE_DIR=...  override ephemeral cache root (probe/test injection, D-20 convention)
 #   DHX_READ_DEDUP_DATA_DIR=...   override durable STATS data root (probe/test injection, D-20 convention)
 #   DHX_READ_DEDUP_STATS_MAX_BYTES=5242880  size cap (bytes) for the durable stats log before it
@@ -106,8 +126,9 @@ FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev
   IFS= read -r OFFSET
   IFS= read -r LIMIT
   IFS= read -r SESSION_ID
+  IFS= read -r AGENT_ID
 } < <(
-  printf '%s' "$INPUT" | jq -r '.tool_name // "", (.tool_input.offset // ""), (.tool_input.limit // ""), .session_id // ""' 2>/dev/null
+  printf '%s' "$INPUT" | jq -r '.tool_name // "", (.tool_input.offset // ""), (.tool_input.limit // ""), .session_id // "", .agent_id // ""' 2>/dev/null
 )
 
 # Matcher should scope to Read, but be defensive — only act on Read.
@@ -119,6 +140,22 @@ FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev
 case "$SESSION_ID" in
   */*|*'\'*|*..*) exit 0 ;;
 esac
+
+# Per-agent keying (HP-003): agent_id is populated on subagent tool calls, absent/empty on
+# parent-level calls. Same D-11 discipline — it becomes a filename component, so an unsafe
+# value disables the hook (reject, never sanitize). Parent store keeps the historical
+# un-suffixed name (probe + live-store continuity); subagents get .agent-<id>.
+AGENT_ID="${AGENT_ID:-}"
+if [ -n "$AGENT_ID" ]; then
+  case "$AGENT_ID" in
+    */*|*'\'*|*..*) exit 0 ;;
+  esac
+  AGENT_SUFFIX=".agent-${AGENT_ID}"
+  AGENT_LABEL="$AGENT_ID"
+else
+  AGENT_SUFFIX=""
+  AGENT_LABEL="main"
+fi
 
 # IN-02: realpath so overlap keys on the canonical inode path.
 RESOLVED=$(realpath "$FILE_PATH" 2>/dev/null || printf '%s' "$FILE_PATH")
@@ -165,7 +202,14 @@ mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 # Best-effort: STATS append is already `|| true`-guarded, so a DATA_ROOT mkdir failure must NOT
 # kill STATE recording (the hook's core function) — decouple it from the STATE_DIR `|| exit 0`.
 mkdir -p "$DATA_ROOT" 2>/dev/null || true
-STATE_FILE="${STATE_DIR}/${SESSION_ID}.jsonl"
+STATE_FILE="${STATE_DIR}/${SESSION_ID}${AGENT_SUFFIX}.jsonl"
+
+# Guard-2 deny config (2026-07-22). DENY_ON=1 unless the kill-switch is set; window
+# defaults to the check-in's 120s zero-FP slice. Non-numeric window → default.
+DENY_ON=1
+[ "${DHX_READ_DEDUP_DENY_DISABLED:-0}" = "1" ] && DENY_ON=0
+DENY_GAP="${DHX_READ_DEDUP_DENY_GAP:-120}"
+case "$DENY_GAP" in ''|*[!0-9]*) DENY_GAP=120 ;; esac
 
 # Phase-2a sibling paths (both under the reapable per-session cache root, NOT the durable data root).
 # COMPACT_FILE: per-session compaction-marker log written by the companion PreCompact hook
@@ -225,7 +269,7 @@ if [ -n "$PRIORS" ] && command -v python3 >/dev/null 2>&1; then
   # heredoc and the data don't both contend for stdin); scalars via argv.
   PY_OUT=$(PRIORS_DATA="$PRIORS" python3 - \
       "$RESOLVED" "$SESSION_ID" "$START" "$END" "$CUR_MTIME" "$CUR_SIZE" "$NOW" "$TTL" \
-      "$SNAP_FILE" "$COMPACT_FILE" "$SEQ" <<'PY' 2>/dev/null || true
+      "$SNAP_FILE" "$COMPACT_FILE" "$SEQ" "$DENY_ON" "$DENY_GAP" "$AGENT_LABEL" <<'PY' 2>/dev/null || true
 import sys, os, json, difflib
 path, session = sys.argv[1], sys.argv[2]
 cs, ce = int(sys.argv[3]), int(sys.argv[4])
@@ -238,6 +282,17 @@ try:
     cur_seq = int(sys.argv[11])
 except (IndexError, ValueError):
     cur_seq = -1
+# Guard-2 argv (2026-07-22): deny enabled flag, deny window seconds, agent label.
+# Defaults fail toward NOT denying (a malformed argv must never block a Read).
+try:
+    deny_on = sys.argv[12] == "1"
+except IndexError:
+    deny_on = False
+try:
+    deny_gap = int(sys.argv[13])
+except (IndexError, ValueError):
+    deny_gap = 120
+agent = sys.argv[14] if len(sys.argv) > 14 else "main"
 
 priors = []
 for line in os.environ.get("PRIORS_DATA", "").splitlines():
@@ -302,6 +357,7 @@ def emit(event, overlap_lines, overlap_tokens, band, extra=None):
         "overlap_tokens": overlap_tokens, "band": band,
         "gap_s": gap_s, "gap_reads": gap_reads,
         "compaction_since_prior": compaction_since_prior,
+        "agent": agent,
     }
     if extra:
         rec.update(extra)
@@ -404,6 +460,18 @@ overlap_tokens = int(round(overlap * avg_line_bytes / 4))
 cur_full = (cs == 1 and ce == 2001)
 prior_full = any(s == 1 and e == 2001 for s, e in merged)
 band = "strict" if (cur_full and prior_full) else "broad"
+
+# --- Guard-2 short-TTL strict deny (2026-07-22 check-in SHIP verdict) ---
+# Gate, ALL required: strict band (full->full, unchanged version — the same_ver filter
+# above already pinned mtime+size) AND within the deny window AND no compaction marker
+# since the prior read AND deny enabled. Everything else logs and allows, as Phase 1 did.
+# The event is logged as "deny" (band stays "strict") so post-ship telemetry separates
+# enforced from observed; the schema stays additive — analyzers keying on the Phase-1
+# event set simply don't see denies.
+if band == "strict" and deny_on and gap_s < deny_gap and not compaction_since_prior:
+    emit("deny", overlap, overlap_tokens, band)
+    sys.exit(0)
+
 emit(band, overlap, overlap_tokens, band)
 PY
   )
@@ -425,6 +493,25 @@ PY
   if [ -n "${EVENT_JSON:-}" ]; then
     # WR-01: the JSON is already escaped by python's json.dumps; atomic O_APPEND write.
     printf '%s\n' "$EVENT_JSON" >> "$STATS_FILE" 2>/dev/null || true
+  fi
+
+  # --- Guard-2 deny emission (2026-07-22) ---
+  # python only emits event:"deny" when the full gate held (strict + <window + no
+  # compaction + enabled). Emit the structured deny and exit WITHOUT recording this read:
+  # the content was NOT re-injected, and recording the denied attempt would refresh the
+  # prior-read timestamp — extending the deny window past actual context residency.
+  # INVARIANT: fail toward ALLOW — if the jq emit fails for any reason, fall through to
+  # normal recording and the Read proceeds (a broken deny must never block work).
+  if [ -n "${EVENT_JSON:-}" ] && printf '%s' "$EVENT_JSON" | jq -e '.event == "deny"' >/dev/null 2>&1; then
+    DENY_GAP_S=$(printf '%s' "$EVENT_JSON" | jq -r '.gap_s // "?"' 2>/dev/null)
+    BASE_NAME="${RESOLVED##*/}"
+    REASON="READ-DEDUP DENY: \"${BASE_NAME}\" was fully read ${DENY_GAP_S}s ago in this same context and is unchanged on disk (mtime+size match) — its full content is already in your context; use that instead of re-reading. A ranged Read (offset/limit) is not blocked if you need specific lines. Full re-reads are allowed again after ${DENY_GAP}s, after the file changes, or after a compaction."
+    MSG="read-dedup: denied full re-read of ${BASE_NAME} (unchanged, read ${DENY_GAP_S}s ago; ~saved $(printf '%s' "$EVENT_JSON" | jq -r '.overlap_tokens // 0' 2>/dev/null) tok)"
+    if DENY_JSON=$(jq -cn --arg r "$REASON" --arg m "$MSG" \
+          '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r},systemMessage:$m}' 2>/dev/null); then
+      printf '%s\n' "$DENY_JSON"
+      exit 0
+    fi
   fi
 fi
 

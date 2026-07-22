@@ -48,6 +48,21 @@
 #                    sanitizes empty/path-sep/`..` session_id (D-11); log-only (empty stdout, exit 0)
 #   V-COMPACT-SINCE  a marker with ts in (prior_read_ts, now] → compaction_since_prior:true; a marker
 #                    predating the prior read → false (the cross-process INVARIANT between the two hooks)
+#   --- Guard-2 short-TTL strict deny + per-agent keying (2026-07-22 check-in SHIP verdict) ---
+#   V-DENY-FIRES     in-window (<120s) full→full unchanged re-read, same agent → structured
+#                    permissionDecision:"deny" (reason points at existing context), stats event=deny
+#                    (band stays strict), agent attributed
+#   V-DENY-NOT-RECORDED  a denied read appends NO state record (recording would refresh the
+#                    window past actual context residency)
+#   V-DENY-GAP/COMPACT/PARTIAL/CHANGED-ALLOWS  outside the window / compaction-marker-since /
+#                    partial / changed → allow + log exactly as Phase 1 (observed, not enforced)
+#   V-DENY-KILLSWITCH  DHX_READ_DEDUP_DENY_DISABLED=1 → allow, logs strict
+#   V-AGENT-SPLIT    parent read then in-window subagent read (agent_id, HP-003) → NOT denied;
+#                    per-agent stores (<sid>.jsonl vs <sid>.agent-<id>.jsonl)
+#   V-AGENT-WITHIN   the SAME agent's in-window repeat → denied, stats agent=<id>
+#   V-AGENT-BADID    unsafe agent_id (path-sep / `..`) → reject-and-disable, nothing written (D-11)
+#   NOTE: legacy measurement sections above run with DHX_READ_DEDUP_DENY_DISABLED=1 (they assert
+#   Phase-1 log-only semantics, which the kill-switch preserves exactly).
 #
 # INVARIANT: token magnitude uses the spike's flat chars/4 proxy (overlap bytes ÷ 4) so the
 # live bands are directly comparable to docs/research .../2026-05-24-read-once-token-waste-
@@ -68,6 +83,11 @@ trap 'rm -rf "$SBX"' EXIT
 export DHX_READ_DEDUP_STATE_DIR="$SBX/cache"
 export DHX_READ_DEDUP_DATA_DIR="$SBX/data"
 STATS="$SBX/data/read-dedup-stats.jsonl"
+# Guard-2 (2026-07-22): the legacy sections below assert the Phase-1 MEASUREMENT semantics
+# (strict/broad events, log-only stdout). With the deny live-by-default, an in-window strict
+# re-read would emit deny JSON and log event:"deny" — so measurement assertions run with the
+# kill-switch on. The V-DENY / V-AGENT sections at the bottom re-enable it explicitly.
+export DHX_READ_DEDUP_DENY_DISABLED=1
 
 PASS=0; FAIL=0
 ok()   { echo "OK   $1"; PASS=$((PASS+1)); }
@@ -309,6 +329,116 @@ mkCN2 | runCN2                            # 1st read AFTER the stale marker
 sleep 1; mkCN2 | runCN2                   # re-read → stale marker predates prior read → false
 CN2_EV=$(tail -1 "$SBX_CN2/data/read-dedup-stats.jsonl" 2>/dev/null)
 chk "V-COMPACT-SINCE marker predating prior read → false" "$(echo "$CN2_EV" | jq -r '.compaction_since_prior')" "false"
+
+# ============================ Guard-2 short-TTL strict deny (2026-07-22) ============================
+# The check-in's SHIP verdict: full->full unchanged re-read, same agent, gap < 120s, no
+# compaction since prior → permissionDecision:"deny" (content still in context; the reason is
+# the substitute). Everything outside the gate allows + logs as before. Denied reads are NOT
+# recorded (recording would refresh the window past actual context residency).
+
+runDN(){ DHX_READ_DEDUP_STATE_DIR="$SBX_DN/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_DN/data" \
+         DHX_READ_DEDUP_DENY_DISABLED=0 bash "$HOOK"; }
+mkDN(){ printf '{"tool_name":"Read","session_id":"siddn","tool_input":{"file_path":"%s"%s}%s}' "$TFDN" "${1:-}" "${2:-}"; }
+DN_STATS(){ tail -1 "$SBX_DN/data/read-dedup-stats.jsonl" 2>/dev/null; }
+
+# --- V-DENY-FIRES: full read, then in-window full re-read → structured deny, stats deny, not recorded ---
+SBX_DN="$SBX/deny"; mkdir -p "$SBX_DN/cache"
+TFDN="$SBX/deny.md"; printf 'd%s\n' $(seq 1 200) > "$TFDN"
+mkDN | runDN                                 # 1st full read → record only
+OUT=$(mkDN | runDN); RC=$?
+chk "V-DENY-FIRES exit-0" "$RC" "0"
+chk "V-DENY-FIRES permissionDecision=deny" "$(echo "$OUT" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+chk "V-DENY-FIRES reason points at existing context" \
+    "$(echo "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null | grep -c 'already in your context')" "1"
+chk "V-DENY-FIRES stats event=deny" "$(DN_STATS | jq -r '.event')" "deny"
+chk "V-DENY-FIRES stats band stays strict" "$(DN_STATS | jq -r '.band')" "strict"
+chk "V-DENY-FIRES stats agent=main" "$(DN_STATS | jq -r '.agent')" "main"
+chk "V-DENY-NOT-RECORDED denied read appends no state record" \
+    "$(wc -l < "$SBX_DN/cache/read-dedup/siddn.jsonl" 2>/dev/null || echo 0)" "1"
+
+# --- V-DENY-GAP-ALLOWS: prior full read OUTSIDE the 120s window (but inside TTL) → allow, strict ---
+SBX_DN="$SBX/denygap"; mkdir -p "$SBX_DN/cache/read-dedup"
+TFDN="$SBX/denygap.md"; printf 'g%s\n' $(seq 1 150) > "$TFDN"
+GMT=$(stat -c %Y "$TFDN"); GSZ=$(stat -c %s "$TFDN"); GOLD=$(( $(date +%s) - 300 ))
+printf '{"path":"%s","start":1,"end":2001,"mtime":"%s","size":"%s","ts":%s,"seq":1}\n' \
+    "$TFDN" "$GMT" "$GSZ" "$GOLD" > "$SBX_DN/cache/read-dedup/siddn.jsonl"
+OUT=$(mkDN | runDN)
+chk "V-DENY-GAP-ALLOWS stdout empty at gap=300s" "${OUT:-<empty>}" "<empty>"
+chk "V-DENY-GAP-ALLOWS logs strict (observed, not enforced)" "$(DN_STATS | jq -r '.event')" "strict"
+
+# --- V-DENY-COMPACT-ALLOWS: in-window BUT a compaction marker since the prior read → allow ---
+SBX_DN="$SBX/denycmp"; mkdir -p "$SBX_DN/cache/read-dedup/compaction"
+TFDN="$SBX/denycmp.md"; printf 'c%s\n' $(seq 1 150) > "$TFDN"
+mkDN | runDN; sleep 1                        # 1st read at T1
+printf '{"ts":%s,"trigger":"auto"}\n' "$(date +%s)" > "$SBX_DN/cache/read-dedup/compaction/siddn.jsonl"
+sleep 1
+OUT=$(mkDN | runDN)
+chk "V-DENY-COMPACT-ALLOWS stdout empty (marker in window)" "${OUT:-<empty>}" "<empty>"
+chk "V-DENY-COMPACT-ALLOWS compaction_since_prior true" "$(DN_STATS | jq -r '.compaction_since_prior')" "true"
+
+# --- V-DENY-PARTIAL-ALLOWS: in-window partial re-read → broad, never denied ---
+SBX_DN="$SBX/denypart"; mkdir -p "$SBX_DN/cache"
+TFDN="$SBX/denypart.md"; printf 'p%s\n' $(seq 1 150) > "$TFDN"
+mkDN | runDN
+OUT=$(mkDN ',"offset":10,"limit":20' | runDN)
+chk "V-DENY-PARTIAL-ALLOWS stdout empty" "${OUT:-<empty>}" "<empty>"
+chk "V-DENY-PARTIAL-ALLOWS logs broad" "$(DN_STATS | jq -r '.event')" "broad"
+
+# --- V-DENY-CHANGED-ALLOWS: in-window re-read of a CHANGED file → allow (legitimate re-read) ---
+SBX_DN="$SBX/denychg"; mkdir -p "$SBX_DN/cache"
+TFDN="$SBX/denychg.md"; printf 'h%s\n' $(seq 1 150) > "$TFDN"
+mkDN | runDN; sleep 1; printf 'h%s\n' $(seq 1 160) > "$TFDN"
+OUT=$(mkDN | runDN)
+chk "V-DENY-CHANGED-ALLOWS stdout empty" "${OUT:-<empty>}" "<empty>"
+chk "V-DENY-CHANGED-ALLOWS logs changed" "$(DN_STATS | jq -r '.event')" "changed"
+
+# --- V-DENY-KILLSWITCH: same in-window strict shape with the kill-switch → allow, logs strict ---
+SBX_DN="$SBX/denykill"; mkdir -p "$SBX_DN/cache"
+TFDN="$SBX/denykill.md"; printf 'k%s\n' $(seq 1 150) > "$TFDN"
+runKILL(){ DHX_READ_DEDUP_STATE_DIR="$SBX_DN/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_DN/data" \
+           DHX_READ_DEDUP_DENY_DISABLED=1 bash "$HOOK"; }
+mkDN | runKILL
+OUT=$(mkDN | runKILL)
+chk "V-DENY-KILLSWITCH stdout empty" "${OUT:-<empty>}" "<empty>"
+chk "V-DENY-KILLSWITCH logs strict (observed)" "$(DN_STATS | jq -r '.event')" "strict"
+
+# ============================ Guard-2 per-agent keying (2026-07-22) ============================
+# HP-003: subagent tool calls carry the parent's session_id + their own agent_id. STATE keys
+# per (session, agent) so a parent-then-subagent pair is NOT a strict double-read (the
+# subagent's context lacks the file — denying it is the blind-work FP class), while a repeat
+# WITHIN one agent's context still denies. Parent store keeps the un-suffixed name.
+
+# --- V-AGENT-SPLIT: parent read, then in-window subagent read of the same path → allow ---
+SBX_AG="$SBX/agent"; mkdir -p "$SBX_AG/cache"
+TFAG="$SBX/agent.md"; printf 'a%s\n' $(seq 1 150) > "$TFAG"
+runAG(){ DHX_READ_DEDUP_STATE_DIR="$SBX_AG/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_AG/data" \
+         DHX_READ_DEDUP_DENY_DISABLED=0 bash "$HOOK"; }
+mkAG(){ printf '{"tool_name":"Read","session_id":"sidag","tool_input":{"file_path":"%s"}%s}' "$TFAG" "${1:-}"; }
+mkAG | runAG                                 # parent full read
+OUT=$(mkAG ',"agent_id":"agentA"' | runAG)   # subagent's FIRST read, in-window
+chk "V-AGENT-SPLIT subagent first read not denied" "${OUT:-<empty>}" "<empty>"
+chk "V-AGENT-SPLIT subagent store created (.agent-agentA)" \
+    "$([ -f "$SBX_AG/cache/read-dedup/sidag.agent-agentA.jsonl" ] && echo yes || echo no)" "yes"
+chk "V-AGENT-SPLIT parent store un-suffixed, 1 record" \
+    "$(wc -l < "$SBX_AG/cache/read-dedup/sidag.jsonl" 2>/dev/null || echo 0)" "1"
+
+# --- V-AGENT-WITHIN: the SAME subagent's in-window full re-read → denied, agent attributed ---
+OUT=$(mkAG ',"agent_id":"agentA"' | runAG)
+chk "V-AGENT-WITHIN same-agent repeat denied" "$(echo "$OUT" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+chk "V-AGENT-WITHIN stats agent=agentA" "$(tail -1 "$SBX_AG/data/read-dedup-stats.jsonl" 2>/dev/null | jq -r '.agent')" "agentA"
+
+# --- V-AGENT-BADID: unsafe agent_id (filename component) → reject-and-disable, nothing written ---
+SBX_AB="$SBX/agentbad"; mkdir -p "$SBX_AB/cache"
+for bad_aid in "a/b" ".." 'x\y'; do
+  OUT=$(printf '{"tool_name":"Read","session_id":"sidab","tool_input":{"file_path":"%s"},"agent_id":"%s"}' "$TFAG" "$bad_aid" \
+    | DHX_READ_DEDUP_STATE_DIR="$SBX_AB/cache" DHX_READ_DEDUP_DATA_DIR="$SBX_AB/data" DHX_READ_DEDUP_DENY_DISABLED=0 bash "$HOOK"); RC=$?
+  WROTE=$(find "$SBX_AB/cache/read-dedup" -type f 2>/dev/null | wc -l)
+  if [ "$RC" = "0" ] && [ "${OUT:-}" = "" ] && [ "$WROTE" = "0" ]; then
+    ok "V-AGENT-BADID rejected unsafe agent_id [$bad_aid]"
+  else
+    bad "V-AGENT-BADID leaked on [$bad_aid] (rc=$RC out=[$OUT] files=$WROTE)"
+  fi
+done
 
 echo
 echo "$PASS passed, $FAIL failed"
