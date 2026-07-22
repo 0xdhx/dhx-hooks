@@ -195,6 +195,26 @@ sed -i 's|forgefinder Phase 26|a real-world Phase 26|' tests/probes/probe-deferr
 sed -i "s|forgefinder's ff-test-output-filter\.sh|a sibling repo's node:test output-filter|" dhx/dhx-pkg-install-filter.sh
 sed -i "s|the forgefinder ff-test-output-filter\.test\.js|a sibling repo's ff-test-output-filter.test.js|" tests/probes/probe-pkg-install-filter.sh
 
+# Class D (2026-07-21): PREFIX-SENSITIVE alias — must run BEFORE the blanket sweep.
+# `dhx-worktree-bash-guard.sh` (D-06) draws its boundary at a sibling repo whose name
+# is a strict PREFIX of another: `/repos/forge` must not false-match `/repos/forgefinder`
+# (forge + 'f', not forge + '/'). The adversarial test asserts exactly that. Mapping
+# those two files to `acme-app` would destroy the shared prefix — the assertion would
+# still pass while testing nothing, which is worse than a scrub miss because it reads
+# green. `forgeworks` preserves the collision property the boundary exists to handle.
+sed -i 's|forgefinder|forgeworks|g' \
+  dhx/dhx-worktree-bash-guard.sh \
+  tests/probes/probe-worktree-guard-adversarial.test.js
+
+# Class D (2026-07-21): blanket sweep for everything else. The surgical rules above
+# produce better prose ("a sibling repo's ..."), so they win by running first; this
+# only catches residuals — new probes and hooks that pick up a `forgefinder` reference
+# between syncs. Without it, every such addition fails the Class D verify and the
+# operator hand-writes another one-off sed. Scoped to the whole worktree (not just the
+# six dirs the Class D verify greps) so the cross-repo path check below is covered too.
+grep -rlI "forgefinder" . --exclude-dir=.git 2>/dev/null \
+  | xargs -r sed -i 's|forgefinder|acme-app|g'
+
 # Class E: residual docs/<file>.md cross-references in probe corpus
 # probe-dhx-statusline.js has a "// Pairs with: ..." block (4 lines)
 sed -i '/^\/\/ Pairs with: docs\/decisions\.md 2026-04-18 statusline-line2 row, and the$/,/^\/\/ formatLine2Signals)\.$/d' tests/probes/probe-dhx-statusline.js
