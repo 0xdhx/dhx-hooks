@@ -240,6 +240,33 @@ sed -i 's|2\. Which `docs/decisions\.md` row or architectural invariant it backs
 # probe-worktree-write-guard.sh: hardcoded local-user path in test JSON fixtures
 sed -i 's|/home/dhx/repos/hooks/\.claude|/tmp/test-repo/.claude|g' tests/probes/probe-worktree-write-guard.sh
 
+# Class E (2026-07-21): generalized doc-pointer sweep — the residual catcher.
+# Every hook or probe that picks up a provenance pointer (`~/repos/cross-repo/docs/
+# research/…md`, "skills `docs/decisions/…md`", a bare in-repo `docs/…md`) between
+# syncs used to fail the verify below and need another hand-written one-off sed. Six
+# accumulated by 2026-07-21. These rules keep the SENTENCE and drop only the PATH, so
+# the surrounding prose still reads — deleting whole lines is what orphaned the
+# continuation lines the Class A/E surgical rules above exist to clean up.
+#
+# DOCS_PATTERN is defined ONCE here and reused by the verify (search "$DOCS_PATTERN"
+# below): if the scrub and the check ever drifted apart, the mirror would either fail
+# on something unscrubbable or ship a pointer the check no longer looks for.
+# NOTE: `#` is the sed delimiter throughout — the pattern contains `|` alternations,
+# which would otherwise be read as delimiters and split the expression.
+DOCS_PATTERN="docs/(decisions|architecture|backlog|hook-patterns|hook-dev-guide|statusline-wrapper|troubleshooting|upstream-proposal-discipline|research|design)[/.][a-z0-9./-]+\.md"
+
+DOC_REF_FILES=$(grep -rlIE "$DOCS_PATTERN" dhx/ tests/probes/ 2>/dev/null || true)
+if [ -n "$DOC_REF_FILES" ]; then
+  # Order matters: foreign-repo-qualified forms first (they carry the useful noun),
+  # bare residuals last.
+  echo "$DOC_REF_FILES" | xargs -r sed -Ei \
+    -e "s#~?(/home/[a-z0-9_-]+)?/?repos/cross-repo/$DOCS_PATTERN#the cross-repo knowledge base#g" \
+    -e "s#~?(/home/[a-z0-9_-]+)?/?repos/skills/$DOCS_PATTERN#the skills-monorepo docs#g" \
+    -e "s#cross-repo \`?$DOCS_PATTERN\`?#the cross-repo knowledge base#g" \
+    -e "s#skills \`?$DOCS_PATTERN\`?#the skills-monorepo docs#g" \
+    -e "s#\`?$DOCS_PATTERN\`?#the project docs#g"
+fi
+
 # Class F: cross-repo skills/ references in incidental working files. The
 # sync-skill-overrides pair was dropped wholesale via the operator-tooling
 # rm above; these scrubs handle places where a single skills-repo path
@@ -318,7 +345,8 @@ if [ "$DANGLING_REPORTS" != "0" ]; then
   echo "[sync] (warn-only — operator review the audit edits if unexpected)"
 fi
 
-DOCS_PATTERN="docs/(decisions|architecture|backlog|hook-patterns|hook-dev-guide|statusline-wrapper|troubleshooting|upstream-proposal-discipline|research|design)[/.][a-z0-9./-]+\.md"
+# DOCS_PATTERN is defined once in the Class E generalized sweep above and reused here
+# deliberately — a second definition would let the scrub and this check drift apart.
 DOCS_OUT=$(grep -rEnI "$DOCS_PATTERN" dhx/ tests/probes/ 2>/dev/null | grep -v 'docs/x.md')
 DANGLING_DOCS=$([ -z "$DOCS_OUT" ] && echo 0 || echo "$DOCS_OUT" | wc -l)
 if [ "$DANGLING_DOCS" != "0" ]; then
