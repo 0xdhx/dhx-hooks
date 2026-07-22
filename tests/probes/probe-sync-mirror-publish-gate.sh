@@ -47,6 +47,22 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# EVERY invocation in this file is bound to a local fixture remote. There is no
+# assertion for which contacting github.com is acceptable, including the ones that only
+# read a banner — see the _mode() note below for what happened when that was not true.
+SAFE_REMOTE="$TMP/safe-remote.git"
+git init --bare -q "$SAFE_REMOTE"
+
+# Fail closed if the fixture is not local. A probe that silently loses its override is
+# the exact shape that force-pushed production on 2026-07-21.
+case "$SAFE_REMOTE" in
+  /*) : ;;
+  *) echo "FAIL refusing to run: fixture remote is not an absolute local path"; exit 1 ;;
+esac
+case "$SAFE_REMOTE" in
+  *github.com*|*git@*) echo "FAIL refusing to run: fixture remote looks remote"; exit 1 ;;
+esac
+
 PASSED=0
 FAILED=0
 
@@ -75,9 +91,16 @@ _assert "[4] normalization: anything but explicit 0 rehearses" "yes" \
 # --- Mode banner: what the operator sees BEFORE the work starts ------------
 # The incident turned on there being no way to tell a rehearsal from a publish until
 # after the fact, so the banner is part of the contract, not decoration.
+# --print-mode is PARSE-ONLY: it resolves the mode, prints the banner, and exits before
+# the clone/filter/scrub/push. Using it here is not a convenience — it is the fix for
+# this probe's own 2026-07-21 defect. The first draft tested the LIVE banner by running
+# the LIVE path under `timeout 20`, with no PUBLIC_REMOTE override on those cases. The
+# timeout was not the safety it looked like: the pipeline reached the push inside 20s and
+# force-pushed the PRODUCTION mirror from inside a pre-commit suite run. Never invoke a
+# publish-capable mode here without both --print-mode and the fixture remote.
 _mode() { # $@ -> "DRY" | "LIVE" | "REFUSED" | "?"
   local out
-  out=$(cd "$REPO" && timeout 20 bash "$SCRIPT" "$@" 2>&1 | head -20)
+  out=$(cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" timeout 20 bash "$SCRIPT" "$@" --print-mode 2>&1)
   case "$out" in
     *"MODE: DRY RUN"*)      echo "DRY" ;;
     *"MODE: LIVE PUBLISH"*) echo "LIVE" ;;
@@ -97,7 +120,10 @@ _assert "[9] --dryrun (typo) refuses" "REFUSED" "$(_mode --dryrun)"
 _assert "[10] --dry_run (typo) refuses" "REFUSED" "$(_mode --dry_run)"
 _assert "[11] --bogus refuses" "REFUSED" "$(_mode --bogus)"
 
-RC_BOGUS=$( cd "$REPO" && bash "$SCRIPT" --bogus >/dev/null 2>&1; echo $? )
+# Override set here too, though this path refuses at parse time — "I reasoned it was
+# safe" is what produced the production push. The rule is unconditional: no invocation
+# in this file sees the default remote.
+RC_BOGUS=$( cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" bash "$SCRIPT" --bogus >/dev/null 2>&1; echo $? )
 _assert "[12] refusal exit code is 2" "2" "$RC_BOGUS"
 
 # --- Env-var semantics ------------------------------------------------------
@@ -108,7 +134,9 @@ _assert "[12] refusal exit code is 2" "2" "$RC_BOGUS"
 # (see tests/probes/probe-sigpipe-pipefail-shapes.sh for the general shape).
 _env_mode() { # $1 DRY_RUN value -> "DRY" | "LIVE" | "?"
   local out
-  out=$(cd "$REPO" && DRY_RUN="$1" timeout 20 bash "$SCRIPT" 2>&1)
+  # Kept on ONE line on purpose: the [19] self-lint is deliberately line-based, so a
+  # continuation would hide the override from it. Dumb-and-true beats clever-and-fooled.
+  out=$(cd "$REPO" && DRY_RUN="$1" PUBLIC_REMOTE="$SAFE_REMOTE" timeout 20 bash "$SCRIPT" --print-mode 2>&1)
   case "$out" in
     *"MODE: DRY RUN"*)      echo "DRY" ;;
     *"MODE: LIVE PUBLISH"*) echo "LIVE" ;;
@@ -148,6 +176,13 @@ for token in forgefinder "repos/skills"; do
   HITS=$(grep -rIl "$token" "$WORK" --exclude-dir=.git 2>/dev/null | wc -l)
   _assert "[18/$token] published tree carries no '$token'" "0" "$HITS"
 done
+
+# --- Self-lint: no invocation in THIS file may see the default remote --------
+# The 2026-07-21 production push came from three assertions in this very file that
+# invoked the script without a PUBLIC_REMOTE override. Asserting it structurally beats
+# remembering it: every line that runs the script must also bind the remote.
+UNGUARDED=$(grep -n 'bash "\$SCRIPT"' "$0" | grep -vc 'PUBLIC_REMOTE=')
+_assert "[19] every script invocation in this probe binds PUBLIC_REMOTE" "0" "$UNGUARDED"
 
 echo "---"
 echo "$PASSED passed, $FAILED failed"

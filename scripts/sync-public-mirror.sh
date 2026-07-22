@@ -41,10 +41,19 @@ set -euo pipefail
 # Regression-guarded by tests/probes/probe-sync-mirror-publish-gate.sh — if someone
 # flips the default back, that probe goes red before the mirror moves.
 DRY_RUN="${DRY_RUN:-1}"
+PRINT_MODE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run|-n) DRY_RUN=1; shift ;;
     --push)       DRY_RUN=0; shift ;;   # the ONLY argv path to a live force-push
+    # Parse-only introspection: resolve the mode, print it, exit BEFORE any clone,
+    # filter, scrub, or push. Exists so the argument-parsing contract can be tested
+    # without executing the pipeline. Added 2026-07-21 after the regression probe for
+    # that very contract tested the LIVE banner by running the LIVE path — and
+    # force-pushed the production mirror from inside a pre-commit hook. A gate whose
+    # test has to perform the dangerous act to observe the gate is not testable; give
+    # the test a side-effect-free way to ask.
+    --print-mode) PRINT_MODE=1; shift ;;
     -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
     *)
       echo "REFUSE: unrecognized argument '$1'." >&2
@@ -70,6 +79,13 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "[sync] MODE: DRY RUN (default) — nothing will be pushed to $PUBLIC_REMOTE"
 else
   echo "[sync] MODE: LIVE PUBLISH (--push given) — will FORCE-PUSH $PUBLIC_REMOTE"
+fi
+
+# --print-mode exits HERE — before the clone, the filter, the scrub, and the push.
+if [ "$PRINT_MODE" = "1" ]; then
+  trap - EXIT
+  rm -rf "$BUILD_DIR"
+  exit 0
 fi
 
 echo "[sync] REPO_ROOT=$REPO_ROOT"
