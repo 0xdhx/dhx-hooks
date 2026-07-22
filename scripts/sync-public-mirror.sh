@@ -24,22 +24,38 @@ set -euo pipefail
 # operator's belief that it was a rehearsal. That is exactly what happened: two
 # unintended force-pushes to 0xdhx/dhx-hooks. A flag that silently does the opposite of
 # what it says is worse than no flag.
-# Two rules now hold: `--dry-run` is a REAL flag, and an UNRECOGNIZED argument is a hard
-# refusal (never a silent live run — the failure mode must not be "publish anyway").
-DRY_RUN="${DRY_RUN:-}"
+# Three rules now hold:
+#
+#   1. REHEARSE BY DEFAULT. A bare invocation does NOT publish. Publishing requires the
+#      explicit `--push`. This is the layer that does not depend on anyone remembering
+#      anything: a forgotten flag, a typo, a stale runbook line, or a copy-paste all
+#      degrade to a rehearsal. A flag-guarded dangerous DEFAULT is the same trap with an
+#      extra step — the default itself has to be the safe one.
+#   2. `--dry-run`/`-n` is a real flag (now a no-op reaffirming the default, kept because
+#      existing runbooks and muscle memory pass it).
+#   3. An UNRECOGNIZED argument is a hard refusal. The failure mode must never be
+#      "publish anyway."
+#
+# `DRY_RUN=0` (env) is honored as a non-interactive publish path for automation that
+# cannot pass argv; it is deliberately the awkward spelling, not the default.
+# Regression-guarded by tests/probes/probe-sync-mirror-publish-gate.sh — if someone
+# flips the default back, that probe goes red before the mirror moves.
+DRY_RUN="${DRY_RUN:-1}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run|-n) DRY_RUN=1; shift ;;
-    --push)       DRY_RUN="";  shift ;;   # explicit opt-in to the live push
+    --push)       DRY_RUN=0; shift ;;   # the ONLY argv path to a live force-push
     -h|--help)    sed -n '2,16p' "$0"; exit 0 ;;
     *)
       echo "REFUSE: unrecognized argument '$1'." >&2
-      echo "        Usage: $0 [--dry-run|-n] [--push]   (env DRY_RUN=1 also works)" >&2
-      echo "        Refusing rather than falling through to a LIVE force-push of" >&2
-      echo "        the public mirror — see the 2026-07-21 incident note above." >&2
+      echo "        Usage: $0 [--push] [--dry-run|-n]" >&2
+      echo "        Default is a REHEARSAL; --push is required to publish." >&2
+      echo "        Refusing rather than falling through — see the 2026-07-21" >&2
+      echo "        incident note above." >&2
       exit 2 ;;
   esac
 done
+[ "$DRY_RUN" = "0" ] || DRY_RUN=1   # normalize: anything not an explicit 0 rehearses
 export DRY_RUN
 
 REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
@@ -51,9 +67,9 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 # Say which mode is running, up front and unmissably — the incident above turned on the
 # operator having no way to tell a rehearsal from a publish until after the fact.
 if [ "$DRY_RUN" = "1" ]; then
-  echo "[sync] MODE: DRY RUN — nothing will be pushed to $PUBLIC_REMOTE"
+  echo "[sync] MODE: DRY RUN (default) — nothing will be pushed to $PUBLIC_REMOTE"
 else
-  echo "[sync] MODE: LIVE PUBLISH — will FORCE-PUSH $PUBLIC_REMOTE (pass --dry-run to rehearse)"
+  echo "[sync] MODE: LIVE PUBLISH (--push given) — will FORCE-PUSH $PUBLIC_REMOTE"
 fi
 
 echo "[sync] REPO_ROOT=$REPO_ROOT"
@@ -685,7 +701,7 @@ fi
 PUB_HEAD=$(git rev-parse HEAD)
 
 if [ "${DRY_RUN:-}" = "1" ]; then
-  echo "[sync] DRY_RUN=1 — skipping push to $PUBLIC_REMOTE and tag"
+  echo "[sync] rehearsal — skipping push to $PUBLIC_REMOTE and tag (pass --push to publish)"
   echo "[sync] would-be public HEAD: $PUB_HEAD"
   echo "[sync] BUILD_DIR retained for inspection: $BUILD_DIR/dhx-hooks"
   trap - EXIT  # disable cleanup
