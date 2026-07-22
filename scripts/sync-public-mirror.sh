@@ -585,7 +585,7 @@ Most hook commands reference `$HOME/.claude/hooks/dhx-*.sh` paths. The expected 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
 | `dhx-assessed-guard.sh` | `Write\|Edit` | Prevents `[assessed]` markers without explicit user approval. |
-| `dhx-read-guard.js` | `Write\|Edit` | Partial-read advisory (PARTIAL-READ NOTE) — fires when a file was Read with offset/limit this session then edited outside the read window. CC's native runtime owns full read-before-edit enforcement; this shim only covers CC's partial-read blindness. |
+| `dhx-read-guard.js` | `Write\|Edit` | Partial-read advisory (PARTIAL-READ NOTE) — fires on any Edit/Write of a file that was Read with offset/limit this session. No read-window comparison exists — detection is per-path, not per-range. CC's native runtime owns full read-before-edit enforcement; this shim only covers CC's partial-read blindness. |
 | `dhx-worktree-write-guard.sh` | `Edit\|Write\|MultiEdit` | Blocks writes whose absolute path escapes the enclosing CC-managed worktree (gh#36182 mitigation). |
 | `dhx-ui-vision-guard.sh` | `Agent` | Ensures `z-gsdui` project skill exists when GSD UI subagents spawn. |
 | `dhx-agent-leak-snapshot.sh` | `Agent` | Captures pre-dispatch `git status` baseline for paired post-check (subagent-leak detection). |
@@ -711,7 +711,7 @@ Initial public release. Mirror of the dhx hook surface from the private workflow
 - `gsd/` read-only snapshots of upstream `gsd-build/get-shit-done` hooks (vendored for fork-tracking).
 
 ### Notable hooks
-- **Partial-read advisory** (`dhx-read-cache.sh` + `dhx-read-guard.js`) — session-scoped detection of files Read with `offset`/`limit` then edited outside the read window, surfaced as a soft PARTIAL-READ NOTE. Covers CC's partial-read blindness (its native read-gate is binary — a partial read satisfies it for an edit anywhere); CC's runtime owns full read-before-edit enforcement.
+- **Partial-read advisory** (`dhx-read-cache.sh` + `dhx-read-guard.js`) — session-scoped detection of files Read with `offset`/`limit` this session, surfaced as a soft PARTIAL-READ NOTE on any later Edit/Write of that path (per-path detection; no read-window comparison). Covers CC's partial-read blindness (its native read-gate is binary — a partial read satisfies it for an edit anywhere); CC's runtime owns full read-before-edit enforcement and (since at least 2.1.217) natively notes modified-since-read on Edit.
 - **Plugin-manifest registration** — survives Claude Code's atomic settings-rename rewriter.
 
 [0.2.0]: https://github.com/0xdhx/dhx-hooks/releases/tag/v0.2.0
