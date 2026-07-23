@@ -385,6 +385,59 @@ _assert_allow "72: not a repo — fail-open, nothing to corrupt"
 _run_in "$_D/shared" "git worktree add ../x -b y"
 _assert_allow "73: 'worktree add' subcommand is 'worktree', never 'add'"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# COMMIT ARM (2026-07-23) — dir-pathspec sweep WARN on a declared shared primary
+# ═══════════════════════════════════════════════════════════════════════════
+# WARN, not deny (v1): rc=0 + hookSpecificOutput.additionalContext on stdout
+# (HP-046 — plain stdout on exit 0 is suppressed for PreToolUse:Bash). The deny
+# for this shape lives in git-safe.sh @1.7 (git_safe_commit refuses dir
+# pathspecs); this arm is the raw-git backstop. Same predicate pair as the add
+# arm — cases 78/79 are the over-warn regression guards (solo repo / lane).
+
+_assert_warn() {
+  local name="$1"
+  if [[ "$RC" == "0" ]] && [[ "$OUT" == *additionalContext* && "$OUT" == *WARN* ]]; then
+    echo "OK   $name"; PASSED=$((PASSED + 1))
+  else
+    echo "FAIL $name — expected rc=0 + additionalContext WARN, got rc=$RC"
+    echo "     output: $OUT"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+mkdir -p "$_D/shared/pkg" "$_D/solo/pkg" "$_D/lane/pkg"
+echo x > "$_D/shared/pkg/f.txt"
+echo x > "$_D/solo/pkg/f.txt"
+echo x > "$_D/lane/pkg/f.txt"
+ln -s pkg "$_D/shared/pkglink"
+
+_run_in "$_D/shared" "git commit -m msg -- pkg"
+_assert_warn "74: bare 'commit -- <dir>' on a declared shared primary WARNS"
+
+_run "$CWD" "cd $_D/shared && git commit -m msg -- pkg"
+_assert_warn "75: cd-redirected 'commit -- <dir>' WARNS (RUNNING_CWD resolution)"
+
+_run "$CWD" "git -C $_D/shared commit -m msg -- pkg"
+_assert_warn "76: -C-redirected 'commit -- <dir>' WARNS (global-prefix replay)"
+
+_run_in "$_D/shared" "git commit -m msg -- pkg/f.txt other.txt"
+_assert_allow "77: file pathspecs stay SILENT (the sanctioned form)"
+
+_run_in "$_D/solo" "git commit -m msg -- pkg"
+_assert_allow "78: dir pathspec in an UNDECLARED primary — silent (over-warn guard)"
+
+_run_in "$_D/lane" "git commit -m msg -- pkg"
+_assert_allow "79: dir pathspec in a worktree lane (own index) — silent"
+
+_run_in "$_D/shared" "git commit -m msg -- nonexistent"
+_assert_allow "80: nonexistent pathspec — silent (deleted-path commits stay legal)"
+
+_run_in "$_D/shared" "git commit -m msg"
+_assert_allow "81: no '--' pathspec — silent"
+
+_run_in "$_D/shared" "git commit -m msg -- pkglink"
+_assert_allow "82: symlink-to-dir pathspec — silent (single index entry, no sweep)"
+
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "$PASSED passed, $FAILED failed"

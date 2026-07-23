@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-git-destructive-guard.sh — PreToolUse hook (Bash matcher)
-# Patterns: HP-003, HP-009, HP-028, HP-037
+# Patterns: HP-003, HP-009, HP-028, HP-037, HP-049
 #
 # Closes the SYNTACTIC bypass surface that the existing
 # `Bash(git push --force *)` / `Bash(git push -f *)` / `Bash(git reset --hard*)`
@@ -219,6 +219,11 @@ CMD=$(jq -r '.tool_input.command // ""' <<<"$INPUT" 2>/dev/null || echo "")
 SPLIT=$(sed -e 's/&&/\n/g' -e 's/||/\n/g' -e 's/;/\n/g' -e 's/|/\n/g' <<<"$CMD")
 
 BLOCK_REASON=""
+# WARN channel (commit arm, v1): non-blocking advisory on exit 0 — HP-049:
+# systemMessage → user, hookSpecificOutput.additionalContext → model; plain
+# stdout on exit 0 is debug-log-only for PreToolUse:Bash, so these are the
+# only two visible paths short of a block.
+WARN_REASON=""
 
 # Running effective-cwd, carried across segments so a bare `cd <path>` segment
 # redirects subsequent `git` segments (shell-state redirection). Empty = the
@@ -618,6 +623,69 @@ inspect_segment() {
       return 0
       ;;
 
+    commit)
+      # ── COMMIT arm (WARN, not deny — v1) — the dir-pathspec sweep shape ──────
+      # `git commit -- <dir>` records the WORKING-TREE content of EVERY changed
+      # file under <dir>, including files a concurrent session staged from a
+      # different content state — the add-arm's sweep class, one step later and
+      # terminal (the commit is durable). Deny lives one layer up: git_safe_commit
+      # (git-safe.sh @1.7) REFUSES dir pathspecs outright, and the dhx-commit
+      # wrapper routes through it. This arm is the backstop for a raw `git commit`
+      # issued outside the lib — WARN via additionalContext (exit 0), so the model
+      # sees the hazard and can re-issue with file paths or the wrapper.
+      #
+      # Gated on the SAME predicate pair as the add arm, for the same over-block
+      # reason: committing a directory pathspec is routine and harmless in a solo
+      # repo and in a worktree lane (own index). Writer-concurrency is the
+      # discriminator, and only the repo can declare that.
+      local seen_ddash=0
+      local -a specs=()
+      local j=$i
+      while [[ $j -lt ${#tokens[@]} ]]; do
+        local t="${tokens[$j]}"
+        if [[ $seen_ddash -eq 0 && "$t" == "--" ]]; then
+          seen_ddash=1; j=$((j + 1)); continue
+        fi
+        [[ $seen_ddash -eq 1 ]] && specs+=("$t")
+        j=$((j + 1))
+      done
+      [[ ${#specs[@]} -gt 0 ]] || return 0
+      # Resolve each pathspec against the EFFECTIVE working dir: the running cd
+      # target (or the hook process cwd), then each retained global `-C <path>`
+      # applied in order — matching git's own chdir sequence. --git-dir does not
+      # chdir, so it deliberately does not participate here.
+      local eff="${RUNNING_CWD:-$PWD}"
+      local k=0
+      while [[ $k -lt ${#global_prefix[@]} ]]; do
+        if [[ "${global_prefix[$k]}" == "-C" ]]; then
+          local carg="${global_prefix[$((k + 1))]:-}"
+          case "$carg" in
+            /*) eff="$carg" ;;
+            ?*) eff="$eff/$carg" ;;
+          esac
+          k=$((k + 2)); continue
+        fi
+        k=$((k + 1))
+      done
+      local s resolved
+      for s in "${specs[@]}"; do
+        case "$s" in
+          /*) resolved="$s" ;;
+          *)  resolved="$eff/$s" ;;
+        esac
+        # A symlink is a single index entry, never a sweep surface (mirrors the
+        # git-safe dir-shape exemption); -d alone would follow it.
+        if [[ -d "$resolved" && ! -L "$resolved" ]]; then
+          if is_primary "$RUNNING_CWD" "${global_prefix[@]}" \
+             && declares_shared_primary "$RUNNING_CWD" "${global_prefix[@]}"; then
+            WARN_REASON="'commit -- $s' carries a DIRECTORY pathspec on a declared shared primary: it commits the working-tree content of every changed file under it, including a peer session's staged work. Commit explicit FILE paths (or use ~/.claude/dhx-tools/dhx-commit, which refuses this shape)."
+          fi
+          return 0
+        fi
+      done
+      return 0
+      ;;
+
     *)
       # Not a subcommand this hook gates (incl. `worktree`, which does NOT route
       # through checkout/switch — `worktree add -b lane` is the sanctioned
@@ -663,5 +731,12 @@ EOF
     exit 2
   fi
 done <<<"$SPLIT"
+
+# Non-blocking WARN (commit dir-pathspec arm). Emitted only when no segment
+# blocked; additionalContext reaches the model's context, the command proceeds.
+if [[ -n "$WARN_REASON" ]] && command -v jq >/dev/null 2>&1; then
+  jq -n --arg c "WARN (git destructive-op guard): $WARN_REASON" \
+    '{systemMessage:$c,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'
+fi
 
 exit 0
