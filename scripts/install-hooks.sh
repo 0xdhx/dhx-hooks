@@ -11,6 +11,10 @@ set -euo pipefail
 #   .git/hooks/reference-transaction -> scripts/hooks/reference-transaction (symlink, worktree-safe; XR-29 Layer-1 guard —
 #                                        ONLY when this repo carries the reftxn machinery; a FOREIGN tree that adopted just
 #                                        the backlog-frontmatter gate via the scaffold installs the pre-commit gate alone)
+#   .git/hooks/<name>                -> scripts/hooks/<name>                (generic sweep: every additional dot-free
+#                                        regular file directly under scripts/hooks/ is wired as a self-contained hook —
+#                                        e.g. forgefinder's pre-push, relater's post-checkout — so adopter repos never
+#                                        need to fork this installer to wire repo-own hooks)
 #
 # scripts/hooks/pre-commit is a run-parts dispatcher over scripts/hooks/
 # pre-commit.d/. New checks are added there — this installer only wires the
@@ -110,7 +114,7 @@ fi
 
 # XR-29 reftxn machinery is cross-repo-specific. cross-repo ALWAYS carries it (tracked), so it is
 # always wired here. A FOREIGN tree that adopts only the backlog-frontmatter gate via the scaffold
-# (conventions/scaffolds/backlog-frontmatter-gate/, which ships a VERBATIM copy of this installer)
+# (cross-repo:conventions/scaffolds/backlog-frontmatter-gate/, which ships a VERBATIM copy of this installer)
 # has no reference-transaction hook — there the installer must wire the pre-commit gate WITHOUT the
 # reftxn guard rather than refuse the whole install. Presence-gate so the ONE installer self-scopes:
 # cross-repo gets the XR-29 guard + predicate snapshot; a foreign adopter gets the pre-commit gate.
@@ -200,6 +204,28 @@ REFTXN_ABS="$GIT_TOPLEVEL/scripts/hooks/reference-transaction"
 install_hook "pre-commit" "$DISPATCHER_ABS"
 install_hook "pre-merge-commit" "$DISPATCHER_ABS"
 
+# ── Generic self-contained hook sweep (2026-07-23 fleet re-vendor arc) ────────
+# Wire EVERY additional self-contained hook the repo tracks directly under
+# scripts/hooks/ — the general case the reftxn presence-gate below is one
+# instance of. Downstream adopters carry repo-own hooks here (forgefinder:
+# pre-push; relater: post-checkout); before this sweep their vendored installers
+# needed local edits to wire them, which pinned those repos to forked
+# pre-2026-07-13 installers (the drift the per-layout comparable set detects).
+# Selection: regular files whose basename contains NO dot — git hook names never
+# carry an extension, so helper artifacts (reftxn-veto-snapshot.sh) and dirs
+# (pre-commit.d/, lib/) self-exclude. pre-commit is the dispatcher (wired
+# above); reference-transaction keeps its dedicated block below (predicate
+# snapshot sync + D-12 exec assert). Glob order keeps the wiring deterministic.
+for _hook in scripts/hooks/*; do
+  [ -f "$_hook" ] || continue
+  _name=${_hook##*/}
+  case "$_name" in
+    pre-commit|reference-transaction|*.*) continue ;;
+  esac
+  [ -x "$_hook" ] || chmod +x "$_hook"
+  install_hook "$_name" "$GIT_TOPLEVEL/scripts/hooks/$_name"
+done
+
 # Foreign-adopter path (HAS_REFTXN=0): the pre-commit + pre-merge-commit gates are wired; the XR-29
 # reftxn guard and its predicate snapshot are cross-repo-specific, so stop here rather than refuse the
 # install or emit cross-repo-internal machinery into a foreign tree. cross-repo (HAS_REFTXN=1) always
@@ -260,8 +286,10 @@ else
     # quoted heredoc keeps the backticked `layer3-unlock-helper` inert.
     cat <<'REFTXN_D02_HEADER'
 # ── XR-34 brain/skull split (D-02): this is the DEV copy ──────────────────────
-# As of XR-34 the LIVE guard reads the ROOT-OWNED predicate copy installed beside
-# the dispatcher (default /usr/local/libexec/fleet-machinery/reftxn-veto-snapshot.sh),
+# As of XR-34 the LIVE guard reads the ROOT-OWNED predicate copy installed INSIDE
+# the dispatcher dir (default /usr/local/libexec/fleet-machinery/dispatcher/reftxn-veto-snapshot.sh
+# — the subhook resolves it as $SELF_DIR/reftxn-veto-snapshot.sh; a TOP-LEVEL copy at
+# /usr/local/libexec/fleet-machinery/ is read by NOTHING and is a false-negative decoy),
 # regenerated via the privileged `layer3-unlock-helper regen-predicate` mode — the
 # agent UID cannot edit that copy (closes the SC-4 self-disable-via-edit residual).
 # THIS tracked working-tree file is the AGENT-WRITABLE DEV/iteration copy ONLY: it
