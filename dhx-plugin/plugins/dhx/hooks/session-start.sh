@@ -37,6 +37,13 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh 
 # it silent + non-blocking regardless. Filesystem/network-only; no stdin needed.
 [ -e ~/.claude/dhx-tools/dhx-watch-health.cjs ] && node ~/.claude/dhx-tools/dhx-watch-health.cjs >/dev/null 2>&1 || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+# Pending `/dhx:vet` closure offers: surfaces rows the vet close-offer UAQ wrote and
+# never got an answer for (a residual row IS an unanswered question — both answers
+# remove it). Sits here, between the watch digest and the skill-desc audit, because it
+# is the same "direct ask on the user" tier per the D-11 ordering rationale in
+# dhx-watch-digest.sh. Empty stdout on the clean path (the common case). The action it
+# surfaces is a RE-VET, never a close command — see the INVARIANT block in the worker.
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
 # Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
 # description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
 # via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one
