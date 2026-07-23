@@ -294,6 +294,35 @@ declares_shared_primary() {
   jq -e '(.shared_primary // .primary_must_stay_on_main // false) == true' "$cfg" >/dev/null 2>&1
 }
 
+# _skip_arg <start-index> <token...> — echo the index just past a flag's
+# ARGUMENT, honoring a leading quote. The tokenizer is whitespace-split, so a
+# quoted message spans many tokens; consuming only one would let the message's
+# interior be parsed as command syntax (the `-m "... -- pkg ..."` false-pathspec
+# class). An unquoted argument is exactly one token. An UNTERMINATED quote
+# consumes the remainder — deliberately fail-SILENT: for a warn-only advisory a
+# missed warn beats a warn that misquotes the command back at the user.
+_skip_arg() {
+  local idx="$1"; shift
+  local -a toks=("$@")
+  local t="${toks[$idx]:-}"
+  [[ -n "$t" ]] || { printf '%s' "$idx"; return; }
+  local q=""
+  case "$t" in
+    \"*) q='"' ;;
+    \'*) q="'" ;;
+  esac
+  if [[ -z "$q" ]]; then printf '%s' "$((idx + 1))"; return; fi
+  # Fully-quoted single token (`"msg"`) — closes on itself. Length>1 guards the
+  # degenerate lone-quote token.
+  if [[ ${#t} -gt 1 && "$t" == *"$q" ]]; then printf '%s' "$((idx + 1))"; return; fi
+  idx=$((idx + 1))
+  while [[ $idx -lt ${#toks[@]} ]]; do
+    if [[ "${toks[$idx]}" == *"$q" ]]; then printf '%s' "$((idx + 1))"; return; fi
+    idx=$((idx + 1))
+  done
+  printf '%s' "$idx"
+}
+
 # is_redirected <global-prefix-token...> — the reset truth-table predicate:
 # true when a gitdir redirection is present (any retained global option that
 # changes the effective gitdir: -C / --git-dir / --work-tree). A running `cd`
@@ -638,15 +667,46 @@ inspect_segment() {
       # reason: committing a directory pathspec is routine and harmless in a solo
       # repo and in a worktree lane (own index). Writer-concurrency is the
       # discriminator, and only the repo can declare that.
+      # Pathspec harvest. TWO shapes carry a pathspec, and collecting only the
+      # first leaves the identical sweep uncovered:
+      #   (1) after a bare `--`            git commit -m msg -- pkg
+      #   (2) POSITIONAL, no `--` at all   git commit -m msg pkg   ← equally real
+      # Confirmed 2026-07-23: form (2) commits pkg/ exactly like form (1).
+      #
+      # A message argument must be CONSUMED, not walked: the tokenizer is
+      # whitespace-split (v1 floor), so a `--` inside `-m "drop the -- pkg note"`
+      # otherwise reads as the separator and fabricates a pathspec that is not in
+      # the command at all — a warn asserting something false about what the user
+      # typed. This arm is the first to read post-`--` content as meaningful (every
+      # other arm STOPS there), so it is the first exposed to that class.
+      # _skip_arg follows an opening quote to its closing token; unquoted args
+      # consume exactly one token.
       local seen_ddash=0
       local -a specs=()
       local j=$i
       while [[ $j -lt ${#tokens[@]} ]]; do
         local t="${tokens[$j]}"
-        if [[ $seen_ddash -eq 0 && "$t" == "--" ]]; then
-          seen_ddash=1; j=$((j + 1)); continue
+        if [[ $seen_ddash -eq 0 ]]; then
+          if [[ "$t" == "--" ]]; then
+            seen_ddash=1; j=$((j + 1)); continue
+          fi
+          case "$t" in
+            # git-commit(1) arg-takers. `-C`/`-c` here are reuse/reedit-message
+            # (the GLOBAL -C <path> was consumed by the skipper before the
+            # subcommand) — a future editor must not mis-handle the collision.
+            -m|-F|-C|-c|-t|-S|--message|--file|--reuse-message|--reedit-message|--template|--author|--date|--cleanup|--fixup|--squash|--trailer|--gpg-sign)
+              j=$(_skip_arg $((j + 1)) "${tokens[@]}"); continue ;;
+            # =-form and attached-arg flags are self-contained single tokens.
+            --*=*|-[mFCctS]?*)
+              j=$((j + 1)); continue ;;
+            -*)
+              j=$((j + 1)); continue ;;
+            *)
+              # Positional → form (2) pathspec.
+              specs+=("$t"); j=$((j + 1)); continue ;;
+          esac
         fi
-        [[ $seen_ddash -eq 1 ]] && specs+=("$t")
+        specs+=("$t")
         j=$((j + 1))
       done
       [[ ${#specs[@]} -gt 0 ]] || return 0

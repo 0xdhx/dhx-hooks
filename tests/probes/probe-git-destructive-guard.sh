@@ -438,6 +438,71 @@ _assert_allow "81: no '--' pathspec — silent"
 _run_in "$_D/shared" "git commit -m msg -- pkglink"
 _assert_allow "82: symlink-to-dir pathspec — silent (single index entry, no sweep)"
 
+# ── Adversarial-review follow-ups (2026-07-23, fresh-context reviewer) ───────
+# 83-85: form (2) — a POSITIONAL dir pathspec with no `--` at all. Confirmed to
+# commit the directory exactly like form (1), so silence here was a real hole.
+# 86-89: the message-argument class — a `--` INSIDE a quoted -m value must not
+# be read as the separator (it fabricated a pathspec absent from the command).
+# Both classes were silent/wrong before the _skip_arg walk; see cases 83 and 86
+# replayed against the pre-fix arm in the non-vacuity block below.
+
+_run_in "$_D/shared" "git commit -m msg pkg"
+_assert_warn "83: POSITIONAL dir pathspec, no '--' separator (form 2)"
+
+_run_in "$_D/shared" "git commit -m \"a quoted msg\" pkg"
+_assert_warn "84: positional dir after a QUOTED message argument"
+
+_run_in "$_D/shared" "git commit --author=\"A U\" pkg"
+_assert_warn "85: positional dir after an =-form arg-taking flag"
+
+_run_in "$_D/shared" "git commit -m \"drop the -- pkg sweep note\""
+_assert_allow "86: '--' inside a quoted message is NOT a separator (no fabricated spec)"
+
+_run_in "$_D/shared" "git commit -m \"touch -- pkg here\" -- pkg/f.txt"
+_assert_allow "87: message contains '-- pkg' but the REAL pathspec is a file"
+
+_run_in "$_D/shared" "git commit -C HEAD"
+_assert_allow "88: 'commit -C HEAD' reuse-message — arg consumed, not a pathspec"
+
+_run_in "$_D/shared" "git commit --amend --no-edit"
+_assert_allow "89: flag-only amend — silent"
+
+_run_in "$_D/solo" "git commit -m msg pkg"
+_assert_allow "90: positional dir in an UNDECLARED primary — silent (over-warn guard)"
+
+# ── Non-vacuity: the two new classes must FAIL against the pre-fix arm ───────
+# A probe case that passes against the code it is meant to guard is testing
+# nothing. 066fd2a is the commit that shipped the arm WITHOUT the _skip_arg
+# walk. Skips once that sha is unreachable (post-squash / shallow clone).
+if git -C "$REPO" cat-file -e 066fd2a^{commit} 2>/dev/null; then
+  _OLDARM="$_D/old-arm.sh"
+  git -C "$REPO" show 066fd2a:dhx/dhx-git-destructive-guard.sh > "$_OLDARM" 2>/dev/null
+  _run_old() {
+    local cwd="$1" cmd="$2" input
+    input=$(jq -cn --arg c "$cwd" --arg x "$cmd" '{cwd:$c,tool_input:{command:$x}}')
+    OUT=$(cd "$cwd" && echo "$input" | bash "$_OLDARM" 2>&1)
+    RC=$?
+  }
+  _run_old "$_D/shared" "git commit -m msg pkg"
+  if [[ "$OUT" != *WARN* ]]; then
+    echo "OK   91: non-vacuity — case 83 (positional dir) is SILENT on the pre-fix arm"
+    PASSED=$((PASSED + 1))
+  else
+    echo "FAIL 91: case 83 already warned pre-fix — the case tests nothing"
+    FAILED=$((FAILED + 1))
+  fi
+  _run_old "$_D/shared" "git commit -m \"drop the -- pkg sweep note\""
+  if [[ "$OUT" == *WARN* ]]; then
+    echo "OK   92: non-vacuity — case 86 (fabricated spec) DID warn on the pre-fix arm"
+    PASSED=$((PASSED + 1))
+  else
+    echo "FAIL 92: case 86 was already silent pre-fix — the case tests nothing"
+    FAILED=$((FAILED + 1))
+  fi
+else
+  echo "SKIP 91-92: non-vacuity baseline 066fd2a unreachable"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "$PASSED passed, $FAILED failed"
