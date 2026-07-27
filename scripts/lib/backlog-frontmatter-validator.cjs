@@ -46,6 +46,21 @@ const path = require('path');
 // ----------------------------------------------------------------------------
 // cross-repo:scripts/lib/parse-frontmatter.cjs
 //
+// !! EDITING THIS FILE HAS A FLEET TAIL. It is INLINED (not required) into the
+// !! backlog-frontmatter gate payload and vendored into 13 repos, so a change
+// !! here must be carried outward BY HAND in three steps, and only the first is
+// !! probe-guarded: (1) regenerate + COMMIT the payload; (2) re-install per
+// !! consuming repo, after a preflight diff of every payload path; (3) prove the
+// !! gate still FIRES — it fails OPEN, so a green scan cannot see a broken one.
+// !! Full recipe: ~/repos/cross-repo/docs/decisions.md § "parse-frontmatter
+// !! source -> payload -> installed" (that repo owns this file; the path is not
+// !! resolvable from a consuming tree). skills:scripts/lib/parse-frontmatter.cjs
+// !! is a SEPARATE, DRIFTED copy — fix both, and keep both probed.
+//
+// (Terse on purpose: every line is spliced verbatim into all 13 vendored copies,
+// where cross-repo-local instructions would be the same false-in-every-copy-but-
+// one header that WR-05 / d70afd0c had just finished removing.)
+//
 // Shared YAML-frontmatter parser. Extracted from backlog-regen.cjs to close
 // drift surface C16/F5 (cross-repo-reindex.cjs previously lifted this verbatim).
 //
