@@ -58,9 +58,12 @@ const path = require('path');
 //     `argument-hint`, etc. — per Phase 10 D-07, 2026-05-11. Non-breaking
 //     against the 7 existing consumers which read underscored backlog
 //     keys exclusively.)
-//   - Strips matching outer single OR double quotes from the value, ONLY
-//     when the inner content contains no additional quote of the same
-//     type (so `'a' or 'b'` is preserved verbatim — Phase 10 WR-03).
+//   - Strips matching outer quotes AND applies YAML scalar unescaping ('' -> '
+//     for single-quoted, backslash escapes for double-quoted), but ONLY when the
+//     value is a WELL-FORMED quoted scalar. Test: remove every escaped pair; if a
+//     lone quote of the same type remains, it was never a quoted scalar but a
+//     plain value that merely begins and ends with one, so it is left verbatim
+//     (so `'a' or 'b'` is preserved — Phase 10 WR-03, now by construction).
 //   - Lines that do not match the regex are silently skipped (preserves
 //     behavior on blank lines, comments, list items, AND malformed YAML
 //     such as empty-key `: value` lines or lines without a colon). This
@@ -104,17 +107,31 @@ const parseFrontmatter = function (raw) {
     if (!m) continue;
     const key = m[1];
     let val = m[2].trim();
-    // Strip outer single OR double quotes ONLY if the inner content does
-    // not contain another quote of the same type. This prevents corruption
-    // of values like `'a' or 'b'` (a sentence containing quotes) being
-    // mistaken for a quoted-value pair and stripped to `a' or 'b`.
-    // Phase 10 WR-03 (2026-05-11).
+    // Strip outer quotes and apply YAML scalar UNESCAPING, but only for a
+    // WELL-FORMED quoted scalar. Test: strip every escaped pair first; if a lone
+    // quote of the same type survives, this was never a quoted scalar (it is a
+    // plain value that merely begins and ends with a quote), so leave it verbatim.
+    // That preserves `'a' or 'b'` — Phase 10 WR-03 (2026-05-11) — by construction
+    // rather than by refusing to unescape.
+    //
+    // Before 2026-07-27 this stripped NOTHING whenever the interior held another
+    // quote of the same type, conflating the two cases: a correctly escaped scalar
+    // (`'RV1''s x'`) kept BOTH its outer quotes and its escape, and the pair leaked
+    // verbatim into rendered markdown link text. Measured: 6 distinct broken titles
+    // in BACKLOG.md between 2026-05-13 and 2026-07-27, one brief hit twice by an
+    // author switching quote style to dodge it. yaml.safe_load parses those titles
+    // correctly, so validating the YAML never caught it and never will.
     if (val.length >= 2) {
-      const first = val[0];
-      const last = val[val.length - 1];
-      if ((first === '"' && last === '"' && !val.slice(1, -1).includes('"')) ||
-          (first === "'" && last === "'" && !val.slice(1, -1).includes("'"))) {
-        val = val.slice(1, -1);
+      const q = val[0];
+      if ((q === '"' || q === "'") && val[val.length - 1] === q) {
+        const inner = val.slice(1, -1);
+        // single-quoted: '' is the ONLY escape. double-quoted: backslash escapes.
+        const bare = q === "'" ? inner.replace(/''/g, '') : inner.replace(/\\./g, '');
+        if (!bare.includes(q)) {
+          val = q === "'"
+            ? inner.replace(/''/g, "'")
+            : inner.replace(/\\([\\"/])/g, '$1').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+        }
       }
     }
     fm[key] = val;
