@@ -52,19 +52,37 @@
 # Both guards that changed had the SAME defect: an `||` fusing a transient
 # cause with a permanent one, so the permanent one inherited the silence.
 #
-# PAYLOAD CEILING — 16384 bytes, measured 2026-07-30 against the live helper:
-# 25 dirty files = 2,074 B; 100 = 6,877 B; 200 = 13,377 B (~66 B/file). The
-# rollup collapses only live/self owners, so dead/unresolved per-file lines grow
-# UNBOUNDED BY DESIGN (they carry the owner map, which the model cannot
-# re-derive). So the cap trips at ~245 files today, ~120-150 once dhx-who's
-# provenance lines land. Peak observed single-commit churn is 37 (skills) / 23
-# (cross-repo) — a strict LOWER bound on peak dirty count, since every file in a
-# commit was dirty just before it, so the true peak is unmeasured above 37. The
-# cap stays tight because the trip is now VISIBLE: an invisible ceiling has to
-# be generous, because a trip costs the operator the whole map and tells them
-# nothing; a visible one can stay small and report itself. This is a CROSS-REPO
-# constant — dhx-who budgets against the same 16384, so changing it here needs a
-# matching note skills-side.
+# PAYLOAD CEILING — 16384 bytes, and a CROSS-REPO CONSTANT duplicated in two
+# repos: here, and `dhx-who.sh`'s own `PAYLOAD_CEILING` (skills). Changing one
+# without the other desynchronizes them silently.
+#
+# Since dhx-who's provenance work landed (skills `a591ac81`, 2026-07-30) the
+# helper ENFORCES this ceiling itself: over budget it collapses owner groups to
+# counted rollups largest-first, then drops lowest-priority groups entirely
+# (never the hand-edit alarm), appending a budget note naming what it cut. So a
+# well-behaved helper never exceeds the cap, and the over-cap notice below is a
+# BACKSTOP against a helper-side enforcer regression — NOT a dirty-tree signal.
+# Do not read a trip as "the tree got big."
+#
+# Measured 2026-07-30 against the live helper. Pre-provenance: 25 dirty files =
+# 2,074 B; 100 = 6,877 B; 200 = 13,377 B (~66 B/file). With provenance on
+# generated files the per-file cost roughly triples — 25 = 5,385 B (215 B/file),
+# 50 = 10,360 B — and then the enforcer engages: 100 = 16,336 B, 200 = 16,290 B,
+# i.e. MORE dirty files yielding FEWER bytes. The rollup exempts dead/unresolved
+# per-file lines by design (they carry the owner map, which `git status` cannot
+# re-derive), so absent the helper's enforcer the payload would grow unbounded.
+#
+# Why the number stays small rather than generous: an invisible ceiling has to
+# be generous, because a trip costs the operator the whole owner map and tells
+# them nothing; a visible one can stay small and report itself. Raising it would
+# also strand headroom — the helper self-limits to 16384 regardless.
+#
+# BOUNDARY: both sides test `> 16384`, on different quantities. The helper
+# measures its assembled string, then prints it with a trailing newline, so the
+# file this hook stats is one byte larger — a payload whose string is exactly
+# 16384 becomes a 16385-byte file: in budget by the producer's reckoning,
+# discarded here. Fixed producer-side (skills) rather than by padding this cap;
+# if that fix is reverted, the 1-byte window reopens here.
 #
 # The helper is two files (dhx-who.sh + enumerate-ccs-sessions.sh); --version
 # interrogates only the first, so a peer mid-edit can skew them briefly. By
