@@ -287,7 +287,7 @@ instead of worktree-rooted ones, silently leaking writes.
 
 If unexpected, recover before proceeding:
   git stash push -u -m "leak-\$(date -Iseconds)"
-  git merge worktree-agent-<id> --no-ff
+  git merge agent-<id> --no-ff
   # verify with probes / tests, drop stash after
 
 If expected (agent intentionally wrote to shared state), no action needed.

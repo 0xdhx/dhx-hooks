@@ -161,6 +161,12 @@ echo "$OUT" | grep -q "leaked-file.txt" && check "[3b] warning includes filename
 echo "$OUT" | grep -q "36182" && check "[3c] warning cites upstream issue" pass || check "[3c] warning missing issue ref" fail
 echo "$OUT" | grep -q "gsd-executor" && check "[3d] warning names subagent_type from sidecar" pass || check "[3d] warning missing subagent_type" fail
 echo "$OUT" | grep -q "stash" && check "[3e] warning includes recovery hint" pass || check "[3e] warning missing recovery hint" fail
+# [3f]/[3g] assert the BRANCH NAMESPACE, not just "a hint exists". CC renamed the
+# worktree branch namespace to `agent-<id>`; the old `worktree-agent-<id>` text
+# hands the user a merge command that resolves to nothing. [3e]'s generic grep
+# stayed green through that entire regression — these two are what can see it.
+echo "$OUT" | grep -q -- "git merge agent-<id> --no-ff" && check "[3f] recovery names current agent-<id> namespace" pass || check "[3f] recovery missing agent-<id> merge command" fail
+echo "$OUT" | grep -q -- "worktree-agent-" && check "[3g] recovery still cites retired worktree-agent- namespace" fail || check "[3g] recovery free of retired worktree-agent- namespace" pass
 rm -f "$TMP/leaked-file.txt"
 
 # === [4] Non-worktree isolation → pre-hook silent, no baseline written ===
