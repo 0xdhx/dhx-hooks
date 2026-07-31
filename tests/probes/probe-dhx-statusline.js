@@ -162,6 +162,39 @@ Phase: none active (milestone complete)
 const sNone = parseStateMd(FIXTURE_NONE);
 ok('parseStateMd none: phase skipped', sNone.phaseNum, undefined);
 
+// CRLF frontmatter — an LF-only fence regex drops the ENTIRE frontmatter on a
+// CRLF STATE.md, so the GSD segment renders silently empty. Derived from
+// FIXTURE_MODERN by line-ending substitution ONLY, so "identical content,
+// different EOL" is structural rather than transcribed (a hand-copied CRLF
+// fixture can drift from its LF twin and assert nothing).
+const FIXTURE_CRLF = FIXTURE_MODERN.replace(/\n/g, '\r\n');
+const sCrlf = parseStateMd(FIXTURE_CRLF);
+ok('parseStateMd CRLF: fixture really is CRLF', /\r\n/.test(FIXTURE_CRLF), true);
+ok('parseStateMd CRLF: frontmatter not dropped', sCrlf.milestone, 'v1.4');
+ok('parseStateMd CRLF: milestone_name unpolluted by \\r', sCrlf.milestoneName, 'Research Orchestration');
+ok('parseStateMd CRLF: status', sCrlf.status, 'executing');
+ok('parseStateMd CRLF: completedPhases', sCrlf.completedPhases, 7);
+ok('parseStateMd CRLF: totalPhases', sCrlf.totalPhases, 10);
+ok('parseStateMd CRLF: phaseName unpolluted by \\r', sCrlf.phaseName, 'Hub Eviction Redesign');
+ok('parseStateMd CRLF: parsed state identical to LF twin',
+   JSON.stringify(sCrlf), JSON.stringify(sModern));
+
+// Unterminated frontmatter — the fence never closes. Frontmatter must be
+// dropped (no closing marker to bound it) but the body `Status:` fallback must
+// still fire; this is the pre-existing behavior the CRLF fix must not disturb.
+const FIXTURE_UNTERMINATED = `---
+milestone: v1.4
+status: executing
+
+Phase: 5 (No Fence Close)
+Status: executing
+`;
+
+const sUnterm = parseStateMd(FIXTURE_UNTERMINATED);
+ok('parseStateMd unterminated: frontmatter dropped', sUnterm.milestone, undefined);
+ok('parseStateMd unterminated: body Status fallback still fires', sUnterm.status, 'executing');
+ok('parseStateMd unterminated: phase line still parsed', sUnterm.phaseNum, '5');
+
 // --- § 5 getRepoSignals (fixture repo) --------------------------------------
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-probe-'));

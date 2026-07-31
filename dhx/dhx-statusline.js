@@ -258,7 +258,10 @@ function parseStateMd(content) {
   const state = {};
 
   // YAML frontmatter between --- markers
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  // CRLF-tolerant fence: an LF-only `^---\n` drops the ENTIRE frontmatter on a
+  // CRLF STATE.md (silent empty GSD segment). Mirrors the upstream gsd-core fix
+  // (#2754/#2865) verbatim — see check-command-router.cjs / install-profiles.cjs.
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (fmMatch) {
     const fmBody = fmMatch[1];
     for (const line of fmBody.split('\n')) {
