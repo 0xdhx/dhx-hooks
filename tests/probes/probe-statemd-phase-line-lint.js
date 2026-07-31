@@ -1,7 +1,12 @@
-// Probe: dhx-statemd-phase-line-lint.js warns ONLY on a genuine
-//   first-paren-≠-current_phase_name mismatch at aligned phase numbers, never
-//   blocks, and stays silent on every sibling-repo STATE.md shape surveyed in
-//   reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+// Probe: dhx-statemd-phase-line-lint.js warns ONLY when gsd-core's parser would
+//   harvest a name that differs from current_phase_name at aligned phase numbers,
+//   never blocks, and stays silent on every sibling-repo STATE.md shape surveyed
+//   in reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+//   NOT "first-paren-≠-name" any more: gsd-core 1.9.1 (#2736) inverted the
+//   parser's precedence to status-keyword-aware dash-over-paren, which fixed the
+//   original hazard and created its mirror image. Fixture expectations were
+//   re-derived from the live parser 2026-07-31 — 11 of 17 corpus phase-lines
+//   changed meaning across that bump. Do not reason from the old threat model.
 // Backs docs/decisions.md 2026-06-25 STATE.md phase-line lint row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
 // SAFE_FOR_LIVE: yes   (requires the hook module + writes fixtures only under an
@@ -47,41 +52,61 @@ const CASES = [
       'Phase: XR-32 (authorization-floor) — EXECUTING (all 4 plans authored+verified; at final operator gates)'),
     warn: false },
 
-  // ---- WARN — genuine first-paren-≠-name clobber at aligned phase numbers ----
-  { name: 'WARN ttsfilter pre-fix (status in first paren, name after dash)',
+  // ---- PASS — shapes gsd-core #2736 FIXED (these were the original WARN set) ----
+  // Re-derived 2026-07-31 against 1.9.1. `N — Name (status aside)` was THE hazard
+  // this lint was built for: the pre-#2736 parser took the parenthetical, so the
+  // status clobbered the curated name. The 1.9.1 parser prefers the em-dash name
+  // unless it reads as a status annotation, so it now harvests the NAME and there
+  // is nothing to warn about. Kept (not deleted) as the regression witness: if a
+  // future bump reverts the precedence, these three go red first.
+  { name: 'PASS #2736-fixed: name after dash, status aside in paren (ttsfilter)',
     content: STATE(16, '"Native Global Hotkey + Selection Capture + Speak"',
       'Phase: 16 — Native Global Hotkey + Selection Capture + Speak (next; Phase 15 landed, UAT deferred)'),
-    warn: true },
-  { name: 'WARN synthetic aligned clobber (name after dash, aside in paren)',
+    warn: false },
+  { name: 'PASS #2736-fixed: name after dash, parenthesised progress note',
     content: STATE(7, 'auth-foundation',
       'Phase: 7 — auth-foundation (in progress; blocked on operator gate)'),
-    warn: true },
+    warn: false },
+
+  // ---- WARN — the hazard that SURVIVES 1.9.1 ----
+  // The mirror image of the fixed shape: `N (Real Name) — <multi-word status tail>`.
+  // The tail escapes STATUSY_TAIL_RE (multi-word) and the lone-ALL-CAPS rule
+  // (more than one token), so the dash branch wins and harvests the STATUS as the
+  // name — clobbering the curated one. This is now the lint's whole reason to exist.
   { name: 'WARN leading-zero body phase aligns via int fallback (05 == 5)',
+    // Prose re-shaped, expectation NOT merely flipped: this case exists to cover
+    // the 05==5 leading-zero alignment path, and that coverage is only reached
+    // when the lint gets past Gate 1 AND actually warns. Under 1.9.1 the old
+    // `05 — real-name (aside text)` prose stops warning, which would have retired
+    // the alignment coverage silently. Same phase tokens, hazardous shape.
     content: STATE(5, 'real-name',
-      'Phase: 05 — real-name (aside text)'),
+      'Phase: 05 (real-name) — AWAITING OPERATOR HOST TRIP'),
     warn: true },
 
-  // ---- PASS — safe name-in-first-paren shapes ----
-  { name: 'PASS safe name-in-first-paren (relater)',
+  // ---- WARN (cont.) — formerly "safe name-in-first-paren", now the hazard ----
+  // Every case below was expected PASS before 1.9.1 on the reasoning that a name
+  // in the FIRST paren always won. #2736 inverted that. Each now harvests its
+  // dash tail; the curated name would be clobbered on the next rebuild.
+  { name: 'WARN paren name loses to multi-word ALL-CAPS tail (relater)',
     content: STATE(13, 'speaker-aware-render-integration',
       'Phase: 13 (speaker-aware-render-integration) — AUTONOMOUS SCOPE + LIVE GPU RUNBOOK DONE, human_needed'),
-    warn: false },
+    warn: true },
   { name: 'PASS markdown-bold phase number (inkling)',
     content: STATE(1, 'Submission Pipeline',
       'Phase: **1 of 4 CLOSED** (Submission Pipeline) — 11/11 plans complete; D-24 exit gate GREEN.'),
     warn: false },
-  { name: 'PASS decimal/leading-zero phase id (xpression-ndi 03.1)',
+  { name: 'WARN decimal phase id, paren name loses to caps tail (xpression-ndi 03.1)',
     content: STATE('03.1', 'accuweather-chrome-removal',
       'Phase: 03.1 (accuweather-chrome-removal) — AWAITING OPERATOR HOST TRIP'),
-    warn: false },
-  { name: 'PASS name-after-dash but matching token in paren (ncaa Slice C)',
+    warn: true },
+  { name: 'WARN dash name wins over the curated paren token (ncaa Slice C)',
     content: STATE(54, 'Slice C',
       'Phase: 54 — Migrate `--remote` Default onto the API — BROADCAST PATH (Slice C)'),
-    warn: false },
-  { name: 'PASS post-fix name-in-paren with 2nd-paren aside (ttsfilter worktree)',
+    warn: true },
+  { name: 'WARN the OLD advisory\'s own recommended shape now clobbers (ttsfilter worktree)',
     content: STATE(16, '"Native Global Hotkey + Selection Capture + Speak"',
       'Phase: 16 (Native Global Hotkey + Selection Capture + Speak) — EXECUTED; code-complete; operator UAT pending'),
-    warn: false },
+    warn: true },
 
   // ---- PASS — terminal / no-harvestable-name shapes ----
   { name: 'PASS milestone-terminal no paren (skills)',
@@ -143,8 +168,58 @@ for (const c of CASES) {
   const warnCase = CASES.find((c) => c.warn);
   const r = h.lintStateMd(warnCase.content);
   const adv = h.buildAdvisory(r);
-  ok(adv.includes(r.harvested) && adv.includes(r.curated) && adv.includes('FIRST paren'),
-    'advisory text names harvested + curated + the FIRST-paren fix');
+
+  // Round-trip EVERY warn case, not just the first. Sampling one is how a wrong
+  // advisory survives: the retired first-paren advice still round-trips against a
+  // lone ALL-CAPS status tail (`— EXECUTING`, where the ALL-CAPS rule hands the
+  // name back to the parenthetical) and only breaks on MULTI-WORD tails. Checking
+  // a single case therefore certifies advice that is wrong for most real STATE.md
+  // lines. Measured 2026-07-31 while building this assertion.
+  for (const c of CASES.filter((x) => x.warn)) {
+    const rc = h.lintStateMd(c.content);
+    const advc = h.buildAdvisory(rc);
+    const line = advc.split('\n').find((l) => l.includes('Fix:') && l.includes('Phase:'));
+    if (!line) {
+      ok(advc.includes('cannot survive any prose shape'),
+        `${c.name} → advisory offers a shape or explains why none exists`);
+      continue;
+    }
+    // Substitute BOTH a lone ALL-CAPS status and a realistic multi-word tail.
+    // Testing only `EXECUTING` certifies the retired first-paren advice as sound:
+    // a lone ALL-CAPS token trips the parser's lone-caps rule and hands the name
+    // back to the parenthetical, so the bad advice round-trips. It is exactly the
+    // multi-word tails that real STATE.md lines carry which break it, so a
+    // single friendly placeholder is a false-green generator, not a test.
+    for (const status of ['EXECUTING', 'EXECUTED; code-complete; operator UAT pending']) {
+      const fixed = c.content.replace(/^Phase:.*$/m,
+        line.slice(line.indexOf('Phase:')).replace('<status>', status));
+      ok(h.lintStateMd(fixed).shouldWarn === false,
+        `${c.name} → advised shape stops the warning [status: ${status.slice(0, 18)}]`);
+    }
+  }
+  ok(adv.includes(r.harvested) && adv.includes(r.curated),
+    'advisory text names both the harvested and the curated name');
+  // The advisory must not merely be well-formed — the shape it RECOMMENDS has to
+  // survive the live parser. The pre-1.9.1 advisory hard-coded "put the name in
+  // the FIRST paren", which #2736 turned into the hazard itself: it kept passing
+  // a substring assertion while telling operators to do the one thing that
+  // clobbers their name. Assert the OUTCOME instead of the wording — extract the
+  // suggested Phase line and run it back through the lint.
+  // Match on `Fix:` + `Phase:` independently, NOT the literal `Fix: Phase:`.
+  // Pinning the joined form makes a reworded advisory (e.g. the retired
+  // "Fix: put the name in the FIRST paren — Phase: …") fall out of the finder
+  // and silently skip the round-trip below, downgrading a behavioural failure
+  // to a presence failure. Loose match keeps the round-trip armed.
+  const suggested = adv.split('\n').find((l) => l.includes('Fix:') && l.includes('Phase:'));
+  ok(!!suggested, 'advisory carries a concrete suggested Phase line');
+  if (suggested) {
+    const line = suggested.slice(suggested.indexOf('Phase:')).replace('<status>', 'EXECUTING');
+    const fixedState = warnCase.content.replace(/^Phase:.*$/m, line);
+    ok(h.lintStateMd(fixedState).shouldWarn === false,
+      'the shape the advisory recommends actually stops the warning (round-trip)');
+  }
+  ok(!adv.includes('FIRST paren'),
+    'advisory no longer recommends the retired first-paren shape (now the hazard)');
 }
 
 // ── 2. Path matcher ───────────────────────────────────────────────────────────
@@ -233,7 +308,12 @@ const MIRROR_PINS = [
   // length-capped names, status reject-guard)
   ['phase-id.cjs', String.raw`/^\s*(?:Phase\s+)?(?:[A-Z][A-Z0-9_]*-)?(\d+[A-Z]?(?:\.\d+)*)\b/i`],
   ['phase-id.cjs', String.raw`/\(([^)]{1,200})\)/`],
-  ['phase-id.cjs', '/—\\s*([^(\\n]{1,200}?)(?:\\s*\\(|$)/'],
+  // #2736 re-harvest (1.9.1): the dash branch now searches a paren-STRIPPED
+  // copy and is gated by a status-keyword vocabulary. Pin the three literals
+  // that carry that precedence — the old single dash regex is gone upstream.
+  ['phase-id.cjs', String.raw`/—\s*([^(\n]{1,200}?)\s*$/`],
+  ['phase-id.cjs', String.raw`str.replace(/\([^)\n]{0,200}\)/g, ' ')`],
+  ['phase-id.cjs', 'const STATUSY_TAIL_RE ='],
   ['phase-id.cjs', String.raw`/^(?:complete|executing|not started)$/i`],
   // state.cjs parseProsePhaseField must still DELEGATE to the canonical parser —
   // a re-inlined divergent regex would keep the phase-id pins green while the
@@ -242,7 +322,15 @@ const MIRROR_PINS = [
   // stateExtractField precedence chain (bold → plain → pipe-table)
   ['state-document.cjs', '\\\\*\\\\*${escaped}:\\\\*\\\\*[ \\\\t]*(.+)'],
   ['state-document.cjs', '^${escaped}:[ \\\\t]*(.+)'],
-  ['state-document.cjs', '^(\\\\|[ \\\\t]*)(${escapedFieldName})([ \\\\t]*\\\\|[ \\\\t]*)([^|\\\\n]*?)([ \\\\t]*\\\\|[ \\\\t]*)$'],
+  // The pipe-table leg is NO LONGER a regex upstream: stateExtractField now
+  // delegates to locateFieldRow(), a character scanner that is not exported.
+  // So there is no literal left to mirror. The hook keeps its own table
+  // implementation DELIBERATELY (vendoring the closure would pull three
+  // helpers across two modules); what is pinned instead is that upstream
+  // still routes through that delegation, so a future re-inlining is seen.
+  // Behavioral parity for this leg is asserted by the table fixtures below,
+  // not by text matching -- see docs/decisions.md 2026-07-31.
+  ['state-document.cjs', 'const hit = locateFieldRow(content, fieldName);'],
   // stripFrontmatter (frontmatter.cjs since #2143) + scalar quote-strip
   ['frontmatter.cjs', String.raw`/^\s*---\r?\n[\s\S]*?\r?\n---\s*/`],
   ['frontmatter.cjs', String.raw`/^["']|["']$/g`],

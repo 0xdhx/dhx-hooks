@@ -2,12 +2,22 @@
 // dhx-statemd-phase-line-lint.js — PostToolUse hook (Write|Edit matcher)
 // Patterns: HP-003, HP-009, HP-017, HP-038, HP-039
 //
-// WARN-only lint for GSD `.planning/STATE.md` writes. Catches the one shape that
-// silently corrupts the curated frontmatter `current_phase_name`: when the
-// `## Current Position` `Phase:` prose line puts a status/aside in the FIRST
-// parenthetical and the name after the dash. gsd-core's frontmatter rebuild
-// harvests the FIRST paren (`parseProsePhaseField`) and clobbers the curated
-// name. See reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+// WARN-only lint for GSD `.planning/STATE.md` writes. Catches the shape that
+// silently corrupts the curated frontmatter `current_phase_name`: one where
+// gsd-core's frontmatter rebuild harvests a DIFFERENT name out of the
+// `## Current Position` `Phase:` prose line than the one curated in frontmatter.
+// See reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+//
+// WHICH shape that is has INVERTED — 2026-07-31, gsd-core 1.9.1 (#2736). It was
+// `N — Name (status aside)`, because the old parser took the first parenthetical.
+// The current parser prefers the em-dash name unless it reads as a status
+// annotation, so that shape is now parsed correctly and the hazard is its mirror:
+// `N (Real Name) — <multi-word status tail>`, where the tail escapes both the
+// status-word vocabulary and the lone-ALL-CAPS rule and is harvested as the name.
+// The lint tracks whatever the mirrored parser does — it does not encode a fixed
+// shape — but any PROSE here that names a specific hazard shape is version-bound.
+// Re-derive against the live parser before trusting it; do not hand-edit the
+// mirror to match a remembered threat model.
 //
 // WARNS, NEVER BLOCKS. PostToolUse cannot block (HP-009); always exit 0. STATE.md
 // prose is human-authored and mid-transition states are legitimate.
@@ -42,24 +52,70 @@
 
 'use strict';
 
-// ── MIRROR: gsd-core parsePhaseFromProse (phase-id.cjs:281) — VERBATIM ─────────
-// Paren-over-dash precedence; reject-guard drops bare status tokens. The dash
-// branch matches the em-dash `—` (U+2014) ONLY — `--` is intentionally not a
-// name separator here (it falls through to the paren, exactly as gsd-core reads).
+// ── MIRROR: gsd-core parsePhaseFromProse (phase-id.cjs) — VERBATIM ────────────
+// Re-harvested 2026-07-31 for gsd-core 1.9.1 (#2736). The precedence INVERTED:
+// it was paren-over-dash, it is now status-keyword-aware dash-over-paren — the
+// em-dash name wins unless it reads as a status annotation (STATUSY_TAIL_RE, a
+// `Milestone:` prefix, or a lone ALL-CAPS token when a parenthetical exists).
+// The dash is searched on a paren-STRIPPED copy, so an em-dash inside a
+// parenthetical name can no longer be mistaken for the separator.
 // #2111/#2125: the phase token is ANCHORED to the start of the value (after an
 // optional `Phase ` label and optional project-code prefix), so a narrative line
 // like `Milestone v0.5 complete` or a bold-marked `**1 of 4 CLOSED**` yields
 // { phase: null } instead of mining a stray numeral. Name quantifiers are
 // length-capped {1,200} upstream (regex-backtracking DoS hardening).
+//
+// THE THREAT MODEL INVERTED WITH IT — do not reason from the old one. The shape
+// this lint was built for (`N — name (status aside)`) is now parsed CORRECTLY
+// upstream and is no longer a clobber hazard. The surviving hazard is its
+// mirror image: `N (Real Name) — <multi-word status tail>`, where the tail
+// escapes both STATUSY_TAIL_RE and the lone-ALL-CAPS rule and is harvested as
+// the name. Measured 2026-07-31: 11 of 17 corpus phase-lines changed meaning
+// across this bump. Any fixture expectation predating it is stale by default.
 function parseProsePhaseField(value) {
   if (!value)
     return { phase: null, name: null };
+  // Coerce defensively so a non-string caller cannot throw on this canonical
+  // surface (mirrors the sibling #2121 functions' String(...) handling).
   const str = String(value);
   const phaseMatch = str.match(/^\s*(?:Phase\s+)?(?:[A-Z][A-Z0-9_]*-)?(\d+[A-Z]?(?:\.\d+)*)\b/i);
+  // The name-extraction quantifiers are length-bounded so a crafted long
+  // unterminated run (many `(` or `—`) in an untrusted STATE.md field value
+  // cannot drive O(n^2) regex backtracking (CPU-exhaustion DoS). A real phase
+  // name is far shorter than the cap.
   const parenName = str.match(/\(([^)]{1,200})\)/);
-  const dashName = str.match(/—\s*([^(\n]{1,200}?)(?:\s*\(|$)/);
-  const rawName = parenName?.[1] ?? dashName?.[1] ?? null;
-  const name = rawName && !/^(?:complete|executing|not started)$/i.test(rawName.trim())
+  // #2736 (the #1695 AC #3 residual): status-keyword-aware precedence. The
+  // first-party writer shapes are `N — Name (aside)` (completePhaseCore),
+  // `N (Name) — EXECUTING` (beginPhaseCore), `N — COMPLETE`, and the
+  // gsd2-import `N (slug) — Milestone: Title`. A blind paren-first read
+  // harvests the aside as the name on the first shape; a blind dash-first
+  // read harvests the status keyword on the others. Prefer the em-dash name
+  // when it is a genuine name, else fall back to the parenthetical. Still
+  // lossy for names that themselves contain a parenthetical — transitions
+  // that hold the exact name bypass this parser entirely via the
+  // syncStateFrontmatter authoritative override.
+  //
+  // The em-dash separator is searched on a paren-stripped copy, so an em-dash
+  // INSIDE a parenthetical name (`16 (Native — Global Hotkey) — EXECUTING`)
+  // can never be mistaken for the name separator.
+  const strNoParens = str.replace(/\([^)\n]{0,200}\)/g, ' ');
+  const dashName = strNoParens.match(/—\s*([^(\n]{1,200}?)\s*$/);
+  // The precedence-decision vocabulary is deliberately broader than the final
+  // name-nulling filter below: a dash tail that merely LOOKS like a status
+  // annotation should lose to a parenthetical name, without changing which
+  // extracted names are nulled (that set stays the long-standing three).
+  const STATUS_WORD_RE = /^(?:complete|executing|not started)$/i;
+  const STATUSY_TAIL_RE = /^(?:completed?|executing|not started|planning|planned|ready(?:\s+to\s+\S.{0,50})?|done|in progress|blocked|paused|verifying)$/i;
+  const dashRaw = dashName?.[1]?.trim() ?? null;
+  const dashIsName = dashRaw !== null && dashRaw.length > 0
+    && !STATUSY_TAIL_RE.test(dashRaw)
+    && !/^milestone\s*:/i.test(dashRaw)
+    // A lone ALL-CAPS token after the dash reads as a status marker whenever a
+    // parenthetical name exists to prefer (the beginPhase writer's systematic
+    // `(Name) — STATUS` shape); with no parenthetical it stays the best guess.
+    && !(parenName && /^[A-Z][A-Z0-9_-]*$/.test(dashRaw));
+  const rawName = dashIsName ? dashRaw : (parenName?.[1] ?? dashRaw ?? null);
+  const name = rawName && !STATUS_WORD_RE.test(rawName.trim())
     ? rawName.trim()
     : null;
   return {
@@ -210,11 +266,36 @@ function lintStateMd(content) {
   return result;
 }
 
+// Emit a fix the CURRENT parser actually honors, verified per-call rather than
+// asserted. The pre-1.9.1 advisory hard-coded "put the name in the FIRST paren";
+// #2736 inverted the precedence and that shape became the hazard it was meant to
+// cure, so the wrong advice outlived the correct parser by a whole release. No
+// fixed string is safe here: which shape round-trips depends on the curated name
+// itself (a name that reads as status vocabulary — `Planning`, `DONE` — loses the
+// em-dash branch and needs the parenthetical form instead). So propose, run the
+// real parser over the proposal, and only suggest what survives.
+function suggestFixLine(result) {
+  const { phase, curated } = result;
+  const shapes = [
+    `Phase: ${phase} — ${curated} (<status>)`,   // preferred post-#2736: dash name wins
+    `Phase: ${phase} (${curated}) — <status>`,   // for names that read as status words
+  ];
+  for (const shape of shapes) {
+    const probe = shape.replace('Phase: ', '').replace('<status>', 'EXECUTING');
+    if (parseProsePhaseField(probe).name === curated)
+      return `  Fix: ${shape}`;
+  }
+  // Neither shape survives: the curated name IS one of gsd-core's rejected status
+  // tokens (complete / executing / not started), which the parser nulls outright.
+  // No prose arrangement can carry it — the name itself has to change.
+  return `  Fix: "${curated}" collides with gsd-core's reserved status vocabulary and cannot survive any prose shape — rename the phase.`;
+}
+
 function buildAdvisory(result) {
   return [
     `⚠ statemd-phase-line: Current Position harvests "${result.harvested}" but frontmatter current_phase_name is "${result.curated}" (phase ${result.phase})`,
-    `  A frontmatter rebuild (gsd-core parseProsePhaseField) will clobber the curated name.`,
-    `  Fix: put the name in the FIRST paren — Phase: ${result.phase} (${result.curated}) — <status>`,
+    `  A frontmatter rebuild (gsd-core parsePhaseFromProse) will clobber the curated name.`,
+    suggestFixLine(result),
   ].join('\n');
 }
 
