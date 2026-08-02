@@ -256,6 +256,21 @@ _assert "[46] foreign PR comment via --repo -> deny" "deny" \
 _assert "[47] gh pr create still silent (still a non-goal)" "silent" \
   "$(_verdict "$(_json s1 "$GH $PR $CREATE --repo open-gsd/gsd-core --title x")")"
 
+# --- NEGATIVE CONTROL: the skipped-confirm path, from the cwd revise actually uses ---
+# This is the acceptance criterion of cross-repo brief
+# 2026-07-26-upstream-revise-rv9-confirm-has-no-enforcement.md, and it is the exact
+# 2026-07-26 #2595 shape: a model that skipped RV9's confirm improvises the post as a
+# top-level call, targeting a FOREIGN PR URL, from inside the revise worktree -- which
+# is a FORK CHECKOUT whose origin owner is OWN. Both halves of this arc are required
+# for it to deny: the matcher widening alone leaves ownership resolving to the cwd
+# origin (own -> silent allow), and the URL-resolution fix alone leaves the verb
+# unmatched. Either half reverted, this goes silent.
+_assert "[48] NEG CONTROL: foreign PR URL improvised from a fork checkout -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT https://github.com/open-gsd/gsd-core/pull/2595 --body-file b" "$OWN_REPO")")"
+# The sanctioned path is a child process, so the hook never sees its gh call at all.
+_assert "[49] sanctioned path (script invocation) -> silent" "silent" \
+  "$(_verdict "$(_json s1 "bash ~/.claude/dhx-tools/dhx-upstream/post-pr-comment.sh --pr https://github.com/open-gsd/gsd-core/pull/2595 --body-file b" "$OWN_REPO")")"
+
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]
               | any(contains("pre-tool-use-gh-issue-write"))' "$MANIFEST" >/dev/null 2>&1 \
