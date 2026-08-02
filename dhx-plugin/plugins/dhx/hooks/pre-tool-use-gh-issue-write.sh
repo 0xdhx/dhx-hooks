@@ -26,8 +26,9 @@
 #
 # --- Marker contract (unchanged, verified 2026-07-21) ---
 # `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dhx-tools/.upstream-marker-<session-id>`, written
-# by run.sh:921 (create path) and run-comment.sh:427 (reply path) at Stage 7 start, both
-# deleted on EXIT by file-and-wire.sh:203 / comment-and-wire.sh:143. 5-min TTL — do NOT
+# by run.sh (create path) and run-comment.sh (reply path) at Stage 7 start, both deleted
+# on EXIT by file-and-wire.sh / comment-and-wire.sh. (Line pins removed 2026-08-02 — the
+# four they carried had all drifted; resolve these by content.) 5-min TTL — do NOT
 # extend it; a long TTL rots hard mode back into soft. The bypass marker is a SEPARATE
 # path (`.upstream-bypass-<session-id>`, 60s TTL) so the audit trail stays distinguishable.
 #
@@ -107,7 +108,21 @@ if [ -z "$OWNER" ]; then
   OWNER=$(grep -oE '(^|[^[:alnum:]_])repos/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
             | head -1 | sed -E 's|.*repos/||; s|/$||' || true)
 fi
-# 3. fall back to the cwd's origin remote
+# 3. positional target URL: https://github.com/<owner>/<repo>/...
+#    Added 2026-08-02. Without this branch a positional issue/PR URL resolved NOTHING
+#    here and fell through to the cwd's origin — so from a fork checkout (origin
+#    0xdhx/...) a FOREIGN target resolved to an OWN owner and the deny silently
+#    no-opped. That was a live bypass of the hard deny, not a theoretical one; a revise
+#    worktree IS such a cwd. Must precede the cwd fallback.
+#    Deliberately loose: any github.com/<owner>/<repo> in the command counts, including
+#    one quoted inside --body. That over-matches (a foreign link in prose denies a write
+#    aimed at the cwd's own repo) and over-matching is the correct direction — the deny
+#    message already tells the operator to pass --repo explicitly, which outranks this.
+if [ -z "$OWNER" ]; then
+  OWNER=$(grep -oE 'github\.com/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
+            | head -1 | sed -E 's|.*github\.com/||; s|/$||' || true)
+fi
+# 4. fall back to the cwd's origin remote
 if [ -z "$OWNER" ] && [ -n "$CWD" ] && [ -d "$CWD" ]; then
   ORIGIN=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
   # git@github.com:owner/repo.git | https://github.com/owner/repo(.git)

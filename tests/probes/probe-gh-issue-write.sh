@@ -215,6 +215,24 @@ _assert "[34] bypass appended an audit line naming the reason" "yes" \
 _assert "[35] bypass marker opens the gate end-to-end" "silent" \
   "$(_verdict "$(_json probe-sess "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
 
+# --- Positional target URL: the owner comes from the URL, not the cwd ---
+# Gap found 2026-08-02: owner resolution had no branch for a positional
+# https://github.com/<owner>/<repo>/... target, so it fell through to the cwd's
+# origin. From a fork checkout (origin 0xdhx/...) a FOREIGN issue URL resolved to
+# an OWN owner and was silently allowed — a live bypass of the D-12 hard deny.
+_assert "[39] foreign issue URL from own-origin cwd -> deny (was: silent bypass)" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT https://github.com/open-gsd/gsd-core/issues/42 --body y" "$OWN_REPO")")"
+_assert "[40] own issue URL from foreign-origin cwd -> silent (URL beats cwd both ways)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT https://github.com/0xdhx/hooks/issues/42 --body y" "$FOREIGN_REPO")")"
+_assert "[41] explicit --repo still outranks a URL elsewhere in the command" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 5 --repo 0xdhx/hooks --body \"see https://github.com/open-gsd/gsd-core/issues/1\"" "$OWN_REPO")")"
+# Deliberate over-match, documented: with no --repo, a foreign URL anywhere in the
+# command resolves foreign and DENIES even if the real target was the cwd's repo.
+# Fail-closed is the correct direction here — the operator passes --repo to disambiguate,
+# which is exactly what the deny message already tells them to do.
+_assert "[42] bare foreign URL in free text, no --repo -> deny (fail-closed over-match)" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 5 --body \"see https://github.com/open-gsd/gsd-core/issues/1\"" "$OWN_REPO")")"
+
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]
               | any(contains("pre-tool-use-gh-issue-write"))' "$MANIFEST" >/dev/null 2>&1 \
