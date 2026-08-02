@@ -177,8 +177,14 @@ _assert "[21] gh api POST to a non-issue path -> silent" "silent" \
   "$(_verdict "$(_json s1 "$GH $API repos/open-gsd/gsd-core/git/refs -X POST -f ref=x")")"
 
 # --- Documented NON-GOALS stay silent (live legitimate consumers — see hook header) ---
-_assert "[22] gh pr comment -> silent (non-goal: /dhx:upstream revise + /dhx:review)" "silent" \
-  "$(_verdict "$(_json s1 "$GH $PR $COMMENT 12 --repo open-gsd/gsd-core --body y")")"
+# [22] pinned `gh pr comment` as a non-goal until 2026-08-02, when it was widened in
+# (see [43]-[46]). Repurposed rather than deleted: token-anchoring for the NEW verb
+# was otherwise untested, and that is exactly the class the `create-else` / `mygh`
+# guards exist for.
+_assert "[22] gh pr comment-else -> silent (continuation guard, pr verb)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT-something-else --body y")")"
+_assert "[22b] mygh pr comment -> silent (prefix guard, pr verb)" "silent" \
+  "$(_verdict "$(_json s1 "my$GH $PR $COMMENT 1 --body y")")"
 _assert "[23] gh pr create -> silent (non-goal: run-pr.sh + /gsd-ship)" "silent" \
   "$(_verdict "$(_json s1 "$GH $PR $CREATE --repo open-gsd/gsd-core --title x")")"
 
@@ -232,6 +238,23 @@ _assert "[41] explicit --repo still outranks a URL elsewhere in the command" "si
 # which is exactly what the deny message already tells them to do.
 _assert "[42] bare foreign URL in free text, no --repo -> deny (fail-closed over-match)" "deny" \
   "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 5 --body \"see https://github.com/open-gsd/gsd-core/issues/1\"" "$OWN_REPO")")"
+
+# --- gh pr comment: widened 2026-08-02 (was a documented non-goal) ---
+# RV9's publication moved into cross-repo scripts/upstream/post-pr-comment.sh, so the
+# sanctioned revise post is now a child process this hook cannot see -- which is what
+# made widening safe. [44] is the /dhx:review live check, kept as a permanent tooth:
+# it posts own-repo review bodies with a BARE PR NUMBER, so owner resolution falls to
+# the cwd origin and must stay silent. If that ever reds, /dhx:review is broken.
+_assert "[43] foreign PR URL comment -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT https://github.com/open-gsd/gsd-core/pull/2595 --body-file b")")"
+_assert "[44] /dhx:review shape (bare num, own-origin cwd) -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT 123 --body-file b" "$OWN_REPO")")"
+_assert "[45] bare num from a foreign-origin cwd -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT 123 --body-file b" "$FOREIGN_REPO")")"
+_assert "[46] foreign PR comment via --repo -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT 12 --repo open-gsd/gsd-core --body-file b")")"
+_assert "[47] gh pr create still silent (still a non-goal)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $CREATE --repo open-gsd/gsd-core --title x")")"
 
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]

@@ -4,8 +4,8 @@
 #           blocks / exit 1 does not), HP-043 ($CLAUDE_CODE_SESSION_ID in tool subprocs)
 #
 # HARD-DENY (D-12 landed 2026-07-21; was soft-warn 2026-07-10..2026-07-21): blocks a
-# FOREIGN-repo `gh issue create` / `gh issue comment` / `gh api …POST` on an issue or PR
-# thread when it runs outside the /dhx:upstream gated pre-flight. Upstream writes are
+# FOREIGN-repo `gh issue create` / `gh issue comment` / `gh pr comment` / `gh api …POST`
+# on an issue or PR thread when it runs outside the /dhx:upstream gated pre-flight. Upstream writes are
 # irreversible and one-shot; a soft warning could only ever inform the SECOND call
 # (PreToolUse `additionalContext` on an `allow` reaches the model alongside the tool
 # result — structurally too late). See docs/decisions.md 2026-07-21 row.
@@ -13,7 +13,9 @@
 # Three ways past this gate, in order of preference:
 #   1. `/dhx:upstream <report-path>`  — new issue (run.sh writes the marker at Stage 7)
 #   2. `/dhx:upstream reply <issue>`  — comment    (run-comment.sh, identical marker)
-#   3. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, 60s window
+#   3. `/dhx:upstream revise <pr>`     — PR comment (post-pr-comment.sh; NO marker — the
+#                                        child-process invisibility below is the mechanism)
+#   4. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, 60s window
 # Own-owner writes (see OWN_OWNERS) never reach the gate at all — silent allow.
 #
 # --- Ownership scoping (the no-friction-on-my-own-repos rule) ---
@@ -54,16 +56,20 @@
 # COVERED:
 #   - `gh issue create --title x --body y`            (canonical create)
 #   - `gh issue comment 123 --body y`                 (canonical comment / reply path)
+#   - `gh pr comment <url|num> --body-file b`         (revise path; widened 2026-08-02)
 #   - `gh api repos/o/r/issues/1/comments -X POST`    (raw-API detour; also --method POST,
 #     and the `pulls` variant — zero legitimate consumers across the skills-monorepo
 #     dhx skills and the cross-repo script trees as of 2026-07-21, so it costs nothing)
 #   - `bash -c '…'` wrappers, pipes, leading/trailing whitespace
 # NOT COVERED — deliberate non-goals, each with a live legitimate consumer that a deny
 # would break (do NOT "close the gap" without reading these first):
-#   - `gh pr comment` — /dhx:upstream revise step RV-4 posts one as a top-level model call
-#     and writes NO marker (its own AskUserQuestion is the gate — see skills
-#     dhx/upstream/references/upstream-pr-revise.md), and /dhx:review posts own-repo PR
-#     review bodies with it (dhx/review/references/review-code-output.md).
+#   (`gh pr comment` WAS listed here and was WIDENED IN on 2026-08-02 — see the covered
+#   list below. It was a non-goal because /dhx:upstream revise RV9 posted one as a
+#   top-level model call; that write moved into cross-repo scripts/upstream/
+#   post-pr-comment.sh, so the sanctioned path is now a child process this hook cannot
+#   see. /dhx:review still posts own-repo review bodies with it and is unaffected because
+#   it passes a BARE PR NUMBER, so ownership resolves from its cwd origin — pinned as a
+#   permanent tooth by probe [44], not assumed.)
 #   - `gh pr create` — /dhx:upstream's PR path runs it inside run-pr.sh behind 10 gates,
 #     and /gsd-ship uses it routinely on own repos.
 #   - raw `curl` POSTs to api.github.com — unbounded shape; not worth the false-positive
@@ -90,7 +96,7 @@ IFS=$'\t' read -r CWD CMD < <(jq -r '[.cwd // "", .tool_input.command // ""] | @
 
 # --- Match: gh issue create|comment (token-anchored) OR gh api POST to an issue/PR thread ---
 MATCHED=0
-if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+issue[[:space:]]+(create|comment)([[:space:]]|$)' <<< "$CMD"; then
+if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+(issue[[:space:]]+(create|comment)|pr[[:space:]]+comment)([[:space:]]|$)' <<< "$CMD"; then
   MATCHED=1
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(-X|--method)[[:space:]]+POST([[:space:]]|$)' <<< "$CMD" \
