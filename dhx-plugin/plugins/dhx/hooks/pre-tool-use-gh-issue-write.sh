@@ -4,17 +4,23 @@
 #           blocks / exit 1 does not), HP-043 ($CLAUDE_CODE_SESSION_ID in tool subprocs)
 #
 # HARD-DENY (D-12 landed 2026-07-21; was soft-warn 2026-07-10..2026-07-21): blocks a
-# FOREIGN-repo `gh issue create` / `gh issue comment` / `gh pr comment` / `gh api …POST`
-# on an issue or PR thread when it runs outside the /dhx:upstream gated pre-flight. Upstream writes are
+# FOREIGN-repo MUTATION of an issue or PR thread — create, comment, edit, close, reopen,
+# review, merge, ready, a `gh api` write method, or a graphql mutation — when it runs outside
+# the /dhx:upstream gated pre-flight. Upstream writes are
 # irreversible and one-shot; a soft warning could only ever inform the SECOND call
 # (PreToolUse `additionalContext` on an `allow` reaches the model alongside the tool
-# result — structurally too late). See docs/decisions.md 2026-07-21 row.
+# result — structurally too late). See docs/decisions.md 2026-07-21 + 2026-08-03 rows.
 #
-# Three ways past this gate, in order of preference:
+# Four ways past this gate, in order of preference:
 #   1. `/dhx:upstream <report-path>`  — new issue (run.sh writes the marker at Stage 7)
 #   2. `/dhx:upstream reply <issue>`  — comment    (run-comment.sh, identical marker)
-#   3. `/dhx:upstream revise <pr>`     — PR comment (post-pr-comment.sh; NO marker — the
-#                                        child-process invisibility below is the mechanism)
+#   3. `/dhx:upstream revise <pr>`     — PR comment (post-pr-comment.sh), retitle
+#                                        (edit-pr-title.sh, RV7) and published-comment
+#                                        correction (edit-pr-comment.sh, RV9.5). NO marker on
+#                                        any of them — the child-process invisibility below is
+#                                        the mechanism, and all three drivers landed BEFORE the
+#                                        verb widening precisely so it would deny into a
+#                                        sanctioned route rather than into the bypass.
 #   4. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, 60s window
 # Own-owner writes (see OWN_OWNERS) never reach the gate at all — silent allow.
 #
@@ -53,14 +59,43 @@
 # plugin updates.
 #
 # --- Matcher scope (token-anchored) ---
+# The verb set is MUTATION-shaped, not creation-shaped, since 2026-08-03. It was creation-only
+# until then, and that gap was measured rather than theorised: two foreign mutations went out
+# ungated in one session (a `--title` retitle of open-gsd/gsd-core#2493, and a PATCH rewriting an
+# already-published maintainer-visible comment). An edit is as publishable as a post and worse in
+# one respect — it silently rewrites text a maintainer may already have read, with no marker in
+# the thread. See reports/2026-08-03-gh-write-deny-covers-create-not-edit.md.
 # COVERED:
 #   - `gh issue create --title x --body y`            (canonical create)
 #   - `gh issue comment 123 --body y`                 (canonical comment / reply path)
 #   - `gh pr comment <url|num> --body-file b`         (revise path; widened 2026-08-02)
-#   - `gh api repos/o/r/issues/1/comments -X POST`    (raw-API detour; also --method POST,
-#     and the `pulls` variant — zero legitimate consumers across the skills-monorepo
-#     dhx skills and the cross-repo script trees as of 2026-07-21, so it costs nothing)
+#   - `gh issue edit|close|reopen`                    (widened 2026-08-03)
+#   - `gh pr edit|review|close|reopen|merge|ready`    (widened 2026-08-03; `review` would
+#     otherwise let a session approve or request-changes on a FOREIGN PR ungated)
+#   - `gh api repos/o/r/issues/1/comments -X POST`    (raw-API detour; also --method, and the
+#     `pulls` variant. Method set widened POST -> POST|PATCH|PUT|DELETE on 2026-08-03: PATCH on
+#     the identical path was the measured bypass, same owner-resolution inputs and same
+#     publication consequence, passing on one verb token)
+#   - `gh api graphql … mutation …`                   (widened 2026-08-03 — see the residual below)
 #   - `bash -c '…'` wrappers, pipes, leading/trailing whitespace
+# ALREADY covered before 2026-08-03, do NOT "add" it: `gh issue comment --edit-last` and
+#   `gh pr comment --edit-last` match on their `issue comment` / `pr comment` tokens. A probe arm
+#   written for them would have been green before the widening and would prove nothing.
+# STATED RESIDUAL — `gh api graphql`. The api branch cannot key on owner for graphql: there is no
+#   `repos/<o>/<r>/` path in a mutation, and its targets are opaque node IDs, so owner resolution
+#   has nothing to read unless the caller happens to pass `--repo` or names a github.com URL. The
+#   detector therefore matches `graphql` + a `mutation` token and falls through to the SAME owner
+#   resolution as every other branch — which for a typical node-ID mutation resolves NOTHING and
+#   therefore DENIES (fail-closed, consistent with the unresolvable-owner posture since D-12).
+#   Honest consequence, stated rather than discovered later, and MEASURED not assumed (probes
+#   [62]-[64b]): the cwd-origin rung still resolves, so a graphql mutation run from inside an
+#   own-repo checkout stays SILENT — the residual is narrower than "all own-repo graphql denies".
+#   What denies is a mutation whose owner resolves NOWHERE: no `--repo`, no github.com URL, and a
+#   cwd that is not an own-owner git repo. That is accepted — measured zero legitimate top-level
+#   consumers (the only live `gh api graphql` in the
+#   trees is cross-repo `scripts/upstream/ci-verdict.sh`, a read-only QUERY carrying no `mutation`
+#   token, and it runs inside a script this hook cannot see anyway). The deny is loud and names
+#   the bypass; a silent ungated graphql mutation is the failure worth trading it for.
 # NOT COVERED — deliberate non-goals, each with a live legitimate consumer that a deny
 # would break (do NOT "close the gap" without reading these first):
 #   (`gh pr comment` WAS listed here and was WIDENED IN on 2026-08-02 — see the covered
@@ -76,6 +111,19 @@
 #     surface for a detour nothing in the toolchain takes.
 #   Precedent for pinning a known gap at the widening site rather than closing it:
 #   reports/2026-07-08-worktree-bash-guard-gap-is-loadbearing-for-deliberate-cross-tree-writes.md
+#
+# LIVE CONSUMERS OF THE 2026-08-03 VERBS THAT SURVIVE ON OWNERSHIP SCOPING, NOT ON THE VERB SET.
+# Measured before the widening, not assumed — these are why the scoping must never be narrowed:
+#   - `/gsd-inbox` (gsd-core workflows/inbox.md) runs `gh issue edit|close` and `gh pr edit|close`
+#     to triage an inbox, and `/gsd-ship` (workflows/ship.md) runs `gh pr edit --add-reviewer`.
+#   - `/dhx:upstream revise` RV7's retitle and RV9.5's comment correction (both now inside
+#     drivers, so this hook never sees them at all).
+#   Every gsd-core call passes a BARE NUMBER, so ownership resolves from the cwd's origin and they
+#   stay silent on the operator's own repos — the identical shape probe [44] already pins for
+#   /dhx:review. Probes [50]-[53] pin these as permanent teeth: if they ever red, gsd-inbox and
+#   gsd-ship are broken. Corollary worth stating: triaging an inbox on a repo you maintain that is
+#   NOT under OWN_OWNERS will deny. That is the ownership list being too narrow, not the verb set
+#   being too wide — widen OWN_OWNERS in a reviewable commit, do not re-narrow the verbs.
 # ALSO NOT matched (token-anchoring, as before): `gh issue list`, `gh issue create-else`,
 # `mygh issue comment`.
 
@@ -94,13 +142,17 @@ if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 # Parse cwd + command from PreToolUse stdin JSON
 IFS=$'\t' read -r CWD CMD < <(jq -r '[.cwd // "", .tool_input.command // ""] | @tsv' <<<"$INPUT" 2>/dev/null || echo $'\t')
 
-# --- Match: gh issue create|comment (token-anchored) OR gh api POST to an issue/PR thread ---
+# --- Match: gh issue|pr MUTATION verb (token-anchored) OR gh api write-method to an
+#     issue/PR thread OR a gh api graphql MUTATION (widened 2026-08-03 — see header) ---
 MATCHED=0
-if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+(issue[[:space:]]+(create|comment)|pr[[:space:]]+comment)([[:space:]]|$)' <<< "$CMD"; then
+if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+(issue[[:space:]]+(create|comment|edit|close|reopen)|pr[[:space:]]+(comment|edit|review|close|reopen|merge|ready))([[:space:]]|$)' <<< "$CMD"; then
   MATCHED=1
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api([[:space:]]|$)' <<< "$CMD" \
-     && grep -qE '(-X|--method)[[:space:]]+POST([[:space:]]|$)' <<< "$CMD" \
+     && grep -qE '(-X|--method)[[:space:]]+(POST|PATCH|PUT|DELETE)([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(^|[^[:alnum:]_])repos/[^[:space:]/]+/[^[:space:]/]+/(issues|pulls)/' <<< "$CMD"; then
+  MATCHED=1
+elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api[[:space:]]+graphql([[:space:]]|$)' <<< "$CMD" \
+     && grep -qE '(^|[^[:alnum:]_])mutation([^[:alnum:]_]|$)' <<< "$CMD"; then
   MATCHED=1
 fi
 [ "$MATCHED" = "1" ] || exit 0
@@ -156,7 +208,7 @@ fi
 
 # --- Deny (structured, exit 0 — see "Emit shape" in the header) ---
 TARGET="${OWNER:-<unresolved owner>}"
-REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare gh call skips all of it, and the write cannot be taken back. Take one of these paths: (1) new issue -> '/dhx:upstream <report-path>'; (2) reply on an existing issue -> '/dhx:upstream reply <issue-url-or-number>'; (3) deliberate one-off, audited + 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly."
+REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare gh call skips all of it, and the write cannot be taken back. Take one of these paths: (1) new issue -> '/dhx:upstream <report-path>'; (2) reply on an existing issue -> '/dhx:upstream reply <issue-url-or-number>'; (3) anything on an EXISTING PR of yours — response comment, retitle, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>', whose RV7/RV9/RV9.5 steps call the sanctioned drivers under dhx-tools/dhx-upstream/ (edit-pr-title.sh, edit-pr-comment.sh, post-pr-comment.sh); prefer posting a follow-up over editing published text, which rewrites what a maintainer may already have read; (4) deliberate one-off, audited + 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
 MSG="Blocked: upstream write to $TARGET outside /dhx:upstream. Use '/dhx:upstream reply <issue>' or '/dhx:upstream <report-path>' — or run dhx-tools/dhx-upstream-bypass.sh --reason \"...\" for a deliberate one-off."
 
 if DENY_JSON=$(jq -cn --arg r "$REASON" --arg m "$MSG" \

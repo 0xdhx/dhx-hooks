@@ -4,8 +4,10 @@
 # Regression probe for dhx-plugin/plugins/dhx/hooks/pre-tool-use-gh-issue-write.sh
 # (PreToolUse:Bash HARD DENY for foreign-repo upstream writes — D-12, 2026-07-21).
 #
-# Invariant (post-D-12): the hook DENIES — blocking — a `gh issue create`, `gh issue
-# comment`, or `gh api …POST` on an issue/PR thread when ALL of:
+# Invariant (post-D-12, verb set widened 2026-08-02 and again 2026-08-03): the hook DENIES —
+# blocking — a foreign-repo MUTATION of an issue or PR thread (create / comment / edit / close /
+# reopen / review / merge / ready, a `gh api` POST|PATCH|PUT|DELETE on an issue or PR path, or a
+# `gh api graphql` carrying a mutation) when ALL of:
 #   (a) the target owner is NOT in the hook's OWN_OWNERS list (or does not resolve), and
 #   (b) no fresh /dhx:upstream marker exists for the session, and
 #   (c) no fresh deliberate-bypass marker exists for the session.
@@ -19,8 +21,19 @@
 # It stays SILENT (no output, exit 0) when: the owner is own (`--repo 0xdhx/…`, a
 # `repos/0xdhx/…` api path, or a cwd whose origin is 0xdhx), the skill marker is fresh
 # (<5m), the bypass marker is fresh (<60s), the subcommand is different (`gh issue list`),
-# token-anchoring rejects it (`create-something-else`, `mygh issue comment`), or the shape
-# is a documented NON-GOAL (`gh pr comment`, `gh pr create`, non-POST `gh api`).
+# token-anchoring rejects it (`create-something-else`, `mygh issue comment`, `edit-something-else`,
+# `issue closed`), the call is a READ (`gh api` GET, or a graphql QUERY carrying no mutation
+# token), or the shape is a documented NON-GOAL (`gh pr create`, raw `curl`).
+#
+# ORDER OF EVIDENCE — three classes below look alike and are not:
+#   [50]-[63] BITE-TESTED arms. Each was measured SILENT against the pre-2026-08-03 hook, so each
+#     is a real tooth. [53] and [59] are the two live incidents from the source report.
+#   [65]-[68] PERMANENT TEETH, green before AND after. Live gsd-core consumers (`/gsd-inbox`,
+#     `/gsd-ship`) passing a BARE NUMBER and surviving on ownership scoping — their staying green
+#     is what proves the widening did not break them. Same role [44] plays for /dhx:review.
+#   [72]-[73] CHARACTERIZATION only. `--edit-last` was ALREADY covered by the `issue comment` /
+#     `pr comment` tokens and denied before this change; labelled so no reader mistakes them for
+#     evidence of the widening (the source report called out this exact miswriting risk).
 #
 # INVARIANT (cross-file contract): the -write name must match hooks.json registration.
 # INVARIANT (cross-file contract): the deny message names the bypass script, and that
@@ -270,6 +283,96 @@ _assert "[48] NEG CONTROL: foreign PR URL improvised from a fork checkout -> den
 # The sanctioned path is a child process, so the hook never sees its gh call at all.
 _assert "[49] sanctioned path (script invocation) -> silent" "silent" \
   "$(_verdict "$(_json s1 "bash ~/.claude/dhx-tools/dhx-upstream/post-pr-comment.sh --pr https://github.com/open-gsd/gsd-core/pull/2595 --body-file b" "$OWN_REPO")")"
+
+# --- MUTATION VERBS: widened 2026-08-03 from creation-only (report
+#     2026-08-03-gh-write-deny-covers-create-not-edit.md) ---
+# Every [50]-[64] arm below was bite-tested against the PRE-widening hook and was SILENT there.
+# [65]-[68] are the inverse: permanent teeth that were ALREADY silent pre-widening and must STAY
+# silent, because they are live gsd-core consumers surviving on ownership scoping.
+EDIT="edit"; CLOSE="close"; REOPEN="reopen"; REVIEW="review"; MERGE="merge"; READY="ready"
+GRAPHQL="graphql"; MUT="mutation"
+
+_assert "[50] foreign issue edit -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $EDIT 42 --repo open-gsd/gsd-core --body y")")"
+_assert "[51] foreign issue close -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $CLOSE 42 --repo open-gsd/gsd-core")")"
+_assert "[52] foreign issue reopen -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $REOPEN 42 --repo open-gsd/gsd-core")")"
+# [53] is measured incident #1: the retitle of open-gsd/gsd-core#2493 that went out ungated.
+_assert "[53] foreign pr edit --title (INCIDENT 1) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $EDIT https://github.com/open-gsd/gsd-core/pull/2493 --title t")")"
+# `pr review` would let a session APPROVE or request-changes on a foreign PR. No live consumer.
+_assert "[54] foreign pr review -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $REVIEW 12 --repo open-gsd/gsd-core --approve")")"
+_assert "[55] foreign pr close -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $CLOSE 12 --repo open-gsd/gsd-core")")"
+_assert "[56] foreign pr reopen -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $REOPEN 12 --repo open-gsd/gsd-core")")"
+_assert "[57] foreign pr merge -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $MERGE 12 --repo open-gsd/gsd-core --squash")")"
+_assert "[58] foreign pr ready -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $READY 12 --repo open-gsd/gsd-core")")"
+
+# --- api write methods: POST was covered, PATCH/PUT/DELETE were not ---
+# [59] is measured incident #2: the PATCH that rewrote an already-published comment.
+_assert "[59] foreign api PATCH on a comment (INCIDENT 2) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API --method PATCH repos/open-gsd/gsd-core/issues/comments/5164385953 -F body=@b")")"
+_assert "[60] foreign api -X PUT on an issue path -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API -X PUT repos/open-gsd/gsd-core/issues/1/lock")")"
+_assert "[61] foreign api --method DELETE on a comment -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API --method DELETE repos/open-gsd/gsd-core/issues/comments/99")")"
+# Read methods stay silent — the widening is to WRITE methods, not to `gh api` wholesale.
+_assert "[61b] foreign api GET still silent (read, not a mutation)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $API repos/open-gsd/gsd-core/issues/comments/99")")"
+
+# --- graphql: no repos/ path to key owner on, so the detector keys on the mutation token ---
+_assert "[62] graphql mutation from a foreign-origin cwd -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API $GRAPHQL -f query='$MUT { addComment(input:{}) }'" "$FOREIGN_REPO")")"
+# Fail-closed: an opaque node-ID target resolves NO owner, and unresolvable has denied since D-12.
+_assert "[63] graphql mutation, node-id only, unresolvable owner -> deny (fail-closed)" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API $GRAPHQL -f query='$MUT { addComment(input:{subjectId:\"MDU6SXNzdWUx\"}) }'" "$BARE_DIR")")"
+# A graphql QUERY carries no mutation token and must not be caught — this is the arm that keeps
+# cross-repo ci-verdict.sh's read (and every other graphql read) out of the matcher.
+_assert "[64] graphql QUERY (no mutation token) -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $API $GRAPHQL -f query='query { repository { name } }'" "$FOREIGN_REPO")")"
+# Ownership scoping still wins over the graphql detector — it is a matcher, not a bypass.
+_assert "[64b] graphql mutation from an OWN-origin cwd -> silent (scoping wins)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $API $GRAPHQL -f query='$MUT { addComment(input:{}) }'" "$OWN_REPO")")"
+
+# --- PERMANENT TEETH: live gsd-core consumers that survive on OWNERSHIP, not on the verb set ---
+# Measured 2026-08-03 before widening: /gsd-inbox (gsd-core workflows/inbox.md) runs issue/pr
+# edit+close, and /gsd-ship (workflows/ship.md) runs `pr edit --add-reviewer`. All pass a BARE
+# NUMBER, so ownership resolves from the cwd origin. If any of these four ever RED, those two
+# workflows are broken — identical role to [44] for /dhx:review. They were green before the
+# widening too, and that is the point: they prove the widening did NOT touch them.
+_assert "[65] gsd-inbox shape: issue edit, bare num, own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $EDIT 42 --add-label bug" "$OWN_REPO")")"
+_assert "[66] gsd-inbox shape: issue close, bare num, own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $CLOSE 42 --comment x" "$OWN_REPO")")"
+_assert "[67] gsd-ship shape: pr edit --add-reviewer, bare num, own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $EDIT 12 --add-reviewer someone" "$OWN_REPO")")"
+_assert "[68] gsd-inbox shape: pr close, bare num, own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $CLOSE 12 --comment x" "$OWN_REPO")")"
+
+# --- Token-anchoring holds for the NEW verbs too (the create-else / mygh guard class) ---
+_assert "[69] gh pr edit-something-else -> silent (continuation guard)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $EDIT-something-else --title t")")"
+_assert "[70] gh issue closed (not close) -> silent (continuation guard)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE ${CLOSE}d --repo open-gsd/gsd-core")")"
+_assert "[71] mygh pr edit -> silent (prefix guard)" "silent" \
+  "$(_verdict "$(_json s1 "my$GH $PR $EDIT 12 --repo open-gsd/gsd-core --title t")")"
+# `gh pr merge` must not swallow `gh pr merge-queue`-style continuations either.
+_assert "[71b] gh pr merge-else -> silent (continuation guard)" "silent" \
+  "$(_verdict "$(_json s1 "$GH $PR $MERGE-else --repo open-gsd/gsd-core")")"
+
+# --- CHARACTERIZATION, NOT a bite test: --edit-last was ALREADY covered pre-widening ---
+# Both of these were deny BEFORE 2026-08-03 — they match on their `issue comment` / `pr comment`
+# tokens, not on any verb added by this change. Labelled explicitly so nobody reads them as
+# evidence for the widening; the report called this out precisely so no such arm got miswritten.
+_assert "[72] CHAR (pre-existing): issue comment --edit-last, foreign -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT --edit-last --repo open-gsd/gsd-core --body y")")"
+_assert "[73] CHAR (pre-existing): pr comment --edit-last, foreign -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $PR $COMMENT --edit-last --repo open-gsd/gsd-core --body y")")"
 
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]
