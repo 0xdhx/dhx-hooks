@@ -153,6 +153,44 @@ _assert_allow "24: sed without -i is read-only → allow"
 _run "$WT_CWD" "git -C $MAIN_CWD log > /dev/null"
 _assert_allow "25: redirect to /dev/null → allow"
 
+# ── Stdin-parse shape arms (2026-08-03) ──────────────────────────────────
+# The write-verb detector was correct; the INPUT PATH was starving it. The old
+# `jq … | @tsv` + `read` parse escaped a real newline/tab into `\`+`n` / `\`+`t`, so the
+# character preceding a line-start write verb was the ALNUM letter `n`/`t` and the
+# `(^|[^[:alnum:]_])` anchors could never fire — `tee`, `sed -i` and `python3 -c` at the
+# start of a continuation line ALL escaped this guard silently. Same defect and same commit
+# as dhx-plugin/…/pre-tool-use-gh-issue-write.sh (probe arms [74]-[80] there).
+# Assert the SHAPE, not the verb: one shape across three verbs beats one multi-line arm per
+# verb. BITE-TESTED — 26/27/28 each measured SILENT against the pre-fix @tsv parse.
+#
+# PAYLOAD NOTE — the leading fixture line is `export D=/tmp`, not the errexit-DISABLE directive.
+# verify-hook-patterns.sh's probe set-flag discipline lint greps ADDED LINES for that directive and
+# cannot tell a shell directive from a quoted fixture payload (it would flag this comment for
+# naming it, hence the description rather than the token). Its only exemption is a line-anchored
+# errexit ENABLE, which a probe must not carry — errexit would abort the suite on the first failing
+# assertion. Only the SHAPE is under test: a line, then the verb at line-start. Do NOT reintroduce
+# the disable directive as fixture data, and do NOT add an errexit enable to silence the lint.
+# Same note in probe-gh-issue-write.sh.
+NL=$'\n'; TAB=$'\t'
+_run "$WT_CWD" "export D=/tmp${NL}tee $MAIN_PATH"
+_assert_block "26: BITE — tee at START of line 2 → block"
+
+_run "$WT_CWD" "cd /tmp${NL}${TAB}sed -i s/foo/bar/ $MAIN_PATH"
+_assert_block "27: BITE — sed -i on line 2, TAB-indented → block"
+
+_run "$WT_CWD" "export D=/tmp${NL}python3 -c \"open('$MAIN_PATH','w').write('y')\""
+_assert_block "28: BITE — python3 -c at START of line 2 → block"
+
+# NON-VACUITY / CHARACTERIZATION, not a bite test: already blocked pre-fix. Pins the real
+# predicate — the ESCAPED WHITESPACE CHARACTER before the verb, not "multi-line". A
+# space-indented line-2 call always matched, because @tsv leaves a real space alone.
+_run "$WT_CWD" "export D=/tmp${NL}  tee $MAIN_PATH"
+_assert_block "29: CHAR (pre-existing) — tee line 2, SPACE-indented → block"
+
+# The fix must not over-fire: a worktree-local write stays allowed on a multi-line command.
+_run "$WT_CWD" "export D=/tmp${NL}tee $WT_PATH"
+_assert_allow "30: worktree-local tee at START of line 2 → allow (scoping survives)"
+
 # ── Summary ──────────────────────────────────────────────────────────────
 echo ""
 echo "$PASSED passed, $FAILED failed"

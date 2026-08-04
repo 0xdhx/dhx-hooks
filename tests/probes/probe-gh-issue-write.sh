@@ -374,6 +374,54 @@ _assert "[72] CHAR (pre-existing): issue comment --edit-last, foreign -> deny" "
 _assert "[73] CHAR (pre-existing): pr comment --edit-last, foreign -> deny" "deny" \
   "$(_verdict "$(_json s1 "$GH $PR $COMMENT --edit-last --repo open-gsd/gsd-core --body y")")"
 
+# --- Stdin-parse shape arms (2026-08-03). The verb set was complete and correct; the INPUT
+# PATH was starving it. `@tsv` escaped a real newline/tab into `\`+`n` / `\`+`t`, so the char
+# preceding a line-start verb was the ALNUM letter `n`/`t` and the `(^|[^[:alnum:]_])` anchor
+# could never fire. These arms assert the SHAPE, not the verb — one verb across the four input
+# shapes, deliberately NOT one multi-line arm per covered verb. A per-verb sweep would be 13x
+# the maintenance for the same signal AND would still have missed [75] (nobody predicted the
+# tab), which is exactly why the shape is the tooth.
+# BITE-TESTED: [74]-[78] were each measured SILENT against the pre-fix @tsv parse. Revert the
+# two `jq -r` reads in the hook to the old one-line `@tsv` + `read` form and all five go SILENT.
+#
+# PAYLOAD NOTE — the leading fixture line is `export D=/tmp`, NOT the errexit-DISABLE directive
+# the live incident actually opened with. verify-hook-patterns.sh's probe set-flag discipline lint
+# greps ADDED LINES for that directive and cannot distinguish a shell directive from a quoted
+# fixture payload (it would even flag this comment for naming it, which is why the token is
+# described here rather than written). Its only exemption is a line-anchored errexit ENABLE —
+# which a probe must not carry, since errexit would abort the suite on the first failing assertion
+# instead of counting it. The lint is right and the fixture is what should move: only the SHAPE is
+# under test — a line, then the verb at line-start — and `export D=/tmp` is the line that defined
+# $D in the real incident anyway. Do NOT reintroduce the disable directive as fixture data, and do
+# NOT add an errexit enable to this probe to silence the lint.
+NL=$'\n'; TAB=$'\t'
+_assert "[74] BITE: pr edit at START of line 2 -> deny" "deny" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}$GH $PR $EDIT 2493 --repo open-gsd/gsd-core --body-file b.md")")"
+_assert "[75] BITE: pr edit on line 2, TAB-indented -> deny" "deny" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}${TAB}$GH $PR $EDIT 2493 --repo open-gsd/gsd-core --body-file b.md")")"
+# The live 2026-08-03 incident: a foreign PR description mutated with no deny. Structurally
+# faithful (leading line, cp, verb at line-start of line 3, piped) — see the PAYLOAD NOTE above
+# for why line 1 is a setup line rather than the incident's literal opening directive.
+_assert "[76] BITE: live incident shape (setup / cp / gh on line 3) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}cp a b${NL}$GH $PR $EDIT 2493 --repo open-gsd/gsd-core --body-file b.md 2>&1 | tail -5")")"
+_assert "[77] BITE: gh api POST at START of line 2 -> deny" "deny" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}$GH $API repos/open-gsd/gsd-core/issues/1/comments -X POST -f body=x")")"
+# Bug 2 (field shift): tab is IFS-whitespace, so `read` collapsed a leading empty `.cwd` and
+# the whole command landed in $CWD with $CMD empty. Needs a hand-built payload — _json's
+# `${3:-/tmp/x}` default cannot express an EMPTY cwd.
+_assert "[78] BITE: empty cwd does not shift fields -> deny" "deny" \
+  "$(_verdict "$(jq -n --arg c "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x --body y" \
+      '{session_id:"s1", cwd:"", tool_input:{command:$c}}')")"
+# NON-VACUITY / CHARACTERIZATION, not a bite test: this one was ALREADY deny pre-fix. It pins
+# the real predicate — the ESCAPED WHITESPACE CHARACTER before the verb, not "multi-line". A
+# space-indented line-2 call always matched, because @tsv leaves a real space alone. Any future
+# reader tempted to describe this bug as "multi-line commands bypass the gate" is refuted here.
+_assert "[79] CHAR (pre-existing): pr edit line 2, SPACE-indented -> deny" "deny" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}  $GH $PR $EDIT 2493 --repo open-gsd/gsd-core --body-file b.md")")"
+# The fix must not over-fire: ownership scoping still decides, on a multi-line command too.
+_assert "[80] own-owner at START of line 2 -> silent (scoping survives the parse fix)" "silent" \
+  "$(_verdict "$(_json s1 "export D=/tmp${NL}$GH $ISSUE $CREATE --repo 0xdhx/dhx-hooks --title x --body y")")"
+
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]
               | any(contains("pre-tool-use-gh-issue-write"))' "$MANIFEST" >/dev/null 2>&1 \

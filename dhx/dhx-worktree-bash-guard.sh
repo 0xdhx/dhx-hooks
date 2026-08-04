@@ -53,7 +53,21 @@ INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-IFS=$'\t' read -r CWD CMD < <(jq -r '[.cwd // "", .tool_input.command // ""] | @tsv' <<<"$INPUT" 2>/dev/null || echo $'\t')
+# TWO INDEPENDENT READS — do NOT "simplify" this back to `jq … | @tsv` + `read`. `@tsv`
+# escapes a real newline/tab into the TWO characters `\`+`n` / `\`+`t`, so the character
+# immediately preceding a line-start write verb became the letter `n` (or `t` under tab
+# indentation) — which IS `[[:alnum:]_]`, defeating the `(^|[^[:alnum:]_])` anchors at the
+# write-verb detector below. Measured 2026-08-03: `tee`, `sed -i` and `python3 -c` at the
+# start of a continuation line ALL escaped this guard silently. A SPACE-indented line-2
+# call matched correctly even before the fix, so the predicate is the escaped whitespace
+# character, not "multi-line". Separately, tab is IFS-whitespace, so `read` collapses a
+# leading empty field and an empty `.cwd` shifts the command into $CWD.
+# `$(…)` strips trailing newlines only; interior newlines survive — which the anchors need,
+# and which the `>`/`>>` redirection arm needs too (`[[:space:]]` includes a real newline).
+# Same defect, same fix, same commit: dhx-plugin/…/pre-tool-use-gh-issue-write.sh.
+# Prior art for the field-collapse half: dhx/dhx-read-dedup.sh:120.
+CWD=$(jq -r '.cwd // ""'                <<<"$INPUT" 2>/dev/null || true)
+CMD=$(jq -r '.tool_input.command // ""' <<<"$INPUT" 2>/dev/null || true)
 
 # Fast exit: not in a CC-managed worktree
 [[ "$CWD" == *".claude/worktrees/"* ]] || exit 0

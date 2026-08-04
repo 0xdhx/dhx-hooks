@@ -126,6 +126,20 @@
 #   being too wide — widen OWN_OWNERS in a reviewable commit, do not re-narrow the verbs.
 # ALSO NOT matched (token-anchoring, as before): `gh issue list`, `gh issue create-else`,
 # `mygh issue comment`.
+#
+# ACCEPTED FALSE POSITIVE (stated up front rather than discovered later, 2026-08-03). Once
+# the stdin parse stopped truncating at the first escaped newline, a command that merely
+# CONTAINS a covered verb at the start of a line became visible to the matcher — including
+# one inside a heredoc body. So writing a doc/report whose prose has a covered verb at
+# line-start AND any foreign `github.com/<owner>/` URL anywhere in the same command now
+# DENIES. That is this repo's own upstream reports, near enough exactly. It is accepted, for
+# the reason the positional-URL rung above already states: over-matching is the correct
+# direction on an irreversible outward write, and the cost is one `dhx-upstream-bypass.sh`
+# invocation against a write that cannot be taken back. Two facts bound it: the SAME false
+# positive has been live for every mid-line occurrence since 565b9c4 with no report or
+# backlog row complaining, and the no-URL case still resolves to the cwd's own origin and
+# stays silent. If this ever does become friction, narrow the URL rung — do NOT re-narrow
+# the verb set or reinstate the truncating parse.
 
 set -euo pipefail
 
@@ -139,8 +153,25 @@ INPUT=$(cat)
 # jq absent -> defensive no-op (cannot parse stdin)
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-# Parse cwd + command from PreToolUse stdin JSON
-IFS=$'\t' read -r CWD CMD < <(jq -r '[.cwd // "", .tool_input.command // ""] | @tsv' <<<"$INPUT" 2>/dev/null || echo $'\t')
+# Parse cwd + command from PreToolUse stdin JSON.
+# TWO INDEPENDENT READS — do NOT "simplify" this back to `jq … | @tsv` + `read`. That was
+# the shipped idiom from 565b9c4 until 2026-08-03 and it broke the matcher two ways, both
+# measured (not theorised) and both silent:
+#   1. `@tsv` escapes a real newline/tab into the TWO characters `\`+`n` / `\`+`t`. The
+#      character immediately preceding a line-start `gh` therefore became the letter `n`
+#      (or `t` under tab indentation) — which IS `[[:alnum:]_]`, so the `(^|[^[:alnum:]_])`
+#      anchor below could never match and every covered verb at the start of a continuation
+#      line was SILENTLY ALLOWED. Note the predicate is the escaped whitespace char, not
+#      "multi-line": `cd /tmp && gh pr edit` on line 2, and a SPACE-indented line-2 call,
+#      both matched correctly even before the fix.
+#   2. Tab is IFS-*whitespace*, so `read` collapses a leading empty field: an empty `.cwd`
+#      shifted the whole command into $CWD and left $CMD empty — MATCHED=0, allow again.
+# `$(…)` strips trailing newlines only; interior newlines survive, which is exactly what
+# the anchor needs. Same reasoning, same fix, as dhx/dhx-read-dedup.sh:120 (which abandoned
+# @tsv for the field-collapse half in its own header note).
+# Sibling with the identical defect, fixed in the same commit: dhx/dhx-worktree-bash-guard.sh.
+CWD=$(jq -r '.cwd // ""'                <<<"$INPUT" 2>/dev/null || true)
+CMD=$(jq -r '.tool_input.command // ""' <<<"$INPUT" 2>/dev/null || true)
 
 # --- Match: gh issue|pr MUTATION verb (token-anchored) OR gh api write-method to an
 #     issue/PR thread OR a gh api graphql MUTATION (widened 2026-08-03 — see header) ---
