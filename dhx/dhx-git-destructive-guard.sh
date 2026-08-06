@@ -777,11 +777,15 @@ Safe alternatives:
   - isolated branch:   git worktree add ../<dir> -b <branch>   (NOT checkout -b
                        in the primary — that moves the shared HEAD for every
                        concurrent session)
-  - in-lane reset:     run a BARE 'git reset --hard' inside your own lane (the
-                       redirected -C/--git-dir/cd form is what is blocked here)
   - staging:           git add -- <path> [<path>...]   (name every path; on a
                        shared tree 'add -A' also stages whatever a concurrent
                        session left in the index, and your next commit takes it)
+
+No reset / force-move recovery command is offered above — that is doctrine,
+not an omission. Agent runtime is verify-only fail-closed, and every command
+swap was considered and rejected by cross-AI council (2026-05-08).
+The canonical deny-history record is not reachable from this tree; read it at
+  /home/dhx/repos/cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md
 
 If this command is genuinely correct, invoke git directly outside Claude's
 Bash tool. This guard is an accident tripwire for the shared working tree,
