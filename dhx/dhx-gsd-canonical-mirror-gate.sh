@@ -209,10 +209,17 @@ fi
 
 # D-10 stderr emit — tier-specific first line (REASON) + shared remediation body.
 CANONICAL="$HOME/.claude/gsd-local-patches/$REL_PATH"
+# Absolute path to the draft-buffer driver, derived from this script's own
+# location (resolving the ~/.claude/hooks symlink back into the repo). The gate
+# fires on writes to ~/.claude/gsd-core/ from ANY cwd, so the repo-relative
+# form this used to print was unrunnable for the operator who tripped it
+# unless they happened to be sitting in the hooks repo (2026-08-06 sweep).
+SELF_RESOLVED="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+DRAFT_BUFFER="$(dirname "$(dirname "$SELF_RESOLVED")")/scripts/dhx-draft-buffer.sh"
 {
   echo "$REASON"
   echo "Either annotate the draft buffer first:"
-  echo "  scripts/dhx-draft-buffer.sh add $REL_PATH --reason \"<why>\""
+  echo "  $DRAFT_BUFFER add $REL_PATH --reason \"<why>\""
   echo "Or mirror after editing:"
   echo "  cp $FILE $CANONICAL"
 } >&2

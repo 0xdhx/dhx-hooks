@@ -269,10 +269,15 @@ NEW=$(diff <(echo "$PRE_STATUS") <(echo "$POST_STATUS") 2>/dev/null | grep '^>' 
 
 # ============================================================================
 # WARNING heredoc body — D-15 INLINED VERBATIM (no template, no preserve-from-file).
-# Source: original dhx-agent-leak-check.sh lines 91-107, with two intentional
+# Source: original dhx-agent-leak-check.sh lines 91-107, with three intentional
 # changes ONLY: (1) added `with isolation=${ISOLATION_FROM_SIDECAR}` to the
-# subject line (was bare `with isolation=worktree`), and (2) `${SUBAGENT}`
-# variable renamed to `${SUBAGENT_FROM_SIDECAR}` to reflect sidecar source.
+# subject line (was bare `with isolation=worktree`), (2) `${SUBAGENT}`
+# variable renamed to `${SUBAGENT_FROM_SIDECAR}` to reflect sidecar source, and
+# (3) the `git stash push -u` / `git merge --no-ff` recovery recipe DELETED
+# 2026-08-06 in favour of a doctrine pointer — `git stash` is prohibited on a
+# shared tree (cross-repo CLAUDE.md), and this hook fires only on the shared
+# primary, so the recipe taught the exact reflex the doctrine removes. Deleted
+# rather than swapped, per D-2/D-7 of the 2026-05-08 council record.
 # All other text is character-for-character identical to the original.
 # ============================================================================
 cat <<WARNING
@@ -285,10 +290,14 @@ Known Claude Code bug: https://github.com/anthropics/claude-code/issues/36182
 Edit/Write calls inside the subagent can resolve to main-repo absolute paths
 instead of worktree-rooted ones, silently leaking writes.
 
-If unexpected, recover before proceeding:
-  git stash push -u -m "leak-\$(date -Iseconds)"
-  git merge agent-<id> --no-ff
-  # verify with probes / tests, drop stash after
+If unexpected, recover by hand. No recovery recipe is printed here, and
+that is doctrine rather than an omission: this hook fires on the SHARED
+primary, where a stash or reset also pockets whatever a concurrent session
+left uncommitted, and every command swap was considered and rejected by
+cross-AI council (2026-05-08). Route by the "Concurrent sessions (shared
+working trees)" section of cross-repo CLAUDE.md. The canonical deny-history
+record is not reachable from this tree; read it at
+  /home/dhx/repos/cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md
 
 If expected (agent intentionally wrote to shared state), no action needed.
 WARNING

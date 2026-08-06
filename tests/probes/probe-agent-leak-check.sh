@@ -160,13 +160,22 @@ echo "$OUT" | grep -q "LEAK SUSPECTED" && check "[3a] post-hook emits LEAK SUSPE
 echo "$OUT" | grep -q "leaked-file.txt" && check "[3b] warning includes filename" pass || check "[3b] warning missing filename" fail
 echo "$OUT" | grep -q "36182" && check "[3c] warning cites upstream issue" pass || check "[3c] warning missing issue ref" fail
 echo "$OUT" | grep -q "gsd-executor" && check "[3d] warning names subagent_type from sidecar" pass || check "[3d] warning missing subagent_type" fail
-echo "$OUT" | grep -q "stash" && check "[3e] warning includes recovery hint" pass || check "[3e] warning missing recovery hint" fail
-# [3f]/[3g] assert the BRANCH NAMESPACE, not just "a hint exists". CC renamed the
-# worktree branch namespace to `agent-<id>`; the old `worktree-agent-<id>` text
-# hands the user a merge command that resolves to nothing. [3e]'s generic grep
-# stayed green through that entire regression — these two are what can see it.
-echo "$OUT" | grep -q -- "git merge agent-<id> --no-ff" && check "[3f] recovery names current agent-<id> namespace" pass || check "[3f] recovery missing agent-<id> merge command" fail
+# [3e]-[3h] — 2026-08-06: the recovery RECIPE was DELETED. `git stash` is
+# prohibited on a shared working tree, and this hook fires only on the shared
+# primary, so the old recipe taught the exact reflex the doctrine removes.
+# Deleted rather than swapped (D-2/D-7, 2026-05-08 council record); these
+# assertions now pin the deletion and the doctrine pointer that replaced it.
+#
+# The command-form greps below match an INVOCATION SHAPE (`git stash push`),
+# never the bare word `stash`. That is load-bearing: the replacement prose
+# mentions stash negatively ("a stash or reset also pockets..."), so the
+# pre-2026-08-06 `grep -q stash` goes green on text that recommends nothing —
+# the same vacuity that let the retired `worktree-agent-` namespace regression
+# sit green under a generic grep for an entire release cycle.
+echo "$OUT" | grep -q "doctrine" && check "[3e] warning carries the doctrine pointer" pass || check "[3e] warning missing doctrine pointer" fail
+echo "$OUT" | grep -qE 'git stash push|git merge [^ ]+ --no-ff' && check "[3f] recovery COMMAND reintroduced — deleted 2026-08-06, see D-2/D-7" fail || check "[3f] no recovery command printed (deletion holds)" pass
 echo "$OUT" | grep -q -- "worktree-agent-" && check "[3g] recovery still cites retired worktree-agent- namespace" fail || check "[3g] recovery free of retired worktree-agent- namespace" pass
+echo "$OUT" | grep -q "cross-repo" && check "[3h] warning routes to the cross-repo shared-tree doctrine" pass || check "[3h] warning missing cross-repo route" fail
 rm -f "$TMP/leaked-file.txt"
 
 # === [4] Non-worktree isolation → pre-hook silent, no baseline written ===
