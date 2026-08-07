@@ -5,7 +5,8 @@
 #
 # Cgroup wrap (2026-05-03): when systemd-run + active user@.service are
 # present, the test runner is wrapped in `systemd-run --user --scope` with
-# MemoryMax + MemorySwapMax=0 (cgroup OOM SIGKILL → exit 137) and
+# MemoryMax + MemorySwapMax=0 (cgroup OOM kill → exit 137, though 143 has also
+# been observed for a memory overrun in the field — see HP-045) and
 # RuntimeMaxSec (SIGTERM at runtime cap → exit 143). Both fail open via the
 # exit-code cascade so resource-exhausted gates don't block Stop. Falls back
 # to bare invocation when host preconditions are absent. Plugin manifest's
@@ -341,8 +342,11 @@ elif [ -n "$DISCOVERED_ROOTDIR" ]; then
 fi
 
 # --- Cgroup wrap factory (single-sourced via dhx-cgroup-cap.sh) ---
-# MemoryMax + MemorySwapMax=0 → SIGKILL/exit 137 on overrun (MemoryMax alone
-# is advisory on hosts with swap available — verified empirically on this
+# MemoryMax + MemorySwapMax=0 → SIGKILL/exit 137 on overrun in every controlled
+# cell tested; a field memory overrun has also surfaced as 143 (HP-045 — cause
+# not isolated, so the exit code does NOT reliably distinguish a memory kill from
+# a runtime kill). (MemoryMax alone is advisory on hosts with swap available —
+# verified empirically on this
 # WSL2 host; see reports/2026-05-03-test-gate-collection-cost.md). RuntimeMaxSec
 # is the systemd-native runtime ceiling (NOT TimeoutStopSec, which is the
 # SIGTERM→SIGKILL grace period after stop is requested) — fires at the cap

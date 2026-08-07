@@ -9,9 +9,13 @@
 #     mid-session pytest, the DHX-7 OOM gap the gate's Stop-time wrap can't see)
 #
 # Runtime behavior this lib relies on is HP-045: on this WSL2 host a
-# `systemd-run --user --scope` with `MemoryMax` + `MemorySwapMax=0` OOM-SIGKILLs
-# an overrunning child (exit 137), and `RuntimeMaxSec` SIGTERMs at the runtime
-# ceiling (exit 143). `MemorySwapMax=0` is load-bearing — `MemoryMax` alone is
+# `systemd-run --user --scope` with `MemoryMax` + `MemorySwapMax=0` OOM-kills an
+# overrunning child — exit 137 in every controlled cell tested, though a memory
+# overrun has ALSO been observed surfacing as 143 in the field (see HP-045; cause
+# not isolated, so do not rely on the code to distinguish memory from runtime).
+# `RuntimeMaxSec` SIGTERMs at the runtime ceiling (exit 143). Both consumers
+# treat 137 and 143 identically, which is what makes the ambiguity harmless.
+# `MemorySwapMax=0` is load-bearing — `MemoryMax` alone is
 # advisory on a swap-enabled host (verified in
 # reports/2026-05-03-test-gate-collection-cost.md).
 #
