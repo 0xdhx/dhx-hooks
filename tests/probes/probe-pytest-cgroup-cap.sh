@@ -167,6 +167,47 @@ HOOK_OUT=$(printf '%s' '{"tool_input":{"command":"pytest"}}' \
 assert_noop "[29] no systemd-run on PATH → fail-open {}"
 
 # ----------------------------------------------------------------------------
+# Per-project .claude/test-gate.json memory_max (2026-08-07 — DHX-7 deferral
+# closed). Resolution key is stdin `.cwd` ONLY. The config is REPO-CONTROLLED
+# and therefore untrusted: strictly validated, clamped to the ceiling, and a bad
+# value falls back to the DEFAULT (never to an uncapped {} — a hostile config
+# must not be able to un-cap the command).
+# ----------------------------------------------------------------------------
+PROJ="$TMP/proj"; mkdir -p "$PROJ/.claude"
+cfg_run() {  # CONFIG_JSON_OR_EMPTY  → sets RC to the rewritten command
+  if [ -n "$1" ]; then printf '%s' "$1" > "$PROJ/.claude/test-gate.json"
+  else rm -f "$PROJ/.claude/test-gate.json"; fi
+  run_hook "{\"tool_input\":{\"command\":\"pytest\"},\"cwd\":\"$PROJ\"}"
+  RC=$(rewritten_cmd)
+}
+assert_mem() {  # LABEL  EXPECTED_MEM
+  if grep -Eq "MemoryMax=$2( |\$)" <<< "$RC"; then echo "OK   $1"; PASS=$((PASS+1))
+  else echo "FAIL $1 (expected MemoryMax=$2): $RC"; FAIL=$((FAIL+1)); fi
+}
+
+cfg_run '';                       assert_mem "[30] no project config → 8G default" "8G"
+cfg_run '{"memory_max":"2G"}';    assert_mem "[31] config LOWERS the cap (2G)" "2G"
+cfg_run '{"memory_max":"8G"}';    assert_mem "[32] config at the ceiling is honored" "8G"
+cfg_run '{"memory_max":"64G"}';   assert_mem "[33] over-ceiling config is CLAMPED, not honored" "8G"
+cfg_run '{"memory_max":"infinity"}'; assert_mem "[34] 'infinity' rejected → default" "8G"
+cfg_run '{"memory_max":8}';       assert_mem "[35] non-string memory_max rejected → default" "8G"
+cfg_run 'not json';               assert_mem "[36] unparseable config rejected → default" "8G"
+
+# INJECTION BOUNDARY (the security assertion — the factory's tokens are flattened
+# into a command STRING, so an unvalidated value is arbitrary command injection).
+cfg_run '{"memory_max":"4G; touch '"$TMP"'/PWNED; echo"}'
+if grep -Fq 'PWNED' <<< "$RC"; then
+  echo "FAIL [37] injection-shaped memory_max reached the command: $RC"; FAIL=$((FAIL+1))
+else echo "OK   [37] injection-shaped memory_max never reaches the command"; PASS=$((PASS+1)); fi
+[ -e "$TMP/PWNED" ] && { echo "FAIL [37b] injection MARKER was created"; FAIL=$((FAIL+1)); } \
+                    || { echo "OK   [37b] no injection marker created"; PASS=$((PASS+1)); }
+
+# Trusted operator env outranks the untrusted config and is NOT ceiling-bound.
+printf '%s' '{"memory_max":"2G"}' > "$PROJ/.claude/test-gate.json"
+run_hook "{\"tool_input\":{\"command\":\"pytest\"},\"cwd\":\"$PROJ\"}" "DHX_PYTEST_CAP_MEM=16G"
+RC=$(rewritten_cmd);              assert_mem "[38] trusted env outranks config, unbounded" "16G"
+
+# ----------------------------------------------------------------------------
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

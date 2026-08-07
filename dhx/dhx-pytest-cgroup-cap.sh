@@ -30,10 +30,36 @@
 # synchronously and returns the child's status (the same propagation the gate
 # relies on for its 137/143 fail-open cascade); no pipe, so no PIPESTATUS dance.
 #
-# Config (env; per-project .claude/test-gate.json unification is a documented
-# deferral — see docs/decisions.md DHX-7 row):
-#   DHX_PYTEST_CAP_MEM      memory ceiling (default 4G; matches the gate default)
+# Budget resolution — TRUSTED env > UNTRUSTED per-project config > default:
+#   DHX_PYTEST_CAP_MEM      memory ceiling. Operator-set, so TRUSTED and
+#                           UNBOUNDED — an explicit value wins outright and the
+#                           project config is not consulted. Default 8G.
 #   DHX_PYTEST_CAP_RUNTIME  runtime ceiling in seconds (default: none)
+#   <cwd>/.claude/test-gate.json `.memory_max`  — the SAME key the Stop-hook gate
+#                           reads (schema: docs/troubleshooting.md). Consulted
+#                           only when DHX_PYTEST_CAP_MEM is unset. REPO-CONTROLLED
+#                           and therefore untrusted: strictly validated and CLAMPED
+#                           to MEM_CEILING. It can LOWER the cap freely; it cannot
+#                           raise it past the ceiling. Closes the DHX-7 deferral.
+#
+# WHY THE VALIDATION IS A SECURITY CONTROL, NOT A NICETY: the rewrite below
+# FLATTENS the factory's tokens into a command STRING (`prefix + bash -c '…'`),
+# unlike the gate which execs an argv ARRAY. So an unvalidated budget value is
+# arbitrary command injection — `4G; rm -rf ~; echo` would land as executable
+# shell in the command CC then runs. Measured 2026-08-07 before the validator
+# existed. The gate's own pass-through (dhx-test-gate.sh) is safe ONLY because of
+# that array/string difference; do not "simplify" this to match it.
+#
+# Directory resolution is stdin `.cwd` ONLY — deliberately NOT parsed out of the
+# command. A `cd <dir> && pytest` parse was designed and REJECTED: the classifier
+# splits on separators with a quote-blind sed, so quoted text can manufacture a
+# fake `cd` candidate; and one Bash input can run pytest in two repos while this
+# hook creates exactly ONE outer scope, so "first config wins" is an invented
+# policy, not shell semantics. Consequence, accepted and documented: a
+# cross-repo invocation (`cd /other/repo && pytest`, issued from a session whose
+# .cwd is elsewhere) resolves the SESSION's config, not the target repo's — it
+# falls back to the default, which is why the default is sized to cover a real
+# suite rather than left at the old 4G.
 #
 # FAIL-OPEN: emits {} (run the command unchanged) on ANY error, missing dep,
 # non-pytest command, already-wrapped command, or absent host cgroup support. A
@@ -49,6 +75,9 @@ command -v jq >/dev/null 2>&1 || emit_noop
 input=$(cat) || emit_noop
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || emit_noop
 [ -n "$cmd" ] || emit_noop
+# Session cwd — the ONLY project-config resolution key (see header). Absent or
+# unparseable is fine: the budget then falls back to the default.
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null) || cwd=""
 
 # --- Bypass: already cgroup-wrapped (avoid double-wrap / self-reference). ------
 # The gate runs pytest as a Stop-hook subprocess, NOT via the Bash tool, so it
@@ -106,8 +135,64 @@ declare -F dhx_cgroup_prefix_tokens >/dev/null 2>&1 || emit_noop
 # fallback). Capping is defense-in-depth, never a hard gate on the command.
 dhx_cgroup_available || emit_noop
 
-MEM="${DHX_PYTEST_CAP_MEM:-4G}"
+# --- Budget resolution (see header § Budget resolution + § security note). -----
+# Default sized from a MEASURED peak: statforge's tests/test_render/
+# test_espn_template.py peaks at 5,158,532 kB (4.92 GiB) and passes 177/1 when it
+# has room — under the previous 4G default it was OOM-killed at 86% three times,
+# surfacing as a bare "Terminated" with NO pytest output (reads as a hang, not a
+# budget hit). 8G is ~62% headroom over that peak and still ~4.6x below the
+# ~37 GB runaway DHX-7 exists to contain.
+DEFAULT_MEM="8G"
+# Applies ONLY to the untrusted repo-controlled config, never to the trusted env.
+MEM_CEILING="8G"
+
+# Strict grammar: digits + at most one K/M/G/T suffix. Rejects whitespace, shell
+# metacharacters, newlines, "infinity", "%"-relative specs, leading zero/zero,
+# and the empty string. Deliberately NARROWER than systemd's own accepted syntax
+# — this value is interpolated into a command string, so the grammar is the
+# injection boundary.
+_mem_valid() { [[ "$1" =~ ^[1-9][0-9]*[KMGT]?$ ]]; }
+
+# Normalize to bytes for the ceiling comparison. Suffixless = already bytes.
+_mem_bytes() {
+  local v="$1" n="${1%[KMGT]}"
+  case "$v" in
+    *K) echo $(( n * 1024 )) ;;
+    *M) echo $(( n * 1024 * 1024 )) ;;
+    *G) echo $(( n * 1024 * 1024 * 1024 )) ;;
+    *T) echo $(( n * 1024 * 1024 * 1024 * 1024 )) ;;
+    *)  echo "$v" ;;
+  esac
+}
+
+if [ -n "${DHX_PYTEST_CAP_MEM:-}" ]; then
+  # Trusted operator override — wins outright, unbounded, config not consulted.
+  MEM="$DHX_PYTEST_CAP_MEM"
+else
+  MEM="$DEFAULT_MEM"
+  cfg="$cwd/.claude/test-gate.json"
+  if [ -n "$cwd" ] && [ -f "$cfg" ] && [ -r "$cfg" ]; then
+    # `if type == "string"` (not `// empty`) so a numeric/bool/null memory_max is
+    # REJECTED rather than stringified into the command.
+    cfg_mem=$(jq -r 'if (.memory_max | type) == "string" then .memory_max else empty end' \
+                "$cfg" 2>/dev/null) || cfg_mem=""
+    if [ -n "$cfg_mem" ] && _mem_valid "$cfg_mem"; then
+      if [ "$(_mem_bytes "$cfg_mem")" -le "$(_mem_bytes "$MEM_CEILING")" ]; then
+        MEM="$cfg_mem"
+      else
+        MEM="$MEM_CEILING"   # clamp: a repo may lower the cap, never raise it
+      fi
+    fi
+    # Malformed / hostile / non-string value → keep DEFAULT_MEM. NEVER emit {}
+    # here: a bad config must not silently un-cap the command.
+  fi
+fi
 TIME="${DHX_PYTEST_CAP_RUNTIME:-}"
+
+# Belt-and-suspenders: whatever path produced MEM, it must satisfy the grammar
+# before it is interpolated. An env override that fails this falls back to the
+# default rather than injecting.
+_mem_valid "$MEM" || MEM="$DEFAULT_MEM"
 
 # --- Rewrite: wrap the WHOLE original command in the cgroup scope. -------------
 # The entire command (compound commands, cd-prefixes, env-prefixes included) runs
