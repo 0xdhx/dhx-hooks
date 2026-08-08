@@ -16,12 +16,22 @@
 //   structural pin survives, for the one leg no export reaches. Read section 4's
 //   own header before changing it: the gsd-core-absent SKIP and the corpus-size
 //   floors are deliberate, and each has a failure mode behind it.
+//
+//   Section 1b + 4f + 4g were added 2026-08-08 for gsd-core 1.10.0 (#2956). That
+//   bump changed NO mirrored function body — it changed the CONTENT handed to
+//   stateExtractField for `Phase` (the `## Current Position` section, not the
+//   whole body). Every per-function differential stayed green (61/61) while the
+//   lint silently disagreed with the harvest it warns about. The lesson is that a
+//   body-only oracle cannot see a composition change: 4f mirrors the new scoper
+//   behaviourally, 4g pins the two call sites that apply it, and 1b carries the
+//   first fixtures in this file with TWO `Phase:` lines — a scoping bug is
+//   invisible to any fixture that only ever carries one.
 // Backs docs/decisions.md 2026-06-25 STATE.md phase-line lint row and the
 //   2026-07-31 differential-oracle row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
 // SAFE_FOR_LIVE: yes   (requires the hook module + writes fixtures only under an
 //   mktemp dir; require()s `~/.claude/gsd-core/bin/lib/{phase-id,state-document,
-//   frontmatter}.cjs` to differential-test the mirrors, and SKIPS that section
+//   frontmatter,markdown-sectionizer}.cjs` to differential-test the mirrors, and SKIPS that section
 //   cleanly when gsd-core is absent. Those imports are side-effect-free —
 //   verified 2026-07-31 by requiring all three under a scratch cwd and a fake
 //   $HOME: zero files created in either. No live mutation.)
@@ -234,6 +244,76 @@ for (const c of CASES) {
     'advisory no longer recommends the retired first-paren shape (now the hazard)');
 }
 
+// ── 1b. Section scoping — ## Current Position (#2956, gsd-core 1.10.0) ────────
+// 1.10.0 stopped harvesting `Phase:` from the whole body and scoped it to the
+// `## Current Position` section (state.cjs:1440 write seam / :1289 read seam).
+// Until the hook followed, a historical `Phase:` line in an archive section was
+// harvested instead of the live one, failing in TWO directions — both reproduced
+// live on 1.10.0 before the fix, both fixtured here:
+//   FALSE WARN — archive phase == current_phase but an older name: the lint
+//                reported a clobber that could not happen.
+//   BLIND      — archive phase != current_phase: Gate 1's alignment check
+//                suppressed, so a GENUINE clobber on the Current Position line
+//                was never examined. Silent, and indistinguishable from a pass.
+//
+// Every fixture in CASES above is built by STATE(), which already nests its prose
+// under `## Current Position` — which is precisely why the whole suite stayed
+// green through the break. These are the first fixtures in this file carrying TWO
+// `Phase:` lines. Keep that property: a scoping bug cannot be seen by a fixture
+// that only ever carries one.
+const ARCHIVE = (proseLine) => `## Session Continuity Archive\n\n${proseLine}\n\n`;
+const TWO_PHASE = (fmPhase, fmName, archiveLine, currentLine) =>
+  `${FM(fmPhase, fmName)}\n${ARCHIVE(archiveLine)}## Current Position\n\n${currentLine}\n`;
+
+const SCOPE_CASES = [
+  { name: 'archive line at the SAME phase with a stale name → no false warn',
+    content: TWO_PHASE(7, 'Loupe Detachable',
+      'Phase: 7 (Stale Renamed Thing) — COMPLETE',
+      'Phase: 7 (Loupe Detachable) — EXECUTING'),
+    warn: false },
+  { name: 'archive line at a DIFFERENT phase must not blind a genuine clobber',
+    content: TWO_PHASE(7, 'Loupe Detachable',
+      'Phase: 3 (Ghost Key Feel) — COMPLETE',
+      'Phase: 7 (Wrong Name) — EXECUTING'),
+    warn: true },
+  { name: 'archive line at a DIFFERENT phase, Current Position agrees → silent',
+    content: TWO_PHASE(7, 'Loupe Detachable',
+      'Phase: 3 (Ghost Key Feel) — COMPLETE',
+      'Phase: 7 (Loupe Detachable) — EXECUTING'),
+    warn: false },
+  // Level-flexible: canonical template is h2, bootstrap template h3 (state.cjs:1189).
+  { name: 'h3 ### Current Position is scoped too (bootstrap template)',
+    content: `${FM(7, 'Loupe Detachable')}\n${ARCHIVE('Phase: 7 (Stale) — COMPLETE')}### Current Position\n\nPhase: 7 (Loupe Detachable) — EXECUTING\n`,
+    warn: false },
+  // The fallback leg: no such section → whole body, i.e. pre-1.10.0 behaviour.
+  { name: 'no Current Position section → full-body fallback still warns',
+    content: `${FM(7, 'Loupe Detachable')}\nPhase: 7 (Wrong Name) — EXECUTING\n`,
+    warn: true },
+  // Why the verbatim fence-aware tokenizer is load-bearing rather than ceremony:
+  // a regex heading scan would match the FENCED heading first and harvest
+  // "Doc Example", producing a false warn on a STATE.md that merely documents a
+  // template. This fixture reds under any non-fence-aware slicer.
+  { name: 'a ## Current Position inside a fenced block is not a real heading',
+    content: `${FM(7, 'Loupe Detachable')}\n## Notes\n\n\`\`\`markdown\n## Current Position\n\nPhase: 7 (Doc Example) — EXECUTING\n\`\`\`\n\n## Current Position\n\nPhase: 7 (Loupe Detachable) — EXECUTING\n`,
+    warn: false },
+];
+
+for (const c of SCOPE_CASES) {
+  ok(h.lintStateMd(c.content).shouldWarn === c.warn,
+    `[scope] ${c.name}`);
+}
+
+// The scoper's own contract, asserted directly rather than only through the lint.
+ok(h.matchCurrentPositionSection('## Other\n\nbody\n') === null,
+  '[scope] matchCurrentPositionSection returns null when the section is absent');
+ok((h.matchCurrentPositionSection('## Current Position\n\nPhase: 7 (X) — GO\n') || '')
+     .includes('Phase: 7 (X) — GO'),
+  '[scope] matchCurrentPositionSection returns the section body when present');
+ok(!(h.matchCurrentPositionSection(
+       '## Current Position\n\nPhase: 7 (X) — GO\n\n## Later\n\nPhase: 9 (Y) — NO\n') || '')
+     .includes('Phase: 9'),
+  '[scope] section body is level-bounded — stops at the next h2');
+
 // ── 2. Path matcher ───────────────────────────────────────────────────────────
 ok(h.isStateMdPath('/x/y/.planning/STATE.md'), 'isStateMdPath matches absolute .planning/STATE.md');
 ok(h.isStateMdPath('.planning/STATE.md'), 'isStateMdPath matches relative .planning/STATE.md');
@@ -363,17 +443,20 @@ function differential(label, corpus, minSize, pick) {
 if (!fs.existsSync(GSD_LIB)) {
   skip('gsd-core lib dir absent — behavioural mirror differential skipped');
 } else {
-  let PI = null, SD = null, FMOD = null, loadErr = null;
+  let PI = null, SD = null, FMOD = null, MS = null, loadErr = null;
   try {
     PI = require(path.join(GSD_LIB, 'phase-id.cjs'));
     SD = require(path.join(GSD_LIB, 'state-document.cjs'));
     FMOD = require(path.join(GSD_LIB, 'frontmatter.cjs'));
+    MS = require(path.join(GSD_LIB, 'markdown-sectionizer.cjs'));
   } catch (e) { loadErr = e.message; }
   const exportsPresent = !loadErr
     && typeof (PI || {}).parsePhaseFromProse === 'function'
     && typeof (SD || {}).stateExtractField === 'function'
     && typeof (FMOD || {}).stripFrontmatter === 'function'
-    && typeof (FMOD || {}).parseFrontmatter === 'function';
+    && typeof (FMOD || {}).parseFrontmatter === 'function'
+    && typeof (MS || {}).collectSection === 'function'
+    && typeof (MS || {}).tokenizeHeadings === 'function';
   ok(exportsPresent,
     `gsd-core is present and still exports every mirrored surface${loadErr ? ` (load error: ${loadErr})` : ''}`);
 
@@ -510,6 +593,57 @@ if (!fs.existsSync(GSD_LIB)) {
       ? fs.readFileSync(path.join(GSD_LIB, 'state.cjs'), 'utf8') : null;
     ok(stateSrc !== null && stateSrc.includes('return parsePhaseFromProse(value);'),
       'state.cjs still DELEGATES to the canonical parser (unexported — no differential reaches this)');
+
+    // ── 4f. matchCurrentPositionSection — the section scope (#2956) ───────────
+    // The hook mirrors collectSection + tokenizeHeadings verbatim, so compare the
+    // composed scoper against upstream's own collectSection over documents built
+    // to hit the parts a naive slicer gets wrong: fenced headings, h2-vs-h3,
+    // level bounding, ATX closing hashes, CRLF, and absence.
+    const isCP = (x) => (x.level === 2 || x.level === 3)
+      && x.text.trim().toLowerCase() === 'current position';
+    const F = '```';
+    const SECTION_DOCS = [
+      { label: 'h2 present', doc: '## Current Position\n\nPhase: 7 (A) — GO\n' },
+      { label: 'h3 present', doc: '### Current Position\n\nPhase: 7 (A) — GO\n' },
+      { label: 'absent', doc: '## Other\n\nbody\n' },
+      { label: 'level-bounded, stops at next h2', doc: '## Current Position\n\nPhase: 7 (A) — GO\n\n## Later\n\nPhase: 9 (B) — NO\n' },
+      { label: 'h3 section does NOT stop at a deeper h4', doc: '### Current Position\n\nPhase: 7 (A) — GO\n\n#### Sub\n\nmore\n' },
+      { label: 'heading inside a fence is not a heading', doc: '## Notes\n\n' + F + 'md\n## Current Position\n\nPhase: 9 (X) — NO\n' + F + '\n\n## Current Position\n\nPhase: 7 (A) — GO\n' },
+      { label: 'preceded by an archive section', doc: '## Session Continuity Archive\n\nPhase: 3 (Old) — DONE\n\n## Current Position\n\nPhase: 7 (A) — GO\n' },
+      { label: 'ATX closing hashes', doc: '## Current Position ##\n\nPhase: 7 (A) — GO\n' },
+      { label: 'CRLF document', doc: '## Current Position\r\n\r\nPhase: 7 (A) — GO\r\n' },
+      { label: 'case-insensitive heading text', doc: '## CURRENT POSITION\n\nPhase: 7 (A) — GO\n' },
+      { label: 'similar-but-different heading', doc: '## Current Positions\n\nPhase: 7 (A) — GO\n' },
+      { label: 'empty section body', doc: '## Current Position\n\n## Later\n\nx\n' },
+      { label: 'empty document', doc: '' },
+      { label: 'section is the whole document', doc: '## Current Position\nPhase: 7 (A) — GO' },
+    ];
+    differential('matchCurrentPositionSection', SECTION_DOCS, 12, (e) => {
+      const upsSection = MS.collectSection(e.doc, isCP, { levelBounded: true });
+      return [h.matchCurrentPositionSection(e.doc), upsSection ? upsSection.body : null];
+    });
+
+    // ── 4g. The COMPOSITION pin — what §4a-4f structurally cannot see ─────────
+    // This is the assertion whose absence let #2956 through. Every per-function
+    // differential was green across the 1.9.1 → 1.10.0 bump because no mirrored
+    // BODY changed; what changed was which content the callers hand to
+    // stateExtractField for `Phase`. buildStateFrontmatter and cmdStateSnapshot
+    // are both unexported, so no differential can reach either — text is the only
+    // instrument, exactly as in 4e.
+    //
+    // Assert BOTH seams, and assert the COUNT rather than mere presence: if a
+    // future bump scopes one seam and not the other, the two disagree with each
+    // other and the hook can only mirror one. A bare `.includes` would stay green
+    // through that. If this reds, do not "fix" it by editing the number — read
+    // state.cjs and re-derive which seam the lint must follow.
+    const scopeHits = stateSrc === null ? -1
+      : (stateSrc.match(/\(currentPositionScope, 'Phase'\)/g) || []).length;
+    ok(scopeHits === 2,
+      `state.cjs scopes Phase to ## Current Position at BOTH seams (found ${scopeHits}, want 2 — write: buildStateFrontmatter, read: cmdStateSnapshot)`);
+    ok(stateSrc !== null
+      && stateSrc.includes('matchCurrentPositionSection(bodyContent) ?? bodyContent')
+      && stateSrc.includes('matchCurrentPositionSection(body) ?? body'),
+      'state.cjs still spells the scope as `matchCurrentPositionSection(...) ?? <body>` (the fallback the hook mirrors)');
   }
 }
 

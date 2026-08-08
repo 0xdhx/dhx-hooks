@@ -30,7 +30,7 @@
 // equals the frontmatter `current_phase`. A lint that fired on the forward
 // transition would train the operator to ignore it — worse than no lint.
 //
-// MIRROR PROVENANCE (gsd-core 1.7.0 — re-verify on gsd-core bumps):
+// MIRROR PROVENANCE (gsd-core 1.10.0 — re-verify on gsd-core bumps):
 //   parsePhaseFromProse   @ ~/.claude/gsd-core/bin/lib/phase-id.cjs:281 (canonical,
 //                           #2121/#2125; state.cjs:1100 parseProsePhaseField is now
 //                           a one-line delegation to it)
@@ -38,6 +38,11 @@
 //   stripFrontmatter      @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs:536 (moved
 //                           from state.cjs in the #2143 dedup; byte-identical logic)
 //   extractFrontmatter    @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs (scalar form)
+//   stripFencedCode       @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
+//   tokenizeHeadings      @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
+//   collectSection        @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
+//   matchCurrentPositionSection @ ~/.claude/gsd-core/bin/lib/state.cjs:1188 (#2956,
+//                           added 1.10.0 — see the sectionizer mirror block below)
 // The regexes below are COPIED VERBATIM — the lint MUST agree with the
 // reader it protects. Do NOT "improve" them (e.g. teach dashName to accept `--`):
 // any divergence makes the lint disagree with the very harvest it warns about.
@@ -45,6 +50,14 @@
 // the live gsd-core source per-module (skips when gsd-core is absent) — a
 // gsd-core bump that changes or moves them flips that assertion red, forcing a
 // re-verify (fired 2026-07-16 on the 1.6.0→1.7.0 #2125 rewrite, as designed).
+//
+// A MIRROR IS NOT ONLY ITS FUNCTION BODIES — it is also the COMPOSITION at the
+// call site. gsd-core 1.10.0 (#2956) changed no mirrored function body at all;
+// it changed which CONTENT `stateExtractField` is handed for `Phase` (the
+// `## Current Position` section, not the whole body). Every per-function
+// differential stayed green through that bump while the lint silently disagreed
+// with the harvest it warns about. The probe now pins the composition too
+// (§4f/§4g) — when adding a mirror, ask what CALLS it, not just what it is.
 //
 // CHANNEL (dual, per HP-038/HP-039): stderr (human, terminal) + stdout JSON
 // {hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext}} (Claude
@@ -138,9 +151,12 @@ function isTableSeparatorRow(firstCell) {
 }
 
 // ── MIRROR: gsd-core stateExtractField (state-document.cjs:60) — VERBATIM ──────
-// Bold `**Field:**` first, then line-start `^Field:`, then pipe-table. Searches
-// the whole (frontmatter-stripped) body — the lint extracts the SAME value
-// gsd-core would harvest, so the two cannot disagree on which Phase line wins.
+// Bold `**Field:**` first, then line-start `^Field:`, then pipe-table, over
+// whatever CONTENT it is handed — first match wins. This function is unchanged
+// since 1.7.0. What changed in gsd-core 1.10.0 (#2956) is the SCOPE its callers
+// hand it for `Phase`: no longer the whole body, but the `## Current Position`
+// section. See matchCurrentPositionSection below; the scoping lives at the CALL
+// SITE in lintStateMd, which is where the 1.10.0 break actually was.
 function stateExtractField(content, fieldName) {
   const escaped = escapeRegex(fieldName);
   const boldPattern = new RegExp(`\\*\\*${escaped}:\\*\\*[ \\t]*(.+)`, 'i');
@@ -167,6 +183,195 @@ function stripFrontmatter(content) {
     result = stripped;
   }
   return result;
+}
+
+// ── MIRROR: gsd-core section scoping (#2956, gsd-core 1.10.0) — VERBATIM ───────
+// 1.10.0 stopped reading `Phase:` from the whole STATE.md body and scoped it to
+// the `## Current Position` section, at BOTH seams:
+//   buildStateFrontmatter (state.cjs:1440) — the WRITE seam this lint protects
+//   cmdStateSnapshot      (state.cjs:1289) — the READ seam
+// Both spell it `matchCurrentPositionSection(body) ?? body`, so one mirror serves
+// both. Without the scope the lint reads a historical `Phase:` line out of an
+// archive section and fails in one of two directions:
+//   FALSE WARN — archive phase number happens to equal current_phase but carries
+//                an older name: the lint reports a clobber that cannot happen.
+//   BLIND      — archive phase differs from current_phase: Gate 1's alignment
+//                check suppresses, and the real Current Position line is never
+//                examined. Silent, and indistinguishable from a clean pass.
+//
+// collectSection + tokenizeHeadings + stripFencedCode are copied VERBATIM from
+// markdown-sectionizer.cjs (a pure, dependency-free seam — zero require()s).
+// stripFencedCode is unreachable on this hook's only call path:
+// matchCurrentPositionSection passes {levelBounded:true}, leaving collectSection's
+// `stripFences` default false. It is mirrored anyway because collectSection's
+// verbatim body references it — omitting it would leave a latent ReferenceError
+// for any future caller. Do NOT "simplify" the three into a regex heading scan:
+// one that disagrees on fenced-code headings or ATX closing hashes reintroduces
+// precisely the divergence class this lint exists to warn about.
+
+function stripFencedCode(content) {
+    if (typeof content !== 'string') {
+        return { text: '', unterminatedFence: false };
+    }
+    const lines = content.split('\n');
+    const kept = [];
+    let openFence = null;
+    // Matches: optional indent (≤3 spaces per CommonMark), fence run, optional info string
+    const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+    for (const rawLine of lines) {
+        // Strip trailing \r for delimiter matching (CRLF safety)
+        const line = rawLine.replace(/\r$/, '');
+        const m = delimRe.exec(line);
+        if (m) {
+            const char = m[2][0];
+            const len = m[2].length;
+            const trailing = m[3];
+            if (openFence === null) {
+                // CommonMark §4.5: backtick fence info string must not contain a backtick.
+                // If it does, this line is NOT a valid fence opener (treat as ordinary content).
+                if (char === '`' && trailing.includes('`')) {
+                    kept.push(rawLine);
+                    continue;
+                }
+                // Opening delimiter — record fence state, drop this line
+                openFence = { char, len };
+            }
+            else if (char === openFence.char && len >= openFence.len && /^\s*$/.test(trailing)) {
+                // Closing delimiter (same char, sufficient length, no trailing content) — close and drop
+                openFence = null;
+            }
+            // else: mismatched delimiter inside fence — treat as content, still drop (it's a fence line)
+            continue; // all delimiter lines are dropped
+        }
+        if (openFence === null) {
+            kept.push(rawLine); // non-fence content: keep as-is (preserve original \r if any)
+        }
+        // Lines inside a fence are silently dropped
+    }
+    return { text: kept.join('\n'), unterminatedFence: openFence !== null };
+}
+
+function tokenizeHeadings(content) {
+    if (typeof content !== 'string' || content.length === 0)
+        return [];
+    // Strip fences first so headings inside code blocks are ignored.
+    // We need the original line positions, so we map stripped-text line numbers
+    // back to original by tracking which original lines survived stripping.
+    const originalLines = content.split('\n');
+    const tokens = [];
+    // We re-run the fence state machine to know which lines are "kept", so we
+    // can map line index in original to whether it survived.
+    const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+    let openFence = null;
+    // Accumulate character offset as we iterate lines
+    let charOffset = 0;
+    for (let i = 0; i < originalLines.length; i++) {
+        const rawLine = originalLines[i];
+        const line = rawLine.replace(/\r$/, '');
+        const dm = delimRe.exec(line);
+        if (dm) {
+            const char = dm[2][0];
+            const len = dm[2].length;
+            const trailing = dm[3];
+            if (openFence === null) {
+                // CommonMark §4.5: backtick fence info string must not contain a backtick.
+                if (char === '`' && trailing.includes('`')) {
+                    // Not a valid fence opener — check for heading on this line (will fall through)
+                }
+                else {
+                    openFence = { char, len };
+                    charOffset += rawLine.length + 1;
+                    continue;
+                }
+            }
+            else if (char === openFence.char && len >= openFence.len && /^\s*$/.test(trailing)) {
+                openFence = null;
+                charOffset += rawLine.length + 1;
+                continue;
+            }
+            else {
+                // Mismatched/invalid delimiter inside fence — treat as content (still inside fence), skip heading check
+                charOffset += rawLine.length + 1;
+                continue;
+            }
+        }
+        if (openFence === null) {
+            // This line is outside any fence — check for ATX heading.
+            // CommonMark: ≤3 leading spaces, then 1–6 `#`, then either EOF (empty heading)
+            // or at least one space/tab followed by optional text, with optional closing `#` sequence.
+            const headingMatch = /^( {0,3})(#{1,6})([ \t]+.*|[ \t]*)?$/.exec(line);
+            if (headingMatch) {
+                const hashes = headingMatch[2];
+                const rest = headingMatch[3] ?? '';
+                // Strip optional closing `#` sequence: trailing whitespace + one or more `#` + optional whitespace
+                const rawText = rest.replace(/^[ \t]+/, '').replace(/[ \t]+#+[ \t]*$/, '').replace(/^#+[ \t]*$/, '');
+                tokens.push({
+                    level: hashes.length,
+                    text: rawText.trim(),
+                    line: i + 1, // 1-based
+                    offset: charOffset,
+                });
+            }
+        }
+        charOffset += rawLine.length + 1;
+    }
+    return tokens;
+}
+
+function collectSection(content, headingPredicate, opts = {}) {
+    if (typeof content !== 'string' || content.length === 0)
+        return null;
+    const { levelBounded = true, stopAtLevel, stripFences = false } = opts;
+    const headings = tokenizeHeadings(content);
+    const targetIdx = headings.findIndex(headingPredicate);
+    if (targetIdx === -1)
+        return null;
+    const target = headings[targetIdx];
+    const lines = content.split('\n');
+    // Determine which headings act as stops after the target
+    const bodyStartLine = target.line + 1; // 1-based, first line of body
+    let bodyEndLine = lines.length + 1; // 1-based, exclusive (default: EOF+1)
+    for (let j = targetIdx + 1; j < headings.length; j++) {
+        const next = headings[j];
+        let isStop;
+        if (stopAtLevel !== undefined) {
+            // stopAtLevel: stop at the next heading whose level <= stopAtLevel
+            isStop = next.level <= stopAtLevel;
+        }
+        else {
+            isStop = levelBounded ? next.level <= target.level : true;
+        }
+        if (isStop) {
+            bodyEndLine = next.line; // stop before this line (1-based)
+            break;
+        }
+    }
+    // Compute character offsets for bodyStart.
+    // lineOffsets[i] = character offset of line (i+1) in content (1-based).
+    const lineOffsets = new Array(lines.length);
+    let acc = 0;
+    for (let i = 0; i < lines.length; i++) {
+        lineOffsets[i] = acc;
+        acc += lines[i].length + 1; // +1 for the '\n' separator
+    }
+    const eofOffset = acc; // byte offset past the last line
+    // bodyStart: character offset of first line of body (bodyStartLine is 1-based)
+    const bodyStartOffset = bodyStartLine <= lines.length ? lineOffsets[bodyStartLine - 1] : eofOffset;
+    // Slice body lines (0-based array: bodyStartLine-1 to bodyEndLine-2 inclusive)
+    const bodyRaw = lines.slice(bodyStartLine - 1, bodyEndLine - 1).join('\n').trimEnd();
+    const body = stripFences ? stripFencedCode(bodyRaw).text : bodyRaw;
+    // INVARIANT: content.slice(bodyStart, bodyEnd) === body
+    // bodyEnd is derived from body.length so that replaceSection(content, section, section.body) === content.
+    return { heading: target, body, bodyStart: bodyStartOffset, bodyEnd: bodyStartOffset + body.length };
+}
+
+// matchCurrentPositionSection (state.cjs:1188) — VERBATIM except the module
+// qualifier on collectSection, which cannot survive extraction into a standalone
+// file (same adaptation the other mirrors make).
+function matchCurrentPositionSection(body) {
+    const isCurrentPosition = (h) => (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
+    const section = collectSection(body, isCurrentPosition, { levelBounded: true });
+    return section ? section.body : null;
 }
 
 // ── Minimal frontmatter scalar reader ─────────────────────────────────────────
@@ -240,7 +445,13 @@ function lintStateMd(content) {
     return result;
 
   const body = stripFrontmatter(content);
-  const prose = parseProsePhaseField(stateExtractField(body, 'Phase'));
+  // #2956 (gsd-core 1.10.0): scope `Phase` to ## Current Position, falling back
+  // to the whole body when no such section exists — byte-for-byte the policy at
+  // gsd-core's write seam (buildStateFrontmatter, state.cjs:1440). Reading the
+  // whole body here is what made this lint disagree with the harvest it warns
+  // about; see the mirror block above for the two failure directions.
+  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
+  const prose = parseProsePhaseField(stateExtractField(currentPositionScope, 'Phase'));
   const fmPhase = normalizePhaseToken(extractFrontmatterScalar(content, 'current_phase'));
   const fmNameRaw = extractFrontmatterScalar(content, 'current_phase_name');
 
@@ -345,6 +556,9 @@ if (require.main === module) {
     parseProsePhaseField,
     stateExtractField,
     stripFrontmatter,
+    tokenizeHeadings,
+    collectSection,
+    matchCurrentPositionSection,
     extractFrontmatterScalar,
     normalizePhaseToken,
     phasesAligned,
