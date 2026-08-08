@@ -53,7 +53,12 @@ config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # `patches:DRIFT 1 broken symlink` token. A future rename does the same silently —
 # guarded by tests/probes/probe-gsd-roots-resolve.sh. See docs/decisions.md
 # 2026-06-05 gsd-core rename row.
-for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches package.json; do
+# 2026-08-08: `package.json` dropped from the list — gsd-core 1.10.0 (#2544)
+# removed the config-root package.json outright (CommonJS marker moved to
+# hooks/package.json + plugin dirs, which ride the `hooks` item above), so the
+# old entry was another permanently-missing false `1 broken symlink` token —
+# the same failure mode as the 2026-06-05 rename row above.
+for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches; do
   p="$config_dir/$item"
   if [[ ! -e "$p" ]]; then
     missing=$((missing + 1))

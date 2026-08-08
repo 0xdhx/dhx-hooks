@@ -40,6 +40,18 @@ echo "=== Gate 6 canonical-mirror byte-equality (${#FILES[@]} fork-tracked files
 # // ~/.claude/gsd-local-patches/<f> for every entry in backup-meta.json files[].
 # // Any divergence is the 2026-05-15 / 2026-05-12 unmirrored-edit failure mode.
 for f in "${FILES[@]}"; do
+  # backup-meta.json is INSTALLER-owned and only regenerates at the next install,
+  # so it can list an entry whose mirror file was legitimately retired or relocated
+  # mid-cycle (e.g. 2026-08-08: verify-work.md's patch moved into the upstream
+  # 1.10.0 fragment verify-work/steps/automated-ui-verification.md and the parent
+  # mirror entry was dropped). The sym flow gates on the MIRROR UNION for exactly
+  # this staleness; a manifest-listed file with no mirror counterpart is a SKIP,
+  # not a divergence. Hand-editing backup-meta.json instead is prohibited (it
+  # breaks the installer's every-listed-file-was-hash-detected invariant).
+  if [ ! -f "$HOME/.claude/gsd-local-patches/$f" ]; then
+    echo "SKIP $f — mirror entry retired/relocated (installer-owned manifest stale until next install)"
+    continue
+  fi
   if diff -q "$HOME/.claude/$f" "$HOME/.claude/gsd-local-patches/$f" >/dev/null 2>&1; then
     echo "OK   $f byte-equal"
     PASS=$((PASS + 1))
