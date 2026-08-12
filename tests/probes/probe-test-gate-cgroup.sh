@@ -519,6 +519,116 @@ assert_no_argv_log "$PROJ" "[14b] secondary guard skipped runner invocation"
 assert_log_contains "$PROJ" "Counter=2 ≥ 2" "[14b] log records secondary-guard branch"
 
 # ----------------------------------------------------------------------------
+# Scenarios 15-20 — DHX-7c memory-budget ceiling on the REPO-CONTROLLED config,
+# and the regression that the first cut of DHX-7c introduced.
+#
+# Before DHX-7c the gate read `.memory_max` with no grammar and no ceiling, so a
+# repo could write {"memory_max":"999G"} and raise the machine-safety cap outright.
+# [19] is the regression lock: the first cut guarded the shared factory with the
+# INTERCEPTOR's narrow numeric grammar, which silently became the gate's grammar —
+# `infinity` and `50%` (valid systemd, always passed through here) started emitting
+# ZERO tokens, and per HP-051 `mapfile` swallows that refusal, leaving an empty
+# prefix that runs the suite UNCAPPED. A cap regression disguised as a cap fix.
+# ----------------------------------------------------------------------------
+if [ "$HOST_HAS_CGROUP" -eq 1 ]; then
+  # Fast no-op runner — these scenarios assert budget RESOLUTION, not OOM behavior.
+  _mk_fast_runner() {  # $1=proj
+    cat > "$1/.venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in *"--version"*) echo "pytest 0.0.0 (probe stub)"; exit 0 ;; esac
+exit 0
+EOF
+    chmod +x "$1/.venv/bin/python"
+  }
+
+  clear_state; PROJ=$(setup_project s15); _mk_fast_runner "$PROJ"
+  printf '%s' '{"memory_max":"999G"}' > "$PROJ/.claude/test-gate.json"
+  set_source_flag "s15"; run_hook "$PROJ" "s15" false
+  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 8G" \
+    "[15] repo config over ceiling → clamped (a repo may lower, never raise)"
+
+  clear_state; PROJ=$(setup_project s16); _mk_fast_runner "$PROJ"
+  printf '%s' '{"memory_max":"99999999999G"}' > "$PROJ/.claude/test-gate.json"
+  set_source_flag "s16"; run_hook "$PROJ" "s16" false
+  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 8G" \
+    "[16] signed-64 overflow value → clamped, not honored"
+
+  clear_state; PROJ=$(setup_project s17); _mk_fast_runner "$PROJ"
+  printf '%s' '{"memory_max":"bogus"}' > "$PROJ/.claude/test-gate.json"
+  set_source_flag "s17"; run_hook "$PROJ" "s17" false
+  assert_log_contains "$PROJ" "malformed" \
+    "[17] malformed repo config → fallback, never uncapped"
+
+  # In-range must be untouched. DHX-7b exists because a legitimate 8G was ignored
+  # and OOM-killed three real pytest runs; a fix that rejects a good value repeats
+  # that incident with the sign flipped. 8G is statforge's shipped value.
+  clear_state; PROJ=$(setup_project s18); _mk_fast_runner "$PROJ"
+  printf '%s' '{"memory_max":"8G"}' > "$PROJ/.claude/test-gate.json"
+  set_source_flag "s18"; run_hook "$PROJ" "s18" false
+  assert_log_not_contains "$PROJ" "clamped" \
+    "[18] in-range 8G (statforge's real value) NOT clamped"
+
+  # REGRESSION LOCK — and it asserts a POSITIVE observable on purpose. `infinity` is
+  # a valid systemd MemoryMax the gate has always passed through. It must still
+  # produce a prefix, not be refused into an empty array (HP-051) that silently runs
+  # the suite uncapped.
+  #
+  # The observable is the runner's OWN cgroup, not a log line. An earlier draft of
+  # this scenario asserted the ABSENCE of the new "emitted no prefix" warning — which
+  # passed against the broken commit too, because that log line did not exist there.
+  # An absence assertion has no teeth against code that predates the message. A
+  # wrapped runner reports `…/app.slice/run-<hex>.scope`; an unwrapped one reports
+  # the gate's own cgroup (`/init.scope` on this host). That distinction is exactly
+  # the regression, so that is what gets asserted.
+  clear_state; PROJ=$(setup_project s19)
+  cat > "$PROJ/.venv/bin/python" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *"--version"*) echo "pytest 0.0.0 (probe stub)"; exit 0 ;; esac
+awk -F: '{print \$3}' /proc/self/cgroup | tail -1 > "$PROJ/.runner-cgroup.txt"
+exit 0
+EOF
+  chmod +x "$PROJ/.venv/bin/python"
+  set_source_flag "s19"; run_hook "$PROJ" "s19" false "DHX_TEST_GATE_MEM=infinity"
+  if grep -qE 'run-[A-Za-z0-9]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
+    echo "OK   [19] trusted env 'infinity' → runner RAN INSIDE a cgroup scope (not uncapped)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL [19] trusted env 'infinity' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected run-*.scope; empty prefix = UNCAPPED)"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Same observable for a percentage spec — the other systemd form the first cut of
+  # DHX-7c silently refused.
+  clear_state; PROJ=$(setup_project s19b)
+  cat > "$PROJ/.venv/bin/python" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *"--version"*) echo "pytest 0.0.0 (probe stub)"; exit 0 ;; esac
+awk -F: '{print \$3}' /proc/self/cgroup | tail -1 > "$PROJ/.runner-cgroup.txt"
+exit 0
+EOF
+  chmod +x "$PROJ/.venv/bin/python"
+  set_source_flag "s19b"; run_hook "$PROJ" "s19b" false "DHX_TEST_GATE_MEM=50%"
+  if grep -qE 'run-[A-Za-z0-9]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
+    echo "OK   [19b] trusted env '50%' → runner RAN INSIDE a cgroup scope (not uncapped)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL [19b] trusted env '50%' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected run-*.scope; empty prefix = UNCAPPED)"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # A config key that is present but NOT a usable string must not be treated as a
+  # config-sourced value — jq's `//` substitutes the TRUSTED env into it, so keying
+  # presence on has()/non-null clamped a trusted 16G down to 8G.
+  clear_state; PROJ=$(setup_project s20); _mk_fast_runner "$PROJ"
+  printf '%s' '{"memory_max":false}' > "$PROJ/.claude/test-gate.json"
+  set_source_flag "s20"; run_hook "$PROJ" "s20" false "DHX_TEST_GATE_MEM=16G"
+  assert_log_not_contains "$PROJ" "clamped" \
+    "[20] non-string memory_max does not clamp the TRUSTED env"
+else
+  echo "SKIP [15]-[20] DHX-7c budget ceiling (host lacks systemd-run + active user-systemd)"
+fi
+
+# ----------------------------------------------------------------------------
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -44,6 +44,41 @@ dhx_cgroup_available() {
 # ceiling; the gate has its own budget and fallback), and pushing them down would
 # impose one caller's policy on the other.
 
+# dhx_cgroup_mem_shell_safe TOKEN — the FACTORY's own guard, and deliberately the
+# weakest of the three. It asserts only the property the factory itself needs: the
+# token is safe to interpolate into a command STRING (the interceptor space-joins
+# these tokens; the gate execs them as argv). Alphanumerics, `.` and `%` only — no
+# whitespace, quotes, `$`, backticks, `;`, `&`, `|`, redirections, parens, or
+# newlines, and not empty.
+#
+# ADDED 2026-08-11 as a REGRESSION FIX (DHX-7c follow-up). The first cut of DHX-7c
+# guarded `dhx_cgroup_prefix_tokens` with `dhx_cgroup_mem_token_valid` — the
+# INTERCEPTOR's narrow numeric grammar — which silently became the GATE's grammar
+# too. The gate had always passed arbitrary systemd specs straight through its argv
+# array, so `MemoryMax=infinity` and `MemoryMax=50%` began returning nonzero here,
+# emitting zero tokens, and (per HP-051, registered in that same commit) landing as
+# an EMPTY `CGROUP_PREFIX` in the gate's `mapfile` — which runs the test suite
+# UNCAPPED. `50%` is a real ceiling that silently became no ceiling.
+#
+# The lesson generalized: a shared factory may enforce only what IT needs. Anything
+# narrower is one caller's policy wearing the factory's authority.
+dhx_cgroup_mem_shell_safe() {
+  [[ "$1" =~ ^[A-Za-z0-9.%]+$ ]]
+}
+
+# dhx_cgroup_mem_spec_valid TOKEN — the GATE's grammar: the systemd MemoryMax forms
+# the gate has always accepted. Broader than the interceptor's numeric grammar
+# (`infinity` and `N%` are valid systemd and were passed through pre-DHX-7c),
+# narrower than "anything at all" — a value that fails this is rejected LOUDLY by
+# the caller and replaced with a known-good default, never allowed to become an
+# empty prefix. Shell-safety is implied: every accepted form is a subset of
+# dhx_cgroup_mem_shell_safe.
+dhx_cgroup_mem_spec_valid() {
+  [ "$1" = "infinity" ] && return 0
+  [[ "$1" =~ ^[1-9][0-9]*%$ ]] && return 0
+  dhx_cgroup_mem_token_valid "$1"
+}
+
 # dhx_cgroup_mem_token_valid TOKEN — strict grammar: digits + at most one K/M/G/T.
 # Rejects whitespace, shell metacharacters, newlines, "infinity", "%"-relative
 # specs, leading zero/zero, and the empty string. Deliberately NARROWER than
@@ -78,9 +113,13 @@ dhx_cgroup_mem_token_valid() {
 #     (`99999999999999999999` parses as 7766279631452241919 — positive and
 #     plausible), so a post-multiply division check would compare against an
 #     already-corrupted operand and pass. The bound must come first.
-#   - 18 digits is the widest operand accepted. The largest 18-digit byte value is
-#     ~889 PB, already astronomically above any real ceiling, so nothing legitimate
-#     is refused; values above it return 1 and the caller clamps.
+#   - 18 digits is a CONSERVATIVE blanket bound, not the exact int64 maximum. That
+#     maximum (9223372036854775807) has 19 digits, but only some 19-digit values are
+#     representable, so bounding at 18 refuses a band of representable-but-absurd
+#     operands rather than doing an exact decimal comparison. Safe for any real
+#     ceiling — the largest 18-digit byte value is ~889 PB — but the helper is
+#     therefore NOT a general-purpose byte converter. Make the comparison exact
+#     against `max` before reusing it as one.
 #   - `n > max / mult` is checked BEFORE multiplying, so the overflow is never
 #     performed rather than performed-and-detected.
 dhx_cgroup_mem_bytes() {
@@ -107,14 +146,20 @@ dhx_cgroup_mem_bytes() {
 # may either `mapfile` it into an array (direct argv exec — the gate) OR join it
 # with spaces into a command string (the rewrite — the interceptor).
 #
-# Returns nonzero WITHOUT emitting anything if MEM fails the grammar (DHX-7c).
+# Returns nonzero WITHOUT emitting anything if MEM is not SHELL-SAFE (DHX-7c).
+# The guard is `dhx_cgroup_mem_shell_safe`, NOT a numeric grammar: the factory
+# enforces only the property it owns, so `infinity` and `50%` — valid systemd specs
+# the gate has always passed — still produce a prefix. Enforcing the interceptor's
+# numeric grammar here was the DHX-7c regression; see that helper's header.
+#
 # CALLER-STATUS WARNING: this guard protects a caller that uses command
 # substitution (`x=$(… ) || fallback` — the interceptor), because `$( )`
 # propagates the producer's status. It does NOT protect a caller that uses
 # `mapfile -t A < <(… )` — process substitution discards the producer's status and
-# `mapfile` returns 0 regardless (verified 2026-08-11). The gate uses that form, so
-# the gate validates its own value BEFORE calling here; this guard is its second
-# layer, not its only one.
+# `mapfile` returns 0 regardless (verified 2026-08-11, HP-051). An unprotected
+# caller must validate BEFORE calling and must never let a refusal become an empty
+# prefix, because an empty prefix runs the workload UNCAPPED and is indistinguishable
+# from "this host has no cgroup support."
 #
 #   MEM   memory ceiling, e.g. 4G (passed to MemoryMax). Required.
 #   TIME  runtime ceiling in whole seconds (passed to RuntimeMaxSec=${TIME}s).
@@ -128,7 +173,7 @@ dhx_cgroup_mem_bytes() {
 # array with TIME present is byte-for-byte what the gate built pre-refactor.
 dhx_cgroup_prefix_tokens() {
   local mem="$1" time="${2:-}"
-  dhx_cgroup_mem_token_valid "$mem" || return 1
+  dhx_cgroup_mem_shell_safe "$mem" || return 1
   printf '%s\n' systemd-run --user --scope --quiet \
     -p "MemoryMax=$mem" \
     -p "MemorySwapMax=0"

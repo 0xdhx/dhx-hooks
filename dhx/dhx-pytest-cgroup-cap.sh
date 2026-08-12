@@ -150,9 +150,12 @@ MEM_CEILING="8G"
 # (DHX-7c) — `dhx_cgroup_mem_token_valid` / `dhx_cgroup_mem_bytes`. The mechanism
 # moved; the POLICY below (trusted env > untrusted config > default, and the
 # ceiling that only the untrusted path is clamped to) stays here, because it is
-# this hook's trust model and not the gate's. Thin local aliases keep the call
-# sites readable and the diff honest about what changed.
-_mem_valid() { dhx_cgroup_mem_token_valid "$1"; }
+# this hook's trust model and not the gate's.
+#
+# THIS hook keeps the NARROW numeric grammar: it space-joins factory tokens into a
+# command STRING, so `^[1-9][0-9]*[KMGT]?$` is its injection boundary. The gate
+# uses the broader `dhx_cgroup_mem_spec_valid` (argv exec, accepts `infinity`/`%`).
+# Do not "unify" the two — that conflation was the DHX-7c regression.
 
 if [ -n "${DHX_PYTEST_CAP_MEM:-}" ]; then
   # Trusted operator override — wins outright, unbounded, config not consulted.
@@ -167,7 +170,7 @@ else
                 "$cfg" 2>/dev/null) || cfg_mem=""
     if [ -n "$cfg_mem" ]; then
       # Three-way status from the factory — DHX-7c. The old code compared two
-      # `_mem_bytes` outputs directly, so a signed-64-bit wrap ("99999999999G" →
+      # byte outputs directly, so a signed-64-bit wrap ("99999999999G" →
       # -3306282043331051520) read as BELOW the ceiling and raised the cap. Status
       # is now branched on, and stdout is never used on a nonzero return:
       #   0 → in/over-range comparison decides;  1 → overflow, CLAMP;
@@ -198,7 +201,7 @@ TIME="${DHX_PYTEST_CAP_RUNTIME:-}"
 # Belt-and-suspenders: whatever path produced MEM, it must satisfy the grammar
 # before it is interpolated. An env override that fails this falls back to the
 # default rather than injecting.
-_mem_valid "$MEM" || MEM="$DEFAULT_MEM"
+dhx_cgroup_mem_token_valid "$MEM" || MEM="$DEFAULT_MEM"
 
 # --- Rewrite: wrap the WHOLE original command in the cgroup scope. -------------
 # The entire command (compound commands, cd-prefixes, env-prefixes included) runs
