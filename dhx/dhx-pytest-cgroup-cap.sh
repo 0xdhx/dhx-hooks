@@ -146,24 +146,13 @@ DEFAULT_MEM="8G"
 # Applies ONLY to the untrusted repo-controlled config, never to the trusted env.
 MEM_CEILING="8G"
 
-# Strict grammar: digits + at most one K/M/G/T suffix. Rejects whitespace, shell
-# metacharacters, newlines, "infinity", "%"-relative specs, leading zero/zero,
-# and the empty string. Deliberately NARROWER than systemd's own accepted syntax
-# — this value is interpolated into a command string, so the grammar is the
-# injection boundary.
-_mem_valid() { [[ "$1" =~ ^[1-9][0-9]*[KMGT]?$ ]]; }
-
-# Normalize to bytes for the ceiling comparison. Suffixless = already bytes.
-_mem_bytes() {
-  local v="$1" n="${1%[KMGT]}"
-  case "$v" in
-    *K) echo $(( n * 1024 )) ;;
-    *M) echo $(( n * 1024 * 1024 )) ;;
-    *G) echo $(( n * 1024 * 1024 * 1024 )) ;;
-    *T) echo $(( n * 1024 * 1024 * 1024 * 1024 )) ;;
-    *)  echo "$v" ;;
-  esac
-}
+# Grammar + overflow-safe arithmetic are SINGLE-SOURCED in dhx-cgroup-cap.sh
+# (DHX-7c) — `dhx_cgroup_mem_token_valid` / `dhx_cgroup_mem_bytes`. The mechanism
+# moved; the POLICY below (trusted env > untrusted config > default, and the
+# ceiling that only the untrusted path is clamped to) stays here, because it is
+# this hook's trust model and not the gate's. Thin local aliases keep the call
+# sites readable and the diff honest about what changed.
+_mem_valid() { dhx_cgroup_mem_token_valid "$1"; }
 
 if [ -n "${DHX_PYTEST_CAP_MEM:-}" ]; then
   # Trusted operator override — wins outright, unbounded, config not consulted.
@@ -176,12 +165,29 @@ else
     # REJECTED rather than stringified into the command.
     cfg_mem=$(jq -r 'if (.memory_max | type) == "string" then .memory_max else empty end' \
                 "$cfg" 2>/dev/null) || cfg_mem=""
-    if [ -n "$cfg_mem" ] && _mem_valid "$cfg_mem"; then
-      if [ "$(_mem_bytes "$cfg_mem")" -le "$(_mem_bytes "$MEM_CEILING")" ]; then
-        MEM="$cfg_mem"
-      else
-        MEM="$MEM_CEILING"   # clamp: a repo may lower the cap, never raise it
+    if [ -n "$cfg_mem" ]; then
+      # Three-way status from the factory — DHX-7c. The old code compared two
+      # `_mem_bytes` outputs directly, so a signed-64-bit wrap ("99999999999G" →
+      # -3306282043331051520) read as BELOW the ceiling and raised the cap. Status
+      # is now branched on, and stdout is never used on a nonzero return:
+      #   0 → in/over-range comparison decides;  1 → overflow, CLAMP;
+      #   2 → malformed, keep DEFAULT_MEM.
+      # Overflow clamps rather than defaulting on purpose: a well-formed value the
+      # arithmetic cannot represent is unambiguously ABOVE the ceiling, and
+      # defaulting would convert a finite-ceiling policy into a lower-cap policy
+      # the moment DEFAULT_MEM and MEM_CEILING diverge (they are both 8G today).
+      cfg_bytes=$(dhx_cgroup_mem_bytes "$cfg_mem"); cfg_rc=$?
+      ceil_bytes=$(dhx_cgroup_mem_bytes "$MEM_CEILING"); ceil_rc=$?
+      if [ "$cfg_rc" -eq 1 ]; then
+        MEM="$MEM_CEILING"   # overflow → clamp (a repo cannot raise the cap)
+      elif [ "$cfg_rc" -eq 0 ] && [ "$ceil_rc" -eq 0 ]; then
+        if [ "$cfg_bytes" -le "$ceil_bytes" ]; then
+          MEM="$cfg_mem"
+        else
+          MEM="$MEM_CEILING" # clamp: a repo may lower the cap, never raise it
+        fi
       fi
+      # cfg_rc=2 (malformed) or an unreadable ceiling → keep DEFAULT_MEM.
     fi
     # Malformed / hostile / non-string value → keep DEFAULT_MEM. NEVER emit {}
     # here: a bad config must not silently un-cap the command.

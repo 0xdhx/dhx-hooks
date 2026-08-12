@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045
+# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045, HP-051
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Cgroup wrap (2026-05-03): when systemd-run + active user@.service are
@@ -114,9 +114,56 @@ if [ -f "$CFG" ]; then
   CFG_TARGET=$(jq -r '.target // ""' "$CFG" 2>/dev/null)
   CFG_MEM=$(jq -r --arg fb "$TEST_BUDGET_MEM" '.memory_max // $fb' "$CFG" 2>/dev/null)
   CFG_TIME=$(jq -r --argjson fb "$TEST_BUDGET_TIME" '.runtime_max_sec // $fb' "$CFG" 2>/dev/null)
+  # Presence is read SEPARATELY from the value: `.memory_max // $fb` falls back to
+  # the env/default, so CFG_MEM is non-empty whenever the file exists. Keying the
+  # DHX-7c clamp off CFG_MEM alone would clamp a TRUSTED `DHX_TEST_GATE_MEM` merely
+  # because an unrelated test-gate.json was present.
+  CFG_MEM_PRESENT=$(jq -r 'if has("memory_max") and .memory_max != null then "1" else "0" end' \
+                      "$CFG" 2>/dev/null)
   [ -n "$CFG_TARGET" ] && TEST_TARGET="$CFG_TARGET"
-  [ -n "$CFG_MEM" ]    && TEST_BUDGET_MEM="$CFG_MEM"
+  [ -n "$CFG_MEM" ]    && { TEST_BUDGET_MEM="$CFG_MEM"
+                            [ "$CFG_MEM_PRESENT" = "1" ] && MEM_FROM_CFG=1; }
   [ -n "$CFG_TIME" ]   && TEST_BUDGET_TIME="$CFG_TIME"
+fi
+
+# --- Ceiling-clamp the REPO-CONTROLLED memory budget (DHX-7c, 2026-08-11). ------
+# `.claude/test-gate.json` `.memory_max` is repo-controlled and, until now, reached
+# `MemoryMax=` with NO grammar check and NO ceiling — so a repo could write
+# `{"memory_max":"999G"}` and raise the machine-safety cap outright. That is the
+# same invariant the interceptor documents ("a repo may lower the cap, never raise
+# it") and the EASIER bypass of the two: it needs no overflow trick at all. Found
+# 2026-08-11 alongside the interceptor's signed-64-bit wrap; fixed in the same
+# commit so the decision record cannot claim a restored invariant while this path
+# stays open.
+#
+# Clamped only when the value CAME FROM THE CONFIG. `DHX_TEST_GATE_MEM` is an
+# operator-set env — trusted and deliberately unbounded, matching the interceptor's
+# `DHX_PYTEST_CAP_MEM` policy.
+#
+# Validation cannot be delegated to `dhx_cgroup_prefix_tokens`' own guard: the gate
+# consumes it via `mapfile -t … < <(…)`, and process substitution discards the
+# producer's exit status (`mapfile` returns 0 regardless — verified 2026-08-11), so
+# a failing factory would be silently ignored here. The gate must check its own
+# value BEFORE the call.
+TEST_GATE_MEM_CEILING="8G"
+if [ "${MEM_FROM_CFG:-0}" = "1" ]; then
+  _tg_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dhx-cgroup-cap.sh"
+  # shellcheck source=/dev/null
+  if [ -f "$_tg_lib" ] && . "$_tg_lib" 2>/dev/null \
+     && declare -F dhx_cgroup_mem_bytes >/dev/null 2>&1; then
+    _tg_bytes=$(dhx_cgroup_mem_bytes "$TEST_BUDGET_MEM"); _tg_rc=$?
+    _tg_ceil=$(dhx_cgroup_mem_bytes "$TEST_GATE_MEM_CEILING"); _tg_ceil_rc=$?
+    if [ "$_tg_rc" -eq 2 ]; then
+      log "test-gate.json memory_max='$TEST_BUDGET_MEM' malformed → using ${DHX_TEST_GATE_MEM:-4G}"
+      TEST_BUDGET_MEM="${DHX_TEST_GATE_MEM:-4G}"
+    elif [ "$_tg_rc" -eq 1 ] \
+      || { [ "$_tg_ceil_rc" -eq 0 ] && [ "$_tg_bytes" -gt "$_tg_ceil" ]; }; then
+      log "test-gate.json memory_max='$TEST_BUDGET_MEM' exceeds ceiling → clamped to $TEST_GATE_MEM_CEILING"
+      TEST_BUDGET_MEM="$TEST_GATE_MEM_CEILING"
+    fi
+  fi
+  # Lib absent/truncated → leave the value as-is. The cap is defense-in-depth and
+  # the gate's contract is fail-open; a missing lib must not block Stop.
 fi
 
 # --- Guard 1: official boolean ---

@@ -207,6 +207,36 @@ printf '%s' '{"memory_max":"2G"}' > "$PROJ/.claude/test-gate.json"
 run_hook "{\"tool_input\":{\"command\":\"pytest\"},\"cwd\":\"$PROJ\"}" "DHX_PYTEST_CAP_MEM=16G"
 RC=$(rewritten_cmd);              assert_mem "[38] trusted env outranks config, unbounded" "16G"
 
+# --- DHX-7c: signed-64-bit overflow must not defeat the ceiling clamp ----------
+# Regression lock for the 2026-08-11 find. Bash arithmetic is signed 64-bit and
+# wraps SILENTLY, so the pre-fix `_mem_bytes` turned a repo-controlled value into a
+# negative or zero byte count that passed `<= ceiling` and RAISED the cap:
+#   "99999999999G" -> -3306282043331051520   "17179869184G" -> 0
+# Both must now clamp to the 8G ceiling. [39a] is the exact reported exploit;
+# [39b] is the zero-wrap variant (a different arithmetic path to the same bypass);
+# [39c] is the plain over-ceiling case that needs NO overflow at all — the control
+# proving the clamp itself works; [39d] pins that the suffixless path (which failed
+# safe only by accident, via `[`'s "integer expression expected") is now handled
+# deliberately rather than incidentally.
+cfg_run '{"memory_max":"99999999999G"}'
+assert_mem "[39a] signed-64 wrap NEGATIVE cannot raise the cap → clamped" "8G"
+cfg_run '{"memory_max":"17179869184G"}'
+assert_mem "[39b] signed-64 wrap to ZERO cannot raise the cap → clamped" "8G"
+cfg_run '{"memory_max":"999G"}'
+assert_mem "[39c] plain over-ceiling value → clamped (no overflow needed)" "8G"
+cfg_run '{"memory_max":"99999999999999999999"}'
+assert_mem "[39d] suffixless over-int64 literal → clamped, not honored" "8G"
+
+# In-range values must be BYTE-IDENTICAL to pre-fix behavior. This is the
+# acceptance criterion that matters: DHX-7b exists because a legitimate "8G" was
+# ignored and OOM-killed three real pytest runs at 86%, surfacing as a bare
+# "Terminated". A validator fix that rejects a good value repeats that incident
+# with the sign flipped. "8G" is the value statforge actually ships.
+cfg_run '{"memory_max":"8G"}'
+assert_mem "[39e] in-range 8G (statforge's real value) unchanged by the fix" "8G"
+cfg_run '{"memory_max":"1K"}'
+assert_mem "[39f] smallest suffixed value still honored" "1K"
+
 # ----------------------------------------------------------------------------
 echo
 echo "$PASS passed, $FAIL failed"
