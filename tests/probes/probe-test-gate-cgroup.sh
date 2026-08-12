@@ -2,7 +2,8 @@
 # probe-test-gate-cgroup.sh
 #
 # Regression probe for dhx/dhx-test-gate.sh. Covers:
-#   - cgroup wrap (Q1) — MemoryMax + MemorySwapMax=0 → exit 137; RuntimeMaxSec → exit 143
+#   - cgroup wrap (Q1) — MemoryMax + MemorySwapMax=0 → OOM kill (137 or 143 per
+#     HP-045; the gate treats them identically); RuntimeMaxSec → exit 143
 #   - fail-open exit codes (Q3) — 137 / 143 / 124
 #   - per-project config (Q4) — .claude/test-gate.json target/memory_max/runtime_max_sec
 #   - opt-out cascade — env / sentinel / JSON disabled
@@ -296,8 +297,11 @@ fi
 assert_log_contains "$PROJ" "Last-failed tests still failing (exit 1)" "[4] log records block branch"
 
 # ----------------------------------------------------------------------------
-# Scenario 5 — Collection blow-up → cgroup MemoryMax + MemorySwapMax=0 →
-# exit 137 → fail open with budget log line.
+# Scenario 5 — Collection blow-up → cgroup MemoryMax + MemorySwapMax=0 → OOM
+# kill → fail open with budget log line.
+# The probe does NOT pin the kill status: HP-045 records 137 in every controlled
+# cell but 143 in the field, and the gate's `137|143|124` cascade treats them
+# identically — so the observable asserted here is the FAIL-OPEN, not the code.
 # Faults a 256 MB allocation under DHX_TEST_GATE_MEM=128M; SwapMax=0 is what
 # makes this deterministic on hosts with swap (verified in design memo).
 # ----------------------------------------------------------------------------
@@ -320,8 +324,8 @@ EOF
   chmod +x "$PROJ/.venv/bin/python"
   set_source_flag "s5"
   run_hook "$PROJ" "s5" false "DHX_TEST_GATE_MEM=64M"
-  # Fail-open path: 137 (cgroup OOM SIGKILL).
-  assert_exit 0 "[5] cgroup OOM (exit 137) → fail open"
+  # Fail-open path: cgroup OOM kill (137 or 143 — see HP-045).
+  assert_exit 0 "[5] cgroup OOM kill → fail open"
   assert_log_contains "$PROJ" "exceeded resource budget" "[5] log records resource-budget fail-open"
   assert_log_contains "$PROJ" "mem=64M" "[5] log cites the active memory cap"
 else
