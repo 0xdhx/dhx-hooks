@@ -1960,8 +1960,15 @@ function getCacheAge(data) {
 // grow without bound — a 50MB session pulled into memory every refresh is
 // not acceptable for a 1Hz statusline.
 //
+// Sidechain (subagent) entries are skipped: they land in the same JSONL but
+// belong to a separate API conversation with its own prompt cache, so their
+// cache_reads must not refresh the MAIN conversation's anchor — while a long
+// subagent runs, the main prefix is aging even though sidechain reads keep
+// appending (2026-08-14, cache-ttl-boundary investigation).
+//
 // INVARIANT: depends on JSONL transcript schema (HP-019). type=assistant
-// entries carry .timestamp (ISO 8601) and .message.usage.cache_read_input_tokens.
+// entries carry .timestamp (ISO 8601) and .message.usage.cache_read_input_tokens;
+// subagent entries are flagged isSidechain: true.
 // Probe: tests/probes/probe-cache-age-anchor.js.
 function readCacheAnchor(transcriptPath) {
   const WINDOW = 65536;
@@ -1982,6 +1989,7 @@ function readCacheAnchor(transcriptPath) {
       if (!line) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.isSidechain === true) continue;
       if (entry.type !== 'assistant') continue;
       const reads = entry.message && entry.message.usage && entry.message.usage.cache_read_input_tokens;
       if (!reads || reads <= 0) continue;
