@@ -548,13 +548,13 @@ EOF
   clear_state; PROJ=$(setup_project s15); _mk_fast_runner "$PROJ"
   printf '%s' '{"memory_max":"999G"}' > "$PROJ/.claude/test-gate.json"
   set_source_flag "s15"; run_hook "$PROJ" "s15" false
-  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 8G" \
+  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 12G" \
     "[15] repo config over ceiling → clamped (a repo may lower, never raise)"
 
   clear_state; PROJ=$(setup_project s16); _mk_fast_runner "$PROJ"
   printf '%s' '{"memory_max":"99999999999G"}' > "$PROJ/.claude/test-gate.json"
   set_source_flag "s16"; run_hook "$PROJ" "s16" false
-  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 8G" \
+  assert_log_contains "$PROJ" "exceeds ceiling → clamped to 12G" \
     "[16] signed-64 overflow value → clamped, not honored"
 
   clear_state; PROJ=$(setup_project s17); _mk_fast_runner "$PROJ"
@@ -565,12 +565,13 @@ EOF
 
   # In-range must be untouched. DHX-7b exists because a legitimate 8G was ignored
   # and OOM-killed three real pytest runs; a fix that rejects a good value repeats
-  # that incident with the sign flipped. 8G is statforge's shipped value.
+  # that incident with the sign flipped. 8G was statforge's shipped value through
+  # 2026-08-14 (now 12G); it stays a below-ceiling in-range check.
   clear_state; PROJ=$(setup_project s18); _mk_fast_runner "$PROJ"
   printf '%s' '{"memory_max":"8G"}' > "$PROJ/.claude/test-gate.json"
   set_source_flag "s18"; run_hook "$PROJ" "s18" false
   assert_log_not_contains "$PROJ" "clamped" \
-    "[18] in-range 8G (statforge's real value) NOT clamped"
+    "[18] in-range 8G (statforge's pre-12G value) NOT clamped"
 
   # REGRESSION LOCK — and it asserts a POSITIVE observable on purpose. `infinity` is
   # a valid systemd MemoryMax the gate has always passed through. It must still

@@ -385,7 +385,11 @@ fi
 # value is used, and the lib is sourced ONCE for both validation and construction.
 # The first cut put this before the guards; that ran arithmetic and a source on every
 # second Stop firing and on turns with no source flag, and double-sourced the lib.
-TEST_GATE_MEM_CEILING="8G"
+# Ceiling raised 8G -> 12G 2026-08-14: statforge's full suite measures 9.44 GiB
+# under `-n 4 --dist loadfile` (cgroup-summed, uncensored; 6.87 GiB serial) — the
+# 8G ceiling sat below legitimate demand. 12G keeps ~3x margin under the ~37 GB
+# runaway class. Matches the interceptor's MEM_CEILING (dhx-pytest-cgroup-cap.sh).
+TEST_GATE_MEM_CEILING="12G"
 TEST_GATE_MEM_FALLBACK="4G"   # known-good; the pre-config default
 CGROUP_PREFIX=()
 _CAP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dhx-cgroup-cap.sh"

@@ -33,7 +33,7 @@
 # Budget resolution — TRUSTED env > UNTRUSTED per-project config > default:
 #   DHX_PYTEST_CAP_MEM      memory ceiling. Operator-set, so TRUSTED and
 #                           UNBOUNDED — an explicit value wins outright and the
-#                           project config is not consulted. Default 8G.
+#                           project config is not consulted. Default 12G.
 #   DHX_PYTEST_CAP_RUNTIME  runtime ceiling in seconds (default: none)
 #   <cwd>/.claude/test-gate.json `.memory_max`  — the SAME key the Stop-hook gate
 #                           reads (schema: docs/troubleshooting.md). Consulted
@@ -136,15 +136,18 @@ declare -F dhx_cgroup_prefix_tokens >/dev/null 2>&1 || emit_noop
 dhx_cgroup_available || emit_noop
 
 # --- Budget resolution (see header § Budget resolution + § security note). -----
-# Default sized from a MEASURED peak: statforge's tests/test_render/
-# test_espn_template.py peaks at 5,158,532 kB (4.92 GiB) and passes 177/1 when it
-# has room — under the previous 4G default it was OOM-killed at 86% three times,
-# surfacing as a bare "Terminated" with NO pytest output (reads as a hang, not a
-# budget hit). 8G is ~62% headroom over that peak and still ~4.6x below the
-# ~37 GB runaway DHX-7 exists to contain.
-DEFAULT_MEM="8G"
+# Default sized from a MEASURED peak: statforge's FULL suite, cgroup-summed and
+# uncensored (bench slice, memory.events all-zero), peaks at 6.87 GiB serial and
+# 9.44 GiB under `-n 4 --dist loadfile` (the repo's wired `make test-parallel`;
+# measured 2026-08-13/14 @ statforge 0a343412). The previous 8G default — sized
+# against the 4.92 GiB test_render peak — sat BELOW the parallel demand and would
+# OOM-kill a legitimate `-n 4` run outright (the same bare-"Terminated" symptom
+# that killed the old 4G default three times at 86%). 12G is ~27% headroom over
+# the parallel peak and still ~3x below the ~37 GB runaway DHX-7 exists to
+# contain.
+DEFAULT_MEM="12G"
 # Applies ONLY to the untrusted repo-controlled config, never to the trusted env.
-MEM_CEILING="8G"
+MEM_CEILING="12G"
 
 # Grammar + overflow-safe arithmetic are SINGLE-SOURCED in dhx-cgroup-cap.sh
 # (DHX-7c) — `dhx_cgroup_mem_token_valid` / `dhx_cgroup_mem_bytes`. The mechanism
@@ -178,7 +181,7 @@ else
       # Overflow clamps rather than defaulting on purpose: a well-formed value the
       # arithmetic cannot represent is unambiguously ABOVE the ceiling, and
       # defaulting would convert a finite-ceiling policy into a lower-cap policy
-      # the moment DEFAULT_MEM and MEM_CEILING diverge (they are both 8G today).
+      # the moment DEFAULT_MEM and MEM_CEILING diverge (they are both 12G today).
       cfg_bytes=$(dhx_cgroup_mem_bytes "$cfg_mem"); cfg_rc=$?
       ceil_bytes=$(dhx_cgroup_mem_bytes "$MEM_CEILING"); ceil_rc=$?
       if [ "$cfg_rc" -eq 1 ]; then

@@ -185,13 +185,13 @@ assert_mem() {  # LABEL  EXPECTED_MEM
   else echo "FAIL $1 (expected MemoryMax=$2): $RC"; FAIL=$((FAIL+1)); fi
 }
 
-cfg_run '';                       assert_mem "[30] no project config → 8G default" "8G"
+cfg_run '';                       assert_mem "[30] no project config → 12G default" "12G"
 cfg_run '{"memory_max":"2G"}';    assert_mem "[31] config LOWERS the cap (2G)" "2G"
-cfg_run '{"memory_max":"8G"}';    assert_mem "[32] config at the ceiling is honored" "8G"
-cfg_run '{"memory_max":"64G"}';   assert_mem "[33] over-ceiling config is CLAMPED, not honored" "8G"
-cfg_run '{"memory_max":"infinity"}'; assert_mem "[34] 'infinity' rejected → default" "8G"
-cfg_run '{"memory_max":8}';       assert_mem "[35] non-string memory_max rejected → default" "8G"
-cfg_run 'not json';               assert_mem "[36] unparseable config rejected → default" "8G"
+cfg_run '{"memory_max":"12G"}';   assert_mem "[32] config at the ceiling is honored" "12G"
+cfg_run '{"memory_max":"64G"}';   assert_mem "[33] over-ceiling config is CLAMPED, not honored" "12G"
+cfg_run '{"memory_max":"infinity"}'; assert_mem "[34] 'infinity' rejected → default" "12G"
+cfg_run '{"memory_max":8}';       assert_mem "[35] non-string memory_max rejected → default" "12G"
+cfg_run 'not json';               assert_mem "[36] unparseable config rejected → default" "12G"
 
 # INJECTION BOUNDARY (the security assertion — the factory's tokens are flattened
 # into a command STRING, so an unvalidated value is arbitrary command injection).
@@ -212,28 +212,29 @@ RC=$(rewritten_cmd);              assert_mem "[38] trusted env outranks config, 
 # wraps SILENTLY, so the pre-fix `_mem_bytes` turned a repo-controlled value into a
 # negative or zero byte count that passed `<= ceiling` and RAISED the cap:
 #   "99999999999G" -> -3306282043331051520   "17179869184G" -> 0
-# Both must now clamp to the 8G ceiling. [39a] is the exact reported exploit;
+# Both must now clamp to the 12G ceiling. [39a] is the exact reported exploit;
 # [39b] is the zero-wrap variant (a different arithmetic path to the same bypass);
 # [39c] is the plain over-ceiling case that needs NO overflow at all — the control
 # proving the clamp itself works; [39d] pins that the suffixless path (which failed
 # safe only by accident, via `[`'s "integer expression expected") is now handled
 # deliberately rather than incidentally.
 cfg_run '{"memory_max":"99999999999G"}'
-assert_mem "[39a] signed-64 wrap NEGATIVE cannot raise the cap → clamped" "8G"
+assert_mem "[39a] signed-64 wrap NEGATIVE cannot raise the cap → clamped" "12G"
 cfg_run '{"memory_max":"17179869184G"}'
-assert_mem "[39b] signed-64 wrap to ZERO cannot raise the cap → clamped" "8G"
+assert_mem "[39b] signed-64 wrap to ZERO cannot raise the cap → clamped" "12G"
 cfg_run '{"memory_max":"999G"}'
-assert_mem "[39c] plain over-ceiling value → clamped (no overflow needed)" "8G"
+assert_mem "[39c] plain over-ceiling value → clamped (no overflow needed)" "12G"
 cfg_run '{"memory_max":"99999999999999999999"}'
-assert_mem "[39d] suffixless over-int64 literal → clamped, not honored" "8G"
+assert_mem "[39d] suffixless over-int64 literal → clamped, not honored" "12G"
 
 # In-range values must be BYTE-IDENTICAL to pre-fix behavior. This is the
 # acceptance criterion that matters: DHX-7b exists because a legitimate "8G" was
 # ignored and OOM-killed three real pytest runs at 86%, surfacing as a bare
 # "Terminated". A validator fix that rejects a good value repeats that incident
-# with the sign flipped. "8G" is the value statforge actually ships.
+# with the sign flipped. "8G" was statforge's shipped value through 2026-08-14
+# (now 12G); it stays a below-ceiling in-range check.
 cfg_run '{"memory_max":"8G"}'
-assert_mem "[39e] in-range 8G (statforge's real value) unchanged by the fix" "8G"
+assert_mem "[39e] in-range 8G (statforge's pre-12G value) unchanged by the fix" "8G"
 cfg_run '{"memory_max":"1K"}'
 assert_mem "[39f] smallest suffixed value still honored" "1K"
 
