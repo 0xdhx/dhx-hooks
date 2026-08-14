@@ -75,7 +75,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('skillPressure', readSkillPressure()),  // D-01/D-02/D-03: fail-silent, not sigil-generating
     withSegmentDiag('wslPressure',   readWslPressure()),    // wsl-pressure cadence alarm: fail-silent, not sigil-generating
     withSegmentDiag('wslProbeBroken', readWslProbeBroken()), // wsl-pressure PROBE-BROKEN (dead-monitor): fail-silent, not sigil-generating
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR, wslProbeBrokenR]) => {
+    withSegmentDiag('claudeCapBypass', readClaudeCapBypass()), // claude-cap bypass (census flag): fail-silent, not sigil-generating
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR, wslProbeBrokenR, claudeCapBypassR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -121,6 +122,11 @@ process.stdin.on('end', () => {
     // `⚠ wslProbeBroken?` sigil would contradict fail-silent (the segment renders its own
     // ⚠ on a real break, and an absent flag is the healthy/silent state).
     const wslProbeBrokenWarning = unwrap(wslProbeBrokenR, () => '');
+    // claude-cap bypass is fail-silent exactly like the wsl readers: own try/catch → ''
+    // on ANY error. Deliberately omitted from sigilCount — a `⚠ claudeCapBypass?` sigil
+    // would contradict fail-silent (the segment renders its own token on a real bypass,
+    // and an absent flag is the healthy/silent state).
+    const claudeCapBypassWarning = unwrap(claudeCapBypassR, () => '');
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -165,6 +171,12 @@ process.stdin.on('end', () => {
     // first among present front members anyway. Auto-recovers (producer rm's the flag on the
     // next healthy classify); silent when the monitor is healthy (readWslProbeBroken → '').
     if (wslProbeBrokenWarning) front.push(wslProbeBrokenWarning);
+    // claude-cap bypass: THIRD, right after the two wsl RED members and before the
+    // orange-208 advisory cluster. Variable severity (RED when the seam is broken,
+    // orange-208 for draining residue) — this slot keeps the front severity-sorted
+    // either way: RED RED RED orange… or RED RED orange orange…. Non-sticky (census
+    // rewrites/rm's the flag each run); silent when absent (readClaudeCapBypass → '').
+    if (claudeCapBypassWarning) front.push(claudeCapBypassWarning);
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
     // Fleet drift (SURF-02): a third orange-208 front member, additive only.
@@ -906,6 +918,41 @@ function readWslProbeBroken() {
     return `\x1b[31m⚠ wsl:probe-broken\x1b[0m`;
   } catch {
     return ''; // no flag = monitor healthy = silent
+  }
+}
+
+// claude-cap bypass flag: written by cross-repo health/scripts/claude-cap-census.sh
+// (riding wsl-pressure.timer, every 30 min) when the Claude memory-cap is NOT applying —
+// claude procs outside claude-cap-*.scope and/or a login shell no longer resolving
+// `claude` to ~/.local/capbin. The flag was write-only until readClaudeCapBypass()
+// below became its consumer (the seam was silently bypassed twice in four days, both
+// found by hand — cross-repo .planning/debug/resolved/claude-cap-uncapped-launch.md).
+const CLAUDE_CAP_BYPASS_FLAG = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'claude-cap-bypass.flag');
+
+// claude-cap bypass alarm. TWO severity classes, split by CAUSE (the flag's machine
+// line carries `capped=N uncapped=N seam_ok=K`):
+//   seam_ok=0      → RED `⚠ claude:seam-broken uncapped=N` — the control is dead for
+//                    every FUTURE launch (structurally wsl:probe-broken: blind ≥ tripped).
+//   seam_ok=1,N>0  → orange-208 `claude:uncapped=N` — historical residue with a healthy
+//                    seam; drains on its own as sessions turn over. Advisory, not act-now
+//                    (RED here would train the operator to ignore the badge).
+//   unparseable    → orange-208 `claude:bypass` — never go silent on a real bypass
+//                    (mirrors readWslPressure's `wsl:pressure` fallback; also covers a
+//                    lingering pre-seam_ok-format flag).
+// NON-STICKY, unlike the operator-cleared trip flag: the census rewrites the flag every
+// run and rm's it on a clean one, so absence = census-clean and no rm instruction is
+// rendered. Fail-silent: any error → '' (absent flag = cap applying = silent).
+function readClaudeCapBypass() {
+  try {
+    const body = fs.readFileSync(CLAUDE_CAP_BYPASS_FLAG, 'utf8');
+    const seam = body.match(/\bseam_ok=([01])\b/);
+    const un = body.match(/\buncapped=(\d+)\b/);
+    const uncapped = un ? parseInt(un[1], 10) : 0;
+    if (seam && seam[1] === '0') return `\x1b[31m⚠ claude:seam-broken uncapped=${uncapped}\x1b[0m`;
+    if (seam && uncapped > 0) return `\x1b[38;5;208mclaude:uncapped=${uncapped}\x1b[0m`;
+    return `\x1b[38;5;208mclaude:bypass\x1b[0m`;
+  } catch {
+    return ''; // no flag = cap applying = silent
   }
 }
 
