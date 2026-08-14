@@ -31,6 +31,7 @@ function readCacheAnchor(transcriptPath) {
       if (!line) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.isSidechain === true) continue;
       if (entry.type !== 'assistant') continue;
       const reads = entry.message && entry.message.usage && entry.message.usage.cache_read_input_tokens;
       if (!reads || reads <= 0) continue;
@@ -170,6 +171,23 @@ ok('future anchor clamped to TTL ceiling',
   remainingFor(Date.now() + 5_000, Date.now(), TTL) === TTL);
 ok('expired anchor produces remaining ≤ 0',
   remainingFor(Date.now() - (TTL + 100) * 1000, Date.now(), TTL) <= 0);
+
+// --- 12. sidechain (subagent) entries do NOT anchor — different cache identity ---
+// Subagent (isSidechain: true) entries land in the SAME session JSONL but are a
+// separate API conversation with its own prompt cache. A sidechain cache_read
+// must not refresh the main conversation's countdown anchor: while a long
+// subagent runs, the main prefix is aging even though sidechain reads keep
+// appending. Last-in-file entry here is a sidechain read NEWER than the
+// main-chain anchor — the anchor must stay on the main-chain timestamp.
+const tMain = '2026-08-14T10:00:00.000Z';
+const tSide = '2026-08-14T10:20:00.000Z';  // newer, but sidechain
+const sidechainP = writeJsonl('sidechain.jsonl', [
+  makeAssistant(tMain, 40000),
+  JSON.stringify({ type: 'assistant', timestamp: tSide, isSidechain: true,
+    message: { usage: { cache_read_input_tokens: 55000, cache_creation_input_tokens: 0 } } }),
+]);
+ok('sidechain assistant with cache_read does not anchor (main-chain wins)',
+  readCacheAnchor(sidechainP) === Date.parse(tMain));
 
 // --- cleanup ---
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* nothing */ }
