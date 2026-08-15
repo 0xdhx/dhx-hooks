@@ -74,7 +74,10 @@ const CLAUDE_LABEL = 'claude:';
 // Thresholds mirrored from the wrapper. Mirrored deliberately (not imported) so a silent
 // constant change in the wrapper fails this probe instead of silently redefining the contract.
 const DEAD_MS = 95 * 60 * 1000;
-const GRACE_MS = 8 * 60 * 1000;
+// Grace is now a CEILING, not the primary gate — the gate is "has the timer fired this boot?",
+// read from the systemd stamp. 12min (was 8) clears the measured worst-case first run of
+// 489.976s (boot -6, 2026-08-07) which the old 480s constant did NOT, by ~10s.
+const GRACE_MS = 12 * 60 * 1000;
 
 // Long-past uptime: well beyond the boot grace, so the grace never masks a render case.
 const UP_OLD = String(72 * 3600 * 1000);
@@ -94,11 +97,22 @@ function livenessToken(out) {
 
 // Plant logs aged by `ageMin` minutes (null → do not create the log at all), plus optional
 // flags, then spawn the real wrapper under an isolated $HOME.
-function runWith({ pressureMin = null, censusMin = null, uptimeMs = UP_OLD, trip = null, broken = null, bypass = null } = {}) {
+// `stampMin` plants the systemd last-trigger stamp aged that many minutes (null = absent, the
+// never-installed case). It lives under $HOME, so unlike /proc/uptime the fixture controls it
+// directly — the stamp counts as "fired this boot" iff its age is less than the pinned uptime.
+function runWith({ pressureMin = null, censusMin = null, uptimeMs = UP_OLD, trip = null, broken = null, bypass = null, stampMin = null } = {}) {
   const tmp = makeFakeHome('dhx-wsl-monitor-dead-');
   try {
     const dir = path.join(tmp, '.local', 'state', 'wsl-stack');
     fs.mkdirSync(dir, { recursive: true });
+    if (stampMin !== null) {
+      const sdir = path.join(tmp, '.local', 'share', 'systemd', 'timers');
+      fs.mkdirSync(sdir, { recursive: true });
+      const sf = path.join(sdir, 'stamp-wsl-pressure.timer');
+      fs.writeFileSync(sf, '');
+      const swhen = new Date(Date.now() - stampMin * 60 * 1000);
+      fs.utimesSync(sf, swhen, swhen); // mtime IS the last-trigger time
+    }
     const plant = (name, ageMin, body) => {
       if (ageMin === null) return; // absent log — the never-installed / not-judgeable state
       const f = path.join(dir, name);
@@ -133,7 +147,9 @@ function check(name, ok, detail) {
 // Pure-function classification — exact boundaries, no spawn, no clock race
 // =========================================================================
 {
-  const k = (p, c, u) => { const s = classifyWslMonitorState(p, c, u); return s ? s.kind : null; };
+  // 4th arg = timerFiredSinceBoot; defaults false so the existing cases keep asserting the
+  // ceiling behaviour (no stamp = wait out the grace).
+  const k = (p, c, u, fired = false) => { const s = classifyWslMonitorState(p, c, u, fired); return s ? s.kind : null; };
   const UP = 1e9;
   check('classify: both fresh → null (silent)', k(1000, 1000, UP) === null);
   check('classify: both stale → monitor', k(DEAD_MS, DEAD_MS, UP) === 'monitor');
@@ -143,8 +159,22 @@ function check(name, ok, detail) {
   check('classify: absent census + stale pressure → pressure (absent ≠ stale)', k(DEAD_MS, null, UP) === 'pressure');
   check('classify: boundary 94:59.999 → null (under threshold)', k(DEAD_MS - 1, DEAD_MS - 1, UP) === null);
   check('classify: boundary 95:00.000 → monitor (at threshold)', k(DEAD_MS, DEAD_MS, UP) === 'monitor');
-  check('classify: boot grace 7:59.999 → null (post-boot suppression)', k(DEAD_MS, DEAD_MS, GRACE_MS - 1) === null);
-  check('classify: boot grace 8:00.000 → monitor (grace expired)', k(DEAD_MS, DEAD_MS, GRACE_MS) === 'monitor');
+  check('classify: boot grace 11:59.999 + timer not yet fired → null (post-boot suppression)',
+    k(DEAD_MS, DEAD_MS, GRACE_MS - 1) === null);
+  check('classify: boot grace 12:00.000 → monitor (ceiling reached, stamp never arrived)',
+    k(DEAD_MS, DEAD_MS, GRACE_MS) === 'monitor');
+  // THE REGRESSION CASE. Boot -6 (2026-08-07): user manager started at 134.05s, first producer
+  // run landed at 489.976s. Under the old 480s kernel-boot-anchored grace this rendered a RED
+  // on a healthy box for ~10s. The ceiling now covers it, and the stamp ends the grace the
+  // instant the timer actually fires rather than at a guessed elapsed time.
+  check('classify: 490s uptime, timer NOT yet fired → null (the boot -6 false positive, fixed)',
+    k(DEAD_MS, DEAD_MS, 489.976 * 1000) === null);
+  check('classify: 490s uptime, timer HAS fired → monitor (stale logs are real evidence now)',
+    k(DEAD_MS, DEAD_MS, 489.976 * 1000, true) === 'monitor');
+  check('classify: timer fired ends the grace early — 1min uptime + fired → monitor',
+    k(DEAD_MS, DEAD_MS, 60 * 1000, true) === 'monitor');
+  check('classify: timer fired does NOT manufacture a verdict — fresh logs stay silent',
+    k(0, 0, 60 * 1000, true) === null);
   check('classify: unreadable uptime (null) → grace does NOT apply, still reports',
     k(DEAD_MS, DEAD_MS, null) === 'monitor');
   check('classify: monitor age is the OLDER of the two logs',
@@ -233,10 +263,41 @@ function check(name, ok, detail) {
     `output: ${JSON.stringify(out)}`);
 }
 {
-  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(9 * 60 * 1000) });
-  check('boot grace expired: 9h-old logs + 9min uptime → ⚠ wsl:monitor-dead renders',
+  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(13 * 60 * 1000) });
+  check('boot grace ceiling reached: 9h-old logs + 13min uptime, no stamp → ⚠ wsl:monitor-dead renders',
     livenessToken(out).startsWith('wsl:monitor-dead'),
     `got ${JSON.stringify(livenessToken(out))}`);
+}
+
+// --- STAMP-ANCHORED GRACE (live render). The systemd stamp, not elapsed time, is the gate. ---
+// Regression fixture for the boot -6 defect: 490s uptime is PAST the old 480s grace, so the
+// pre-change wrapper rendered a RED here on a healthy box.
+{
+  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(490 * 1000) });
+  check('stamp absent + 490s uptime → SILENT (boot -6 false positive, fixed at render level)',
+    livenessToken(out) === '' && !out.includes(MONITOR_SIGIL),
+    `output: ${JSON.stringify(out)}`);
+}
+{
+  // Stamp aged 1min against 490s uptime → fired THIS boot → grace ends, stale logs count.
+  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(490 * 1000), stampMin: 1 });
+  check('stamp fired this boot + stale logs → ⚠ wsl:monitor-dead renders (grace ended early)',
+    livenessToken(out).startsWith('wsl:monitor-dead'),
+    `got ${JSON.stringify(livenessToken(out))}`);
+}
+{
+  // Stamp aged 60min against 5min uptime → predates boot → LAST boot's stamp, not this one.
+  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(5 * 60 * 1000), stampMin: 60 });
+  check('stamp from a PREVIOUS boot → still suppressed (mtime predates boot wall-time)',
+    livenessToken(out) === '' && !out.includes(MONITOR_SIGIL),
+    `output: ${JSON.stringify(out)}`);
+}
+{
+  // The stamp must not manufacture a verdict — it ends the grace, it does not assert staleness.
+  const out = runWith({ pressureMin: 1, censusMin: 1, uptimeMs: String(490 * 1000), stampMin: 1 });
+  check('stamp fired + FRESH logs → segment silent (stamp ends grace, never asserts a fault)',
+    livenessToken(out) === '' && !out.includes(MONITOR_SIGIL),
+    `output: ${JSON.stringify(out)}`);
 }
 
 // --- ARBITRATION, live: monitor dead suppresses BOTH stale flags, trip survives ---

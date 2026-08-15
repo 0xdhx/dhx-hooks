@@ -5,7 +5,7 @@
 //     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
 //     overshoots the real gsd-core line (1.4.6 overshot live 1.4.5, 2026-06-15).
 //     Guard: tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053, HP-054
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -1051,23 +1051,55 @@ const WSL_CENSUS_LOG   = path.join(os.homedir(), '.local', 'state', 'wsl-stack',
 // beside it.
 const WSL_MONITOR_DEAD_MS = 95 * 60 * 1000;
 
-// Boot grace. The timer is OnBootSec=5min (its Persistent=true is INERT — monotonic triggers
-// only, per the unit's own comment), so after every WSL2 start the logs are legitimately as
-// old as the downtime until the first run lands. Measured: WSL2 booted 2026-08-13 07:40:57
-// and the first pressure.log line landed 07:47:09 — boot+6m12s (OnBootSec + RandomizedDelaySec
-// + runtime). Without this gate the guard renders a RED for ~6min after EVERY boot, and both
-// of the only two >=65min gaps in 44 days were downtime — i.e. every firing the guard would
-// have produced in that window would have been a false positive. 8min covers the measured
-// 6m12s with margin.
+// Boot grace CEILING — a backstop, no longer the primary mechanism. After every WSL2 start
+// the logs are legitimately as old as the downtime until the first run lands, so the segment
+// must stay silent until the producer has had its chance. The question that actually matters
+// is "has the timer fired yet this boot?", and systemd answers it directly (see
+// WSL_PRESSURE_TIMER_STAMP below) — this constant only bounds how long we wait for that
+// answer, so an absent or frozen stamp can never suppress the guard forever.
 //
-// RESIDUAL (stated, not implied away): /proc/uptime is time since BOOT, not time since
-// RESUME. A host suspend advances wall-clock while a monotonic timer's schedule does not, so
-// on a SLEEPING host this guard could false-positive for up to one cadence after resume.
-// It does not fire here because this host does not suspend — measured CLOCK_BOOTTIME minus
-// CLOCK_MONOTONIC = 0.000s over 47h uptime, and 44 days of logs show no non-downtime gap
-// above 60.2min. If a sleeping host ever enters scope, the fix is producer-written
-// boot_id-qualified CLOCK_MONOTONIC heartbeats — see the cross-repo backlog brief.
-const WSL_MONITOR_BOOT_GRACE_MS = 8 * 60 * 1000;
+// WHY THIS IS NOT AN ELAPSED-TIME GATE ANY MORE. It was, keyed on /proc/uptime, and that was
+// wrong by construction: `OnBootSec=5min` on a systemd USER manager is anchored to MANAGER
+// START, while /proc/uptime is anchored to KERNEL BOOT, and the gap between them is the
+// manager's own startup latency. Measured across 16 boots of user-journal data:
+//   manager start after kernel boot   2.99s .. 134.05s   (the unbounded term)
+//   first run after MANAGER start   316.5s .. 362.3s     (tight — 45.8s = RandomizedDelaySec)
+//   first run after KERNEL boot     332.9s .. 490.0s     (loose — inherits the latency above)
+// On boot -6 the manager came up at 134.05s and the first run landed at 489.976s, past the
+// then-480s grace: a ~10s window rendering a RED on a healthy box (2026-08-07). No constant
+// fixes that class — the manager-start term has no upper bound — which is why the gate now
+// keys on the event instead of on elapsed time. 12min is chosen only to clear the observed
+// 490.0s worst case with ~47% headroom while a stamp is unavailable.
+//
+// RESIDUAL (stated, not implied away): a host SUSPEND still defeats this. `man systemd.timer`
+// is explicit that without WakeSystem= a monotonic timer's clock pauses while suspended, so on
+// a sleeping host the schedule freezes while log mtime keeps aging — the guard could
+// false-positive for up to one cadence after resume, and the stamp would be equally stale
+// because the timer genuinely did not fire. It does not bite here: CLOCK_BOOTTIME minus
+// CLOCK_MONOTONIC measured 0.000s over 48.51h, and `journalctl -b all` across 17 boots shows
+// zero suspend events. If a sleeping host ever enters scope the lever is the UNIT, not this
+// file — `OnCalendar=` makes Persistent= catch-up live (the unit's own comment names it).
+// Contract + re-derivation procedure: cross-repo docs/coupling/wsl-monitor-liveness-thresholds.md.
+const WSL_MONITOR_BOOT_GRACE_MS = 12 * 60 * 1000;
+
+// systemd writes this stamp on EVERY trigger of wsl-pressure.timer — its mtime IS the last
+// trigger time, maintained by the scheduler itself rather than inferred from a producer's
+// side effects. Verified ordering on a live run: stamp 09:50:17.444, then the census log at
+// .947 and pressure.log at .951 — the stamp leads the producers by ~0.5s.
+//
+// The unit's own comment calls its `Persistent=true` INERT, and that is true of CATCH-UP
+// (monotonic triggers only) but NOT of the stamp: systemd maintains the file regardless, so
+// this signal costs nothing and needs no unit change.
+//
+// It proves the TIMER fired, never that the producer COMPLETED — which is exactly why it
+// anchors the grace and does not replace the log-mtime staleness check. (The pair is strictly
+// more expressive than either alone: fresh stamp + stale log = ran-but-did-not-finish, a
+// distinction this segment cannot currently draw. Filed, not built here.)
+//
+// Bonus the /proc/uptime anchor could never have: this path is under $HOME, so makeFakeHome()
+// fixtures drive it directly — the exact limitation readUptimeMs() documents below.
+const WSL_PRESSURE_TIMER_STAMP = path.join(
+  os.homedir(), '.local', 'share', 'systemd', 'timers', 'stamp-wsl-pressure.timer');
 
 // Seconds-since-boot as ms. Own try/catch → null (unreadable /proc/uptime must not be able to
 // suppress the guard AND must not be able to fabricate one) — null means "cannot apply the
@@ -1111,8 +1143,25 @@ function wslLogAgeMs(file, now) {
 //   pressure only  → 'pressure' (trip + probe-broken flags unvouched)
 //   census only    → 'census'   (claude-cap-bypass flag unvouched)
 //   neither        → null       (silent)
-function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs) {
-  if (uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) return null; // post-boot grace
+// Has wsl-pressure.timer fired since THIS boot? Compares the systemd stamp's mtime against
+// boot wall-time (now - uptime). Own try/catch → false, and false means "grace still applies",
+// which is safe precisely because the grace is now ceiling-bounded: an absent stamp (timer
+// never installed) or an unreadable one delays the guard by at most WSL_MONITOR_BOOT_GRACE_MS
+// rather than suppressing it indefinitely. A stamp left over from a PREVIOUS boot correctly
+// reads as "not yet fired" — its mtime predates boot wall-time.
+function readTimerFiredSinceBoot(uptimeMs, now) {
+  if (uptimeMs === null) return false; // cannot locate boot; let the ceiling govern
+  try {
+    return fs.statSync(WSL_PRESSURE_TIMER_STAMP).mtimeMs > (now - uptimeMs);
+  } catch {
+    return false;
+  }
+}
+
+function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFiredSinceBoot) {
+  // Post-boot grace: suppress only while the scheduler has NOT yet fired this boot, and only
+  // up to the ceiling. Once the timer has fired, a stale log is real evidence, not boot lag.
+  if (!timerFiredSinceBoot && uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) return null;
   const stale = (a) => a !== null && a >= WSL_MONITOR_DEAD_MS;
   const p = stale(pressureAgeMs);
   const c = stale(censusAgeMs);
@@ -1135,10 +1184,12 @@ const WSL_MONITOR_LABELS = { monitor: 'wsl:monitor-dead', pressure: 'wsl:pressur
 function readWslMonitorState() {
   try {
     const now = Date.now();
+    const uptimeMs = readUptimeMs();
     const state = classifyWslMonitorState(
       wslLogAgeMs(WSL_PRESSURE_LOG, now),
       wslLogAgeMs(WSL_CENSUS_LOG, now),
-      readUptimeMs(),
+      uptimeMs,
+      readTimerFiredSinceBoot(uptimeMs, now),
     );
     if (!state) return { token: '', kind: null };
     const age = formatBurnDuration(state.ageMs / 60000);
