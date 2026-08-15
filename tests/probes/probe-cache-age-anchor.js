@@ -1,196 +1,168 @@
-// Probe: confirm getCacheAge anchors on the most recent type=assistant entry
-// with cache_read_input_tokens > 0, NOT on JSONL mtime.
-// Backs docs/decisions.md 2026-04-17 statusline cache-age JSONL anchor row +
-// HP-019 (JSONL transcript schema).
+// Probe: parseTranscriptTail anchor semantics + getCacheAge render (arc N7).
+// Backs docs/decisions.md 2026-04-17 statusline cache-age JSONL anchor row,
+// the 2026-08-15 N7 bust-signal row, HP-019 (JSONL transcript schema), and the
+// N5 review amendments f20 (TTL from observed write bucket) + f21 (anchor on
+// substantial cache_creation, not only positive reads).
 // Run: node tests/probes/probe-cache-age-anchor.js
 //
-// Pattern: re-implements readCacheAnchor locally (matching probe-settings-hash.js
-// convention) so a future regression in the wrapper diverges from the probe and
-// flips assertions. The probe IS the contract.
+// Pattern change (2026-08-15): drives the REAL exported functions from
+// dhx/statusline-wrapper.js instead of a local mirror — readCacheAnchor was
+// replaced by the shared parseTranscriptTail and a mirror of dead code cannot
+// regress. Fixtures are tmp files only.
 
-// SAFE_FOR_LIVE: yes   (re-implements function locally; tmp-file fixtures only)
+// SAFE_FOR_LIVE: yes   (drives exported functions against tmp-file fixtures only)
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// --- function under test (mirror of dhx/statusline-wrapper.js::readCacheAnchor) ---
-function readCacheAnchor(transcriptPath) {
-  const WINDOW = 65536;
-  let fd;
-  try {
-    fd = fs.openSync(transcriptPath, 'r');
-    const size = fs.fstatSync(fd).size;
-    if (size === 0) return null;
-    const len = Math.min(WINDOW, size);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    const startIdx = size > WINDOW ? 1 : 0;
-    for (let i = lines.length - 1; i >= startIdx; i--) {
-      const line = lines[i];
-      if (!line) continue;
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
-      if (entry.isSidechain === true) continue;
-      if (entry.type !== 'assistant') continue;
-      const reads = entry.message && entry.message.usage && entry.message.usage.cache_read_input_tokens;
-      if (!reads || reads <= 0) continue;
-      const t = Date.parse(entry.timestamp || '');
-      if (Number.isFinite(t)) return t;
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
-  }
-}
+const wrapper = require(path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js'));
+const { parseTranscriptTail, getCacheAge } = wrapper;
 
-// --- band selection (mirrors getCacheAge color logic) ---
-// Returned for color-band assertions without re-implementing ANSI escapes here.
-function bandFor(remaining) {
-  if (remaining <= 0) return 'red';
-  if (remaining < 15 * 60) return 'orange';
-  if (remaining < 30 * 60) return 'yellow';
-  return 'green';
-}
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-cache-anchor-'));
+process.on('exit', () => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* nothing */ } });
 
-// --- helpers ---
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-cache-age-'));
 let pass = 0, fail = 0;
 function ok(name, cond) {
   if (cond) { console.log(`OK   ${name}`); pass++; }
   else { console.log(`FAIL ${name}`); fail++; }
 }
 
-function makeAssistant(ts, cacheRead) {
+function rec(ts, opts = {}) {
   return JSON.stringify({
-    type: 'assistant',
+    type: opts.type || 'assistant',
+    isSidechain: opts.sidechain === true,
     timestamp: ts,
-    message: { usage: { cache_read_input_tokens: cacheRead, cache_creation_input_tokens: 0 } },
-  });
+    requestId: opts.req || `req-${ts}`,
+    uuid: opts.uuid || `uuid-${ts}-${Math.floor(Math.random() * 1e9)}`,
+    effort: opts.effort || 'medium',
+    version: opts.version || '2.1.233',
+    subtype: opts.subtype,
+    message: opts.type === 'system' ? undefined : {
+      id: opts.mid || `msg-${ts}`,
+      model: opts.model || 'claude-fable-5',
+      stop_reason: opts.stop === null ? null : (opts.stop || 'end_turn'),
+      usage: opts.usage || { input_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100 },
+      diagnostics: opts.diag || null,
+    },
+  }) + '\n';
 }
-function makeAwaySummary(ts) {
-  // No .message.usage block — matches the real shape per away-summary-billing.md
-  return JSON.stringify({ type: 'system', subtype: 'away_summary', timestamp: ts, summary: 'recap' });
-}
-function writeJsonl(name, lines) {
+
+function writeFixture(name, content) {
   const p = path.join(TMP, name);
-  fs.writeFileSync(p, lines.join('\n') + '\n');
+  fs.writeFileSync(p, content);
   return p;
 }
 
-// --- 1. missing transcript_path → null (caller resolves '') ---
-ok('missing file path returns null', readCacheAnchor(path.join(TMP, 'does-not-exist.jsonl')) === null);
+// --- basic null paths --------------------------------------------------------
+ok('missing file returns null', parseTranscriptTail(path.join(TMP, 'nope.jsonl')) === null);
+ok('empty file returns null', parseTranscriptTail(writeFixture('empty.jsonl', '')) === null);
+ok('no assistant entries returns null',
+  parseTranscriptTail(writeFixture('nouser.jsonl', JSON.stringify({ type: 'user', timestamp: '2026-01-01T00:00:00Z' }) + '\n')) === null);
 
-// --- 2. empty file → null ---
-const emptyP = path.join(TMP, 'empty.jsonl');
-fs.writeFileSync(emptyP, '');
-ok('empty file returns null', readCacheAnchor(emptyP) === null);
+// --- anchor selection --------------------------------------------------------
+const t1 = '2026-08-15T10:00:00.000Z', t2 = '2026-08-15T10:05:00.000Z';
 
-// --- 3. no assistant-with-cache_read entries → null ---
-// User entries + system away_summary entries only. mtime is recent but no anchor exists.
-const noAnchorP = writeJsonl('no-anchor.jsonl', [
-  JSON.stringify({ type: 'user', timestamp: '2026-04-17T10:00:00.000Z', message: { content: 'hi' } }),
-  makeAwaySummary('2026-04-17T10:05:00.000Z'),
-  makeAwaySummary('2026-04-17T10:08:00.000Z'),
-]);
-ok('no cache_read entries returns null (away_summary does not anchor)',
-  readCacheAnchor(noAnchorP) === null);
+// Zero reads + trivial creation → parse succeeds but no anchor.
+const zeroP = writeFixture('zero.jsonl',
+  rec(t1, { usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 100 } }));
+const zeroT = parseTranscriptTail(zeroP);
+ok('zero reads + trivial creation → no anchor', zeroT !== null && zeroT.anchor === null);
 
-// --- 4. assistant entry with cache_read=0 does NOT anchor ---
-const zeroReadsP = writeJsonl('zero-reads.jsonl', [
-  JSON.stringify({ type: 'assistant', timestamp: '2026-04-17T10:00:00.000Z',
-    message: { usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 50000 } } }),
-]);
-ok('assistant with cache_read=0 returns null', readCacheAnchor(zeroReadsP) === null);
+// f21: zero reads + SUBSTANTIAL creation anchors (cold write re-anchors).
+const coldP = writeFixture('coldwrite.jsonl',
+  rec(t1, { usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 60000 } }));
+const coldT = parseTranscriptTail(coldP);
+ok('substantial cache_creation anchors without reads (f21)',
+  coldT !== null && coldT.anchor !== null && coldT.anchor.tsMs === Date.parse(t1));
 
-// --- 5. picks the MOST RECENT assistant-with-cache_read, not earlier ones ---
-const t1 = '2026-04-17T10:00:00.000Z';  // older
-const t2 = '2026-04-17T10:30:00.000Z';  // newer
-const multipleP = writeJsonl('multiple.jsonl', [
-  makeAssistant(t1, 50000),
-  makeAwaySummary('2026-04-17T10:15:00.000Z'),  // bumps mtime, doesn't anchor
-  makeAssistant(t2, 60000),
-  makeAwaySummary('2026-04-17T10:45:00.000Z'),  // most recent line, but not assistant
-]);
-ok('picks most recent assistant-with-cache_read (skips later non-anchor lines)',
-  readCacheAnchor(multipleP) === Date.parse(t2));
+// Newest-by-timestamp wins.
+const multiP = writeFixture('multi.jsonl', rec(t1) + rec(t2));
+const multiT = parseTranscriptTail(multiP);
+ok('anchor is newest cache_read entry', multiT.anchor.tsMs === Date.parse(t2));
 
-// --- 6. mtime independence — anchor stays at t2 even if we re-touch the file ---
-const beforeMtime = readCacheAnchor(multipleP);
-fs.utimesSync(multipleP, new Date(), new Date());  // bump mtime to NOW
-const afterMtime = readCacheAnchor(multipleP);
-ok('anchor unchanged when mtime alone bumps (proves mtime independence)',
-  beforeMtime === afterMtime && afterMtime === Date.parse(t2));
+// Anchor unaffected by file mtime.
+const before = parseTranscriptTail(multiP).anchor.tsMs;
+fs.utimesSync(multiP, new Date(), new Date());
+ok('anchor ignores file mtime', parseTranscriptTail(multiP).anchor.tsMs === before);
 
-// --- 7. partial line at head of large file is skipped (no JSON.parse pollution) ---
-// Construct a file >64KB. The reader's 64KB tail will start mid-record. Make
-// the partial head an unparseable string so a missing skip would throw or noise.
-// Then place a valid anchor near the end.
-const filler = 'X'.repeat(70000);  // 70KB of junk that becomes the partial first line
-const tEnd = '2026-04-17T11:00:00.000Z';
-const partialP = path.join(TMP, 'partial-head.jsonl');
-// Single line of 70k 'X' chars (no newlines) followed by the real anchor entry.
-// When the reader takes the last 64KB and splits on '\n', lines[0] is "XXX...XXX{maybe}"
-// — definitely not parseable JSON. lines[1] is the anchor.
-fs.writeFileSync(partialP, filler + '\n' + makeAssistant(tEnd, 30000) + '\n');
-ok('partial line at head of window is skipped (no parse error pollution)',
-  readCacheAnchor(partialP) === Date.parse(tEnd));
+// Sidechain exclusion.
+const sideP = writeFixture('side.jsonl', rec(t1) + rec(t2, { sidechain: true }));
+ok('sidechain entries excluded from anchor', parseTranscriptTail(sideP).anchor.tsMs === Date.parse(t1));
 
-// --- 8. file fits entirely in window — startIdx stays 0, byte 0 is a real record head ---
-// Put the only anchor as the very first line. If the reader incorrectly skipped
-// startIdx 0 even when size <= WINDOW, this would return null.
-const tinyP = writeJsonl('tiny-fits.jsonl', [
-  makeAssistant('2026-04-17T09:00:00.000Z', 12345),
-]);
-const tinySize = fs.statSync(tinyP).size;
-ok('small file (size <= window) reads first line as real entry',
-  tinySize <= 65536 && readCacheAnchor(tinyP) === Date.parse('2026-04-17T09:00:00.000Z'));
+// Non-terminal (no stop_reason) records are ignored entirely.
+const streamP = writeFixture('stream.jsonl', rec(t1) + rec(t2, { stop: null }));
+ok('non-terminal record (no stop_reason) ignored', parseTranscriptTail(streamP).newest.tsMs === Date.parse(t1));
 
-// --- 9. unparseable file → null (no exception bubbles out) ---
-const garbageP = path.join(TMP, 'garbage.jsonl');
-fs.writeFileSync(garbageP, '{not json\nalso not json\n}{}{\n');
-ok('unparseable garbage returns null without throwing', readCacheAnchor(garbageP) === null);
+// uuid dedup (fork replay).
+const dupP = writeFixture('dup.jsonl', rec(t1, { uuid: 'same' }) + rec(t2, { uuid: 'same' }));
+ok('duplicate uuid deduped', parseTranscriptTail(dupP).prev === null);
 
-// --- 10. band thresholds map remaining → color correctly ---
-const TTL = 3600;
-ok('remaining 3000s (50m) → green', bandFor(3000) === 'green');
-ok('remaining 1700s (28m) → yellow', bandFor(1700) === 'yellow');
-ok('remaining 600s  (10m) → orange', bandFor(600) === 'orange');
-ok('remaining 0s         → red',    bandFor(0) === 'red');
-ok('remaining -500s      → red',    bandFor(-500) === 'red');
+// --- TTL bucket (f20) --------------------------------------------------------
+const b5P = writeFixture('b5.jsonl', rec(t1, {
+  usage: { input_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500,
+           cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 500 } } }));
+ok('5m write bucket → ttlSecs 300', parseTranscriptTail(b5P).ttlSecs === 300);
+const b1P = writeFixture('b1.jsonl', rec(t1, {
+  usage: { input_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500,
+           cache_creation: { ephemeral_1h_input_tokens: 500, ephemeral_5m_input_tokens: 0 } } }));
+ok('1h write bucket → ttlSecs 3600', parseTranscriptTail(b1P).ttlSecs === 3600);
 
-// --- 11. clamp: anchor in the future (clock skew) yields remaining clamped to TTL ---
-// Re-implements the getCacheAge clamp formula to assert it's still tight.
-function remainingFor(anchorMs, nowMs, ttl) {
-  const elapsed = (nowMs - anchorMs) / 1000;
-  return Math.min(ttl, Math.floor(ttl - elapsed));
+// --- disorder flag (HP-019) --------------------------------------------------
+const disP = writeFixture('dis.jsonl', rec(t2) + rec(t1));
+ok('file order vs timestamp disorder sets corrupt flag', parseTranscriptTail(disP).corrupt === true);
+ok('in-order file has corrupt=false', parseTranscriptTail(multiP).corrupt === false);
+
+// --- getCacheAge render ------------------------------------------------------
+async function renderChecks() {
+  const nowIso = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+  const freshP = writeFixture('fresh.jsonl', rec(nowIso));
+  const freshT = parseTranscriptTail(freshP);
+  const data = { model: { id: 'claude-fable-5' }, effort: { level: 'medium' } };
+
+  const seg = await getCacheAge(data, freshT);
+  ok('fresh anchor renders green countdown', /\x1b\[32m\d+m\x1b\[0m/.test(seg));
+
+  const segNoTail = await getCacheAge(data, null);
+  ok('null tail hides segment', segNoTail === '');
+
+  // Model-ID mismatch vs anchor → dim ttl? (unknown, never a fake countdown).
+  const segModel = await getCacheAge({ model: { id: 'claude-opus-5' }, effort: { level: 'medium' } }, freshT);
+  ok('model change → dim ttl?', segModel.includes('ttl?') && segModel.includes('\x1b[2m'));
+
+  // Effort mismatch vs anchor → same invalidation.
+  const segEffort = await getCacheAge({ model: { id: 'claude-fable-5' }, effort: { level: 'max' } }, freshT);
+  ok('effort change → dim ttl?', segEffort.includes('ttl?'));
+
+  // Display-name-only stdin (no stable id) must NOT false-trigger (f5).
+  const segNoId = await getCacheAge({ model: { display_name: 'Fable 5' }, effort: { level: 'medium' } }, freshT);
+  ok('absent model.id does not invalidate', /\d+m/.test(segNoId) && !segNoId.includes('ttl?'));
+
+  // Expired anchor.
+  const oldIso = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  const oldT = parseTranscriptTail(writeFixture('old.jsonl', rec(oldIso)));
+  const segOld = await getCacheAge(data, oldT);
+  ok('expired anchor renders EXPIRED', segOld.includes('EXPIRED'));
+
+  // Bust glyph: newest terminal record carries a server bust verdict.
+  const bustP = writeFixture('bust.jsonl',
+    rec(nowIso, { req: 'rA', mid: 'mA', usage: { input_tokens: 5, cache_read_input_tokens: 150000, cache_creation_input_tokens: 200 } }) +
+    rec(new Date().toISOString(), { req: 'rB', mid: 'mB',
+      usage: { input_tokens: 5, cache_read_input_tokens: 19000, cache_creation_input_tokens: 140000 },
+      diag: { cache_miss_reason: { type: 'messages_changed', cache_missed_input_tokens: 133000 } } }));
+  const bustT = parseTranscriptTail(bustP);
+  const segBust = await getCacheAge(data, bustT);
+  ok('unexpected bust appends red ✸bust glyph with kt', segBust.includes('\x1b[31m✸bust:133k\x1b[0m'));
+
+  // Expected cold (model change between records) → NO glyph.
+  const expP = writeFixture('exp.jsonl',
+    rec(nowIso, { req: 'rA', mid: 'mA', model: 'claude-opus-5' }) +
+    rec(new Date().toISOString(), { req: 'rB', mid: 'mB', model: 'claude-fable-5',
+      usage: { input_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 90000 },
+      diag: { cache_miss_reason: { type: 'model_changed', cache_missed_input_tokens: 90000 } } }));
+  const segExp = await getCacheAge(data, parseTranscriptTail(expP));
+  ok('expected cold (model change) renders no glyph', !segExp.includes('✸'));
+
+  console.log(`${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
 }
-ok('future anchor clamped to TTL ceiling',
-  remainingFor(Date.now() + 5_000, Date.now(), TTL) === TTL);
-ok('expired anchor produces remaining ≤ 0',
-  remainingFor(Date.now() - (TTL + 100) * 1000, Date.now(), TTL) <= 0);
-
-// --- 12. sidechain (subagent) entries do NOT anchor — different cache identity ---
-// Subagent (isSidechain: true) entries land in the SAME session JSONL but are a
-// separate API conversation with its own prompt cache. A sidechain cache_read
-// must not refresh the main conversation's countdown anchor: while a long
-// subagent runs, the main prefix is aging even though sidechain reads keep
-// appending. Last-in-file entry here is a sidechain read NEWER than the
-// main-chain anchor — the anchor must stay on the main-chain timestamp.
-const tMain = '2026-08-14T10:00:00.000Z';
-const tSide = '2026-08-14T10:20:00.000Z';  // newer, but sidechain
-const sidechainP = writeJsonl('sidechain.jsonl', [
-  makeAssistant(tMain, 40000),
-  JSON.stringify({ type: 'assistant', timestamp: tSide, isSidechain: true,
-    message: { usage: { cache_read_input_tokens: 55000, cache_creation_input_tokens: 0 } } }),
-]);
-ok('sidechain assistant with cache_read does not anchor (main-chain wins)',
-  readCacheAnchor(sidechainP) === Date.parse(tMain));
-
-// --- cleanup ---
-try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* nothing */ }
-
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+renderChecks();

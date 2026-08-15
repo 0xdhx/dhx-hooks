@@ -57,6 +57,30 @@ process.stdin.on('end', () => {
     cwd = process.cwd();
   }
 
+  // ONE bounded transcript-tail parse per refresh (arc N7, f30) — shared by the
+  // cache-TTL segment, the bust classifier, and the telemetry writers. Sync +
+  // fail-soft: a parse error yields null (segment hides, telemetry skips).
+  let transcriptTail = null;
+  try {
+    if (data.transcript_path) transcriptTail = parseTranscriptTail(data.transcript_path);
+  } catch { transcriptTail = null; }
+
+  // Telemetry writes happen BEFORE the async render fan-out: statusline
+  // processes are cancellation-prone and an event lost mid-render is a gap in
+  // the spool. Sync, advance-gated (at most one write per completed API call),
+  // fail-soft via the statusline error log — never blocks the render.
+  try {
+    recordCacheTelemetry(data, transcriptTail);
+  } catch (e) {
+    appendStatuslineError({
+      ts: new Date().toISOString(),
+      segment: 'cacheTelemetry',
+      error_message: String((e && e.message) || e),
+      error_stack_first_line: ((e && e.stack) || '').split('\n')[0],
+      cwd,
+    });
+  }
+
   // Run the dhx renderer, git info, cache-age, ccburn, health cache, and drift check in parallel.
   // ccburn renders synchronously from the stdin rate_limits payload — no subprocess (2026-05-29).
   // Each branch is wrapped via withSegmentDiag so a thrown exception in any one
@@ -65,7 +89,7 @@ process.stdin.on('end', () => {
   Promise.all([
     withSegmentDiag('renderer',   runRenderer(input)),
     withSegmentDiag('git',        getGitInfo(cwd)),
-    withSegmentDiag('cacheAge',   getCacheAge(data)),
+    withSegmentDiag('cacheAge',   getCacheAge(data, transcriptTail)),
     withSegmentDiag('ccburn',     buildCcburnFromStdin(input)),
     withSegmentDiag('firstPrompt', getFirstUserPrompt(data)),
     withSegmentDiag('health',     readHealthCache(data && data.session_id)),
@@ -2198,100 +2222,389 @@ function checkDrift(data) {
   });
 }
 
-// Cache-TTL countdown. Anchors on the most recent assistant entry whose
-// usage block reports cache_read_input_tokens > 0 — that timestamp is when
-// the warm prefix was last touched on the server, which is what actually
-// keeps the cache TTL alive. Always-on segment: green ≥30m, yellow <30m,
-// orange 208 <15m, red EXPIRED. Default TTL 3600s matches Max plan
-// (verified 2026-04-17, docs/research/economics/session-cost-mechanics.md);
-// DHX_CACHE_TTL env overrides for Pro/API (300).
+// --- Shared main-chain tail parse (arc N7, 2026-08-15) -----------------------
 //
-// Why not mtime: away_summary writes (HP-019 / docs/research/economics/away-summary-billing.md)
-// bump JSONL mtime without producing a type=assistant entry — and they're
-// billed inference calls. Anchoring on mtime would make the countdown
-// "reset" every ~3-15 min during idle while the user silently pays for
-// each recap, training the signal to lie. cache_read timestamps come from
-// the same `usage` block billing is computed from, so the countdown can't
-// drift from cost reality. Active streaming still reads near full TTL —
-// each chunk lands as a cache_read entry.
+// ONE bounded tail read feeds three consumers: the cache-TTL countdown, the
+// bust/cold classifier, and the telemetry writers (manifest Item C f30 — never
+// add an independent second/third transcript scan to this hot path). Replaces
+// readCacheAnchor (2026-04-17 → 2026-08-15), whose read-only anchor predicate
+// self-inflicted a one-turn lag after cold writes (N5 review f21): the anchor
+// now also latches on a substantial cache_creation, sharing constants with
+// dhx-cold-return-gate.sh (WINDOW 256KB, CRT_MIN 10000, 60s disorder tolerance).
 //
-// Resume re-anchors automatically: post-/resume sessions see one re-cache
-// turn (~70k cache_creation, GH #42338) and then the next turn lands as a
-// fresh cache_read entry — the new anchor.
+// Record selection (f25/f26): only TERMINAL records classify — group by
+// (requestId, message.id), require stop_reason (streaming repeats share one
+// message.id with cumulative usage; a stop_reason record carries the max in
+// 541,427/541,427 measured groups — D-10). Ancestry: uuid dedup (fork replays),
+// isSidechain exclusion (separate API conversation, own prefix), timestamp
+// ordering with a corruption flag when file order disagrees >60s (HP-019).
 //
-// 64KB tail-read sized for typical assistant entries (~1-5KB each); a
-// degenerate 64KB+ tool_use_result blocking every entry resolves to ''
-// (segment hides for one render, returns on next turn).
-function getCacheAge(data) {
+// Why not mtime for the anchor: away_summary writes (HP-019) bump JSONL mtime
+// without a type=assistant entry — billed calls the countdown must not chase.
+// usage-block timestamps come from the same block billing is computed from.
+//
+// INVARIANT: depends on JSONL transcript schema (HP-019). type=assistant
+// entries carry .timestamp, .requestId, top-level .effort, .message.{id,model,
+// stop_reason,usage,diagnostics}; subagent entries are flagged isSidechain.
+// Probes: tests/probes/probe-cache-age-anchor.js (parse + anchor),
+//         tests/probes/probe-cache-event-classifier.js (classification),
+//         tests/probes/probe-cache-telemetry-spools.js (writers).
+const TAIL_WINDOW = 262144;          // matches DHX_COLD_RETURN_WINDOW default
+const ANCHOR_CREATION_MIN = 10000;   // matches cold-return gate CRT_MIN
+const DISORDER_TOLERANCE_MS = 60000; // matches cold-return gate's 60s slack
+
+function parseTranscriptTail(transcriptPath) {
+  let fd;
+  try {
+    fd = fs.openSync(transcriptPath, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return null;
+    const len = Math.min(TAIL_WINDOW, size);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    // Skip the first split when the window starts mid-record — partial line.
+    const startIdx = size > TAIL_WINDOW ? 1 : 0;
+
+    const seenUuids = new Set();
+    const groups = new Map();     // key → terminal-group summary (file order)
+    let compactTsMs = null;       // newest compact-boundary marker in window
+    let maxTs = -Infinity;
+    let corrupt = false;
+
+    for (let i = startIdx; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      let r;
+      try { r = JSON.parse(line); } catch { continue; }
+      if (r.isSidechain === true) continue;
+      // /compact writes a system boundary record — expected-cold cause marker.
+      if (r.type === 'system' && typeof r.subtype === 'string' && r.subtype.includes('compact')) {
+        const t = Date.parse(r.timestamp || '');
+        if (Number.isFinite(t) && (compactTsMs == null || t > compactTsMs)) compactTsMs = t;
+        continue;
+      }
+      if (r.type !== 'assistant') continue;
+      const m = r.message;
+      if (!m || !m.usage) continue;
+      if (r.uuid) {
+        if (seenUuids.has(r.uuid)) continue; // fork-replay double-count
+        seenUuids.add(r.uuid);
+      }
+      const tsMs = Date.parse(r.timestamp || '');
+      if (!Number.isFinite(tsMs)) continue;
+      const key = `${r.requestId || ''}:${(m.id || '')}`;
+      // Terminal record only (stop_reason present); later file-order wins.
+      if (!m.stop_reason) continue;
+      if (tsMs < maxTs - DISORDER_TOLERANCE_MS) corrupt = true;
+      if (tsMs > maxTs) maxTs = tsMs;
+      const u = m.usage;
+      groups.set(key, {
+        key,
+        tsMs,
+        model: m.model || null,
+        effort: typeof r.effort === 'string' ? r.effort : null,
+        version: r.version || null,
+        read: u.cache_read_input_tokens || 0,
+        creation: u.cache_creation_input_tokens || 0,
+        input: u.input_tokens || 0,
+        e1h: (u.cache_creation && u.cache_creation.ephemeral_1h_input_tokens) || 0,
+        e5m: (u.cache_creation && u.cache_creation.ephemeral_5m_input_tokens) || 0,
+        diag: (m.diagnostics && m.diagnostics.cache_miss_reason) || null,
+      });
+    }
+
+    if (groups.size === 0) return null;
+    const ordered = [...groups.values()].sort((a, b) => a.tsMs - b.tsMs);
+    const newest = ordered[ordered.length - 1];
+    const prev = ordered.length > 1 ? ordered[ordered.length - 2] : null;
+
+    // Anchor: newest completion whose usage proves the server touched (read) or
+    // rebuilt (substantial creation) the warm prefix — f21 creation-anchoring.
+    let anchor = null;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const g = ordered[i];
+      if (g.read > 0 || g.creation >= ANCHOR_CREATION_MIN) { anchor = g; break; }
+    }
+
+    // TTL bucket from the newest bucketed write (f20): observed beats assumed.
+    let ttlSecs = null;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const g = ordered[i];
+      if (g.e1h + g.e5m > 0) { ttlSecs = g.e1h >= g.e5m ? 3600 : 300; break; }
+    }
+
+    return { newest, prev, anchor, ttlSecs, corrupt, compactTsMs };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
+  }
+}
+
+// --- Cache-event classifier (arc N7; manifest Item C as amended by N5) -------
+//
+// Diagnostics-first (f4): the server's stored message.diagnostics.cache_miss_reason
+// is authoritative (it knows actual cache state); the read/creation ratio
+// signatures survive only as an explicitly-labeled fallback for the ~26% blind
+// categories and pre-diagnostics records. Planned invalidations classify as
+// EXPECTED_COLD:<cause> (f27) and never feed the bust glyph; only
+// UNEXPECTED_BUST does. Below the ~30k separability floor the heuristic emits
+// UNKNOWN_SMALL, never BUST/COLD from fixed thresholds (f24).
+//
+// Classes: WARM | UNKNOWN_SMALL | UNKNOWN | EXPECTED_COLD:<cause> | UNEXPECTED_BUST
+// Causes:  first | compact | model | effort | cc-upgrade (structural, from the
+//          adjacent terminal records) or the server's diag type / ratio-bust /
+//          ratio-cold on the unexpected path.
+const HEUR_SMALL_FLOOR = 30000;      // below: base ≈ whole prefix, no separation
+const HEUR_BUST_BASE_MAX = 30000;    // collapsed-read ceiling (~20k fleet-warm base + slack)
+const HEUR_BUST_CREATION_MIN = 50000;
+const HEUR_COLD_CREATION_MIN = 10000;
+
+function classifyCacheEvent(tail) {
+  if (!tail || !tail.newest) return null;
+  const { newest, prev, compactTsMs } = tail;
+  const read = newest.read, creation = newest.creation;
+  const gapS = prev ? Math.round((newest.tsMs - prev.tsMs) / 1000) : null;
+
+  // Structural expected-cold causes, visible from the adjacent records.
+  let cause = null;
+  if (!prev) cause = 'first';
+  else if (compactTsMs != null && compactTsMs > prev.tsMs && compactTsMs <= newest.tsMs) cause = 'compact';
+  else if (prev.model && newest.model && prev.model !== newest.model) cause = 'model';
+  else if (prev.effort && newest.effort && prev.effort !== newest.effort) cause = 'effort';
+  else if (prev.version && newest.version && prev.version !== newest.version) cause = 'cc-upgrade';
+
+  const base = { gapS, read, creation, corrupt: !!tail.corrupt };
+
+  // Blind categories (`unavailable` / `previous_message_not_found`, ~26% of
+  // sampled verdicts) are the server saying "can't diagnose", NOT a bust
+  // verdict — observed live on a fully-warm turn (read 447k, creation <1k,
+  // type unavailable). They fall through to the structural causes + ratio
+  // heuristic, with the diag type preserved as provenance. This is exactly why
+  // the heuristic survives as fallback (f4's blind-category rate).
+  const diag = newest.diag;
+  const diagBlind = diag && (diag.type === 'unavailable' || diag.type === 'previous_message_not_found');
+  if (diag && typeof diag.type === 'string' && !diagBlind) {
+    if (diag.type === 'model_changed' && !cause) cause = 'model';
+    const missed = Number.isFinite(diag.cache_missed_input_tokens) ? diag.cache_missed_input_tokens : null;
+    if (cause) return { ...base, cls: `EXPECTED_COLD:${cause}`, cause, heuristic: false, diagType: diag.type, missed };
+    return { ...base, cls: 'UNEXPECTED_BUST', cause: diag.type, heuristic: false, diagType: diag.type, missed };
+  }
+  const diagType = diag && typeof diag.type === 'string' ? diag.type : null;
+
+  // No usable server verdict — a fully-warm turn carries none (diagnosis-
+  // engine readout) and blind categories land here too, so a warm-looking
+  // geometry is genuinely quiet and anything else falls to the explicitly-
+  // labeled ratio heuristic.
+  if (cause) return { ...base, cls: `EXPECTED_COLD:${cause}`, cause, heuristic: false, diagType, missed: null };
+
+  const prior = prev ? prev.input + prev.read + prev.creation : null;
+  const h = { ...base, heuristic: true, diagType, missed: null };
+  if (prior != null && prior < HEUR_SMALL_FLOOR) {
+    // Below the separability floor: warm-shaped geometry stays quiet, anything
+    // bust/cold-shaped is undecidable — never BUST/COLD from thresholds here.
+    if (read >= prior * 0.8) return { ...h, cls: 'WARM', cause: null };
+    return { ...h, cls: 'UNKNOWN_SMALL', cause: null };
+  }
+  if (prior != null && read >= prior * 0.8) return { ...h, cls: 'WARM', cause: null };
+  if (read === 0 && creation >= HEUR_COLD_CREATION_MIN) return { ...h, cls: 'UNEXPECTED_BUST', cause: 'ratio-cold' };
+  if (read > 0 && read <= HEUR_BUST_BASE_MAX && creation >= HEUR_BUST_CREATION_MIN) {
+    return { ...h, cls: 'UNEXPECTED_BUST', cause: 'ratio-bust' };
+  }
+  if (prior == null && read > 0) return { ...h, cls: 'WARM', cause: null };
+  return { ...h, cls: 'UNKNOWN', cause: null };
+}
+
+// Cache-TTL countdown + bust glyph. Always-on segment: green ≥30m, yellow <30m,
+// orange 208 <15m, red EXPIRED. TTL source (f20): DHX_CACHE_TTL env override →
+// observed cache-write bucket from the transcript (1h/5m) → 3600 assumed.
+//
+// TTL-clock invalidation (Item C enhancement, f5): when the stdin's stable
+// model ID (data.model.id) or effort level (data.effort.level) differs from the
+// ANCHOR turn's, the countdown is lying — the next call rewrites the prefix
+// regardless of the clock. Render dim `ttl?` (unknown), never a fake countdown;
+// the next completed call re-anchors with matching identity and the clock
+// resumes. `/login` with unchanged model remains undetectable — represented as
+// nothing rather than faked (N5 review round).
+//
+// Bust glyph: red `✸bust[:Nk]` appended when the NEWEST terminal record
+// classifies UNEXPECTED_BUST (diagnostics-first; N missed-input-kilotokens when
+// the server quantified it). Self-clears when the next completed call
+// classifies warm. EXPECTED_COLD causes stay quiet by design (f27). Local
+// session health only — never folded into cross-repo fleet channels.
+function getCacheAge(data, tail) {
   return new Promise((resolve) => {
-    const transcriptPath = data.transcript_path;
-    if (!transcriptPath) return resolve('');
-    const ttl = parseInt(process.env.DHX_CACHE_TTL, 10) || 3600;
-    const anchorMs = readCacheAnchor(transcriptPath);
-    if (anchorMs == null) return resolve('');
-    const elapsed = (Date.now() - anchorMs) / 1000;
+    if (!tail || !tail.anchor) return resolve('');
+    const ttl = parseInt(process.env.DHX_CACHE_TTL, 10) || tail.ttlSecs || 3600;
+
+    // Bust glyph (independent of clock validity — a bust already happened).
+    let glyph = '';
+    const ev = classifyCacheEvent(tail);
+    if (ev && ev.cls === 'UNEXPECTED_BUST') {
+      const kt = ev.missed != null && ev.missed > 0 ? `:${Math.round(ev.missed / 1000)}k` : '';
+      glyph = ` \x1b[31m✸bust${kt}\x1b[0m`;
+    }
+
+    // Model/effort invalidation vs the anchor turn (both compared only when
+    // both sides are present — absence is unknown, not mismatch).
+    const sModel = data.model && data.model.id;
+    const sEffort = data.effort && data.effort.level;
+    const invalidated =
+      (sModel && tail.anchor.model && sModel !== tail.anchor.model) ||
+      (sEffort && tail.anchor.effort && sEffort !== tail.anchor.effort);
+    if (invalidated) return resolve(`\x1b[2mttl?\x1b[0m${glyph}`);
+
+    const elapsed = (Date.now() - tail.anchor.tsMs) / 1000;
     // Clamp upward to absorb clock skew / pre-write stat.
     const remaining = Math.min(ttl, Math.floor(ttl - elapsed));
-    if (remaining <= 0) return resolve('\x1b[31mEXPIRED\x1b[0m');
+    if (remaining <= 0) return resolve(`\x1b[31mEXPIRED\x1b[0m${glyph}`);
     const mins = Math.floor(remaining / 60);
     const label = mins < 1 ? '<1m' : `${mins}m`;
     let color;
     if (remaining < 15 * 60) color = '\x1b[38;5;208m'; // orange 208
     else if (remaining < 30 * 60) color = '\x1b[33m';  // yellow
     else color = '\x1b[32m';                            // green
-    resolve(`${color}${label}\x1b[0m`);
+    resolve(`${color}${label}\x1b[0m${glyph}`);
   });
 }
 
-// Tail-read last 64KB of the JSONL transcript and return ms-epoch of the
-// most recent type=assistant entry whose usage.cache_read_input_tokens > 0.
-// Returns null on missing file, unreadable file, no match in window, or
-// unparseable timestamps. Tail-read (not readFileSync) because transcripts
-// grow without bound — a 50MB session pulled into memory every refresh is
-// not acceptable for a 1Hz statusline.
+// --- Rolling cache telemetry (arc N7; manifest Item C as amended) ------------
 //
-// Sidechain (subagent) entries are skipped: they land in the same JSONL but
-// belong to a separate API conversation with its own prompt cache, so their
-// cache_reads must not refresh the MAIN conversation's anchor — while a long
-// subagent runs, the main prefix is aging even though sidechain reads keep
-// appending (2026-08-14, cache-ttl-boundary investigation).
+// Two spool families under ~/.cache/dhx (override: DHX_CACHE_TELEMETRY_DIR):
 //
-// INVARIANT: depends on JSONL transcript schema (HP-019). type=assistant
-// entries carry .timestamp (ISO 8601) and .message.usage.cache_read_input_tokens;
-// subagent entries are flagged isSidechain: true.
-// Probe: tests/probes/probe-cache-age-anchor.js.
-function readCacheAnchor(transcriptPath) {
-  const WINDOW = 65536;
-  let fd;
-  try {
-    fd = fs.openSync(transcriptPath, 'r');
-    const size = fs.fstatSync(fd).size;
-    if (size === 0) return null;
-    const len = Math.min(WINDOW, size);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    // Skip the first split when the window starts mid-record — it's a partial
-    // line. When the window covers the whole file, byte 0 is a real line head.
-    const startIdx = size > WINDOW ? 1 : 0;
-    for (let i = lines.length - 1; i >= startIdx; i--) {
-      const line = lines[i];
-      if (!line) continue;
-      let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
-      if (entry.isSidechain === true) continue;
-      if (entry.type !== 'assistant') continue;
-      const reads = entry.message && entry.message.usage && entry.message.usage.cache_read_input_tokens;
-      if (!reads || reads <= 0) continue;
-      const t = Date.parse(entry.timestamp || '');
-      if (Number.isFinite(t)) return t;
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
+//   cache-events/<profile>-<session>.jsonl   one row per completed main-chain
+//     call (all classes — WARM rows are the denominator the secular-ramp watch
+//     needs). Per-session spool files, NOT one shared rolling file (f28):
+//     concurrent statusline processes race rotation and duplicate events.
+//   quota-snapshots/<profile>-<YYYYMMDD>.jsonl   one row per MAIN-CHAIN ADVANCE
+//     (f16 — an unchanged utilization after a completed call is informative
+//     censoring Item A needs; timer-only refreshes are suppressed by the
+//     advance key, not by value comparison). Tagged {profile, session,
+//     resets_at} — the profile letter is the load-bearing discriminator
+//     (measured: write-on-change alone collapsed only 17.21% of the ccburn
+//     corpus) but is insufficient without session + window (f15/29).
+//
+// Deterministic event id (f28/f32): `<session>:<requestId>:<message.id>` —
+// offline merges dedupe on it; re-observation after a crash is idempotent.
+// Writes are SYNCHRONOUS single-line appends (statusline processes are
+// cancellation-prone; an async write dies with the process), fire at most once
+// per completed API call (advance-gated via the per-session state file), and
+// are fail-soft: a writer error logs one statusline-errors.jsonl line and never
+// blocks the render.
+//
+// Schema discipline (Item C amendment): rows carry v:1; schema changes are
+// ADDITIVE or come with a real offline migration — never rebuild()-on-drift,
+// quota snapshots are not re-derivable. Mode 0600 files / 0700 dirs (f31/f61).
+// Retention: files older than DHX_CACHE_TELEMETRY_RETENTION_DAYS (default 30)
+// are swept opportunistically at most once per day per session.
+const TELEMETRY_RETENTION_DAYS = (() => {
+  const raw = parseInt(process.env.DHX_CACHE_TELEMETRY_RETENTION_DAYS, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30;
+})();
+
+function telemetryBaseDir() {
+  return process.env.DHX_CACHE_TELEMETRY_DIR || path.join(os.homedir(), '.cache', 'dhx');
+}
+
+// CCS profile letter — same derivation as dhx-statusline.js::getCcsProfile
+// (kept inline: the renderer doesn't export it, and the regex is the contract).
+function telemetryProfileLetter() {
+  const m = (process.env.CLAUDE_CONFIG_DIR || '').match(/\.ccs\/instances\/([^/]+)\/?$/);
+  return m ? m[1] : 'x';
+}
+
+function appendSpoolLine(file, row) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const fd = fs.openSync(file, 'a', 0o600);
+  try { fs.writeSync(fd, JSON.stringify(row) + '\n'); }
+  finally { try { fs.closeSync(fd); } catch { /* nothing */ } }
+}
+
+function sweepSpoolDir(dir, cutoffMs) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const n of names) {
+    if (!n.endsWith('.jsonl')) continue;
+    const p = path.join(dir, n);
+    try { if (fs.statSync(p).mtimeMs < cutoffMs) fs.unlinkSync(p); }
+    catch { /* races with a concurrent sweep are fine */ }
   }
+}
+
+function recordCacheTelemetry(data, tail, nowMs) {
+  if (!tail || !tail.newest) return;
+  const sid = data && data.session_id;
+  if (!sid || /[/\\]|\.\./.test(sid)) return;  // basename-escape threat model
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const base = telemetryBaseDir();
+  const profile = telemetryProfileLetter();
+  const stateFile = path.join(base, 'cache-telemetry', `state-${sid}.json`);
+
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {}; } catch { state = {}; }
+  const key = tail.newest.key;
+  if (state.lastEventKey === key) return;  // timer-only refresh — no advance
+
+  const ev = classifyCacheEvent(tail);
+  const eventRow = {
+    v: 1,
+    id: `${sid}:${key}`,
+    ts: new Date(tail.newest.tsMs).toISOString(),
+    observed_at: new Date(now).toISOString(),
+    cc: (data && data.version) || tail.newest.version || null,
+    profile,
+    session: sid,
+    gap_s: ev.gapS,
+    read: ev.read,
+    creation: ev.creation,
+    class: ev.cls,
+    cause: ev.cause,
+    heuristic: ev.heuristic,
+    missed: ev.missed,
+    diag_type: ev.diagType,
+    model: tail.newest.model,
+    effort: tail.newest.effort,
+    ttl_bucket: tail.newest.e1h + tail.newest.e5m > 0
+      ? (tail.newest.e1h >= tail.newest.e5m ? '1h' : '5m') : null,
+    corrupt: ev.corrupt,
+  };
+  appendSpoolLine(path.join(base, 'cache-events', `${profile}-${sid}.jsonl`), eventRow);
+
+  // Quota snapshot rides the same advance gate. Sides are recorded as-is
+  // (including expired windows — the consumer filters; censoring is data).
+  const rl = data && data.rate_limits;
+  if (rl && typeof rl === 'object' && (rl.five_hour || rl.seven_day)) {
+    const side = (lim) => (lim && typeof lim === 'object')
+      ? { pct: Number(lim.used_percentage), resets_at: lim.resets_at != null ? lim.resets_at : null }
+      : null;
+    const day = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+    appendSpoolLine(path.join(base, 'quota-snapshots', `${profile}-${day}.jsonl`), {
+      v: 1,
+      id: `${sid}:${key}`,
+      ts: new Date(now).toISOString(),
+      cc: (data && data.version) || null,
+      profile,
+      session: sid,
+      event_key: key,
+      five_hour: side(rl.five_hour),
+      seven_day: side(rl.seven_day),
+    });
+  }
+
+  // Opportunistic retention sweep, at most once per day per session.
+  let lastSweepMs = Number(state.lastSweepMs) || 0;
+  if (now - lastSweepMs > 86400_000) {
+    const cutoff = now - TELEMETRY_RETENTION_DAYS * 86400_000;
+    sweepSpoolDir(path.join(base, 'cache-events'), cutoff);
+    sweepSpoolDir(path.join(base, 'quota-snapshots'), cutoff);
+    sweepSpoolDir(path.join(base, 'cache-telemetry'), cutoff);
+    lastSweepMs = now;
+  }
+  try {
+    fs.mkdirSync(path.join(base, 'cache-telemetry'), { recursive: true, mode: 0o700 });
+    writeAtomic(stateFile, { v: 1, lastEventKey: key, lastSweepMs });
+  } catch { /* state-write failure → at worst a duplicate row; id dedupes offline */ }
 }
 
 // First user prompt segment (L2). Head-reads the 64KB window of the JSONL
@@ -2529,6 +2842,15 @@ module.exports = {
   // can drive the real helper (not a reimplementation) under a mocked
   // fs.renameSync to assert the leaked-tmp cleanup invariant.
   writeAtomic,
+  // Cache bust-signal + telemetry (arc N7, 2026-08-15) — exported so the
+  // probes drive the REAL implementations against tmp fixtures:
+  // probe-cache-age-anchor.js (parse/anchor + getCacheAge render),
+  // probe-cache-event-classifier.js, probe-cache-telemetry-spools.js.
+  parseTranscriptTail,
+  classifyCacheEvent,
+  getCacheAge,
+  recordCacheTelemetry,
+  telemetryProfileLetter,
   // Per-segment self-diagnosis (2026-04-26 #4)
   withSegmentDiag,
   appendStatuslineError,
