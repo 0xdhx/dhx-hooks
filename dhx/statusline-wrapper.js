@@ -5,7 +5,7 @@
 //     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
 //     overshoots the real gsd-core line (1.4.6 overshot live 1.4.5, 2026-06-15).
 //     Guard: tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -76,7 +76,8 @@ process.stdin.on('end', () => {
     withSegmentDiag('wslPressure',   readWslPressure()),    // wsl-pressure cadence alarm: fail-silent, not sigil-generating
     withSegmentDiag('wslProbeBroken', readWslProbeBroken()), // wsl-pressure PROBE-BROKEN (dead-monitor): fail-silent, not sigil-generating
     withSegmentDiag('claudeCapBypass', readClaudeCapBypass()), // claude-cap bypass (census flag): fail-silent, not sigil-generating
-  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR, wslProbeBrokenR, claudeCapBypassR]) => {
+    withSegmentDiag('wslMonitor', readWslMonitorState()),   // wsl-stack producer-liveness: fail-silent, not sigil-generating
+  ]).then(([rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR, fleetR, watchR, skillPressureR, wslPressureR, wslProbeBrokenR, claudeCapBypassR, wslMonitorR]) => {
     // Process each segment — fire the sigil + log if it threw, else pass-through.
     const ts = new Date().toISOString();
     function unwrap(result, fallback) {
@@ -127,6 +128,12 @@ process.stdin.on('end', () => {
     // would contradict fail-silent (the segment renders its own token on a real bypass,
     // and an absent flag is the healthy/silent state).
     const claudeCapBypassWarning = unwrap(claudeCapBypassR, () => '');
+    // wsl-stack producer-liveness is fail-silent exactly like the three flag readers: own
+    // try/catch → { token: '', kind: null } on ANY error. Deliberately omitted from
+    // sigilCount — a `⚠ wslMonitor?` sigil would contradict fail-silent. NOTE the fallback
+    // shape: this segment returns an OBJECT (token + state kind), not a bare string, because
+    // composeWslFront below needs the kind to arbitrate which stale flags to suppress.
+    const wslMonitor = unwrap(wslMonitorR, () => ({ token: '', kind: null }));
     // sigilCount is the count of segments that crashed this refresh — fed to
     // computeMetaGlyph below as one of its OR-aggregated inputs.
     const sigilCount = [rendererR, gitInfoR, cacheAgeR, burnOutputR, firstPromptR, healthR, driftR]
@@ -158,25 +165,18 @@ process.stdin.on('end', () => {
     // keep concerns distinct — drift says "restart", health says "/dhx:sym repair".
     // Order: drift first (session identity), then health (session wiring).
     const front = [];
-    // wsl-pressure (cadence tripwire alarm): RED, placed FIRST — a !! bash-leak trip is
-    // imminent-OOM (wedges the whole box), categorically more severe than the orange-208
-    // advisory members below. Durable: shows until the operator clears the flag. Silent when
-    // no flag exists (readWslPressure returns '').
-    if (wslPressureWarning) front.push(wslPressureWarning);
-    // wsl-pressure PROBE-BROKEN (dead-monitor): RED, placed SECOND — right after the trip
-    // token. A trip is a confirmed climbing leak with frozen evidence (act now to prevent the
-    // OOM wedge); a broken monitor is the RISK of an undetected leak (fix the probe). The
-    // trip's FIRST placement is a locked do-not-re-litigate decision, so broken slots in
-    // second — and when only broken fires (the common case, no coexisting trip) it renders
-    // first among present front members anyway. Auto-recovers (producer rm's the flag on the
-    // next healthy classify); silent when the monitor is healthy (readWslProbeBroken → '').
-    if (wslProbeBrokenWarning) front.push(wslProbeBrokenWarning);
-    // claude-cap bypass: THIRD, right after the two wsl RED members and before the
-    // orange-208 advisory cluster. Variable severity (RED when the seam is broken,
-    // orange-208 for draining residue) — this slot keeps the front severity-sorted
-    // either way: RED RED RED orange… or RED RED orange orange…. Non-sticky (census
-    // rewrites/rm's the flag each run); silent when absent (readClaudeCapBypass → '').
-    if (claudeCapBypassWarning) front.push(claudeCapBypassWarning);
+    // The wsl cluster (trip → producer-liveness → probe-broken → cap-bypass) is composed by
+    // the pure composeWslFront() rather than pushed member-by-member, because the liveness
+    // state ARBITRATES: a flag whose producer is confirmed stale is an unvouched last-known
+    // state and must not keep rendering as a current RED verdict. The trip always survives
+    // (durable by decision); pressure-stale suppresses probe-broken; census-stale suppresses
+    // cap-bypass. See composeWslFront for the full rationale and the ordering lock.
+    for (const token of composeWslFront({
+      trip: wslPressureWarning,
+      monitor: wslMonitor,
+      broken: wslProbeBrokenWarning,
+      bypass: claudeCapBypassWarning,
+    })) front.push(token);
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
     // Fleet drift (SURF-02): a third orange-208 front member, additive only.
@@ -954,6 +954,169 @@ function readClaudeCapBypass() {
   } catch {
     return ''; // no flag = cap applying = silent
   }
+}
+
+// wsl-stack PRODUCER-LIVENESS guard: the dead-man's switch the three flag readers above
+// structurally CANNOT be. All three flags are driven by wsl-pressure.timer; every reader
+// keys on flag existence/contents, so a dead/masked timer freezes all three in their last
+// state and each reader keeps rendering it as current. wsl-pressure-broken.flag cannot
+// cover this — the producer writes it on its OWN exit-3 path, so it means "ran and failed",
+// never "never ran". The dangerous case is the SILENT one: claude-cap-bypass.flag ABSENT +
+// producer dead reads as "cap applying" when nothing has checked in hours. No per-flag
+// staleness window can cover that (there is no flag to hang a window on), which is why this
+// is one shared segment keyed on the producers' LOGS, independent of every flag.
+//
+// Keyed on log MTIME, not on the logs' contents: the two producers write INCOMPATIBLE
+// timestamp formats (pressure.log is ISO-8601 UTC `2026-08-15T11:15:16Z`; the census log is
+// local-naive `2026-08-15 06:15:16`, no zone), so last-line parsing would need two parsers
+// plus a timezone assumption. mtime needs neither — and pressure.log is 74KB+ and growing,
+// so a readFileSync here would put an unbounded read on the render path. statSync is O(1).
+//
+// NOT keyed on FLAG mtime (the trap): for wsl-pressure-trip.flag the mtime IS the trip time,
+// and that flag is durable by the 2026-06-15 decision that considered and REJECTED
+// auto-clear-on-recovery. An mtime window would silence exactly the flag whose staleness is
+// the intended behavior.
+const WSL_PRESSURE_LOG = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'pressure.log');
+const WSL_CENSUS_LOG   = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'claude-cap-census.log');
+
+// 95min. DERIVED, not guessed. The unit is OnUnitActiveSec=30min + RandomizedDelaySec=60s,
+// AccuracySec defaulting to 1min → 32min nominal max interval, so two missed opportunities
+// are 64min. But measured reality is looser than the schedule: across 44 days / 1999
+// intervals of pressure.log the max gap that was NOT downtime is 60.2min (p99 31.3min), so a
+// 65min threshold would have carried under 5min of headroom. The guard's job is to report a
+// dead monitor in time to MATTER, and that is bounded by the ~18h OOM runway the unit's own
+// comment cites — not by two cadences. 95min buys ~35min of headroom over the observed max
+// while still consuming under 9% of the runway. Trading detection latency for false-positive
+// immunity is nearly free here; a RED that cries wolf would degrade the two real RED alarms
+// beside it.
+const WSL_MONITOR_DEAD_MS = 95 * 60 * 1000;
+
+// Boot grace. The timer is OnBootSec=5min (its Persistent=true is INERT — monotonic triggers
+// only, per the unit's own comment), so after every WSL2 start the logs are legitimately as
+// old as the downtime until the first run lands. Measured: WSL2 booted 2026-08-13 07:40:57
+// and the first pressure.log line landed 07:47:09 — boot+6m12s (OnBootSec + RandomizedDelaySec
+// + runtime). Without this gate the guard renders a RED for ~6min after EVERY boot, and both
+// of the only two >=65min gaps in 44 days were downtime — i.e. every firing the guard would
+// have produced in that window would have been a false positive. 8min covers the measured
+// 6m12s with margin.
+//
+// RESIDUAL (stated, not implied away): /proc/uptime is time since BOOT, not time since
+// RESUME. A host suspend advances wall-clock while a monotonic timer's schedule does not, so
+// on a SLEEPING host this guard could false-positive for up to one cadence after resume.
+// It does not fire here because this host does not suspend — measured CLOCK_BOOTTIME minus
+// CLOCK_MONOTONIC = 0.000s over 47h uptime, and 44 days of logs show no non-downtime gap
+// above 60.2min. If a sleeping host ever enters scope, the fix is producer-written
+// boot_id-qualified CLOCK_MONOTONIC heartbeats — see the cross-repo backlog brief.
+const WSL_MONITOR_BOOT_GRACE_MS = 8 * 60 * 1000;
+
+// Seconds-since-boot as ms. Own try/catch → null (unreadable /proc/uptime must not be able to
+// suppress the guard AND must not be able to fabricate one) — null means "cannot apply the
+// boot grace", and classify below treats that as "grace does not apply" rather than as fresh.
+function readUptimeMs() {
+  // Probe hook, mirroring REGISTRY_STARTUP_SUPPRESS_MS's DHX_WSL_UPTIME_MS-style override:
+  // /proc/uptime is not under $HOME, so a makeFakeHome() fixture cannot control it and a
+  // render-level probe would behave differently on a freshly-booted machine. Validated, not
+  // blindly trusted — a non-numeric or negative value falls through to the real read.
+  const override = parseFloat(process.env.DHX_WSL_UPTIME_MS);
+  if (Number.isFinite(override) && override >= 0) return override;
+  try {
+    const secs = parseFloat(String(fs.readFileSync('/proc/uptime', 'utf8')).split(/\s+/)[0]);
+    return (Number.isFinite(secs) && secs >= 0) ? secs * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+// Age of a producer log in ms, or null when it cannot be judged (absent / unreadable /
+// future mtime). null is deliberately NOT "stale": an ABSENT log is indistinguishable from
+// never-installed, and every reader in this family treats absent as silent. That is a real
+// coverage hole, documented rather than hidden.
+function wslLogAgeMs(file, now) {
+  try {
+    const ageMs = now - fs.statSync(file).mtimeMs;
+    return (Number.isFinite(ageMs) && ageMs >= 0) ? ageMs : null;
+  } catch {
+    return null;
+  }
+}
+
+// FOUR-state classification, exported for deterministic tests. NOT a first-match priority:
+// pressure-stale does not prove "the timer stopped". The census rides the pressure script's
+// tail via `[ -x "$CAPCENSUS" ] && { "$CAPCENSUS" --quiet || true; }` — a missing or
+// non-executable script is skipped SILENTLY and a failure is swallowed, so the census can
+// freeze while pressure stays fresh. And the pressure log is written BEFORE the census is
+// invoked, so the converse (pressure log write fails, census still runs) is reachable too.
+// Each label therefore names the producer observed stale; none asserts an unproved cause.
+//   both stale     → 'monitor'  (nothing in the stack has checked in)
+//   pressure only  → 'pressure' (trip + probe-broken flags unvouched)
+//   census only    → 'census'   (claude-cap-bypass flag unvouched)
+//   neither        → null       (silent)
+function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs) {
+  if (uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) return null; // post-boot grace
+  const stale = (a) => a !== null && a >= WSL_MONITOR_DEAD_MS;
+  const p = stale(pressureAgeMs);
+  const c = stale(censusAgeMs);
+  if (p && c) return { kind: 'monitor', ageMs: Math.max(pressureAgeMs, censusAgeMs) };
+  if (p) return { kind: 'pressure', ageMs: pressureAgeMs };
+  if (c) return { kind: 'census', ageMs: censusAgeMs };
+  return null;
+}
+
+const WSL_MONITOR_LABELS = { monitor: 'wsl:monitor-dead', pressure: 'wsl:pressure-dead', census: 'wsl:census-dead' };
+
+// Producer-liveness reader. RED — same imminent-OOM severity class as the trip and
+// probe-broken tokens (blind >= tripped), and broader than either: a dead producer
+// invalidates all three flags at once. Returns BOTH the token and the state kind, because
+// the front-stack composition below needs the kind to arbitrate which stale flags to
+// suppress. Fail-silent: any error → { token: '', kind: null }.
+// Age rendered via formatBurnDuration (already in-file: `<1m` / `47m` / `1h58m` / `Xh` / `Nd`) —
+// 5min-over-threshold and 3-days-dead are different situations and the operator should not
+// have to go pull a log to tell them apart.
+function readWslMonitorState() {
+  try {
+    const now = Date.now();
+    const state = classifyWslMonitorState(
+      wslLogAgeMs(WSL_PRESSURE_LOG, now),
+      wslLogAgeMs(WSL_CENSUS_LOG, now),
+      readUptimeMs(),
+    );
+    if (!state) return { token: '', kind: null };
+    const age = formatBurnDuration(state.ageMs / 60000);
+    const label = WSL_MONITOR_LABELS[state.kind];
+    return { token: `\x1b[31m⚠ ${label}${age ? ' ' + age : ''}\x1b[0m`, kind: state.kind };
+  } catch {
+    return { token: '', kind: null }; // fail-silent, exactly like the three flag readers
+  }
+}
+
+// Front-stack composition for the wsl cluster — a PURE function so the arbitration is
+// testable without a render. The three flag readers stay byte-for-byte untouched; arbitration
+// happens here at composition time, which is where runMain already orders and joins results.
+//
+// WHY arbitrate at all: the invariant this whole family serves is "never assert a verdict you
+// cannot vouch for". When a producer is confirmed stale, ITS flag is an unvouched last-known
+// state — continuing to render it as a current RED verdict violates the same invariant the
+// liveness guard exists to enforce. So suppress exactly the flag whose producer is stale,
+// and no more:
+//   - trip ALWAYS survives. It is durable and operator-cleared by decision; its whole point is
+//     that it outlives the incident, so staleness is a feature and suppression would be a bug.
+//   - pressure stale → suppress probe-broken (same producer).
+//   - census stale   → suppress claude-cap-bypass (same producer).
+// The suppressed detail is not lost — the /dhx:infra pull surface reports it as "last known,
+// stale". Push shows the actionable now-state; pull carries the forensics.
+// Order: trip → monitor-liveness → probe-broken → cap-bypass (trip's FIRST slot is a locked
+// do-not-re-litigate decision; liveness slots in second because a dead producer is broader
+// than a broken probe — it invalidates the census and the cap flag too).
+function composeWslFront({ trip, monitor, broken, bypass }) {
+  const out = [];
+  if (trip) out.push(trip);
+  if (monitor && monitor.token) out.push(monitor.token);
+  const kind = monitor && monitor.kind;
+  const pressureStale = kind === 'monitor' || kind === 'pressure';
+  const censusStale   = kind === 'monitor' || kind === 'census';
+  if (broken && !pressureStale) out.push(broken);
+  if (bypass && !censusStale) out.push(bypass);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -2209,6 +2372,13 @@ module.exports = {
   // branch → colored-display contract deterministically. See docs/decisions.md
   // 2026-06-10 off-main-magenta row.
   formatBranchSegment,
+  // wsl-stack producer-liveness (2026-08-15) — both exported as PURE functions so
+  // probe-statusline-wsl-monitor-dead.js can pin the four-state classification and the
+  // front-stack arbitration deterministically, without spawning a render or aging a real
+  // file. classifyWslMonitorState takes ages in ms (not paths) precisely so the boundary
+  // cases (94:59.999 vs 95:00.000, boot grace 7:59 vs 8:00) are exact rather than racy.
+  classifyWslMonitorState,
+  composeWslFront,
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
