@@ -197,12 +197,33 @@ process.stdin.on('end', () => {
       line1 = front.join(' \x1b[2m|\x1b[0m ') + ' \x1b[2m|\x1b[0m ' + line1;
     }
 
-    // Meta-glyph (2026-04-26 #2b): purely additive leftmost ∙/⌃ aggregating
-    // drift + health.front + health.tail + sigilCount. Prepend AFTER the front
-    // composition above so the full leftmost order is:
+    // Meta-glyph (2026-04-26 #2b; input set re-derived from the stated contract
+    // 2026-08-15). Leftmost ∙/⌃. Prepend AFTER the front composition above so the
+    // full leftmost order is:
     //   meta-glyph SP <front-with-pipes> SP <renderer-line1>...
     // Existing detail unchanged — this only adds one glyph + space at column 0.
-    const metaGlyph = computeMetaGlyph(driftWarning, health.front, health.tail, sigilCount);
+    //
+    // CLASSIFICATION SITE. Every front contributor is either in this array or named
+    // in computeMetaGlyph's "DOES NOT PARTICIPATE" block with a reason — adding a
+    // front member without doing one or the other fails
+    // probe-statusline-metaglyph-front-agreement.js. Read the contract there first.
+    //
+    // These are the READER OUTPUTS, not composeWslFront's rendered tokens: that
+    // function suppresses probe-broken/cap-bypass when their producer is stale, and
+    // a suppressed-but-real fault must still warn. Presentation suppression must
+    // never manufacture a false green.
+    const currentFaults = [
+      wslMonitor.token,        // wsl:monitor-dead    — wsl telemetry unvouchable now
+      wslProbeBrokenWarning,   // wsl:probe-broken    — pressure unknowable now
+      claudeCapBypassWarning,  // claude:seam-broken  — cap bypassed now
+      driftWarning,            // session stale now
+      health.front,            // session wiring degraded now
+      // NOT wslPressureWarning   — a LATCH over a frozen count, not a current reading.
+      // NOT fleetWarning         — cross-repo convention drift (boundary held 2026-05-23).
+      // NOT watchWarning         — cross-repo watch-checker health, its own channel.
+      // NOT skillPressureWarning — workflow backlog, not current session health.
+    ];
+    const metaGlyph = computeMetaGlyph(currentFaults, health.tail, sigilCount);
     line1 = metaGlyph + ' ' + line1;
 
     // ccburn (2026-04-27 quick task 260427-u89): moves to line 2 head — the
@@ -458,29 +479,68 @@ function computeSegmentSigil(segmentName) {
 
 // --- Meta-glyph composition (2026-04-26 statusline observability bundle #2b) ---
 //
-// Aggregates the four "something needs attention" signals — drift warning,
-// critical health (front), advisory health (tail), per-segment crash sigils —
-// into a single leftmost glyph. Dim green ∙ (color 70) means the pipeline is
-// running AND every signal is clean; bright yellow ⌃ (color 220) means at
-// least one signal is firing (the user reads the existing detail to know which).
+// THE CONTRACT (stated as a proposition, 2026-08-15 — read this before adding an input):
 //
-// Purely additive: prepended BEFORE the existing front composition so the full
-// leftmost order becomes meta-glyph → drift → critical-health → renderer-line1.
-// Existing detail (drift text, critical/advisory health text, sigils) renders
-// unchanged after the glyph.
+//   Dim green ∙  = this session, and the telemetry needed to assess it, are
+//                  CURRENTLY trustworthy.
+//   Bright yellow ⌃ = a CURRENT condition makes this session unsafe, stale,
+//                  degraded, or materially untrustworthy.
 //
-// Why a meta-glyph at all: today, a session with no health warnings shows
-// nothing in the front-of-stack zone — users can't distinguish "all good" from
-// "statusline broken / not running". An explicit dim green ∙ confirms the pipeline
-// is alive AND clean, distinct from segment-specific signals which only appear
-// during faults.
+// Latched history and workflow backlogs DO NOT participate — they keep their own
+// front tokens. This is a proposition, not an enumeration, precisely because the
+// prior four-input enumeration (drift + health.front + health.tail + sigilCount)
+// was written when the front stack had two members and was never revisited as it
+// grew to nine. Four members joined the front stack across two later arcs without
+// ever being checked against it; three of them belonged. Classify against the
+// proposition; `probe-statusline-metaglyph-front-agreement.js` fails the suite if
+// a front contributor is left unclassified.
+//
+// PARTICIPATES (current-truth):
+//   wsl:monitor-dead   — the producer vouching for the wsl flags is dead; current
+//                        wsl safety state is unknowable
+//   wsl:probe-broken   — the pressure probe itself is broken; same
+//   claude:seam-broken — the concurrent-claude cap is bypassed NOW
+//   driftWarning       — the CC install advanced under a live session; stale now
+//   health.front       — session wiring degraded now
+//   health.tail        — session advisory now (renders on line 2, not in front)
+//   sigilCount         — a statusline segment threw on THIS refresh
+//
+// DOES NOT PARTICIPATE, and why (do not re-litigate without reading these):
+//   wsl:bash=N trip    — a LATCH, not a current reading. readWslPressure() parses a
+//                        FROZEN capture written at trip time and renders it until the
+//                        operator clears the flag; the count in the token is the count
+//                        AT TRIP. Current pressure is deliberately unavailable here —
+//                        pressure.log is read for mtime only (74KB+ and growing; parsing
+//                        it per-refresh is the D-14 hot-path spend that caused the
+//                        2026-04-26 capture-pane wedge). A latch cannot establish current
+//                        state, so wiring it would redefine green from "currently healthy"
+//                        to "no uncleared records". Making live pressure participate needs
+//                        a producer-side `pressureActive` field — filed, not dropped.
+//   fleet / watch /    — cross-repo and workflow-backlog signals, not this session's
+//   skillPressure        health. Boundary affirmed 2026-05-23; each is its own channel.
+//
+// WHY THE INPUTS ARE SOURCE VALUES, NOT RENDERED TOKENS (load-bearing): composeWslFront()
+// SUPPRESSES probe-broken/cap-bypass when their producer is stale. Deriving glyph state
+// from what got rendered would let presentation suppression manufacture a false green.
+// The call site passes the reader outputs, so a suppressed-but-real fault still warns.
+//
+// Why a meta-glyph at all: a session with no health warnings shows nothing in the
+// front-of-stack zone — users can't distinguish "all good" from "statusline broken /
+// not running". An explicit dim green ∙ confirms the pipeline is alive AND clean.
+// It must therefore RENDER IN EVERY STATE — presence-vs-absence is the only detector
+// for "the watcher itself is dead" (2026-04-26; never conditionally emit it).
 //
 // Color non-collision: meta-glyph green 70 + yellow 220 are distinct from
 // critical 208 + advisory red 31 + sigil red 31. (Sigil and advisory share the
 // red palette but never co-locate — sigil sits where the segment's normal
 // output would have been; advisory sits at the tail.)
-function computeMetaGlyph(driftWarning, healthFront, healthTail, sigilCount) {
-  const warn = !!driftWarning || !!healthFront || !!healthTail || sigilCount > 0;
+//
+// `currentFaults` is an ARRAY of participating front-member source values (falsy ==
+// not firing) rather than N positional scalars: the seven-argument signature this
+// replaces is what made the drift possible, and the array gives the classification a
+// single site the probe can assert against.
+function computeMetaGlyph(currentFaults, healthTail, sigilCount) {
+  const warn = (currentFaults || []).some(Boolean) || !!healthTail || sigilCount > 0;
   // Hairline glyphs: ∙ (U+2219 bullet operator, dim green) for clean / ⌃ (U+2303
   // up arrowhead, bright yellow) for warn. Chosen 2026-04-26 over solid ● / ▲ to
   // recede on the clean path while preserving the third-state distinction —

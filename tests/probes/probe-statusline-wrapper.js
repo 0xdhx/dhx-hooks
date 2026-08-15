@@ -145,31 +145,48 @@ ok('stdin: non-numeric used_percentage skipped → empty',
      five_hour: { used_percentage: 'x', resets_at: NOW + 9300 },
    }}), NOW), '');
 
-// --- § 4 computeMetaGlyph (2026-04-26 #2b additive meta-glyph) -------------
-// Aggregates {driftWarning, healthFront, healthTail, sigilCount} into a single
-// leftmost glyph: dim green ∙ (color 70) when ALL inputs clean, bright yellow
-// ⌃ (220) when ANY fires. Purely additive — does not replace existing front
+// --- § 4 computeMetaGlyph (2026-04-26 #2b; signature re-derived 2026-08-15) -
+// Aggregates {currentFaults[], healthTail, sigilCount} into a single leftmost
+// glyph: dim green ∙ (color 70) when ALL inputs clean, bright yellow ⌃ (220)
+// when ANY fires. Purely additive — does not replace existing front
 // composition. Color non-collision: 70/220 distinct from critical 208 and
-// advisory red 31. Probe pinned in tests/probes/probe-statusline-wrapper.js
-// per docs/decisions.md 2026-04-26 meta-glyph row (hairline glyphs locked
-// 2026-04-26 — see same-day "meta-glyph hairline glyphs" decisions row).
+// advisory red 31. Per docs/decisions.md 2026-04-26 meta-glyph row (hairline
+// glyphs locked 2026-04-26) + the 2026-08-15 input-set row.
+//
+// SIGNATURE NOTE (2026-08-15). This was `(driftWarning, healthFront, healthTail,
+// sigilCount)` — four positional scalars enumerating a front stack that then grew
+// to nine members. `currentFaults` is now an ARRAY of the participating front-member
+// SOURCE values, so drift and health.front are two entries in it rather than named
+// parameters. These are TRUTH-TABLE assertions on the helper; they are deliberately
+// NOT the negative control for the wiring change — over the normal input domain the
+// old and new calls are observationally equivalent, so a helper assertion cannot tell
+// them apart. The behavioral control lives in
+// probe-statusline-metaglyph-front-agreement.js, which spawns the wrapper.
 
 const GREEN_DOT  = '\x1b[2;38;5;70m∙\x1b[0m';
 const YELLOW_TRI = '\x1b[38;5;220m⌃\x1b[0m';
 
-ok('meta-glyph: all clear → dim green ∙',         computeMetaGlyph('', '', '', 0),                       GREEN_DOT);
-ok('meta-glyph: drift fires → yellow ⌃',          computeMetaGlyph('drift-text', '', '', 0),             YELLOW_TRI);
-ok('meta-glyph: critical fires → yellow ⌃',       computeMetaGlyph('', 'critical-text', '', 0),          YELLOW_TRI);
-ok('meta-glyph: advisory fires → yellow ⌃',       computeMetaGlyph('', '', 'advisory-text', 0),          YELLOW_TRI);
-ok('meta-glyph: 1 sigil → yellow ⌃',              computeMetaGlyph('', '', '', 1),                       YELLOW_TRI);
-ok('meta-glyph: many sigils → yellow ⌃',          computeMetaGlyph('', '', '', 6),                       YELLOW_TRI);
-ok('meta-glyph: mixed (drift+crit+adv+sigil) → yellow ⌃',
-   computeMetaGlyph('drift', 'crit', 'adv', 2), YELLOW_TRI);
-ok('meta-glyph: null inputs → dim green ∙ (!! coerces)',
-   computeMetaGlyph(null, null, null, 0), GREEN_DOT);
-ok('meta-glyph: undefined inputs → dim green ∙',  computeMetaGlyph(undefined, undefined, undefined, 0),  GREEN_DOT);
+ok('meta-glyph: all clear → dim green ∙',         computeMetaGlyph([], '', 0),                           GREEN_DOT);
+ok('meta-glyph: drift fires → yellow ⌃',          computeMetaGlyph(['drift-text'], '', 0),               YELLOW_TRI);
+ok('meta-glyph: critical fires → yellow ⌃',       computeMetaGlyph(['critical-text'], '', 0),            YELLOW_TRI);
+ok('meta-glyph: advisory fires → yellow ⌃',       computeMetaGlyph([], 'advisory-text', 0),              YELLOW_TRI);
+ok('meta-glyph: 1 sigil → yellow ⌃',              computeMetaGlyph([], '', 1),                           YELLOW_TRI);
+ok('meta-glyph: many sigils → yellow ⌃',          computeMetaGlyph([], '', 6),                           YELLOW_TRI);
+ok('meta-glyph: mixed (fault+adv+sigil) → yellow ⌃',
+   computeMetaGlyph(['drift', 'crit'], 'adv', 2), YELLOW_TRI);
+// The 2026-08-15 wsl/seam members arrive as ordinary array entries — a current fault
+// anywhere in the array warns, which is the whole contract.
+ok('meta-glyph: a wsl current-fault alone → yellow ⌃',
+   computeMetaGlyph(['', '', '\x1b[31m⚠ wsl:monitor-dead 2h\x1b[0m', '', ''], '', 0), YELLOW_TRI);
+ok('meta-glyph: all-empty fault array → dim green ∙ (empty strings are falsy)',
+   computeMetaGlyph(['', '', '', '', ''], '', 0), GREEN_DOT);
+ok('meta-glyph: null/undefined entries → dim green ∙ (Boolean coerces)',
+   computeMetaGlyph([null, undefined, null], null, 0), GREEN_DOT);
+// Defensive: a missing array must not throw on the render hot path.
+ok('meta-glyph: undefined currentFaults → dim green ∙ (no throw)',
+   computeMetaGlyph(undefined, '', 0), GREEN_DOT);
 // Edge: sigilCount = 0 falsy. 0 → dim green ∙.
-ok('meta-glyph: sigilCount = 0 (zero is falsy) → dim green ∙', computeMetaGlyph('', '', '', 0), GREEN_DOT);
+ok('meta-glyph: sigilCount = 0 (zero is falsy) → dim green ∙', computeMetaGlyph([], '', 0), GREEN_DOT);
 
 // --- § 5 formatBranchSegment (off-main magenta signal + GSD compaction) ------
 // Line-1 git branch token. On the default branch (main/master) → cyan, full
