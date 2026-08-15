@@ -46,6 +46,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-session-registry-prompt.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-cold-return-gate.sh\"",
+            "timeout": 5
           }
         ]
       }
