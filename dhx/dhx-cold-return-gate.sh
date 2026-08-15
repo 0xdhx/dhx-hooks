@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # dhx-cold-return-gate.sh — UserPromptSubmit hook (matchless)
-# Patterns: HP-008, HP-009, HP-012, HP-017, HP-019, HP-027
+# Patterns: HP-008, HP-009, HP-012, HP-017, HP-019, HP-027, HP-049
+#
+# HP-049 SCOPE CAVEAT (read before trusting the advisory lane): HP-049 verifies
+# the `systemMessage` (operator) / `additionalContext` (model) split on
+# PreToolUse. This hook uses that channel on UserPromptSubmit, where
+# docs/hook-dev-guide.md § Output JSON Schema documents `systemMessage` as
+# universal and cross-version-portable — documented, NOT probe-verified for this
+# event. tests/probes/probe-cold-return-gate.sh asserts the hook EMITS valid
+# `{systemMessage:…}` JSON at exit 0; it cannot assert that CC RENDERS it. If CC
+# ever fails to parse the JSON, the failure mode is a raw JSON blob injected into
+# the model's context (ugly + a few tokens), never a block and never a lost
+# prompt. Close the gap with a live one-shot probe when convenient.
 #
 # Cold-return advisory gate. Blocks exactly ONE prompt (exit 2) when the
 # session is about to pay a full cold-cache prefix rewrite, names the cost
