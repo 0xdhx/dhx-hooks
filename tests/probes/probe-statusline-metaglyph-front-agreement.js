@@ -134,12 +134,27 @@ check('§1 INVARIANT: glyph inputs are reader outputs, not the rendered front ar
 // § 2 + § 3 — Behavioral truth table, and the negative control
 // ---------------------------------------------------------------------------
 
-// Materialize the PRE-CHANGE wrapper for the negative control. Resolved by content: the
-// blob at the last commit that touched the wrapper before this change.
+// The PRE-CHANGE wrapper for the negative control, pinned to a FIXED commit.
+//
+// DO NOT change this to `HEAD`. It was HEAD while the change was uncommitted, and the moment
+// the change landed HEAD became the POST-change wrapper — the control compared the new code
+// against itself, every fixture agreed, and § 3 went red. That red was correct: a control
+// that cannot discriminate is not a control. The baseline is a fixed historical fact, so it
+// gets a fixed ref.
+//
+// 303e264 = the commit immediately before df8c7e3 (the contract change). Anything at or after
+// df8c7e3 is post-change and will collapse the control again.
+const PRE_CHANGE_REF = '303e264';
+
 function preChangeWrapper() {
-  const blob = execFileSync('git', ['-C', REPO, 'show', `HEAD:${REL_WRAPPER}`], {
-    encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
-  });
+  let blob;
+  try {
+    blob = execFileSync('git', ['-C', REPO, 'show', `${PRE_CHANGE_REF}:${REL_WRAPPER}`], {
+      encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null; // ref unreachable (shallow clone, or the filter-repo'd public mirror)
+  }
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-metaglyph-prechange-')), 'statusline-wrapper.js');
   fs.writeFileSync(f, blob);
   return f;
@@ -192,22 +207,33 @@ const CASES = [
 const PRE = preChangeWrapper();
 let controlPairs = 0;
 
+// § 3 needs reachable history. The private repo always has it; the filter-repo'd public
+// mirror does not. Announce the skip loudly rather than passing it silently — a control
+// that quietly evaporates is worse than one that is absent by declaration.
+if (!PRE) {
+  console.log(`SKIP §3 negative control — ${PRE_CHANGE_REF} unreachable (shallow clone or rewritten history).`);
+  console.log('       § 1 and § 2 still ran; only the old-vs-new discrimination is unavailable here.');
+}
+
 for (const c of CASES) {
   const got = glyphFrom(WRAPPER, c.fx);
   check(`§2 ${c.name} → ${c.expect}`, got === c.expect, `got ${got}`);
 
-  const old = glyphFrom(PRE, c.fx);
-  check(`§3 negative control — pre-change wrapper on '${c.name}' → ${c.was}`, old === c.was, `got ${old}`);
+  if (PRE) {
+    const old = glyphFrom(PRE, c.fx);
+    check(`§3 negative control — pre-change wrapper on '${c.name}' → ${c.was}`, old === c.was, `got ${old}`);
+  }
   if (c.expect !== c.was) controlPairs++;
 }
 
-// The control is only meaningful if at least one fixture DISCRIMINATES. Without this
-// assertion a future refactor could make every case agree and the suite would stay green
-// while proving nothing.
-check('§3 negative control discriminates (≥1 fixture differs old-vs-new)',
-  controlPairs >= 3, `${controlPairs} discriminating fixture(s)`);
-
-fs.rmSync(path.dirname(PRE), { recursive: true, force: true });
+// The control is only meaningful if fixtures actually DISCRIMINATE. Without this a future
+// refactor could make every case agree and the suite would stay green while proving nothing
+// — which is exactly what happened when this probe was pinned to a moving HEAD.
+if (PRE) {
+  check('§3 negative control discriminates (≥3 fixtures differ old-vs-new)',
+    controlPairs >= 3, `${controlPairs} discriminating fixture(s)`);
+  fs.rmSync(path.dirname(PRE), { recursive: true, force: true });
+}
 
 // The 2026-04-26 third-state guarantee: the glyph must RENDER in every state, because
 // presence-vs-absence is the only detector for "the watcher itself is dead".
