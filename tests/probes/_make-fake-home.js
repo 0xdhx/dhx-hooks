@@ -44,9 +44,44 @@ const REAL_RENDERER = path.resolve(__dirname, '..', '..', 'dhx', 'dhx-statusline
 // each new probe. Probes that don't touch the wrapper at all should
 // continue to use bare `fs.mkdtempSync` — the helper exists to mark
 // the wrapper-fixture surface, not to be the only tmpdir builder.
+// Every fake home this module hands out, removed on process exit.
+//
+// Why here and not left to callers: cleanup WAS per-caller, and the caller that
+// forgot leaked silently at rc 0 for months. Measured 2026-08-15:
+// probe-statusline-self-diag.js allocated five fake homes per run and removed
+// none, leaving 41 `selfdiag-*` trees in /tmp while the probe reported PASS —
+// a leak that reports as success is invisible until someone counts /tmp.
+// Centralizing matches this file's own stated contract ("extend this helper
+// rather than copying the symlink dance into each new probe"): the allocation
+// lives here, so the cleanup obligation does too, and a future caller cannot
+// forget something it never has to write.
+//
+// Callers that ALREADY clean up in a `finally` (probe-health-suffix.js et al.)
+// stay correct and unchanged — `force: true` makes removing an absent path a
+// no-op, so the two layers compose rather than fight. Their eager cleanup is
+// still worth keeping: it frees space mid-run rather than at exit.
+const _fakeHomes = [];
+
+function _cleanupFakeHomes() {
+  // Escape hatch for debugging a failing probe: keep the trees to inspect them.
+  if (process.env.DHX_KEEP_FAKE_HOME === '1') return;
+  for (const home of _fakeHomes.splice(0)) {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+  }
+}
+
+process.on('exit', _cleanupFakeHomes);
+// 'exit' does NOT fire on a signal, and a probe interrupted mid-run is exactly
+// when scratch is most likely to be abandoned. process.exit() re-enters the
+// 'exit' handler above, so the removal itself stays in one place.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => process.exit(1));
+}
+
 function makeFakeHome(prefix) {
   if (typeof prefix !== 'string' || !prefix) prefix = 'dhx-fake-home-';
   const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  _fakeHomes.push(home);
   fs.mkdirSync(path.join(home, '.cache', 'dhx'), { recursive: true });
   fs.mkdirSync(path.join(home, '.claude', 'hooks'), { recursive: true });
   fs.symlinkSync(REAL_RENDERER, path.join(home, '.claude', 'hooks', 'dhx-statusline.js'));
