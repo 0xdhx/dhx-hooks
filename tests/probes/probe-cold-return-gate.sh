@@ -244,6 +244,59 @@ check '[18] nothing written outside the cache dir' \
 check '[18] stage lands inside the cache dir' \
   "$(find "$CASE_DIR/cache" -name 'cold-return-stage-*' | wc -l)" 1
 
+# --- [20] synthetic input takes the ADVISORY lane, never the block lane ------
+# Regression anchor for the 2026-08-15 live-fire finding: the first production
+# fire blocked a `<task-notification>` for a restarted background agent. The
+# manifest's structural-exclusion argument ("a queue implies an active agent
+# implies API calls within the TTL") is refuted by detached background tasks,
+# which run for hours making zero parent-session API calls. Machine input must
+# never be erased — its recovery story ("the operator resends") does not exist.
+synth_case() {
+  local name=$1 prompt=$2
+  local dir="$TMPROOT/$name"; mkdir -p "$dir/cache"
+  printf '{"session_id":"%s","transcript_path":"%s","cwd":"/tmp","prompt":%s}' \
+    "$name" "$COLD_T" "$prompt" > "$dir/in.json"
+  ( export DHX_COLD_RETURN_CACHE_DIR="$dir/cache" DHX_COLD_RETURN_NOW="$NOW"
+    bash "$HOOK" < "$dir/in.json" > "$dir/out" 2> "$dir/err" )
+  SRC=$?; SOUT=$(cat "$dir/out"); SERR=$(cat "$dir/err"); SDIR="$dir"
+}
+COLD_T="$TMPROOT/cold.jsonl"
+
+synth_case notif '"<task-notification>\n<task-id>abc</task-id>\n</task-notification>"'
+check '[20] task-notification -> allow (never exit 2)' "$SRC" 0
+check '[20] task-notification -> stderr silent' "$([ -s "$SDIR/err" ] && echo noisy || echo empty)" empty
+check '[20] advisory rides systemMessage JSON' \
+  "$(printf '%s' "$SOUT" | jq -r 'if (.systemMessage|type)=="string" then "yes" else "no" end' 2>/dev/null)" yes
+case "$SOUT" in *"Cold cache"*) ok '[20] advisory carries the cost fork' ;; *) bad '[20] advisory carries the cost fork' ;; esac
+case "$SOUT" in *"NOT blocked"*) ok '[20] advisory says it did not block' ;; *) bad '[20] advisory says it did not block' ;; esac
+check '[20] advisory writes NO stage file (nothing was erased)' \
+  "$(find "$SDIR/cache" -name 'cold-return-stage-*' | wc -l)" 0
+check '[20] advisory writes NO marker (nothing to override)' \
+  "$(find "$SDIR/cache" -name 'cold-return-marker-*' | wc -l)" 0
+check '[20] advisory still records state for the cooldown' \
+  "$(find "$SDIR/cache" -name 'cold-return-state-*' | wc -l)" 1
+check '[20] state records the advisory lane' \
+  "$(jq -r '.lane' "$SDIR/cache/cold-return-state-notif.json" 2>/dev/null)" advisory
+
+# Every synthetic wrapper class, not just the one that bit us.
+for pair in 'caveat:<local-command-caveat>Caveat: ...' 'cmdname:<command-name>/compact</command-name>' \
+            'sysrem:<system-reminder>note</system-reminder>' 'cmdout:<local-command-stdout>x</local-command-stdout>'; do
+  nm=${pair%%:*}; body=${pair#*:}
+  synth_case "$nm" "$(jq -Rn --arg b "$body" '$b')"
+  check "[20] ${nm} wrapper -> allow" "$SRC" 0
+done
+
+# Non-vacuity: a human prompt that merely MENTIONS the tag still blocks.
+synth_case mentions '"please read the <task-notification> format docs"'
+check '[20] human prompt merely citing the tag still BLOCKS' "$SRC" 2
+
+# --- [21] cooldown applies to the advisory lane too --------------------------
+( export DHX_COLD_RETURN_CACHE_DIR="$TMPROOT/notif/cache" DHX_COLD_RETURN_NOW=$((NOW + 300))
+  bash "$HOOK" < "$TMPROOT/notif/in.json" > "$TMPROOT/notif/out2" 2>/dev/null )
+check '[21] second notification inside cooldown -> allow' "$?" 0
+check '[21] ...and emits nothing (no advisory spam)' \
+  "$([ -s "$TMPROOT/notif/out2" ] && echo noisy || echo empty)" empty
+
 # --- [19] happy path writes no state at all ----------------------------------
 check '[19] allow path leaves no marker/stage behind' \
   "$(find "$TMPROOT/warm/cache" -type f 2>/dev/null | wc -l)" 0

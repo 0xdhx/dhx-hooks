@@ -222,10 +222,85 @@ CTX_MIN="${DHX_COLD_RETURN_CONTEXT_MIN:-150000}"
 ARM=$((CTX_MIN + CTX_MIN / 10))
 [ "$CTX" -ge "$ARM" ] || exit 0
 
+# --- Step 4.5: synthetic-input discrimination (2026-08-15, live-fire finding) --
+# The manifest's structural-exclusion argument for the queued-message case is
+# REFUTED by measurement: it held that "a queue implies an active agent, which
+# implies API calls within the TTL," bounding the exception to a >1h single tool
+# call via the tool-timeout ceiling. A DETACHED BACKGROUND TASK breaks every link
+# — it runs for hours making zero API calls in the parent session, so the parent
+# anchor ages past the TTL while work is in flight, and the completion
+# notification then arrives through UserPromptSubmit as queued machine input
+# after arbitrary idle. Nothing bounds it. First production fire (session
+# 3df4d133, 2026-08-15) blocked exactly that: a `<task-notification>` for a
+# restarted background agent.
+#
+# Blocking machine input is never right, because the recovery story is "the
+# operator resends" and no human typed it — the marker and stage file protect
+# nothing. But staying silent is wrong too: an operator returning to a background
+# session on a dead 252k cache is precisely who this hook exists for. So
+# synthetic input takes the NON-BLOCKING lane: same measurement, same cost fork,
+# delivered via `systemMessage` (operator-visible, not injected into the model's
+# context) at exit 0. Nothing is ever erased.
+PROMPT_HEAD=$(printf '%s' "$INPUT" | jq -j '(.prompt // "") | .[0:32]' 2>/dev/null) || PROMPT_HEAD=""
+SYNTHETIC=0
+case "$PROMPT_HEAD" in
+  '<task-notification>'*|'<local-command-caveat>'*|'<local-command-stdout>'*|\
+  '<command-name>'*|'<system-reminder>'*|'<user-prompt-submit-hook>'*) SYNTHETIC=1 ;;
+esac
+
 # --- Step 5: stage the prompt, arm the marker, block ------------------------
 umask 077
 mkdir -p "$CACHE_DIR" 2>/dev/null || exit 0
 
+# Shared state writer — both lanes record the fire so the cooldown applies
+# uniformly (a burst of task notifications must not produce a burst of
+# advisories any more than a burst of blocks).
+write_state() {
+  local tmp
+  tmp=$(mktemp "$CACHE_DIR/.cold-return-state-$SID.XXXXXX" 2>/dev/null) || return 0
+  if jq -n --argjson b "$NOW" --argjson ctx "$CTX" --argjson age "$AGE" --argjson syn "$SYNTHETIC" \
+        '{blocked_at_epoch:$b, context_estimate:$ctx, anchor_age_s:$age, lane:(if $syn==1 then "advisory" else "block" end)}' \
+        > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+}
+
+# --- Step 5a: the measurement text (shared by both lanes) -------------------
+# Flush-left, <=76 cols, one status symbol from the safe set, no padded label
+# gutter (a wrapped continuation returns to column 0 and would invert the
+# hierarchy), no markdown headers (they flatten to bold). Summary first: an
+# operator returning after an hour reads line 1 and already has the decision.
+AGE_H=$((AGE / 3600))
+AGE_M=$(((AGE % 3600) / 60))
+if [ "$AGE_H" -gt 0 ]; then AGE_TXT=$(printf '%dh%02dm' "$AGE_H" "$AGE_M"); else AGE_TXT="${AGE_M}m"; fi
+CTX_K=$(((CTX + 500) / 1000))
+COLD_K=$(((CTX * 2 + 500) / 1000))
+WARM_K=$(((CTX / 10 + 500) / 1000))
+if [ "$TTL" -ge 3600 ]; then TTL_TXT="1h"; else TTL_TXT="$((TTL / 60))m"; fi
+case "$TTL_SRC" in
+  observed) TTL_NOTE="TTL ${TTL_TXT} (observed write bucket)" ;;
+  override) TTL_NOTE="TTL ${TTL_TXT} (env override)" ;;
+  *)        TTL_NOTE="TTL ${TTL_TXT} assumed — write bucket unreadable; 5m if in overage" ;;
+esac
+HEAD_TXT=$(printf '⚠ Cold cache — the next send pays a full prefix rewrite.\n\nAnchor %s old · %s\nContext ~%sk → ≈%sk equivalents to rewarm (~%sk if it were warm)\n\n/clear if this arc is done · /compact if it is not (cold, keeps context)' \
+  "$AGE_TXT" "$TTL_NOTE" "$CTX_K" "$COLD_K" "$WARM_K")
+
+# --- Step 5b: ADVISORY lane (synthetic input) -------------------------------
+# Non-blocking: `systemMessage` surfaces to the operator without entering the
+# model's context, and exit 0 lets the turn through untouched. No stage file and
+# no marker — nothing was erased, so there is nothing to recover and nothing to
+# override. Channel per docs/hook-dev-guide.md § Output JSON Schema (universal,
+# cross-version-portable); same shape HP-049 uses on PreToolUse.
+if [ "$SYNTHETIC" -eq 1 ]; then
+  write_state
+  MSG=$(printf '%s\nThis turn is system-generated and was NOT blocked — it proceeds now.\n' "$HEAD_TXT")
+  jq -n --arg m "$MSG" '{systemMessage:$m}' 2>/dev/null || true
+  exit 0
+fi
+
+# --- Step 5c: BLOCK lane (human prompt) -------------------------------------
 STAGE="$CACHE_DIR/cold-return-stage-$SID.txt"
 # `jq -j`, not `-r`: -r appends a newline, and the staged copy must be the
 # operator's exact bytes — this file IS the paste they cannot otherwise recover.
@@ -249,44 +324,15 @@ if ! jq -n --arg s "$SESSION_ID" --arg st "$STAGE" --arg h "$P_HASH" \
 fi
 mv -f "$MTMP" "$MARKER" 2>/dev/null || { rm -f "$MTMP" "$STAGE" 2>/dev/null; exit 0; }
 
-STMP=$(mktemp "$CACHE_DIR/.cold-return-state-$SID.XXXXXX" 2>/dev/null)
-if [ -n "${STMP:-}" ]; then
-  if jq -n --argjson b "$NOW" --argjson ctx "$CTX" --argjson age "$AGE" \
-        '{blocked_at_epoch:$b, context_estimate:$ctx, anchor_age_s:$age}' > "$STMP" 2>/dev/null; then
-    mv -f "$STMP" "$STATE" 2>/dev/null || rm -f "$STMP" 2>/dev/null
-  else
-    rm -f "$STMP" 2>/dev/null
-  fi
-fi
+write_state
 
 # Sweep stage files orphaned by sessions that never resent. Block path only —
 # never on the hot path. Bounded by the cache dir's own size.
 find "$CACHE_DIR" -maxdepth 1 -name 'cold-return-stage-*.txt' -mmin +1440 -delete 2>/dev/null
 
-# --- Step 6: the message ----------------------------------------------------
-# Flush-left, <=76 cols, one status symbol from the safe set, no padded label
-# gutter (a wrapped continuation returns to column 0 and would invert the
-# hierarchy), no markdown headers (they flatten to bold). Summary first: an
-# operator returning after an hour reads line 1 and already has the decision.
-AGE_H=$((AGE / 3600))
-AGE_M=$(((AGE % 3600) / 60))
-if [ "$AGE_H" -gt 0 ]; then AGE_TXT=$(printf '%dh%02dm' "$AGE_H" "$AGE_M"); else AGE_TXT="${AGE_M}m"; fi
-CTX_K=$(((CTX + 500) / 1000))
-COLD_K=$(((CTX * 2 + 500) / 1000))
-WARM_K=$(((CTX / 10 + 500) / 1000))
-if [ "$TTL" -ge 3600 ]; then TTL_TXT="1h"; else TTL_TXT="$((TTL / 60))m"; fi
-case "$TTL_SRC" in
-  observed) TTL_NOTE="TTL ${TTL_TXT} (observed write bucket)" ;;
-  override) TTL_NOTE="TTL ${TTL_TXT} (env override)" ;;
-  *)        TTL_NOTE="TTL ${TTL_TXT} assumed — write bucket unreadable; 5m if in overage" ;;
-esac
-
+# --- Step 6: the block message ----------------------------------------------
 {
-  printf '⚠ Cold cache — this send pays a full prefix rewrite.\n\n'
-  printf 'Anchor %s old · %s\n' "$AGE_TXT" "$TTL_NOTE"
-  printf 'Context ~%sk → ≈%sk equivalents to rewarm (~%sk if it were warm)\n\n' \
-    "$CTX_K" "$COLD_K" "$WARM_K"
-  printf '/clear if this arc is done · /compact if it is not (cold, keeps context)\n'
+  printf '%s\n' "$HEAD_TXT"
   printf 'Resend to send it anyway. Your prompt was erased on block and saved at:\n'
   printf '%s\n' "$STAGE"
 } >&2
