@@ -2433,6 +2433,13 @@ function classifyCacheEvent(tail) {
 // the server quantified it). Self-clears when the next completed call
 // classifies warm. EXPECTED_COLD causes stay quiet by design (f27). Local
 // session health only — never folded into cross-repo fleet channels.
+// Strip a trailing bracketed context-window variant tag from a model id:
+// `claude-opus-5[1m]` -> `claude-opus-5`. Non-strings pass through untouched so
+// the caller's "both sides present" guard keeps working on undefined.
+function baseModelId(id) {
+  return typeof id === 'string' ? id.replace(/\[[^\]]*\]$/, '') : id;
+}
+
 function getCacheAge(data, tail) {
   return new Promise((resolve) => {
     if (!tail || !tail.anchor) return resolve('');
@@ -2448,10 +2455,22 @@ function getCacheAge(data, tail) {
 
     // Model/effort invalidation vs the anchor turn (both compared only when
     // both sides are present — absence is unknown, not mismatch).
-    const sModel = data.model && data.model.id;
+    //
+    // baseModelId: statusline stdin tags the CONTEXT-WINDOW VARIANT into the id
+    // (`claude-opus-5[1m]`) while the API echoes only the base model back in each
+    // assistant record's `message.model` (`claude-opus-5`). The two never compare
+    // equal on a long-context session, so every such session read as a permanent
+    // model change and the countdown rendered `ttl?` forever — measured live
+    // 2026-08-15, 7 of 10 concurrent sessions on `[1m]`. Strip a trailing
+    // bracketed variant tag from BOTH sides; a genuine opus->fable switch still
+    // mismatches, and the f5 stable-id discipline is unchanged (this is not a
+    // retreat to display-name comparison).
+    // INVARIANT: the variant tag is a client-side decoration, not a cache-key
+    // input — same base model + same effort = same prefix cache identity.
+    const sModel = baseModelId(data.model && data.model.id);
     const sEffort = data.effort && data.effort.level;
     const invalidated =
-      (sModel && tail.anchor.model && sModel !== tail.anchor.model) ||
+      (sModel && tail.anchor.model && sModel !== baseModelId(tail.anchor.model)) ||
       (sEffort && tail.anchor.effort && sEffort !== tail.anchor.effort);
     if (invalidated) return resolve(`\x1b[2mttl?\x1b[0m${glyph}`);
 

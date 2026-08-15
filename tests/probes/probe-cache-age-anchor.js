@@ -133,6 +133,32 @@ async function renderChecks() {
   const segEffort = await getCacheAge({ model: { id: 'claude-fable-5' }, effort: { level: 'max' } }, freshT);
   ok('effort change → dim ttl?', segEffort.includes('ttl?'));
 
+  // Context-window VARIANT tag must not read as a model change. stdin carries
+  // `claude-<model>[1m]`; the API echoes only the base model in message.model.
+  // Comparing them raw made every long-context session render `ttl?` forever
+  // (shipped 2026-08-15, caught same day on a live 7-of-10-session sample).
+  // The fixture below is the shape the original cases could not produce: they
+  // drew both sides from ONE string space, so the client-vs-API asymmetry was
+  // unrepresentable.
+  const segVariant = await getCacheAge(
+    { model: { id: 'claude-fable-5[1m]' }, effort: { level: 'medium' } }, freshT);
+  ok('[1m] variant vs base anchor renders a countdown, not ttl?',
+    /\d+m/.test(segVariant) && !segVariant.includes('ttl?'));
+
+  // ...and the reverse direction (variant on the ANCHOR side, base on stdin).
+  const variantAnchorT = parseTranscriptTail(
+    writeFixture('variant-anchor.jsonl', rec(nowIso, { model: 'claude-fable-5[1m]' })));
+  const segVariantAnchor = await getCacheAge(
+    { model: { id: 'claude-fable-5' }, effort: { level: 'medium' } }, variantAnchorT);
+  ok('base stdin vs [1m] anchor renders a countdown, not ttl?',
+    /\d+m/.test(segVariantAnchor) && !segVariantAnchor.includes('ttl?'));
+
+  // Non-vacuity: normalization must NOT swallow a genuine cross-model switch
+  // that happens to carry a variant tag on one side.
+  const segRealSwitch = await getCacheAge(
+    { model: { id: 'claude-opus-5[1m]' }, effort: { level: 'medium' } }, freshT);
+  ok('opus[1m] vs fable anchor still invalidates', segRealSwitch.includes('ttl?'));
+
   // Display-name-only stdin (no stable id) must NOT false-trigger (f5).
   const segNoId = await getCacheAge({ model: { display_name: 'Fable 5' }, effort: { level: 'medium' } }, freshT);
   ok('absent model.id does not invalidate', /\d+m/.test(segNoId) && !segNoId.includes('ttl?'));
