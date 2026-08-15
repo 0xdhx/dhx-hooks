@@ -230,6 +230,21 @@ function check(name, ok, detail) {
     tok === 'wsl:monitor-dead 1h40m', `got ${JSON.stringify(tok)}`);
 }
 
+// --- The newer-age selection SURVIVES the render, not just the classifier. ---
+// Every other render fixture in this file plants two EQUALLY stale logs, so all of them pass
+// under either end of the range: the pure-classifier assertions above pin the selection, but
+// nothing pinned that readWslMonitorState() actually propagates it into the rendered token.
+// Asymmetric, both orders — a single order cannot tell "reports the newer" from "reports
+// whichever argument came first". 96 min -> 1h36m (newer), 285 min -> 4h45m (older).
+{
+  const a = livenessToken(runWith({ pressureMin: 96, censusMin: 285 }));
+  check('render: both-stale token carries the NEWER log age (1h36m, not 4h45m)',
+    a === 'wsl:monitor-dead 1h36m', `got ${JSON.stringify(a)}`);
+  const b = livenessToken(runWith({ pressureMin: 285, censusMin: 96 }));
+  check('render: newer-age selection is order-independent through the render path',
+    b === 'wsl:monitor-dead 1h36m', `got ${JSON.stringify(b)}`);
+}
+
 // --- pressure stale only ---
 {
   const out = runWith({ pressureMin: 100.5, censusMin: 1 });
