@@ -1165,7 +1165,23 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   const stale = (a) => a !== null && a >= WSL_MONITOR_DEAD_MS;
   const p = stale(pressureAgeMs);
   const c = stale(censusAgeMs);
-  if (p && c) return { kind: 'monitor', ageMs: Math.max(pressureAgeMs, censusAgeMs) };
+  // NEWER of the two, not older. The token renders `wsl:monitor-dead <age>`, and the pull
+  // surface renders it as the sentence "no producer has checked in for <age>" — which is only
+  // true of the MOST RECENT write across both producers. Math.max named the oldest producer's
+  // downtime and asserted it as the coverage gap: 2h-stale pressure + 9h-stale census claimed
+  // "no producer has checked in for 9h" when one had checked in 2h ago.
+  // WHY the worst-case age is not the thing to report here: 'monitor' fires only once BOTH are
+  // stale, so a long-dark producer was already on screen as 'census-dead 9h' (or 'pressure-dead')
+  // the whole time it was dark. The new fact at this transition is total blindness, which began
+  // when the newer producer went quiet. Reporting max re-reports the old outage under a new label.
+  // The per-producer detail is not lost — the /dhx:infra pull surface prints both ages beneath
+  // the headline (surface-monitor-liveness.sh, monitor branch), per the push/pull split this
+  // family already follows: push carries the actionable now-state, pull carries the forensics.
+  // INVARIANT: the bash twin wsl_state() in ~/repos/skills/dhx/infra/references/
+  // wsl-monitor-liveness.sh MUST select the same end of the range (`p < c ? p : c`). Two
+  // different ages for one condition trains distrust in the guard. Pinned from both sides:
+  // this probe's newer-age assertion, and scenario 10 of skills' probe-infra-monitor-liveness.sh.
+  if (p && c) return { kind: 'monitor', ageMs: Math.min(pressureAgeMs, censusAgeMs) };
   if (p) return { kind: 'pressure', ageMs: pressureAgeMs };
   if (c) return { kind: 'census', ageMs: censusAgeMs };
   return null;

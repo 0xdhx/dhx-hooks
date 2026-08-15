@@ -177,8 +177,17 @@ function check(name, ok, detail) {
     k(0, 0, 60 * 1000, true) === null);
   check('classify: unreadable uptime (null) → grace does NOT apply, still reports',
     k(DEAD_MS, DEAD_MS, null) === 'monitor');
-  check('classify: monitor age is the OLDER of the two logs',
-    classifyWslMonitorState(DEAD_MS, DEAD_MS * 3, 1e9).ageMs === DEAD_MS * 3);
+  // The both-stale age is the NEWER log — the most recent sign of life across both producers.
+  // This inverts a prior assertion that pinned Math.max (the OLDER log): the pull surface renders
+  // this age as "no producer has checked in for <age>", which max made false (2h-stale pressure +
+  // 9h-stale census claimed 9h of total silence when one producer wrote 2h ago). See the rationale
+  // block at classifyWslMonitorState. 4th arg passed explicitly — the old call site omitted it and
+  // leaned on `undefined` being falsy, so the assertion only held because 1e9 clears the ceiling.
+  check('classify: monitor age is the NEWER of the two logs (most recent sign of life)',
+    classifyWslMonitorState(DEAD_MS, DEAD_MS * 3, 1e9, false).ageMs === DEAD_MS);
+  // Argument-order guard: without this, "always return arg 1" would satisfy the assertion above.
+  check('classify: monitor age is order-independent (newer wins from either position)',
+    classifyWslMonitorState(DEAD_MS * 3, DEAD_MS, 1e9, false).ageMs === DEAD_MS);
 }
 
 // =========================================================================
