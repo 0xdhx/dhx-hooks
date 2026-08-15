@@ -54,20 +54,56 @@ else
   bad "composition guard: 05-verify-hook-patterns.sh missing/not-executable/does-not-reference verify-hook-patterns.sh"
 fi
 
-# Resolve via `git rev-parse --git-path hooks/pre-commit` — respects core.hooksPath
-# AND works from both main checkout and linked worktrees (in a worktree `.git` is
-# a gitdir-pointer FILE, so literal `.git/hooks/pre-commit` is not a real path).
+# Resolve the repo's OWN pre-commit from the COMMON dir — NEVER `git rev-parse
+# --git-path hooks/pre-commit`, which FOLLOWS core.hooksPath. That distinction is
+# load-bearing under fleet enrollment (XR-34): enrolling points core.hooksPath at
+# the root-owned reftxn dispatcher, so --git-path resolves to a real dispatcher
+# FILE, the `-L` test fails, and this probe reddens on a repo that is wired
+# correctly. The enrolled dispatcher does not REPLACE this repo's hooks — it
+# CHAINS to exactly this common-dir hooks/ (proven live by the fleet canary's
+# chain-delegation leg), so the invariant worth asserting is that the repo's own
+# gate is installed, independent of whatever guard is in front of it.
+# install-hooks.sh:59-65 documents the same trap and resolves the same way.
+# Using the common dir also keeps the worktree property the old --git-path form
+# had: from a linked worktree, --git-common-dir points at the primary's .git.
+#
 # Compare by CONTENT (diff -q), not absolute-path equivalence: from a worktree,
 # `scripts/hooks/pre-commit` resolves to the worktree's checkout of the file
 # (separate inode from the main repo's), yet the live hook symlink targets the
 # main repo's copy — both have the same blob, so content-equivalence is the
 # correct invariant.
-LIVE_HOOK=$(git rev-parse --git-path hooks/pre-commit 2>/dev/null)
-if [ -n "$LIVE_HOOK" ] && [ -L "$LIVE_HOOK" ] && \
-   diff -q "$LIVE_HOOK" scripts/hooks/pre-commit >/dev/null 2>&1; then
-  ok "live hooks/pre-commit symlink resolves to the dispatcher (scripts/hooks/pre-commit content)"
+_cdir=$(git rev-parse --git-common-dir 2>/dev/null || echo .git)
+case "$_cdir" in /*) : ;; *) _cdir="$REPO_ROOT/$_cdir" ;; esac
+OWN_HOOK="$_cdir/hooks/pre-commit"
+if [ -L "$OWN_HOOK" ] && diff -q "$OWN_HOOK" scripts/hooks/pre-commit >/dev/null 2>&1; then
+  ok "repo's own hooks/pre-commit symlink resolves to the dispatcher (scripts/hooks/pre-commit content)"
 else
-  bad "live hooks/pre-commit ($LIVE_HOOK) is not a symlink whose target matches scripts/hooks/pre-commit"
+  bad "repo's own hooks/pre-commit ($OWN_HOOK) is not a symlink whose target matches scripts/hooks/pre-commit"
+fi
+
+# INVARIANT: relaxing the assertion above to ignore core.hooksPath would accept ANY
+# redirect, including one that bypasses the convention gate entirely. So the posture
+# is asserted separately: a hooksPath OUTSIDE the repo is the fleet dispatcher and is
+# expected to chain back to the hook above (reported, never failed); a hooksPath
+# INSIDE the repo but pointing somewhere other than the common-dir hooks/ is a real
+# misconfiguration and DOES fail.
+_hp=$(git config --get core.hooksPath 2>/dev/null || true)
+if [ -z "$_hp" ]; then
+  ok "core.hooksPath unset — git uses the common-dir hooks/ asserted above"
+else
+  case "$_hp" in /*) _hpa="$_hp" ;; *) _hpa="$REPO_ROOT/$_hp" ;; esac
+  _hpa=$(realpath "$_hpa" 2>/dev/null || echo "$_hpa")
+  _own=$(realpath "$_cdir/hooks" 2>/dev/null || echo "$_cdir/hooks")
+  if [ "$_hpa" = "$_own" ]; then
+    ok "core.hooksPath -> the repo's own common-dir hooks/ (self, not a redirect)"
+  else
+    case "$_hpa" in
+      "$REPO_ROOT"/*)
+        bad "core.hooksPath -> $_hpa: inside the repo but not its common-dir hooks/ — the convention gate would be bypassed" ;;
+      *)
+        ok "core.hooksPath -> outside the repo ($_hpa) — fleet dispatcher in front; it CHAINS to the hook asserted above (XR-34), not a replacement" ;;
+    esac
+  fi
 fi
 
 # --- behavioral block/pass (isolated throwaway repo) ------------------------
