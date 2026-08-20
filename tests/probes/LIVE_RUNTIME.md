@@ -67,12 +67,27 @@ scratch `$HOME`. The live runtime was never mutated.
 path is not the same as asserting on live content.
 
 The remaining probes that read live paths without a fake `$HOME` (29 of the 35
-surveyed) depend on `~/.claude/dhx-tools/*` (skills-repo install) or
-`~/.ccs/shared/settings.json` (machine settings). Same structural hazard, a
-*different* upstream — out of scope for this tier, and the reason the tag is
-`LIVE_RUNTIME` rather than `GSD_FLIPPABLE`: if a skills-repo install is ever shown
-to flip a commit's verdict the same way, those probes join this roster without a
-rename.
+surveyed) depend on `~/.claude/dhx-tools/*` or `~/.ccs/shared/settings.json`. They
+carry a real and *measured* version of this hazard — five of them flip, and one
+(`c90d734`, 2026-05-22) already blocked a clean-HEAD commit — but **they cannot join
+this roster, and that is a ruling, not a backlog item.**
+
+`~/.claude/dhx-tools/` is 33 symlinks into `~/repos/skills/scripts/` and
+`~/repos/cross-repo/scripts/` — live working trees, not an installed snapshot. There
+is no install event and no version file, so there is nothing for a freshness stamp to
+key on; a content hash over two peer repos' `scripts/` trees would go stale on every
+keystroke in either. The tier's safety comes entirely from `#8c` being able to ask
+"has the live tier run against the *currently installed* gsd-core?", and that question
+has no counterpart here.
+
+The answer for that class is to **de-pin** — those probes assert on upstream *source
+text*, and one reds on a pure `headerFor` → `headerLabel` rename with zero behavioural
+change. See `docs/decisions.md` § 2026-08-20 "The non-gsd live-dependent probes…" and
+`.planning/backlog/2026-08-20-non-gsd-live-dependent-probes-untiered.md`.
+
+The tag is still named `LIVE_RUNTIME` rather than `GSD_FLIPPABLE` — a naming choice made
+before the ruling above, kept because it costs nothing. Do not read it as a reserved slot
+for that class.
 
 ## Invocation
 
