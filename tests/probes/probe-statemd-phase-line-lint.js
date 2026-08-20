@@ -23,9 +23,19 @@
 //   whole body). Every per-function differential stayed green (61/61) while the
 //   lint silently disagreed with the harvest it warns about. The lesson is that a
 //   body-only oracle cannot see a composition change: 4f mirrors the new scoper
-//   behaviourally, 4g pins the two call sites that apply it, and 1b carries the
+//   behaviourally, 4g pins the call sites that apply it, and 1b carries the
 //   first fixtures in this file with TWO `Phase:` lines — a scoping bug is
 //   invisible to any fixture that only ever carries one.
+//
+//   4g was re-derived 2026-08-19 for gsd-core 1.11.0 (#3208), which refactored the
+//   READ seam out of cmdStateSnapshot into a helper, resolveStatePhase, reached
+//   through a different call shape. The scoping guarantee held; only the shape
+//   moved. 4g now counts each seam SEPARATELY — the single combined count it used
+//   to carry would pass a bump that doubled one seam while de-scoping the other,
+//   which is control-verified, not hypothetical. The hook still mirrors the WRITE
+//   seam and must keep doing so: resolveStatePhase reads frontmatter FIRST, so a
+//   lint following it would compare current_phase_name against itself and could
+//   never warn. See docs/decisions.md 2026-08-19.
 // Backs docs/decisions.md 2026-06-25 STATE.md phase-line lint row and the
 //   2026-07-31 differential-oracle row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
@@ -634,15 +644,52 @@ if (!fs.existsSync(GSD_LIB)) {
     // Assert BOTH seams, and assert the COUNT rather than mere presence: if a
     // future bump scopes one seam and not the other, the two disagree with each
     // other and the hook can only mirror one. A bare `.includes` would stay green
-    // through that. If this reds, do not "fix" it by editing the number — read
-    // state.cjs and re-derive which seam the lint must follow.
-    const scopeHits = stateSrc === null ? -1
-      : (stateSrc.match(/\(currentPositionScope, 'Phase'\)/g) || []).length;
-    ok(scopeHits === 2,
-      `state.cjs scopes Phase to ## Current Position at BOTH seams (found ${scopeHits}, want 2 — write: buildStateFrontmatter, read: cmdStateSnapshot)`);
-    ok(stateSrc !== null
-      && stateSrc.includes('matchCurrentPositionSection(bodyContent) ?? bodyContent')
-      && stateSrc.includes('matchCurrentPositionSection(body) ?? body'),
+    // through that. If this reds, do not "fix" it by editing a number or loosening
+    // a regex — read state.cjs and re-derive which seam the lint must follow.
+    //
+    // Counted PER SEAM (2026-08-19), not as one combined `=== 2`. A combined count
+    // stays green through the exact bump this pin exists to catch: one seam gaining
+    // a second scoped read while the other is de-scoped entirely. Per-seam also
+    // names which seam moved instead of reporting a bare arithmetic miss.
+    //
+    // The two seams no longer SHARE a call shape (gsd-core 1.11.0 / #3208). The
+    // write seam still calls stateExtractField directly; the read seam moved out of
+    // cmdStateSnapshot into the helper resolveStatePhase(fm, body) and now reads via
+    // stateFieldValue, which takes frontmatter as its first argument. Both are still
+    // scoped to `## Current Position` — the guarantee is intact, only the shape moved.
+    // resolveStatePhase has two callers, cmdStateSnapshot and cmdStateValidate; both
+    // inherit the scope from the helper, so the seam is still counted once.
+    // Resolve both by CONTENT, never by line number: state.cjs is a build artifact
+    // replaced wholesale on every gsd-core install.
+    //
+    // A THIRD scoped `Phase` read exists and is deliberately EXCLUDED from both
+    // counts: resolveCurrentPhaseId (#3208) scopes via sliceCurrentPositionSection
+    // with NO `?? body` fallback, because its callers WRITE durable records and must
+    // render `?` rather than guess a phase. state.cjs documents that divergence as
+    // intentional and forbids reconciling it by pointing one at the other. It binds
+    // `positionSection`, not `currentPositionScope`, so it cannot land in either
+    // count below — that exclusion is load-bearing, not incidental.
+    //
+    // Comments are stripped before counting. state.cjs's own JSDoc for
+    // resolveCurrentPhaseId quotes the read-seam call shape verbatim, and its JSDoc
+    // for resolveStatePhase quotes the `?? body` spelling; today both survive only
+    // because a line break splits the first, but a reflow would turn either into a
+    // false green. Count executable text only.
+    const stateCode = stateSrc === null ? null
+      : stateSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const countCalls = (re) => stateCode === null ? -1
+      : (stateCode.match(re) || []).length;
+    // The optional `)` absorbs the `(0, ns.fn)(…)` shape tsc emits for a namespaced
+    // import without also matching a bare identifier that merely ends in the name.
+    const writeSeamHits = countCalls(/stateExtractField\)?\(currentPositionScope, 'Phase'\)/g);
+    const readSeamHits = countCalls(/stateFieldValue\)?\(fm, currentPositionScope, null, 'Phase'\)/g);
+    ok(writeSeamHits === 1,
+      `state.cjs WRITE seam scopes Phase to ## Current Position (buildStateFrontmatter → stateExtractField(currentPositionScope, 'Phase') — found ${writeSeamHits}, want 1)`);
+    ok(readSeamHits === 1,
+      `state.cjs READ seam scopes Phase to ## Current Position (resolveStatePhase → stateFieldValue(fm, currentPositionScope, null, 'Phase') — found ${readSeamHits}, want 1)`);
+    ok(stateCode !== null
+      && stateCode.includes('matchCurrentPositionSection(bodyContent) ?? bodyContent')
+      && stateCode.includes('matchCurrentPositionSection(body) ?? body'),
       'state.cjs still spells the scope as `matchCurrentPositionSection(...) ?? <body>` (the fallback the hook mirrors)');
   }
 }

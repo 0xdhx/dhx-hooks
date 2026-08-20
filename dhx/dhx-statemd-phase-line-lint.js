@@ -30,18 +30,22 @@
 // equals the frontmatter `current_phase`. A lint that fired on the forward
 // transition would train the operator to ignore it — worse than no lint.
 //
-// MIRROR PROVENANCE (gsd-core 1.10.0 — re-verify on gsd-core bumps):
-//   parsePhaseFromProse   @ ~/.claude/gsd-core/bin/lib/phase-id.cjs:281 (canonical,
-//                           #2121/#2125; state.cjs:1100 parseProsePhaseField is now
+// MIRROR PROVENANCE (last re-verified against gsd-core 1.11.0, 2026-08-19 —
+// re-verify on gsd-core bumps). Resolve every entry by SYMBOL, never by line
+// number: these modules are build artifacts compiled from src/*.cts and replaced
+// wholesale on every install, so a line cite here is stale the moment it is
+// written. `grep -n '<symbol>' <file>` is the resolution step.
+//   parsePhaseFromProse   @ ~/.claude/gsd-core/bin/lib/phase-id.cjs (canonical,
+//                           #2121/#2125; state.cjs's own parseProsePhaseField is
 //                           a one-line delegation to it)
-//   stateExtractField     @ ~/.claude/gsd-core/bin/lib/state-document.cjs:60
-//   stripFrontmatter      @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs:536 (moved
+//   stateExtractField     @ ~/.claude/gsd-core/bin/lib/state-document.cjs
+//   stripFrontmatter      @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs (moved
 //                           from state.cjs in the #2143 dedup; byte-identical logic)
 //   extractFrontmatter    @ ~/.claude/gsd-core/bin/lib/frontmatter.cjs (scalar form)
 //   stripFencedCode       @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
 //   tokenizeHeadings      @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
 //   collectSection        @ ~/.claude/gsd-core/bin/lib/markdown-sectionizer.cjs
-//   matchCurrentPositionSection @ ~/.claude/gsd-core/bin/lib/state.cjs:1188 (#2956,
+//   matchCurrentPositionSection @ ~/.claude/gsd-core/bin/lib/state.cjs (#2956,
 //                           added 1.10.0 — see the sectionizer mirror block below)
 // The regexes below are COPIED VERBATIM — the lint MUST agree with the
 // reader it protects. Do NOT "improve" them (e.g. teach dashName to accept `--`):
@@ -150,7 +154,7 @@ function isTableSeparatorRow(firstCell) {
   return /^[\s\-:]+$/.test(firstCell.trim());
 }
 
-// ── MIRROR: gsd-core stateExtractField (state-document.cjs:60) — VERBATIM ──────
+// ── MIRROR: gsd-core stateExtractField (state-document.cjs) — VERBATIM ─────────
 // Bold `**Field:**` first, then line-start `^Field:`, then pipe-table, over
 // whatever CONTENT it is handed — first match wins. This function is unchanged
 // since 1.7.0. What changed in gsd-core 1.10.0 (#2956) is the SCOPE its callers
@@ -173,7 +177,7 @@ function stateExtractField(content, fieldName) {
   return null;
 }
 
-// ── MIRROR: gsd-core stripFrontmatter (frontmatter.cjs:536) — VERBATIM ─────────
+// ── MIRROR: gsd-core stripFrontmatter (frontmatter.cjs) — VERBATIM ─────────────
 function stripFrontmatter(content) {
   let result = content;
   while (true) {
@@ -188,11 +192,28 @@ function stripFrontmatter(content) {
 // ── MIRROR: gsd-core section scoping (#2956, gsd-core 1.10.0) — VERBATIM ───────
 // 1.10.0 stopped reading `Phase:` from the whole STATE.md body and scoped it to
 // the `## Current Position` section, at BOTH seams:
-//   buildStateFrontmatter (state.cjs:1440) — the WRITE seam this lint protects
-//   cmdStateSnapshot      (state.cjs:1289) — the READ seam
-// Both spell it `matchCurrentPositionSection(body) ?? body`, so one mirror serves
-// both. Without the scope the lint reads a historical `Phase:` line out of an
-// archive section and fails in one of two directions:
+//   buildStateFrontmatter — the WRITE seam, and the ONLY one this lint mirrors
+//   resolveStatePhase     — the READ seam (called by cmdStateSnapshot and
+//                           cmdStateValidate; it lived inline in cmdStateSnapshot
+//                           until gsd-core 1.11.0 / #3208 extracted it)
+// Both still spell the scope `matchCurrentPositionSection(<body>) ?? <body>`, so
+// one mirrored scoper serves both — but they no longer share a CALL shape, and
+// more importantly they no longer share a PRECEDENCE. resolveStatePhase reads
+// frontmatter FIRST (`current_phase` / `current_phase_name`), falling through to
+// the scoped prose only when frontmatter is absent; buildStateFrontmatter reads
+// the body ONLY, because frontmatter is its output. This lint mirrors the WRITE
+// seam deliberately and must keep doing so: a lint that followed the read seam's
+// ladder would compare `current_phase_name` against itself, always agree, and
+// never warn. The precedence split is also WHY the lint still earns its keep —
+// a body/frontmatter disagreement is invisible to every read until the next
+// frontmatter rebuild flips it. Do not "re-sync" this to the read seam.
+// gsd-core also carries a THIRD scoped `Phase` read, resolveCurrentPhaseId
+// (#3208), which is strict (no `?? body` fallback) because its callers persist
+// durable records. It is not a seam this lint mirrors; state.cjs documents the
+// divergence as deliberate.
+//
+// Without the scope the lint reads a historical `Phase:` line out of an archive
+// section and fails in one of two directions:
 //   FALSE WARN — archive phase number happens to equal current_phase but carries
 //                an older name: the lint reports a clobber that cannot happen.
 //   BLIND      — archive phase differs from current_phase: Gate 1's alignment
@@ -365,7 +386,7 @@ function collectSection(content, headingPredicate, opts = {}) {
     return { heading: target, body, bodyStart: bodyStartOffset, bodyEnd: bodyStartOffset + body.length };
 }
 
-// matchCurrentPositionSection (state.cjs:1188) — VERBATIM except the module
+// matchCurrentPositionSection (state.cjs) — VERBATIM except the module
 // qualifier on collectSection, which cannot survive extraction into a standalone
 // file (same adaptation the other mirrors make).
 function matchCurrentPositionSection(body) {
@@ -405,8 +426,8 @@ function extractFrontmatterScalar(content, key) {
 
 // ── Phase-number normalization + alignment ────────────────────────────────────
 // Normalize both sides through the SAME anchored token regex gsd-core uses for
-// prose AND frontmatter phase values (state.cjs:2825 runs frontmatter `Current
-// Phase` raws through parsePhaseFromProse too), so `XR-32` → `32`,
+// prose AND frontmatter phase values (state.cjs's syncStateFrontmatter runs
+// frontmatter `Current Phase` raws through parsePhaseFromProse too), so `XR-32` → `32`,
 // `03.1` → `03.1` — and junk like `Milestone v1.4` → null (no longer `1.4`),
 // which lands on Gate 1's suppress side, matching gsd-core's own #905 guard.
 function normalizePhaseToken(value) {
@@ -447,7 +468,7 @@ function lintStateMd(content) {
   const body = stripFrontmatter(content);
   // #2956 (gsd-core 1.10.0): scope `Phase` to ## Current Position, falling back
   // to the whole body when no such section exists — byte-for-byte the policy at
-  // gsd-core's write seam (buildStateFrontmatter, state.cjs:1440). Reading the
+  // gsd-core's write seam (buildStateFrontmatter). Reading the
   // whole body here is what made this lint disagree with the harvest it warns
   // about; see the mirror block above for the two failure directions.
   const currentPositionScope = matchCurrentPositionSection(body) ?? body;
