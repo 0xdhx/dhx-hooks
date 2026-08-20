@@ -27,24 +27,38 @@
 //   first fixtures in this file with TWO `Phase:` lines — a scoping bug is
 //   invisible to any fixture that only ever carries one.
 //
-//   4g was re-derived 2026-08-19 for gsd-core 1.11.0 (#3208), which refactored the
-//   READ seam out of cmdStateSnapshot into a helper, resolveStatePhase, reached
-//   through a different call shape. The scoping guarantee held; only the shape
-//   moved. 4g now counts each seam SEPARATELY — the single combined count it used
-//   to carry would pass a bump that doubled one seam while de-scoping the other,
-//   which is control-verified, not hypothetical. The hook still mirrors the WRITE
-//   seam and must keep doing so: resolveStatePhase reads frontmatter FIRST, so a
-//   lint following it would compare current_phase_name against itself and could
-//   never warn. See docs/decisions.md 2026-08-19.
+//   Section 4g is RETIRED (2026-08-19) and replaced by 4h, which RUNS gsd-core's
+//   exported write path instead of text-scanning its source. 4g's premise — that
+//   both seams are unexported, so text is the only instrument — was simply false:
+//   `syncStateFrontmatter` is exported and reaches buildStateFrontmatter. A text
+//   pin on a BUILD ARTIFACT reds on any emit change and blocks every commit in
+//   the repo, and it can also false-GREEN (its regexes were not function-scoped).
+//   Read 4h's own header before touching it; the read-seam assertion was dropped
+//   deliberately, not lost.
+//
+//   Section 1c was added 2026-08-19 for the two-rung write ladder. The hook had
+//   mirrored only the PROSE rung since the day it shipped, while upstream reads a
+//   whole-body `Current Phase` / `Current Phase Name` FIELD first — leaving the
+//   lint wrong in both directions, the phase rung's failure being the BLIND one.
+//   The suite was fully green across that entire span because no fixture carried
+//   either field. Third instance of one pattern: a rung, a scope, or a caller that
+//   no fixture exercises is one no assertion protects. See docs/decisions.md
+//   2026-08-19.
 // Backs docs/decisions.md 2026-06-25 STATE.md phase-line lint row and the
 //   2026-07-31 differential-oracle row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
 // SAFE_FOR_LIVE: yes   (requires the hook module + writes fixtures only under an
 //   mktemp dir; require()s `~/.claude/gsd-core/bin/lib/{phase-id,state-document,
-//   frontmatter,markdown-sectionizer}.cjs` to differential-test the mirrors, and SKIPS that section
-//   cleanly when gsd-core is absent. Those imports are side-effect-free —
-//   verified 2026-07-31 by requiring all three under a scratch cwd and a fake
-//   $HOME: zero files created in either. No live mutation.)
+//   frontmatter,markdown-sectionizer,state}.cjs` to differential-test the mirrors, and SKIPS
+//   that section cleanly when gsd-core is absent. Those imports are side-effect-free —
+//   re-verified 2026-08-19 after state.cjs joined the set for §4h: requiring all
+//   five AND calling `syncStateFrontmatter(doc, undefined)` over three documents
+//   under a scratch cwd and a fake $HOME created zero files. The undefined `cwd`
+//   is load-bearing — it is what keeps the write seam off every disk path. Note
+//   state.cjs has a WIDER footprint than the other four: it resolves
+//   `bin/shared/config-defaults.manifest.json` at module load, so a gsd-core tree
+//   carrying `bin/lib` alone throws on require. That lands on the deliberate
+//   present-but-broken FAIL branch, not the absent-gsd-core SKIP. No live mutation.)
 
 'use strict';
 
@@ -256,7 +270,9 @@ for (const c of CASES) {
 
 // ── 1b. Section scoping — ## Current Position (#2956, gsd-core 1.10.0) ────────
 // 1.10.0 stopped harvesting `Phase:` from the whole body and scoped it to the
-// `## Current Position` section (state.cjs:1440 write seam / :1289 read seam).
+// `## Current Position` section, at the write seam (buildStateFrontmatter) and
+// the read seam (inline in cmdStateSnapshot then, resolveStatePhase since 1.11.0).
+// Resolve both by SYMBOL — state.cjs is a build artifact and line cites go stale.
 // Until the hook followed, a historical `Phase:` line in an archive section was
 // harvested instead of the live one, failing in TWO directions — both reproduced
 // live on 1.10.0 before the fix, both fixtured here:
@@ -323,6 +339,71 @@ ok(!(h.matchCurrentPositionSection(
        '## Current Position\n\nPhase: 7 (X) — GO\n\n## Later\n\nPhase: 9 (Y) — NO\n') || '')
      .includes('Phase: 9'),
   '[scope] section body is level-bounded — stops at the next h2');
+
+// ── 1c. The two-rung write ladder — whole-body FIELDS (2026-08-19) ───────────
+// buildStateFrontmatter resolves BOTH values through a two-rung ladder:
+//     currentPhase     = stateExtractField(bodyContent, 'Current Phase')      ?? prosePhase.phase
+//     currentPhaseName = stateExtractField(bodyContent, 'Current Phase Name') ?? prosePhase.name
+// The first rung reads the WHOLE body; only the prose `Phase:` line is scoped to
+// `## Current Position`. The hook mirrored the prose rung ONLY, from the day it
+// shipped (2026-06-25) until 2026-08-19 — and the whole suite stayed green the
+// entire time, because NO fixture above carries either field. Same structural
+// blindness as §1b: a rung no fixture exercises is a rung no assertion protects.
+//
+// Both failure directions are reproduced live against gsd-core 1.11.0 (see
+// docs/decisions.md 2026-08-19); the BLIND one is the reason this section exists.
+// Keep the property that every fixture here carries a `Current Phase` or a
+// `Current Phase Name` field — that is what makes the section load-bearing.
+const FIELD_CASES = [
+  // THE FALSE NEGATIVE. Upstream takes the FIELD for phase (7 — aligned) and the
+  // PROSE for name ("Wrong"), so it clobbers. The pre-fix lint compared
+  // frontmatter 7 against the PROSE phase 9, read a forward transition, and went
+  // silent — a genuine clobber, invisible. RED against the pre-fix hook.
+  { name: 'BLIND: Current Phase field aligns while the prose phase does not',
+    content: `${FM(7, 'Curated')}\n## Session Continuity Archive\n\nPhase: 9 (Wrong) — NO\n\n`
+      + '## Current Position\n\nCurrent Phase: 7\nPhase: 9 (Wrong) — DEFERRED PENDING REVIEW\n',
+    warn: true },
+  // THE FALSE WARN. Upstream takes the Current Phase Name FIELD, which already
+  // equals the curated value, so nothing is clobbered. The pre-fix lint read the
+  // prose dash-tail and warned. RED against the pre-fix hook.
+  { name: 'Current Phase Name field already matches curated → nothing to clobber',
+    content: `${FM(7, 'Curated')}\n## Current Position\n\n`
+      + 'Current Phase Name: Curated\nPhase: 7 (Different) — AWAITING OPERATOR HOST TRIP\n',
+    warn: false },
+  // The field rung is WHOLE-BODY, not section-scoped: a field OUTSIDE
+  // ## Current Position still wins. Scoping the field rung to the section (the
+  // obvious wrong fix) turns this green-by-accident, so it is the control that
+  // pins the ladder's scope ASYMMETRY rather than merely its existence.
+  { name: 'Current Phase Name field OUTSIDE the section still wins (whole-body rung)',
+    content: `${FM(3, 'Curated')}\n## Meta\n\nCurrent Phase Name: FromField\n\n`
+      + '## Current Position\n\nPhase: 3 (Prose) — AWAITING OPERATOR HOST TRIP\n',
+    warn: true },
+  // Control — the field rung must not resurrect the forward-transition warn that
+  // Gate 1 deliberately suppresses. Field phase 32 vs frontmatter 33: still silent.
+  { name: 'Current Phase field at a DIFFERENT phase stays a forward transition',
+    content: `${FM(33, 'doctrine-correction')}\n## Current Position\n\n`
+      + 'Current Phase: 32\nPhase: 32 (authorization-floor) — AWAITING OPERATOR HOST TRIP\n',
+    warn: false },
+  // Control — absent fields must leave the prose rung's behaviour untouched.
+  // This is the regression guard on §1/§1b: if mirroring the ladder had changed
+  // the no-field path, this fixture would flip.
+  { name: 'no fields present → prose rung unchanged (regression guard)',
+    content: STATE(13, 'speaker-aware-render-integration',
+      'Phase: 13 (speaker-aware-render-integration) — AUTONOMOUS SCOPE + LIVE GPU RUNBOOK DONE, human_needed'),
+    warn: true },
+];
+
+for (const c of FIELD_CASES) {
+  ok(h.lintStateMd(c.content).shouldWarn === c.warn,
+    `[field-rung] ${c.name}`);
+}
+
+// The harvested value itself, not just the warn/suppress verdict — a lint that
+// warns for the right reason but reports the wrong name emits a useless advisory.
+ok(h.lintStateMd(FIELD_CASES[0].content).harvested === 'DEFERRED PENDING REVIEW',
+  '[field-rung] BLIND case reports the name upstream would actually write');
+ok(h.lintStateMd(FIELD_CASES[2].content).harvested === 'FromField',
+  '[field-rung] whole-body field rung reports the FIELD value, not the prose tail');
 
 // ── 2. Path matcher ───────────────────────────────────────────────────────────
 ok(h.isStateMdPath('/x/y/.planning/STATE.md'), 'isStateMdPath matches absolute .planning/STATE.md');
@@ -453,12 +534,17 @@ function differential(label, corpus, minSize, pick) {
 if (!fs.existsSync(GSD_LIB)) {
   skip('gsd-core lib dir absent — behavioural mirror differential skipped');
 } else {
-  let PI = null, SD = null, FMOD = null, MS = null, loadErr = null;
+  // SMOD (state.cjs) joined this list 2026-08-19 for §4h, which RUNS the exported
+  // write path instead of text-scanning it. `syncStateFrontmatter(content, cwd)`
+  // is content->content and takes no I/O path when cwd is undefined, which is how
+  // §4h calls it — see the SAFE_FOR_LIVE note in this file's header.
+  let PI = null, SD = null, FMOD = null, MS = null, SMOD = null, loadErr = null;
   try {
     PI = require(path.join(GSD_LIB, 'phase-id.cjs'));
     SD = require(path.join(GSD_LIB, 'state-document.cjs'));
     FMOD = require(path.join(GSD_LIB, 'frontmatter.cjs'));
     MS = require(path.join(GSD_LIB, 'markdown-sectionizer.cjs'));
+    SMOD = require(path.join(GSD_LIB, 'state.cjs'));
   } catch (e) { loadErr = e.message; }
   const exportsPresent = !loadErr
     && typeof (PI || {}).parsePhaseFromProse === 'function'
@@ -466,7 +552,10 @@ if (!fs.existsSync(GSD_LIB)) {
     && typeof (FMOD || {}).stripFrontmatter === 'function'
     && typeof (FMOD || {}).parseFrontmatter === 'function'
     && typeof (MS || {}).collectSection === 'function'
-    && typeof (MS || {}).tokenizeHeadings === 'function';
+    && typeof (MS || {}).tokenizeHeadings === 'function'
+    // The §4h oracle's whole premise: this seam IS reachable. If a future bump
+    // un-exports it, FAIL here rather than silently losing the differential.
+    && typeof (SMOD || {}).syncStateFrontmatter === 'function';
   ok(exportsPresent,
     `gsd-core is present and still exports every mirrored surface${loadErr ? ` (load error: ${loadErr})` : ''}`);
 
@@ -633,64 +722,82 @@ if (!fs.existsSync(GSD_LIB)) {
       return [h.matchCurrentPositionSection(e.doc), upsSection ? upsSection.body : null];
     });
 
-    // ── 4g. The COMPOSITION pin — what §4a-4f structurally cannot see ─────────
-    // This is the assertion whose absence let #2956 through. Every per-function
-    // differential was green across the 1.9.1 → 1.10.0 bump because no mirrored
-    // BODY changed; what changed was which content the callers hand to
-    // stateExtractField for `Phase`. buildStateFrontmatter and cmdStateSnapshot
-    // are both unexported, so no differential can reach either — text is the only
-    // instrument, exactly as in 4e.
+    // ── 4h. The COMPOSITION oracle — behavioural, over the PUBLIC write path ──
+    // REPLACES the 4g text pin (retired 2026-08-19). 4g counted call shapes in
+    // state.cjs source because the seams were believed unexported. They are not:
+    // `syncStateFrontmatter` is exported (module.exports, state.cjs) and reaches
+    // buildStateFrontmatter, so the composition this hook mirrors can be checked
+    // by RUNNING it. Every objection to the text pin is structural and none of
+    // them apply here:
+    //   - state.cjs is a BUILD ARTIFACT (compiled from src/*.cts, replaced
+    //     wholesale on every install). Any emit change — a helper-import style,
+    //     a reflow inside an argument list, a minifier — reds a text pin for no
+    //     behavioural reason, and a red here blocks EVERY commit in the repo.
+    //   - the counted regexes were not function-scoped: an unrelated helper
+    //     reusing the callee and variable names could supply the expected count
+    //     while the real call site was gone. A false GREEN, not just a red.
+    //   - comment-stripping was required to keep state.cjs's own JSDoc from
+    //     satisfying the pin, and a naive stripper can be fed by a template
+    //     literal in the emit.
+    // The read seam is deliberately NOT asserted any more. This hook mirrors the
+    // WRITE seam; whether gsd-core keeps its own read seam scoped the same way is
+    // gsd-core's invariant, not one this repo consumes — the same reasoning that
+    // already excluded resolveCurrentPhaseId. Pinning it bought a red we could
+    // not act on.
     //
-    // Assert BOTH seams, and assert the COUNT rather than mere presence: if a
-    // future bump scopes one seam and not the other, the two disagree with each
-    // other and the hook can only mirror one. A bare `.includes` would stay green
-    // through that. If this reds, do not "fix" it by editing a number or loosening
-    // a regex — read state.cjs and re-derive which seam the lint must follow.
-    //
-    // Counted PER SEAM (2026-08-19), not as one combined `=== 2`. A combined count
-    // stays green through the exact bump this pin exists to catch: one seam gaining
-    // a second scoped read while the other is de-scoped entirely. Per-seam also
-    // names which seam moved instead of reporting a bare arithmetic miss.
-    //
-    // The two seams no longer SHARE a call shape (gsd-core 1.11.0 / #3208). The
-    // write seam still calls stateExtractField directly; the read seam moved out of
-    // cmdStateSnapshot into the helper resolveStatePhase(fm, body) and now reads via
-    // stateFieldValue, which takes frontmatter as its first argument. Both are still
-    // scoped to `## Current Position` — the guarantee is intact, only the shape moved.
-    // resolveStatePhase has two callers, cmdStateSnapshot and cmdStateValidate; both
-    // inherit the scope from the helper, so the seam is still counted once.
-    // Resolve both by CONTENT, never by line number: state.cjs is a build artifact
-    // replaced wholesale on every gsd-core install.
-    //
-    // A THIRD scoped `Phase` read exists and is deliberately EXCLUDED from both
-    // counts: resolveCurrentPhaseId (#3208) scopes via sliceCurrentPositionSection
-    // with NO `?? body` fallback, because its callers WRITE durable records and must
-    // render `?` rather than guess a phase. state.cjs documents that divergence as
-    // intentional and forbids reconciling it by pointing one at the other. It binds
-    // `positionSection`, not `currentPositionScope`, so it cannot land in either
-    // count below — that exclusion is load-bearing, not incidental.
-    //
-    // Comments are stripped before counting. state.cjs's own JSDoc for
-    // resolveCurrentPhaseId quotes the read-seam call shape verbatim, and its JSDoc
-    // for resolveStatePhase quotes the `?? body` spelling; today both survive only
-    // because a line break splits the first, but a reflow would turn either into a
-    // false green. Count executable text only.
-    const stateCode = stateSrc === null ? null
-      : stateSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const countCalls = (re) => stateCode === null ? -1
-      : (stateCode.match(re) || []).length;
-    // The optional `)` absorbs the `(0, ns.fn)(…)` shape tsc emits for a namespaced
-    // import without also matching a bare identifier that merely ends in the name.
-    const writeSeamHits = countCalls(/stateExtractField\)?\(currentPositionScope, 'Phase'\)/g);
-    const readSeamHits = countCalls(/stateFieldValue\)?\(fm, currentPositionScope, null, 'Phase'\)/g);
-    ok(writeSeamHits === 1,
-      `state.cjs WRITE seam scopes Phase to ## Current Position (buildStateFrontmatter → stateExtractField(currentPositionScope, 'Phase') — found ${writeSeamHits}, want 1)`);
-    ok(readSeamHits === 1,
-      `state.cjs READ seam scopes Phase to ## Current Position (resolveStatePhase → stateFieldValue(fm, currentPositionScope, null, 'Phase') — found ${readSeamHits}, want 1)`);
-    ok(stateCode !== null
-      && stateCode.includes('matchCurrentPositionSection(bodyContent) ?? bodyContent')
-      && stateCode.includes('matchCurrentPositionSection(body) ?? body'),
-      'state.cjs still spells the scope as `matchCurrentPositionSection(...) ?? <body>` (the fallback the hook mirrors)');
+    // The corpus is HARVESTED from the fixture arrays above, so adding a fixture
+    // automatically extends this differential and the two can never fall out of
+    // sync (same design as §4a). The expectation is DERIVED from upstream's own
+    // output rather than hand-written — the pre-fix session wrote a wrong literal
+    // expectation for exactly this reason.
+    const ORACLE_DOCS = [...CASES, ...SCOPE_CASES, ...FIELD_CASES].map((c) => c.content);
+    ok(ORACLE_DOCS.length >= 20,
+      `write-seam oracle corpus is non-vacuous (${ORACLE_DOCS.length} >= 20)`);
+
+    let oracleDiverge = 0;
+    let oracleRan = 0;
+    for (const doc of ORACLE_DOCS) {
+      let rebuiltName;
+      let rebuiltPhase;
+      try {
+        const synced = SMOD.syncStateFrontmatter(doc, undefined);
+        const rebuilt = FMOD.parseFrontmatter(synced);
+        rebuiltName = rebuilt ? rebuilt.current_phase_name : undefined;
+        rebuiltPhase = rebuilt ? rebuilt.current_phase : undefined;
+      } catch {
+        // A throw is itself divergence — the hook is pure and never throws.
+        oracleDiverge++;
+        continue;
+      }
+      oracleRan++;
+      // Re-express the hook's CONTRACT in terms of what upstream actually wrote.
+      // Gate 1's alignment guard is a DELIBERATE divergence from upstream (a
+      // forward transition is legitimate and must stay silent), so it is part of
+      // the expectation rather than something the oracle flags.
+      const curatedRaw = h.extractFrontmatterScalar(doc, 'current_phase_name');
+      const fmPhaseTok = h.normalizePhaseToken(h.extractFrontmatterScalar(doc, 'current_phase'));
+      const wroteTok = h.normalizePhaseToken(rebuiltPhase == null ? null : String(rebuiltPhase));
+      const wroteName = rebuiltName == null ? null : String(rebuiltName);
+      const expectWarn = h.phasesAligned(wroteTok, fmPhaseTok)
+        && h.isPresentName(curatedRaw)
+        && !!wroteName
+        && wroteName.trim() !== curatedRaw.trim();
+      const actual = h.lintStateMd(doc);
+      const verdictAgrees = actual.shouldWarn === expectWarn;
+      // When it warns, the NAME it reports must be the name upstream would write.
+      // A lint that warns for the right reason but names the wrong value emits an
+      // advisory the operator cannot act on.
+      const nameAgrees = !expectWarn || actual.harvested === wroteName.trim();
+      if (!verdictAgrees || !nameAgrees) {
+        oracleDiverge++;
+        console.log(`     ↳ oracle divergence: expectWarn=${expectWarn} got=${actual.shouldWarn}`
+          + ` upstreamName=${JSON.stringify(wroteName)} harvested=${JSON.stringify(actual.harvested)}`);
+      }
+    }
+    ok(oracleRan === ORACLE_DOCS.length,
+      `write-seam oracle ran every corpus document (${oracleRan} of ${ORACLE_DOCS.length})`);
+    ok(oracleDiverge === 0,
+      `lint agrees with the LIVE write seam over the whole corpus (${oracleDiverge} diverge of ${ORACLE_DOCS.length})`);
   }
 }
 

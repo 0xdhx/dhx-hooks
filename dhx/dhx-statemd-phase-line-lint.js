@@ -476,23 +476,56 @@ function lintStateMd(content) {
   const fmPhase = normalizePhaseToken(extractFrontmatterScalar(content, 'current_phase'));
   const fmNameRaw = extractFrontmatterScalar(content, 'current_phase_name');
 
+  // THE WRITE-SEAM LADDER — mirrored whole, including its SCOPE ASYMMETRY.
+  // buildStateFrontmatter resolves BOTH values through a two-rung ladder whose
+  // first rung is a whole-BODY field and whose second is the SCOPED prose line:
+  //     currentPhase     = stateExtractField(bodyContent, 'Current Phase')      ?? prosePhase.phase
+  //     currentPhaseName = stateExtractField(bodyContent, 'Current Phase Name') ?? prosePhase.name
+  // Do NOT scope the field rungs to ## Current Position — upstream reads them
+  // from the whole body, and only the prose `Phase:` line is section-scoped.
+  //
+  // Mirroring only the prose rung (the shape shipped 2026-06-25 through
+  // 2026-08-19) left the lint wrong in BOTH directions, and the phase rung's
+  // failure was the BLIND one — verified live against gsd-core 1.11.0:
+  //   FALSE NEGATIVE (phase rung): frontmatter current_phase 7, a whole-body
+  //     `Current Phase: 7` field, and a scoped `Phase: 9 (Wrong)` line. Upstream
+  //     takes the FIELD for the phase (7, aligned) and the PROSE for the name,
+  //     writing current_phase_name="Wrong" over the curated value — a real
+  //     clobber. The lint compared frontmatter 7 against the PROSE phase 9, read
+  //     it as a forward transition, and stayed silent. Silent, and
+  //     indistinguishable from a clean pass — the same failure class as the
+  //     2026-08-08 section-scope blind.
+  //   FALSE POSITIVE (name rung): a whole-body `Current Phase Name:` field that
+  //     already matches the curated name. Upstream takes the field and clobbers
+  //     nothing; the lint read the prose tail and warned about a clobber that
+  //     cannot happen.
+  // Probe section 4h differentials this composition against the live exported
+  // syncStateFrontmatter, so a future ladder change reds there rather than here.
+  const harvestedPhase = normalizePhaseToken(
+    stateExtractField(body, 'Current Phase') ?? prose.phase);
+  const harvestedName = stateExtractField(body, 'Current Phase Name') ?? prose.name;
+
   // Gate 1 — phase-number alignment (the load-bearing guard). Both sides must
   // resolve to a phase number and they must align. A forward transition
-  // (body phase ≠ frontmatter phase) is legitimate → suppress.
-  if (!prose.phase || !fmPhase || !phasesAligned(normalizePhaseToken(prose.phase), fmPhase))
+  // (harvested phase ≠ frontmatter phase) is legitimate → suppress. This is a
+  // DELIBERATE divergence from upstream: gsd-core would still rewrite the name
+  // there, but a lint that fired on every legitimate transition would be trained
+  // away. The alignment side must use the HARVESTED phase, not the prose phase —
+  // that substitution is the false-negative fix above.
+  if (!harvestedPhase || !fmPhase || !phasesAligned(harvestedPhase, fmPhase))
     return result;
 
   // Gate 2 — a name was actually harvested (reject-guard already applied in
   // parseProsePhaseField), and the frontmatter carries a curated name to clobber.
-  if (!prose.name || !isPresentName(fmNameRaw))
+  if (!harvestedName || !isPresentName(fmNameRaw))
     return result;
 
   const curated = fmNameRaw.trim();
-  if (prose.name === curated)
-    return result; // names agree — the SAFE name-in-first-paren shape
+  if (harvestedName.trim() === curated)
+    return result; // names agree — nothing a rebuild would clobber
 
   result.shouldWarn = true;
-  result.harvested = prose.name;
+  result.harvested = harvestedName.trim();
   result.curated = curated;
   result.phase = fmPhase;
   return result;
