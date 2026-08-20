@@ -35,6 +35,8 @@
 # Run: bash tests/probes/probe-deferred-gate-disjointness.sh
 
 # SAFE_FOR_LIVE: yes   (static grep over committed dhx/*.sh + a READ-ONLY grep of
+# LIVE_RUNTIME: yes  (greps live gsd-core audit.cjs for three constants; an upstream rename flips it with the repo unchanged)
+# LIVE_SUBJECT: dhx/dhx-deferred-check.sh dhx/dhx-milestone-close-blocker-pretooluse.sh dhx/dhx-milestone-close-blocker-check.sh
 #   ~/.claude/gsd-core/bin/lib/audit.cjs, skipped when gsd-core is absent; no writes,
 #   no fixtures, no live mutation)
 set -uo pipefail

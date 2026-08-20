@@ -48,6 +48,8 @@
 //   2026-07-31 differential-oracle row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
 // SAFE_FOR_LIVE: yes   (requires the hook module + writes fixtures only under an
+// LIVE_RUNTIME: yes  (section 4h differentials the hook mirror against the LIVE gsd-core write seam; an install can flip it with the repo unchanged)
+// LIVE_SUBJECT: dhx/dhx-statemd-phase-line-lint.js
 //   mktemp dir; require()s `~/.claude/gsd-core/bin/lib/{phase-id,state-document,
 //   frontmatter,markdown-sectionizer,state}.cjs` to differential-test the mirrors, and SKIPS
 //   that section cleanly when gsd-core is absent. Those imports are side-effect-free —

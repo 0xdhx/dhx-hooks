@@ -15,6 +15,19 @@
 #   bash scripts/run-probes.sh                              # bare — defaults to --filter SAFE_FOR_LIVE=yes (D-14)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes   # explicit health.sh delegate (D-26)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=no    # sandbox-only (D-26+D-27)
+#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no
+#                                                           # hermetic tier — the pre-commit gate's default (2026-08-20)
+#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=yes --stamp
+#                                                           # live tier + version stamp; run after a gsd-core install
+#
+# --filter is REPEATABLE and the keys AND together. Two keys are recognised:
+#   SAFE_FOR_LIVE=yes|no  — untagged probes are REFUSED (fail toward NOT running:
+#                           an unclassified probe might mutate live state).
+#   LIVE_RUNTIME=yes|no   — untagged probes are treated as `no` (fail toward
+#                           RUNNING at commit time: an unclassified probe is
+#                           assumed hermetic, so the gate keeps checking it).
+# The two defaults point in opposite directions ON PURPOSE — each fails toward
+# the safe side of its own question. See tests/probes/LIVE_RUNTIME.md.
 # Exit code 0 = all probes passed. Nonzero = at least one probe failed
 # or timed out (124). Exit 2 = invalid flag value or D-27 PWD+CONFIG_DIR
 # refusal under --filter SAFE_FOR_LIVE=no when cwd or CONFIG_DIR resolves
@@ -42,36 +55,56 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
 # existing matches_filter() loop, not via a hardcoded array. (D-14; backlog
 # 2026-05-01-retire-supersession-watchdogs-hardcoded-list-via-filter-flag.md
 # trigger fired Phase 6 C1 — 3 new SAFE_FOR_LIVE=no probes shipped.)
-FILTER_KEY=""
-FILTER_VAL=""
+FILTER_KEYS=()
+FILTER_VALS=()
+STAMP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --filter)
       shift
-      if [[ "${1:-}" == SAFE_FOR_LIVE=* ]]; then
-        FILTER_KEY="SAFE_FOR_LIVE"
-        FILTER_VAL="${1#SAFE_FOR_LIVE=}"
-        if [[ "$FILTER_VAL" != "yes" && "$FILTER_VAL" != "no" ]]; then
-          echo "run-probes: --filter SAFE_FOR_LIVE expects 'yes' or 'no', got '$FILTER_VAL'" >&2
+      _spec="${1:-}"
+      case "$_spec" in
+        SAFE_FOR_LIVE=*|LIVE_RUNTIME=*)
+          _k="${_spec%%=*}"
+          _v="${_spec#*=}"
+          if [[ "$_v" != "yes" && "$_v" != "no" ]]; then
+            echo "run-probes: --filter $_k expects 'yes' or 'no', got '$_v'" >&2
+            exit 2
+          fi
+          FILTER_KEYS+=("$_k")
+          FILTER_VALS+=("$_v")
+          ;;
+        *)
+          echo "run-probes: --filter expects SAFE_FOR_LIVE=yes|no or LIVE_RUNTIME=yes|no, got '${_spec:-<empty>}'" >&2
           exit 2
-        fi
-      else
-        echo "run-probes: --filter expects SAFE_FOR_LIVE=yes|no, got '${1:-<empty>}'" >&2
-        exit 2
-      fi
+          ;;
+      esac
+      shift
+      ;;
+    --stamp)
+      STAMP=1
       shift
       ;;
     *)
-      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no)" >&2
+      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no, --filter LIVE_RUNTIME=yes|no, --stamp)" >&2
       exit 2
       ;;
   esac
 done
 
+# Helper: current value requested for a filter key ("" when the key is unset).
+filter_val_for() {
+  local want="$1" i
+  for i in "${!FILTER_KEYS[@]}"; do
+    [[ "${FILTER_KEYS[$i]}" == "$want" ]] && { printf '%s' "${FILTER_VALS[$i]}"; return 0; }
+  done
+  printf ''
+}
+
 # ----- D-27: PWD+CONFIG_DIR refusal gate (fires ONLY on --filter SAFE_FOR_LIVE=no) -----
 # Closes T-04-07 — refuses to invoke live-state-mutating probes when cwd OR
 # CLAUDE_CONFIG_DIR resolves under live ~/.ccs tree (covers shared + instances/*/).
-if [[ "$FILTER_KEY" == "SAFE_FOR_LIVE" && "$FILTER_VAL" == "no" ]]; then
+if [[ "$(filter_val_for SAFE_FOR_LIVE)" == "no" ]]; then
   cwd_resolved=$(realpath "$PWD" 2>/dev/null || true)
   curr=$(realpath "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" 2>/dev/null || true)
   live=$(realpath "$HOME/.ccs" 2>/dev/null || true)
@@ -86,6 +119,9 @@ FAIL=0
 PASS=0
 TIMEOUT=0
 SKIPPED=0
+# Basenames of probes that FAILED this run. Consumed by the --stamp writer so the
+# pre-commit gate can name which live differentials are red without re-running them.
+FAILED_NAMES=()
 # SUPERSESSION bucket (Convention-A FAIL gating, brief
 # .planning/backlog/2026-05-13-run-probes-convention-a-recognition.md): a
 # Convention A probe (exit_0_means_v1_2_work_warranted) that correctly exits 1|2
@@ -108,25 +144,55 @@ active_cc=$(printf '%s' "$cc_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 # SAFE_FOR_LIVE=no) are skipped via header-tag match through the existing
 # matches_filter() loop, not via a hardcoded array. (D-14; backlog
 # 2026-05-01-retire-supersession-watchdogs-hardcoded-list-via-filter-flag.md)
-if [[ -z "$FILTER_KEY" ]]; then FILTER_KEY="SAFE_FOR_LIVE"; FILTER_VAL="yes"; fi
+# NOTE: the default is SAFE_FOR_LIVE=yes ONLY. LIVE_RUNTIME is deliberately NOT
+# defaulted — a bare invocation (health.sh --probes, sync-public-mirror.sh, a
+# direct operator run) keeps running the WHOLE suite including the live tier, so
+# the 2026-08-20 tier split subtracts coverage from exactly one caller: the
+# pre-commit gate, which opts in explicitly. Adding a default here would silently
+# remove the live differentials from every other surface.
+if [[ ${#FILTER_KEYS[@]} -eq 0 ]]; then FILTER_KEYS=("SAFE_FOR_LIVE"); FILTER_VALS=("yes"); fi
 
-# D-26: filter check — returns 0 (run) if filter passes, 1 (skip) if filter excludes.
+# D-26 (+2026-08-20 multi-key): filter check — returns 0 (run) if EVERY requested
+# filter passes, 1 (skip) if any excludes. Keys AND together.
+#
+# The two keys fail in OPPOSITE directions, and that asymmetry is load-bearing:
+#   SAFE_FOR_LIVE — untagged is REFUSED. The question is "may this touch live
+#                   state?", and an unclassified probe must not be assumed safe.
+#   LIVE_RUNTIME  — untagged reads as `no`. The question is "is this probe's
+#                   verdict flippable by an upstream install?", and an
+#                   unclassified probe must be assumed hermetic so the
+#                   pre-commit gate keeps running it. A new live probe that
+#                   forgets its tag therefore lands in the tier that runs MORE
+#                   often, never the one that runs less. probe-live-runtime-tier.sh
+#                   asserts the tag/roster parity that catches the omission.
 matches_filter() {
-  local file="$1"
-  [[ -z "$FILTER_KEY" ]] && return 0   # bare invocation — no filter
-  # Look for `# SAFE_FOR_LIVE: <val>` (sh) or `// SAFE_FOR_LIVE: <val>` (js)
-  if grep -qE "^(# |// )SAFE_FOR_LIVE: ${FILTER_VAL}\b" "$file"; then
-    return 0
-  fi
-  # Untagged probes always skipped under --filter (refuse to assume safety)
-  if ! grep -qE "^(# |// )SAFE_FOR_LIVE: (yes|no)\b" "$file"; then
-    echo "[SKIP] $(basename "$file") — refusing: missing SAFE_FOR_LIVE tag"
+  local file="$1" i key val tagged
+  for i in "${!FILTER_KEYS[@]}"; do
+    key="${FILTER_KEYS[$i]}"
+    val="${FILTER_VALS[$i]}"
+    if grep -qE "^(# |// )${key}: ${val}\b" "$file"; then
+      continue
+    fi
+    if grep -qE "^(# |// )${key}: (yes|no)\b" "$file"; then
+      tagged=yes
+    else
+      tagged=no
+    fi
+    if [[ "$tagged" == "no" ]]; then
+      if [[ "$key" == "LIVE_RUNTIME" ]]; then
+        # Untagged == LIVE_RUNTIME: no. Run it when `no` was asked for.
+        [[ "$val" == "no" ]] && continue
+      else
+        echo "[SKIP] $(basename "$file") — refusing: missing ${key} tag"
+        SKIPPED=$((SKIPPED+1))
+        return 1
+      fi
+    fi
+    echo "[SKIP] $(basename "$file") — ${key} filter (looking for $val)"
     SKIPPED=$((SKIPPED+1))
     return 1
-  fi
-  echo "[SKIP] $(basename "$file") — SAFE_FOR_LIVE filter (looking for $FILTER_VAL)"
-  SKIPPED=$((SKIPPED+1))
-  return 1
+  done
+  return 0
 }
 
 for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
@@ -144,6 +210,7 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
     echo "[TIMED OUT] $(basename "$p") — exceeded 30s (D-16)"
     TIMEOUT=$((TIMEOUT+1))
     FAIL=$((FAIL+1))
+    FAILED_NAMES+=("$(basename "$p")")
   elif [ "$RC" -eq 0 ]; then
     PASS=$((PASS+1))
   else
@@ -174,9 +241,11 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
       if [ "$RC" -ge 3 ]; then
         echo "[FAIL] $probe_base — Convention A probe exited $RC (>=3, unexpected) — counted FAIL"
         FAIL=$((FAIL+1))
+        FAILED_NAMES+=("$probe_base")
       elif [ "$conclusion" = "error" ] || [ "$conclusion" = "ambiguous" ]; then
         echo "[FAIL] $probe_base — Convention A conclusion=$conclusion (exit $RC) — counted FAIL"
         FAIL=$((FAIL+1))
+        FAILED_NAMES+=("$probe_base")
       else
         # conclusion=supersession_found_* (or any benign conclusion) at RC 1|2:
         # a legitimate supersession observation, NOT a failure.
@@ -186,6 +255,7 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
     else
       # Convention B / field absent / unparseable / jq missing → fail SAFE.
       FAIL=$((FAIL+1))
+      FAILED_NAMES+=("$probe_base")
     fi
   fi
   echo "---"
@@ -205,6 +275,35 @@ if [[ -n "$active_cc" ]] && [[ "$active_cc" != "unknown" ]] && [[ -d "$results_d
   echo "Running multi-cc-results validator against $results_dir..."
   bash "$REPO/scripts/verify-multi-cc-results.sh" || FAIL=$((FAIL+1))
   echo "---"
+fi
+
+# ----- 2026-08-20: --stamp — record that the live tier RAN against this gsd-core -----
+# Written on PASS *and* on FAIL, deliberately. The stamp answers "was the live tier
+# executed against the currently-installed gsd-core?", NOT "did it pass". Gating the
+# write on success would deadlock the repo exactly as the pre-tier gate did: a slow
+# live red (statemd mirror re-derivation) would leave the stamp stale forever, so the
+# freshness check in verify-hook-patterns.sh check #8c would block every commit until
+# the multi-hour fix landed — reinstating the blast radius this split exists to remove.
+# Instead the stamp records the failures by name, 8c blocks only commits that stage a
+# failing probe's declared LIVE_SUBJECT, and everything else flows.
+if [ "$STAMP" -eq 1 ]; then
+  stamp_dir="$REPO/tests/probes/.results/live-tier"
+  mkdir -p "$stamp_dir"
+  gsd_version="absent"
+  [ -r "$HOME/.claude/gsd-core/VERSION" ] && gsd_version="$(tr -d '[:space:]' < "$HOME/.claude/gsd-core/VERSION")"
+  {
+    printf '{\n'
+    printf '  "gsd_version": "%s",\n' "$gsd_version"
+    printf '  "ran_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  "passed": %s,\n' "$PASS"
+    printf '  "failing": ['
+    for i in "${!FAILED_NAMES[@]}"; do
+      [ "$i" -gt 0 ] && printf ', '
+      printf '"%s"' "${FAILED_NAMES[$i]}"
+    done
+    printf ']\n}\n'
+  } > "$stamp_dir/status.json"
+  echo "Live-tier stamp written: gsd-core $gsd_version, $PASS passed, ${#FAILED_NAMES[@]} failing → ${stamp_dir#$REPO/}/status.json"
 fi
 
 [ "$FAIL" -eq 0 ]

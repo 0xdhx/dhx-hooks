@@ -25,6 +25,8 @@
 # Backs decisions.md 2026-06-15 "gsd-hook-version marker drift — revert + guard" row.
 # Run: bash tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
 # SAFE_FOR_LIVE: yes   (grep-only against in-repo wrapper + read-only cat of live ~/.claude/gsd-core/VERSION; no writes)
+# LIVE_RUNTIME: yes  (reds on EVERY gsd-core release by design (reconciliation forcing-function); cleared by a one-line marker bump)
+# LIVE_SUBJECT: dhx/statusline-wrapper.js
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -29,6 +29,8 @@
 # AND the 2026-06-05 "gsd-core runtime-surface migration tail" row (4 surfaces).
 # Run: bash tests/probes/probe-gsd-roots-resolve.sh
 # SAFE_FOR_LIVE: yes   (grep-only against in-repo source + read-only dir-exists checks on live ~/.claude; no writes)
+# LIVE_RUNTIME: yes  (asserts the live gsd-core root + agents/skills populations resolve; a gsd layout move flips it with the repo unchanged)
+# LIVE_SUBJECT: dhx/dhx-gsd-canonical-mirror-gate.sh dhx/dhx-gsd-drift-surface.sh scripts/dhx-gsd-triad.sh scripts/dhx-draft-buffer.sh
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

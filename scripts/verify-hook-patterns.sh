@@ -15,12 +15,23 @@ set -euo pipefail
 #      — same SIGPIPE-bites-control-flow class). Comment lines and lines
 #      containing the literal `HP-028` are exempt. Companion at-rest
 #      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
-#   8. Run scripts/run-probes.sh when dhx/*.js or tests/probes/* are
-#      staged. Catches wrapper require-boundary changes that don't
-#      update fake-$HOME fixtures + probe edits that break their own
-#      assertions. Trigger scoped narrowly so dhx/*.sh edits don't pay
-#      the probe-suite cost (sed-extraction + citation-check at #6/#7
-#      already cover hook-side regressions).
+#   8. Probe suite, tiered (2026-08-20). Armed by the same narrow pathspec
+#      as before (dhx/*.js or tests/probes/*), then split three ways:
+#        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no. Every
+#           probe whose verdict is a pure function of the repository.
+#           Blocks on red, exactly as the whole suite used to.
+#        8b STAGED LIVE SUBJECTS — each LIVE_RUNTIME:yes probe runs iff the
+#           commit stages the probe itself or one of its declared
+#           LIVE_SUBJECT files. Blocks on red. This is what keeps a live
+#           differential gating the thing it actually guards.
+#        8c LIVE-TIER FRESHNESS — blocks if the installed gsd-core VERSION
+#           differs from the version the live tier last RAN against. The
+#           fix is one command, printed in the message.
+#      Rationale: an install-triggered invariant was being checked at
+#      commit time ~450 times per 120 days to catch ~20 possible
+#      breakages, and any single live red froze all 223 trigger-matched
+#      files across every concurrent session on this shared tree.
+#      See docs/decisions.md 2026-08-20 + tests/probes/LIVE_RUNTIME.md.
 #
 # Exclusions: misc/*.sh, .planned/**, .inactive/**, gsd/**, *.js/*.cjs/*.mjs
 # Bypass: git commit --no-verify (git handles natively; no extra envvar).
@@ -320,14 +331,77 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
   if [ "${DHX_RED_COMMIT:-0}" = "1" ]; then
     echo "Skipping probe suite — DHX_RED_COMMIT=1 (TDD-RED commit; pair with GREEN to close)."
   else
-    echo "Running probe suite (dhx/*.js or tests/probes/* staged)..."
+    STAGED_ALL=$(git diff --cached --name-only || true)
+
+    # ---- 8a. Hermetic tier ----------------------------------------------
     # Phase 25 D-06 (2026-05-24) re-synced the hooks-side `### Gate 6` doc section
     # to the cross-repo canonical byte-for-byte and retired the
     # DHX_PROBE_ALLOW_CROSS_REPO_DIVERGENCE override that previously masked the
     # by-design divergence here. probe-gate-6-cross-repo-parity.sh now passes
     # plainly; a mismatch again means real drift and blocks (its original
     # REQ-04 contract).
-    bash scripts/run-probes.sh || { echo "FAILED: probe suite"; exit 1; }
+    echo "Running hermetic probe tier (dhx/*.js or tests/probes/* staged)..."
+    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no \
+      || { echo "FAILED: hermetic probe tier"; exit 1; }
+
+    # ---- 8b. Live probes whose own subject is staged ---------------------
+    # A live differential must still gate the file it mirrors. `grep -qxF` reads
+    # a herestring, never a pipe — the HP-028 SIGPIPE+pipefail shape check #5
+    # blocks is deliberately avoided here too.
+    LIVE_PROBES=$(grep -lE '^(# |// )LIVE_RUNTIME: yes\b' tests/probes/probe-*.js tests/probes/probe-*.sh 2>/dev/null || true)
+    for lp in $LIVE_PROBES; do
+      subjects=$(sed -nE 's|^(# \|// )LIVE_SUBJECT:[[:space:]]*(.*)$|\2|p' "$lp" || true)
+      hit=""
+      for cand in "$lp" $subjects; do
+        if grep -qxF -- "$cand" <<<"$STAGED_ALL"; then hit="$cand"; break; fi
+      done
+      [ -n "$hit" ] || continue
+      echo "Running live probe $(basename "$lp") — its subject '$hit' is staged..."
+      case "$lp" in
+        *.js) node "$lp" ;;
+        *.sh) bash "$lp" ;;
+      esac || { echo "FAILED: $(basename "$lp") (staged subject: $hit)"; exit 1; }
+    done
+
+    # ---- 8c. Live-tier freshness against the installed gsd-core ----------
+    # The one thing that makes the split safe: a live differential cannot
+    # silently stop running, because an install moves VERSION and the stamp
+    # does not follow until the live tier is actually executed. The stamp
+    # records the RUN, not the verdict (see run-probes.sh --stamp), so a slow
+    # live red never deadlocks the repo — it only holds commits that stage the
+    # failing probe's own subject, via 8b.
+    LIVE_VER_FILE="$HOME/.claude/gsd-core/VERSION"
+    STAMP_FILE="tests/probes/.results/live-tier/status.json"
+    if [ -r "$LIVE_VER_FILE" ]; then
+      live_ver=$(tr -d '[:space:]' < "$LIVE_VER_FILE")
+      stamped=""
+      stamp_failing=""
+      if [ -r "$STAMP_FILE" ] && command -v jq >/dev/null 2>&1; then
+        stamped=$(jq -r '.gsd_version // ""' "$STAMP_FILE" 2>/dev/null || true)
+        stamp_failing=$(jq -r '.failing[]?' "$STAMP_FILE" 2>/dev/null || true)
+      fi
+      if [ "$stamped" != "$live_ver" ]; then
+        echo "" >&2
+        echo "BLOCKED: the live-runtime probe tier has not run against the installed gsd-core." >&2
+        echo "  installed gsd-core: $live_ver" >&2
+        echo "  live tier last ran: ${stamped:-<never>}" >&2
+        echo "" >&2
+        echo "  Run it — this takes seconds and clears the block whether it passes or fails:" >&2
+        echo "    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=yes --stamp" >&2
+        echo "" >&2
+        echo "  Any probe that reds there will then gate only commits staging its own" >&2
+        echo "  LIVE_SUBJECT, not this one. See tests/probes/LIVE_RUNTIME.md." >&2
+        exit 1
+      fi
+      if [ -n "$stamp_failing" ]; then
+        echo "" >&2
+        echo "NOTE: live tier ran against gsd-core $live_ver with failures outstanding:" >&2
+        printf '  red: %s\n' $stamp_failing >&2
+        echo "  These do NOT block this commit — they block only commits staging their" >&2
+        echo "  declared LIVE_SUBJECT. Reconcile them before they accumulate." >&2
+        echo "" >&2
+      fi
+    fi
   fi
 fi
 

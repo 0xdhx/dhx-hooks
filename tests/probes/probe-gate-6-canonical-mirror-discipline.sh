@@ -17,6 +17,8 @@
 #       when the fork mirror is not installed (backup-meta.json / jq absent).
 
 # SAFE_FOR_LIVE: yes  (read-only diff -q against live ~/.claude/ trees; never writes; reads backup-meta.json files[] to derive the file set so future fork-tracked additions propagate)
+# LIVE_RUNTIME: yes  (diffs live ~/.claude/<f> against the gsd-local-patches mirror; an install overwrites fork-tracked files. NO repo subject — its red is cleared by a LIVE-STATE action (re-apply the fork), never by a repo edit, so it must never gate a commit)
+# LIVE_SUBJECT:
 set -uo pipefail
 
 BACKUP_META="$HOME/.claude/gsd-local-patches/backup-meta.json"

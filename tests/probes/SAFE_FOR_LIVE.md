@@ -84,6 +84,7 @@ asserts row count == file count.
 | `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 UNINSTALLED:dhx@dhx-local branch supersession probe — D-07b) |
 | `probe-known-marketplaces-natural-heal.sh` | no | sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess (Phase 6 C1 km mini-probe — D-11 HEAL-07) |
 | `probe-first-prompt-segment.js` | yes | re-implements function locally; tmp-file fixtures only |
+| `probe-live-runtime-tier.sh` | yes | all behavioral cells run inside `mktemp` trees — a sandbox repo with emitted fixture probes and a fake `$HOME` carrying a synthetic `gsd-core/VERSION`, plus a throwaway `git init` repo for the check #8c cells; reads the real repo only to grep LIVE_RUNTIME tags and the LIVE_RUNTIME.md roster; never writes the live repo, the live `tests/probes/.results/live-tier/` stamp, or `~/.claude` (2026-08-20 live-runtime tier split probe) |
 | `probe-memory-scope-guard.sh` | yes | hook subshell with synthetic stdin against mktemp fixture paths only (a fake `.ccs/…/memory/` tree under `mktemp -d`); no live repo, config, or memory-store writes (2026-07-08 memory-scope-guard write-time front-stop probe) |
 | `probe-migration.js` | yes | re-implemented compare core; tmp-file fixtures via os.tmpdir |
 | `probe-milestone-close-blocker-check.sh` | yes | mktemp + isolated subprocess invocation of hook with HOME=$TMP; no live `~/.cache/dhx`, `~/.claude`, or git state touched (mirrors `probe-execute-stop-review.sh` precedent) |

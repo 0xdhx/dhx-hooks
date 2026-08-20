@@ -16,6 +16,8 @@
 // Run: `node tests/probes/probe-stale-hooks-filter-retired.js`
 
 // SAFE_FOR_LIVE: yes   (read-only assertions against repo-tracked source files)
+// LIVE_RUNTIME: yes  (asserts on the gsd-* hooks installed under ~/.claude/hooks/; a reinstall can flip it with the repo unchanged)
+// LIVE_SUBJECT: dhx/statusline-wrapper.js
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
