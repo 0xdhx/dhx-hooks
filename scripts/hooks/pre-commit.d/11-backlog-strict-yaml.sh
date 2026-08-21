@@ -2,7 +2,7 @@
 # scripts/hooks/pre-commit.d/11-backlog-strict-yaml.sh
 #
 # Pre-commit check -- strict-YAML gate over the ACTIVE backlog tier.
-# Ported into hooks on 2026-08-21 from skills@3cc2c6c1a
+# Ported into hooks on 2026-08-21, re-vendored 2026-08-21 from skills@06382ed3b
 # (skills:scripts/hooks/pre-commit.d/11-backlog-strict-yaml.sh). The executable
 # half below is byte-identical to that source; only this header is local.
 #
@@ -32,6 +32,13 @@
 # work, and the archive converges LAZILY on the REOPEN vector: `git mv
 # shipped/x.md ./x.md` lands a brief in the active tier, where this gate DOES
 # apply, so a dirty legacy brief is fixed exactly when it re-enters service.
+#
+# One further exclusion: the exact filename .planning/backlog/BACKLOG.md. Some
+# repos keep the AUTO-GENERATED backlog index inside the briefs directory rather
+# than at .planning/BACKLOG.md; it carries no frontmatter and never can, so
+# without the exclusion this leaf would block on it every time it is staged, over
+# a file with no author to fix. The pattern is the EXACT name, not a prefix glob:
+# a real brief merely named BACKLOG-something.md is still a brief.
 #
 # --no-renames is LOAD-BEARING for that reopen vector: with rename detection ON a
 # `git mv` shows as R (excluded by --diff-filter=ACM) and the reopened brief would
@@ -102,6 +109,7 @@ staged=()
 for p in "${all_staged[@]}"; do
   case "$p" in
     .planning/backlog/*/*)  : ;;                # any subdir — out of scope
+    .planning/backlog/BACKLOG.md) : ;;          # GENERATED index, not a brief
     .planning/backlog/*.md) staged+=("$p") ;;   # active tier
   esac
 done
@@ -188,10 +196,18 @@ if violations:
         "Active-tier frontmatter must parse under yaml.safe_load. Usual cause: an\n"
         "unquoted value containing ': ', or a value starting with a backtick.\n"
         "\n"
-        "Fix recipe — swap inner \" to ' FIRST, then wrap the value in \"...\".\n"
-        "  Escaping as \\\" is valid YAML but WRONG here: backlog-close.cjs and\n"
-        "  closer-ruling-measurement.sh strip only the OUTER quotes, so literal\n"
-        "  backslashes would surface in what consumers read and in BACKLOG.md.\n"
+        "Fix recipe — wrap the value in the quote style it does NOT already\n"
+        "contain: no \" in the value -> wrap in \"...\"; a \" in the value ->\n"
+        "wrap in '...'. That needs NO escaping, so what every consumer extracts\n"
+        "stays byte-identical to what it extracted before.\n"
+        "  Do NOT 'swap inner \" to ' and then wrap' — that parses fine and\n"
+        "  silently REWRITES the value. It is what produced the two 2026-08-21\n"
+        "  fleet regressions this gate's own advice was meant to prevent.\n"
+        "  Value contains BOTH quote styles? SCALAR fields may escape (\\\" inside\n"
+        "  \"...\", or '' inside '...'): both frontmatter readers share\n"
+        "  scripts/lib/parse-frontmatter-scalar.cjs, which UNESCAPES (2026-08-15).\n"
+        "  Block-LIST items may NOT — backlog-close.cjs's list wrapper strips the\n"
+        "  outer quotes only, so an escape leaks into the value verbatim.\n"
         "  Verify each edit on the ROUND TRIP (consumer view before vs after),\n"
         "  not on parse-success — parse-success accepts an edit that silently\n"
         "  changes what the line-based consumers extract.\n"
