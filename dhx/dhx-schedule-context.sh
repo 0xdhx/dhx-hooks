@@ -10,11 +10,14 @@
 # avoid SIGPIPE upstream), then delegates. Clean path = EMPTY stdout (zero context tokens).
 # NEVER blocks session start.
 #
-# THE RENDERER'S session-start MODE LANDS IN A LATER CROSS-REPO PLAN. Until that plan merges,
-# the renderer answers an unknown mode with exit 0 and no output, so this child correctly
-# emits nothing — which is ALSO its clean-path behaviour. That is a DESIGNED graceful absence,
-# not a gap: wiring it now means the leg starts working the moment its mode lands, with no
-# second hooks-repo change.
+# THE RENDERER'S MODE TOKEN IS `context` — the LEG is named session-start, the argv MODE is not.
+# cross-repo's dhx-schedule-render.cjs freezes MODES = ['prompt','context','banner'] and answers any
+# other token with exit 0 and no output; its test suite pins `session-start` as exactly such an
+# UNKNOWN mode. This shim shipped (7f502e0) invoking `session-start`, copied from a cross-repo
+# handoff written before plan 40-04 chose the spelling, so the leg was silently inert — corrected
+# 2026-08-22 by the /dhx:test 40 security audit. Until ~/.claude/dhx-tools/dhx-schedule-render.cjs
+# is provisioned (cross-repo's install-dhx-tools.sh from the primary, post-merge) the guard below
+# still returns silently — that absence is designed; a wrong mode token is not.
 #
 # Suppression: DHX_SKIP_SCHEDULE_CONTEXT=1
 # Source-of-truth: ~/repos/hooks/dhx/dhx-schedule-context.sh
@@ -41,5 +44,5 @@ RENDERER="${DHX_SCHEDULE_RENDERER:-$HOME/.claude/dhx-tools/dhx-schedule-render.c
 [ -e "$RENDERER" ] || exit 0
 command -v node >/dev/null 2>&1 || exit 0
 
-node "$RENDERER" session-start --session-id "$SESSION_ID" 2>/dev/null </dev/null || true
+node "$RENDERER" context --session-id "$SESSION_ID" 2>/dev/null </dev/null || true
 exit 0
