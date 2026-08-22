@@ -67,6 +67,47 @@ fi
 [ -n "$UUID" ] || exit 0
 [ -n "$CWD" ] || CWD="$PWD"
 
+# --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
+# ABOVE the idempotency exit below, deliberately: this must fire on EVERY prompt, not once
+# per session, or the per-session comparison reports the schedule leg dead in every long
+# session. Warning sign that this got moved: the beat file's `count` never exceeds 1.
+# One ~200-byte write; no lock, no directory scan; every failure path silent. $UUID and
+# $INPUT are both already in hand, so this needs no additional jq call.
+_SCH_HB_DIR="$HOME/.cache/dhx/hooks/prompt"
+# printf '%s', never echo — echo appends a newline, sha256sum hashes it, and this digest
+# would then never equal the Node side's for the same session.
+_SCH_HB_KEY=$(printf '%s' "$UUID" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_HB_KEY=""
+# The EVENT digest: the RAW payload this hook already holds. `$(cat)` above already stripped
+# trailing newlines — that is the canonicalisation, and the Node side strips identically. The
+# two sides therefore agree WITHOUT any inter-hook communication, which the execution model
+# forbids. Never compare beat timestamps: hooks on one event run concurrently, so a healthy
+# leg's beat can legitimately be older than this one.
+#
+# ELIGIBILITY SYMMETRY: dhx-schedule-prompt.sh exits early on a non-empty agent_id and on an
+# empty session_id. This beat sits above the `case "$TRANSCRIPT"` subagent guard below, so a
+# subagent event could in principle produce a reference beat with no schedule counterpart —
+# that combination is KNOWN-BENIGN, not a dead leg. (Vacuous in practice: a Task subagent
+# fired ZERO UserPromptSubmit at 2.1.170 per this hook's own header.) Do NOT move this below
+# the idempotency exit under any circumstance.
+_SCH_EV_KEY=$(printf '%s' "$INPUT" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_EV_KEY=""
+if [ -n "$_SCH_HB_KEY" ]; then
+  mkdir -p "$_SCH_HB_DIR" 2>/dev/null
+  _SCH_HB_F="$_SCH_HB_DIR/$_SCH_HB_KEY.json"
+  _SCH_HB_N=0
+  [ -f "$_SCH_HB_F" ] && _SCH_HB_N=$(sed -n 's/.*"count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$_SCH_HB_F" 2>/dev/null)
+  case "$_SCH_HB_N" in ''|*[!0-9]*) _SCH_HB_N=0 ;; esac
+  # D-28: BOTH identities — the one from stdin and the one visible in this process's
+  # environment — so a later plan can OBSERVE whether they agree instead of assuming it.
+  _SCH_ENV_KEY=$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_ENV_KEY=""
+  # printf > tmp && mv is atomic, per this hook's own atomicity note.
+  printf '{"last_fire_at":"%s","count":%d,"event_hash":"%s","session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((_SCH_HB_N+1))" "$_SCH_EV_KEY" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
+    > "$_SCH_HB_F.tmp.$$" 2>/dev/null \
+    && mv -f "$_SCH_HB_F.tmp.$$" "$_SCH_HB_F" 2>/dev/null \
+    || rm -f "$_SCH_HB_F.tmp.$$" 2>/dev/null
+fi
+# --- end /dhx:schedule beat ---------------------------------------------------------------
+
 # Subagent guard (optional defense-in-depth): a subagent transcript lives under
 # .../subagents/...; never register a subagent uuid as a session.
 case "$TRANSCRIPT" in

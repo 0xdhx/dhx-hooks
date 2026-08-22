@@ -12,6 +12,38 @@ SID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo unkno
 SRC=$(echo "$INPUT" | jq -r '.source // "unknown"' 2>/dev/null || echo unknown)
 echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-probe.log
 
+# --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
+# Reuses $SID/$INPUT already in hand — no second jq call. One ~200-byte write; no lock, no
+# directory scan (scans belong to the health verb alone); every failure path silent.
+_SCH_HB_DIR="$HOME/.cache/dhx/hooks/session-start"
+# printf '%s', never echo — echo appends a newline, sha256sum hashes it, and this digest
+# would then never equal the Node side's for the same session.
+_SCH_HB_KEY=$(printf '%s' "$SID" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_HB_KEY=""
+# The literal string `unknown` must never become a session key.
+[ "$SID" = "unknown" ] && _SCH_HB_KEY=""
+# The EVENT digest: the RAW payload this dispatcher already holds. `$(cat)` above already
+# stripped trailing newlines — that is the canonicalisation, and the Node side strips
+# identically. The two sides therefore agree WITHOUT any inter-hook communication, which the
+# execution model forbids. Never compare beat timestamps: hooks on one event run
+# concurrently, so a healthy leg's beat can legitimately be older than this one.
+_SCH_EV_KEY=$(printf '%s' "$INPUT" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_EV_KEY=""
+if [ -n "$_SCH_HB_KEY" ]; then
+  mkdir -p "$_SCH_HB_DIR" 2>/dev/null
+  _SCH_HB_F="$_SCH_HB_DIR/$_SCH_HB_KEY.json"
+  _SCH_HB_N=0
+  [ -f "$_SCH_HB_F" ] && _SCH_HB_N=$(sed -n 's/.*"count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$_SCH_HB_F" 2>/dev/null)
+  case "$_SCH_HB_N" in ''|*[!0-9]*) _SCH_HB_N=0 ;; esac
+  # D-28: BOTH identities — the one from stdin and the one visible in this process's
+  # environment — so a later plan can OBSERVE whether they agree instead of assuming it.
+  _SCH_ENV_KEY=$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_ENV_KEY=""
+  printf '{"last_fire_at":"%s","count":%d,"event_hash":"%s","session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((_SCH_HB_N+1))" "$_SCH_EV_KEY" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
+    > "$_SCH_HB_F.tmp.$$" 2>/dev/null \
+    && mv -f "$_SCH_HB_F.tmp.$$" "$_SCH_HB_F" 2>/dev/null \
+    || rm -f "$_SCH_HB_F.tmp.$$" 2>/dev/null
+fi
+# --- end /dhx:schedule beat ---------------------------------------------------------------
+
 # Dispatch to canonical scripts. Hand each its own stdin copy.
 # Run each even if one fails — they are independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
@@ -44,6 +76,12 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 # dhx-watch-digest.sh. Empty stdout on the clean path (the common case). The action it
 # surfaces is a RE-VET, never a close command — see the INVARIANT block in the worker.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
+# Due /dhx:schedule commitments as session context. Plain text only — a JSON child would
+# corrupt the dispatcher's concatenated stdout (see dhx/dhx-vitals-banner.sh). Empty on the
+# clean path, and empty until the renderer's session-start mode lands in a later cross-repo
+# plan, which is a designed graceful absence rather than a gap. Sits in the same D-11
+# "direct ask on the user" tier as the vet-closure offers above.
+printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
 # Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
 # description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
 # via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one
