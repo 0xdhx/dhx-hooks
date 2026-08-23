@@ -18,7 +18,15 @@ set -euo pipefail
 #   8. Probe suite, tiered (2026-08-20). Armed by the same narrow pathspec
 #      as before (dhx/*.js or tests/probes/*), then split three ways:
 #        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no. Every
-#           probe whose verdict is a pure function of the repository.
+#           probe whose verdict a /dhx:sym gsd-update alone CANNOT flip
+#           with the repository unchanged. That is the entire guarantee.
+#           It is NOT repo-purity: a probe in this tier may read live
+#           config, or assert on THIS repo's absolute path, and still be
+#           correctly tiered. Before building anything that reconstructs
+#           a tree and runs this tier against it, read
+#           tests/probes/LIVE_RUNTIME.md § "What this tier does NOT
+#           guarantee" — four such oracles were measured on 2026-08-23
+#           and all four produced false reds against a GREEN live tree.
 #           Blocks on red, exactly as the whole suite used to.
 #        8b STAGED LIVE SUBJECTS — each LIVE_RUNTIME:yes probe runs iff the
 #           commit stages the probe itself or one of its declared

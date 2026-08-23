@@ -393,16 +393,34 @@ fi
 # agree byte-for-byte on the same canonicalised input.
 if command -v sha256sum >/dev/null 2>&1 && command -v shasum >/dev/null 2>&1 \
    && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
-  NS="$SB/nosha"; mkdir -p "$NS"
+  # Build a PATH that has no sha256sum on it. Only the dirs that actually CARRY
+  # sha256sum need a sanitised mirror; every other dir passes through untouched.
+  #
+  # This used to mirror the WHOLE PATH — 9289 files across 28 dirs, one
+  # $(basename) fork and up to one ln -s each. Profiled 2026-08-23: ~28k of the
+  # probe's 63k traced commands, and the dominant term in a 20.2s runtime against
+  # a 30s D-16 cap. On this host exactly 2 of 28 PATH dirs carry sha256sum
+  # (/usr/bin, /bin), so the mirror shrinks by ~83% and the forks go to zero.
+  # ${f##*/} is the fork-free spelling of basename.
+  NSDIR="$SB/nosha"; mkdir -p "$NSDIR"
   IFS=: read -r -a _PDIRS <<<"$PATH"
+  _NSPATH=()
   for d in "${_PDIRS[@]}"; do
     [ -d "$d" ] || continue
+    if [ ! -e "$d/sha256sum" ]; then
+      _NSPATH+=("$d")
+      continue
+    fi
     for f in "$d"/*; do
-      b=$(basename "$f")
+      b=${f##*/}
       [ "$b" = sha256sum ] && continue
-      [ -x "$f" ] && [ ! -e "$NS/$b" ] && ln -s "$f" "$NS/$b" 2>/dev/null
+      [ -x "$f" ] && [ ! -e "$NSDIR/$b" ] && ln -s "$f" "$NSDIR/$b" 2>/dev/null
     done
+    _NSPATH+=("$NSDIR")
   done
+  # $NS stays the PATH STRING the cells below consume, so their `PATH="$NS"` uses
+  # are unchanged. Dir order is preserved, so shadowing precedence is too.
+  NS=$(IFS=:; printf '%s' "${_NSPATH[*]}")
   if env PATH="$NS" sh -c 'command -v sha256sum' >/dev/null 2>&1; then
     echo "SKIP [B9-B11] could not build a sha256sum-less PATH"
   else

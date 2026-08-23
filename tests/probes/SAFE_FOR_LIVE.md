@@ -77,6 +77,7 @@ asserts row count == file count.
 | `probe-health-sh-no-side-effects.sh` | no | mktemp + fake HOME; full env-var isolation (Wave 2 tag preserved) |
 | `probe-health-sh-tiering.sh` | no | mktemp + fake HOME; uses stub-leaf-tool fixtures (Wave 2 tag preserved) |
 | `probe-health-suffix.js` | yes | uses `_make-fake-home` (mktemp + HOME override per spawn); fully sandboxed |
+| `probe-hermetic-tier-contract-parity.sh` | yes | read-only: greps two tracked repo files (`scripts/verify-hook-patterns.sh`, `tests/probes/LIVE_RUNTIME.md`) for prose-contract parity; the negative control mutates a `cp` of the gate inside a `mktemp` dir, never the original; no `$HOME` read, no live write, no subprocess beyond grep/sed/python on those copies (2026-08-23 hermetic-tier contract-parity probe) |
 | `probe-hooks-wiring.sh` | yes | mktemp + full env-var override (HOME, DHX_HOOKS_MANIFEST, DHX_HOOKS_REPO_ROOT, DHX_HOOKS_INSTALL_DIR); never touches live repo |
 | `probe-inception-posture.sh` | yes | read-only grep over in-repo hooks.json + hook source, plus fixture-JSON piped to the hook subshell (hook only reads stdin, writes JSON to stdout); no file, cache, or config writes (2026-07-09 dhx-inception-posture build-posture-injection probe) |
 | `probe-install-plugin-idempotency.sh` | no | mktemp + fake HOME confines writes; invokes install-plugin.sh subprocess against fake CCS topology (Wave 1 tag preserved) |

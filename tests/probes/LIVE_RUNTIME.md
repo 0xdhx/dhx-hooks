@@ -44,6 +44,55 @@ commit. An empty `LIVE_SUBJECT` is meaningful, not an omission: it marks a probe
 whose red is cleared by a **live-state action**, never by a repo edit, so no commit
 should ever be held for it.
 
+## What this tier does NOT guarantee
+
+Added 2026-08-23, after a consumer was built on the wrong reading of it.
+
+The rule above is **narrow on purpose**: one axis, one event class. The hermetic tier's
+only guarantee is that a `/dhx:sym gsd-update` cannot flip a verdict in it. It is
+**not** a guarantee that a probe's verdict is a pure function of the repository, and
+nothing here has ever promised that. Two things a hermetic probe may legitimately do:
+
+- **Read live configuration.** `probe-v1-1-1-gate.sh` reads live state in four of its
+  five gates (a git-log epoch, `verify-hooks.sh`, `~/.claude/read-once/reads.jsonl`, and
+  the process table via `pgrep`). It is correctly tiered: no gsd-core install flips any
+  of them. Every one of those gates carries a runnable seam
+  (`DHX_PROBE_VERIFY_HOOKS_RC` and friends) — the seams exist for callers that need
+  determinism, and are deliberately **not** defaulted, because a probe that stubs out
+  every live read asserts nothing about the machine while still reporting green.
+- **Assert on this repo's absolute path.** `scripts/verify-hooks.sh` checks that
+  `~/.claude/hooks/*` resolve into `/home/dhx/repos/hooks/dhx/`. That is a fact about
+  the installation, and no copy of the tree at any other path can satisfy it.
+
+### The consequence: you cannot run this tier against a reconstructed tree
+
+This is the practical bite, and it is not obvious until you try. On 2026-08-23 the
+`DHX_RED_COMMIT` work needed to answer *"was the tier green at the parent commit?"*.
+Four ways of reconstructing that tree were measured against a live tree the tier
+reports **GREEN**:
+
+| oracle | result |
+|---|---|
+| `git archive HEAD` | 4 false reds |
+| `git worktree add --detach` | **VETOED** by the XR-29 reference-transaction guard |
+| `git clone --shared` | 2 false reds |
+| `git clone --shared` + `install-hooks.sh` | 1 false red, **irreducible** |
+
+The last is the absolute-path assertion above: structural, not a setup gap. The gate
+shipped using **staged attribution** instead — deciding from what the commit stages,
+which needs no reconstruction at all. See `docs/decisions.md` 2026-08-23 and the header
+of `tests/probes/probe-red-commit-attribution.sh`.
+
+### Considered and rejected: making the tier actually repo-pure
+
+Sweeping every hermetic probe until the name is literally true was rejected. It fights
+an axis that was chosen on measured evidence rather than by omission; it is unbounded
+(a screening grep flags candidates but cannot separate "reads live state" from "reads
+live state in a way that can flip"); it would subtract coverage from the commit gate to
+make a description accurate; and the only consumer that ever needed purity — the
+parent-reconstruction oracle — is abandoned. If a future consumer needs a repo-pure
+tier, it needs a **new** tag and a new roster, not a redefinition of this one.
+
 ## Roster
 
 | Probe | LIVE_SUBJECT | Flip demonstrated by | What clears a red |
