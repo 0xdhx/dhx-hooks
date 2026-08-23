@@ -56,6 +56,16 @@ const { hashWarnSettings, gsdDriftPersistenceDays } = require('../../dhx/statusl
 // this scanner and the wrapper's shows up as a red assertion on the shared
 // fixtures.
 
+// Engine-portable Dirent parent resolution. Node 24 REMOVED `dirent.path`
+// (deprecated DEP0178); `dirent.parentPath` is the surviving property from
+// Node >= 20.12. This mirror is deliberately independent of the wrapper's
+// `direntParent` — the probe carries its own scanner so divergence shows up
+// as a red assertion (see the header note above `scanRecursive`). Keeping the
+// same fallback ORDER is what makes the two comparable across engines.
+function direntParent(entry, root) {
+  return entry.parentPath || entry.path || root;
+}
+
 function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
   let maxMtime = 0;
   let count = 0;
@@ -69,13 +79,13 @@ function scanRecursive(dir, ignoreBasenames, ignorePathPattern) {
     for (const entry of entries) {
       if (ignoreBasenames && ignoreBasenames.has(entry.name)) continue;
       if (ignorePathPattern) {
-        const full = entry.path ? path.join(entry.path, entry.name) : entry.name;
+        const full = path.join(direntParent(entry, dir), entry.name);
         if (ignorePathPattern.test(full)) continue;
       }
       count++;
       if (entry.isDirectory && entry.isDirectory()) continue;
       try {
-        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const full = path.join(direntParent(entry, dir), entry.name);
         const st = fs.statSync(full);
         if (st.mtimeMs > maxMtime) {
           maxMtime = st.mtimeMs;
@@ -150,7 +160,7 @@ function restampTree(root, mtimeMs) {
   const entries = fs.readdirSync(root, { withFileTypes: true, recursive: true });
   const dirs = [];
   for (const entry of entries) {
-    const full = entry.path ? path.join(entry.path, entry.name) : path.join(root, entry.name);
+    const full = path.join(direntParent(entry, root), entry.name);
     if (entry.isDirectory()) dirs.push(full);
     else {
       try { fs.utimesSync(full, mtimeMs / 1000, mtimeMs / 1000); } catch {}

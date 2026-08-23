@@ -254,6 +254,15 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
       fi
     else
       # Convention B / field absent / unparseable / jq missing → fail SAFE.
+      #
+      # Announce the name. This branch used to bump the counters SILENTLY, so a
+      # red tier reported "N failed" with no roster and the operator had to
+      # re-derive which probes those were by eye from thousands of lines of
+      # per-assertion output. On 2026-08-23 that cost: the tier had been red for
+      # four days, the failing set was reported by guess, and the commit that
+      # tripped it reached for DHX_RED_COMMIT=1 rather than a diagnosis. A gate
+      # that cannot name what it caught does not get acted on.
+      echo "[FAIL] $probe_base — exited $RC (Convention B: exit 0 means pass)"
       FAIL=$((FAIL+1))
       FAILED_NAMES+=("$probe_base")
     fi
@@ -261,6 +270,14 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   echo "---"
 done
 echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped), $SUPERSESSION supersession-observed"
+# Roster after the count, unconditionally. `--stamp` also records this set in
+# status.json, but the stamp is written only for the live tier — the hermetic
+# tier (pre-commit check #8a) never passes --stamp, which is exactly the run
+# whose operator most needs the names. Printed to stdout with the summary so
+# it survives the `|| { echo FAILED...; exit 1; }` fence in check #8a.
+if [ "${#FAILED_NAMES[@]}" -gt 0 ]; then
+  printf '  red: %s\n' "${FAILED_NAMES[@]}"
+fi
 
 # D-21 (Phase 15 MULTI-CC-VER): defensive validation of the supersession-watchdog
 # cross-version result corpus. Non-blocking on absent v1.3-multi-cc-ver/<active-cc>/ dir

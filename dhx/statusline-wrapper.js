@@ -5,7 +5,7 @@
 //     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
 //     overshoots the real gsd-core line (1.4.6 overshot live 1.4.5, 2026-06-15).
 //     Guard: tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053, HP-054
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053, HP-054, HP-056
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -1482,6 +1482,35 @@ function hashWarnSettings(settingsReal) {
   } catch { return ''; }
 }
 
+// Helper: resolve a recursive-readdir Dirent to its parent directory.
+//
+// LOAD-BEARING ENGINE CONTRACT. `fs.readdirSync(dir, {withFileTypes:true,
+// recursive:true})` reports each entry's parent directory ON the Dirent, but the
+// property was renamed across Node majors: `dirent.path` (Node 20.1-23,
+// deprecated DEP0178) -> `dirent.parentPath` (Node >= 20.12). Node 24 REMOVED
+// `dirent.path` outright.
+//
+// Reading `entry.path` alone with a `join(scanRoot, entry.name)` fallback is NOT
+// a safe default. On Node 24 the ternary takes the fallback for EVERY entry, so
+// every nested path collapses to `<root>/<basename>`: the walk flattens, statSync
+// 404s on nested files (mtime 0 / kind 'unreadable'), and any caller keying on
+// path SEGMENTS -- classifyEntry's segment-0 marketplace check -- sees the bare
+// filename and classifies everything `novel`. The result is a total drift
+// FALSE-NEGATIVE, not a crash: the statusline renders clean and detects nothing.
+// This is precisely the failure mode scanRecursive's own D-20 comment predicts.
+//
+// Observed 2026-08-23: the host's `nvm alias default` moved 22 -> 24 on
+// 2026-08-19 18:18 and six probes went red at an UNCHANGED HEAD. Peer precedent
+// for the correct idiom predates it by four months -- forgefinder
+// `scripts/hub.js` `d.parentPath ?? d.path` (9294e138, 2026-04-23).
+// See docs/decisions.md 2026-08-23 row and HP-056.
+//
+// Order is load-bearing: `parentPath` first (the surviving property), `path`
+// second (pre-20.12 engines), scan root last (top-level-only fallback).
+function direntParent(entry, root) {
+  return entry.parentPath || entry.path || root;
+}
+
 // Helper: recursively scan a directory, returning both max mtime AND entry count.
 // Count is zero extra I/O — readdirSync({recursive:true}) enumerates everything
 // anyway, so counting the returned array is free. Both signals feed checkDrift()'s
@@ -1532,7 +1561,7 @@ function scanRecursive(dir, keepPredicate) {
       // `plugins` trigger silently never fires (total drift false-negative).
       // This mirrors enumerateNovelPatterns' rel-normalization at :911-912.
       if (keepPredicate) {
-        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const full = path.join(direntParent(entry, dir), entry.name);
         const rel = path.relative(dir, full).split(path.sep).join('/');
         if (!keepPredicate(rel, entry.name)) continue;
       }
@@ -1546,7 +1575,7 @@ function scanRecursive(dir, keepPredicate) {
       // three trees (agents/gsd/plugins) — see probe scenarios [2]-[4].
       if (entry.isDirectory && entry.isDirectory()) continue;
       try {
-        const full = entry.path ? path.join(entry.path, entry.name) : path.join(dir, entry.name);
+        const full = path.join(direntParent(entry, dir), entry.name);
         const st = fs.statSync(full);
         if (st.mtimeMs > maxMtime) {
           maxMtime = st.mtimeMs;
@@ -1666,9 +1695,9 @@ function enumerateNovelPatterns(pluginsCacheRoot) {
     const entries = fs.readdirSync(root, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
       if (entry.isDirectory && entry.isDirectory()) continue;
-      // `entry.path` is the absolute parent dir (Node ≥ 20); fall back to the
-      // scan root for top-level entries.
-      const absParent = entry.path || root;
+      // Engine-portable parent dir (see direntParent above: Node 24 removed
+      // `entry.path`; `parentPath` is the surviving property).
+      const absParent = direntParent(entry, root);
       const absFull = path.join(absParent, entry.name);
       // Relative-to-cache-root path, forward-slash normalized — the shape the
       // allowlist predicate's per-segment logic expects.
@@ -1795,7 +1824,7 @@ function isGsdDriftFromForkSync(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = G
     const entries = fs.readdirSync(liveRoot, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
       if (entry.isDirectory && entry.isDirectory()) continue;
-      const full = entry.path ? path.join(entry.path, entry.name) : path.join(liveRoot, entry.name);
+      const full = path.join(direntParent(entry, liveRoot), entry.name);
       let liveStat;
       try { liveStat = fs.statSync(full); } catch { return false; }
       if (liveStat.mtimeMs <= snapshot.gsd_mtime) continue;
@@ -1864,7 +1893,7 @@ function collectGsdDriftDivergingFiles(snapshot, liveRoot = GSD_LIVE_ROOT, forkR
     const entries = fs.readdirSync(liveRoot, { withFileTypes: true, recursive: true });
     for (const entry of entries) {
       if (entry.isDirectory && entry.isDirectory()) continue;
-      const full = entry.path ? path.join(entry.path, entry.name) : path.join(liveRoot, entry.name);
+      const full = path.join(direntParent(entry, liveRoot), entry.name);
       let liveStat;
       try { liveStat = fs.statSync(full); } catch {
         diverging.push({ path: path.relative(liveRoot, full), kind: 'unreadable' });
