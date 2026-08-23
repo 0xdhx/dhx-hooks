@@ -27,6 +27,12 @@ set -euo pipefail
 #        8c LIVE-TIER FRESHNESS — blocks if the installed gsd-core VERSION
 #           differs from the version the live tier last RAN against. The
 #           fix is one command, printed in the message.
+#   9. Staged multi-cc corpus cells (2026-08-23). Validates cells staged under
+#      tests/probes/.results/v1.3-multi-cc-ver/ against the corpus contract,
+#      reading them from the INDEX. This is where corpus blocking authority
+#      lives; run-probes.sh's copy of the validator is advisory only. Same
+#      ruling as the 8a/8b/8c split — gate at the event that owns the
+#      invariant. An UNSTAGED artifact from a hand-run can no longer block.
 #      Rationale: an install-triggered invariant was being checked at
 #      commit time ~450 times per 120 days to catch ~20 possible
 #      breakages, and any single live red froze all 223 trigger-matched
@@ -37,6 +43,10 @@ set -euo pipefail
 # Bypass: git commit --no-verify (git handles natively; no extra envvar).
 #
 # Exit codes: 0 = pass, 1 = block.
+#
+# NOTE on DHX_RED_COMMIT=1: it skips ONLY check #8. Checks #1-#7 and #9 still
+# gate — #9 in particular, because a corpus cell staged under a TDD-RED opt-out
+# is still published evidence.
 
 REGISTRY="docs/hook-patterns.md"
 
@@ -402,6 +412,66 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
         echo "" >&2
       fi
     fi
+  fi
+fi
+
+# 9. Staged multi-cc corpus cells — validate the INDEX, never the worktree.
+#    This is where corpus blocking authority LIVES as of 2026-08-23. It used to
+#    live in run-probes.sh, folded into the probe tier's own FAIL counter, so a
+#    machine-local side-artifact from a keyless hand-run blocked every
+#    probe-touching commit repo-wide under the message "FAILED: hermetic probe
+#    tier" — with the tier green (2026-07-09, 2026-08-23). Same ruling as the
+#    2026-08-20 tier split: gate at the event that OWNS the invariant. Corpus
+#    integrity is owned by PUBLISHING a cell, not by an unrelated probe run.
+#
+#    Reading the INDEX is the load-bearing half. The cells under
+#    tests/probes/.results/v1.3-multi-cc-ver/ are a MIXED surface — 16 are
+#    tracked evidence, while a hand-run drops untracked siblings beside them in
+#    the live CC-version dir. Validating the worktree conflates the two and
+#    re-creates the exact repo-wide block this check exists to remove. Every
+#    cell here therefore comes from `git show :<path>`, so an untracked orphan
+#    in the same directory is invisible to it.
+#    Companion assertions: tests/probes/probe-multi-cc-validator-decoupling.sh (D/E).
+STAGED_CELLS=$(git diff --cached --name-only --diff-filter=ACM -- 'tests/probes/.results/v1.3-multi-cc-ver/' || true)
+if [ -n "$STAGED_CELLS" ] && [ -x "scripts/verify-multi-cc-results.sh" ]; then
+  echo "Validating staged multi-cc corpus cells..."
+  CORPUS_TMP=$(mktemp -d)
+  mkdir -p "$CORPUS_TMP/scripts" "$CORPUS_TMP/docs"
+  cp scripts/verify-multi-cc-results.sh "$CORPUS_TMP/scripts/"
+  chmod +x "$CORPUS_TMP/scripts/verify-multi-cc-results.sh"
+  # decisions.md from the INDEX too — assertion 5 cross-checks non-decisive
+  # cells against "Validated stable" rows, and the row that matters is the one
+  # being committed, not the one on disk.
+  git show :docs/decisions.md > "$CORPUS_TMP/docs/decisions.md" 2>/dev/null || : > "$CORPUS_TMP/docs/decisions.md"
+  CORPUS_VERS=""
+  while IFS= read -r cell; do
+    [ -n "$cell" ] || continue
+    case "$cell" in *.json) ;; *) continue ;; esac
+    mkdir -p "$CORPUS_TMP/$(dirname "$cell")"
+    git show ":$cell" > "$CORPUS_TMP/$cell" 2>/dev/null || continue
+    cver=$(basename "$(dirname "$cell")")
+    case " $CORPUS_VERS " in *" $cver "*) ;; *) CORPUS_VERS="$CORPUS_VERS $cver" ;; esac
+  done <<< "$STAGED_CELLS"
+  CORPUS_RC=0
+  CORPUS_OUT=""
+  for cver in $CORPUS_VERS; do
+    vout=$(bash "$CORPUS_TMP/scripts/verify-multi-cc-results.sh" "$cver" 2>&1) || CORPUS_RC=1
+    [ -n "$vout" ] && CORPUS_OUT="$CORPUS_OUT$vout"$'\n'
+  done
+  rm -rf "$CORPUS_TMP"
+  if [ "$CORPUS_RC" -ne 0 ]; then
+    echo "" >&2
+    echo "BLOCKED: a multi-cc corpus cell staged in this commit fails validation." >&2
+    echo "" >&2
+    printf '%s' "$CORPUS_OUT" | sed 's|^|  |' >&2
+    echo "" >&2
+    echo "  Staged cells in this commit:" >&2
+    printf '%s\n' "$STAGED_CELLS" | sed 's|^|    |' >&2
+    echo "" >&2
+    echo "  These cells are committed EVIDENCE — fix or unstage them. This is not the" >&2
+    echo "  old repo-wide block: an UNSTAGED artifact from a hand-run cannot reach this" >&2
+    echo "  check, and never blocks a commit again." >&2
+    FAIL=1
   fi
 fi
 

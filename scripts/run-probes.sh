@@ -237,20 +237,53 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
       conclusion=$(jq -r '.conclusion // ""' "$outcome_json" 2>/dev/null || echo "")
     fi
     if [ "$convention" = "exit_0_means_v1_2_work_warranted" ]; then
-      # Convention A. RC>=3 is a truly unexpected exit → FAIL regardless of conclusion.
+      # ----- Convention A: route on the SHARED conclusion taxonomy -----------
+      # One taxonomy, three consumers: the watchdog probes WRITE a conclusion,
+      # this branch ROUTES it, verify-multi-cc-results.sh VALIDATES it. Keep all
+      # three in step — a token admitted by one and unknown to another is what
+      # blocked every probe-touching commit on 2026-07-09 and again 2026-08-23.
+      # Companion assertions: tests/probes/probe-conclusion-taxonomy.sh.
+      #
+      #   supersession_found_*        decisive positive  -> SUPERSESSION (informational)
+      #   skipped                     no observation     -> SKIPPED (not pass, not fail)
+      #   ambiguous, ambiguous_*      indeterminate      -> FAIL
+      #   error                       malfunction        -> FAIL
+      #   anything else               UNKNOWN            -> FAIL (fail SAFE)
+      #
+      # The last row is load-bearing and is a CHANGE (2026-08-23). This branch
+      # used to send every non-error/non-exact-`ambiguous` token to SUPERSESSION,
+      # so a probe that self-skipped for a missing API key was reported as an
+      # OBSERVED SUPERSESSION and the run exited 0 — a materially false
+      # scientific verdict. Defaulting an unrecognised verdict to "informational"
+      # is exactly backwards: an unknown token is the one case you know nothing
+      # about. RC>=3 stays an unexpected exit and FAILs regardless of conclusion.
       if [ "$RC" -ge 3 ]; then
         echo "[FAIL] $probe_base — Convention A probe exited $RC (>=3, unexpected) — counted FAIL"
         FAIL=$((FAIL+1))
         FAILED_NAMES+=("$probe_base")
-      elif [ "$conclusion" = "error" ] || [ "$conclusion" = "ambiguous" ]; then
-        echo "[FAIL] $probe_base — Convention A conclusion=$conclusion (exit $RC) — counted FAIL"
-        FAIL=$((FAIL+1))
-        FAILED_NAMES+=("$probe_base")
       else
-        # conclusion=supersession_found_* (or any benign conclusion) at RC 1|2:
-        # a legitimate supersession observation, NOT a failure.
-        echo "[SUPERSESSION OBSERVED] $probe_base — conclusion=$conclusion exit=$RC (Convention A — informational, not FAIL)"
-        SUPERSESSION=$((SUPERSESSION+1))
+        case "$conclusion" in
+          supersession_found_*)
+            echo "[SUPERSESSION OBSERVED] $probe_base — conclusion=$conclusion exit=$RC (Convention A — informational, not FAIL)"
+            SUPERSESSION=$((SUPERSESSION+1))
+            ;;
+          skipped)
+            # The probe declined to observe (no API key, precondition unmet).
+            # Not a pass — it proved nothing — and not a failure either.
+            echo "[SELF-SKIPPED] $probe_base — conclusion=skipped exit=$RC (no observation made; not a pass, not a failure)"
+            SKIPPED=$((SKIPPED+1))
+            ;;
+          error|ambiguous|ambiguous_*)
+            echo "[FAIL] $probe_base — Convention A conclusion=$conclusion (exit $RC) — counted FAIL"
+            FAIL=$((FAIL+1))
+            FAILED_NAMES+=("$probe_base")
+            ;;
+          *)
+            echo "[FAIL] $probe_base — Convention A conclusion='${conclusion:-<empty>}' is not in the shared taxonomy (exit $RC) — counted FAIL (fail SAFE)"
+            FAIL=$((FAIL+1))
+            FAILED_NAMES+=("$probe_base")
+            ;;
+        esac
       fi
     else
       # Convention B / field absent / unparseable / jq missing → fail SAFE.
@@ -288,10 +321,54 @@ fi
 # absent here: the guards below require a real dotted-triple version AND an
 # existing results_dir, so an "unknown" active_cc simply skips the validator.
 results_dir="$REPO/tests/probes/.results/v1.3-multi-cc-ver/$active_cc"
+#
+# ADVISORY ONLY (2026-08-23). This validator has its OWN counter and NEVER
+# touches $FAIL. It used to run `|| FAIL=$((FAIL+1))` — the same counter the
+# probes use — AFTER the summary line and AFTER the `red:` roster, and it never
+# appended to FAILED_NAMES. One shared counter produced four disagreeing signals
+# from a single run: the summary said "0 failed", the roster printed nothing,
+# `--stamp` recorded "failing": [] (so check #8c's outstanding-failures branch
+# stayed silent), and the script still exited 1 — which check #8a rendered to the
+# operator as "FAILED: hermetic probe tier". The tier had passed. Machine-local
+# side-artifacts from a keyless hand-run blocked every probe-touching commit
+# repo-wide, twice (2026-07-09, 2026-08-23), under a message about something else.
+#
+# Blocking authority for corpus integrity did not disappear — it MOVED to the
+# event that owns the invariant: staging a cell. See verify-hook-patterns.sh
+# check #9, which validates the STAGED representation from the index. That is
+# the 2026-08-19 tier-split ruling applied to this surface (gate at the event
+# that owns the invariant, not at an unrelated run).
+# Companion assertions: tests/probes/probe-multi-cc-validator-decoupling.sh.
+VALIDATOR_FINDINGS=0
+validator_out=""
 if [[ -n "$active_cc" ]] && [[ "$active_cc" != "unknown" ]] && [[ -d "$results_dir" ]] && [[ -x "$REPO/scripts/verify-multi-cc-results.sh" ]]; then
   echo "Running multi-cc-results validator against $results_dir..."
-  bash "$REPO/scripts/verify-multi-cc-results.sh" || FAIL=$((FAIL+1))
+  validator_out=$(bash "$REPO/scripts/verify-multi-cc-results.sh" 2>&1); validator_rc=$?
+  [ -n "$validator_out" ] && printf '%s\n' "$validator_out"
+  [ "$validator_rc" -ne 0 ] && VALIDATOR_FINDINGS=1
   echo "---"
+fi
+
+if [ "$VALIDATOR_FINDINGS" -ne 0 ]; then
+  # Name the cells and the cleanup. The operator must never have to read this
+  # script to learn that a corpus finding is not a red probe.
+  bad_cells=$(printf '%s\n' "$validator_out" | sed -nE 's/.*\(in (.*)\)$/\1/p' | sort -u)
+  echo ""
+  if [ "$FAIL" -eq 0 ]; then
+    echo "NOTE: multi-cc corpus validator reported findings — the probe tier itself PASSED."
+  else
+    echo "NOTE: multi-cc corpus validator reported findings — separately from the $FAIL red probe(s) above."
+  fi
+  echo "  This does NOT block. Corpus cells are gated where they are published —"
+  echo "  staging one under tests/probes/.results/v1.3-multi-cc-ver/ (check #9) — not here."
+  if [ -n "$bad_cells" ]; then
+    printf '  cell: %s\n' $bad_cells
+    echo "  If these are leftovers from a hand-run, remove only the files YOUR run wrote:"
+    printf '    rm -f %s\n' $bad_cells
+    echo "  Compare FILE mtimes, not directory mtimes — on this shared tree the current"
+    echo "  CC-version dir is the one a peer session is most likely to be writing."
+  fi
+  echo ""
 fi
 
 # ----- 2026-08-20: --stamp — record that the live tier RAN against this gsd-core -----

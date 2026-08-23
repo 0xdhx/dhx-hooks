@@ -13,10 +13,15 @@
 #      on-disk cells that still carry the boolean. See docs/decisions.md row 220 (gate
 #      closed) + HP-024 § Corpus advancement.
 #   3. .probe_id ∈ the 5-name supersession-watchdog allowlist.
-#   4. .conclusion matches the allowed-token regex (D-08 #4).
-#   5. No JSON with conclusion="ambiguous" is cited in any docs/decisions.md
-#      row that contains the literal phrase "Validated stable" (D-08 A1
-#      single-pass per-row grep idiom).
+#   4. .conclusion matches the allowed-token regex (D-08 #4) — the shared
+#      taxonomy, which since 2026-08-23 admits `skipped` and `ambiguous_*`
+#      (both emitted by design; see the ALLOWED_CONCLUSION_RE comment).
+#   5. No JSON with a NON-DECISIVE conclusion (skipped / ambiguous / ambiguous_*)
+#      is cited in any docs/decisions.md row that contains the literal phrase
+#      "Validated stable" (D-08 A1 single-pass per-row grep idiom). Widened from
+#      exact `ambiguous` on 2026-08-23 in the same change that admitted the two
+#      new tokens — admitting a token to assertion 4 without covering it here
+#      would open a hole, not close one.
 #   6. Each result file resolves under the expected
 #      tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/ path prefix.
 #
@@ -51,10 +56,39 @@ ALLOWED_PROBES=(
   probe-known-marketplaces-natural-heal
 )
 
-# Allowed-token regex for .conclusion (D-08 #4).
+# Allowed-token regex for .conclusion (D-08 #4) — the SHARED taxonomy.
 # v1_2_work_warranted is a legacy synonym for validated_stable (per
 # 15-01-PLAN.md <interfaces> note + v1.2-phase-6 km baseline precedent).
-ALLOWED_CONCLUSION_RE='^(validated_stable|supersession_found_[a-z_0-9]+|ambiguous|v1_2_work_warranted)$'
+#
+# 2026-08-23: `skipped` and `ambiguous_*` ADDED. Both are emitted BY DESIGN by
+# all four *-natural-heal probes — `skipped` when no ANTHROPIC_API_KEY is present
+# (a deliberate fast clean self-skip) and `ambiguous_pre_state_abnormal` when the
+# live pre-state is missing (whose own comment says "write the outcome JSON
+# anyway (audit trail)"). Neither had ever been in this set, and the old regex is
+# ANCHORED, so `ambiguous` never covered `ambiguous_pre_state_abnormal`. The
+# whitelist was the stale surface, not the write: a keyless hand-run therefore
+# published a cell this validator refused, which blocked every probe-touching
+# commit repo-wide (2026-07-09, and again 2026-08-23).
+#
+# Keeping the artifacts is deliberate — they record that a run happened and why
+# it observed nothing, which suppressing the write would destroy. What they must
+# NOT do is masquerade as a verdict: assertion 5 below therefore covers every
+# NON-DECISIVE conclusion, so a `skipped` or `ambiguous_*` cell can never be
+# cited as "Validated stable".
+#
+# Consumers that must stay in step: the producers (tests/probes/probe-*natural-heal.sh),
+# run-probes.sh's Convention-A routing branch, and this file.
+# Companion assertions: tests/probes/probe-conclusion-taxonomy.sh.
+ALLOWED_CONCLUSION_RE='^(validated_stable|supersession_found_[a-z_0-9]+|ambiguous|ambiguous_[a-z_0-9]+|skipped|v1_2_work_warranted)$'
+
+# A conclusion is DECISIVE when the probe actually reached a verdict. Everything
+# else (skipped / ambiguous / ambiguous_*) recorded an attempt, not an answer.
+is_non_decisive() {
+  case "$1" in
+    skipped|ambiguous|ambiguous_*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # Field extractors used below (documented here so the validator surface is
 # greppable as a contract):
@@ -173,7 +207,7 @@ validate_dir() {
     # rows always cite the full versioned path, so the version-scoped match is
     # exact: an ambiguous cell can only trip on a row claiming THAT SAME cell
     # is stable — the real corpus-integrity hazard.
-    if [[ "$conc" == "ambiguous" ]] && [[ -n "${pid:-}" ]] && [[ -f "$REPO/docs/decisions.md" ]]; then
+    if is_non_decisive "$conc" && [[ -n "${pid:-}" ]] && [[ -f "$REPO/docs/decisions.md" ]]; then
       # Order-independent same-line match: the row must reference BOTH this
       # cell's version-scoped path AND the "Validated stable" verdict (grep the
       # path first, then re-grep that row for the verdict — robust to whichever
@@ -183,7 +217,7 @@ validate_dir() {
       # literal, so a version like '2.1.*' cannot over-match decisions.md rows.
       if grep -F "v1.3-multi-cc-ver/${cc}/${pid}" "$REPO/docs/decisions.md" 2>/dev/null \
            | grep -F "Validated stable" >/dev/null 2>&1; then
-        echo "verify-multi-cc-results: $pid (cc $cc) has conclusion=ambiguous but its $cc cell is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
+        echo "verify-multi-cc-results: $pid (cc $cc) has NON-DECISIVE conclusion '$conc' but its $cc cell is cited in a 'Validated stable' row of docs/decisions.md (in $f)" >&2
         fails=$((fails+1))
       fi
     fi
