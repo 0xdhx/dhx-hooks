@@ -15,7 +15,9 @@ echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-pro
 # --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
 # Reuses $SID/$INPUT already in hand — no second jq call. One ~200-byte write; no lock, no
 # directory scan (scans belong to the health verb alone); every failure path silent.
-_SCH_HB_DIR="$HOME/.cache/dhx/hooks/session-start"
+# Root honours DHX_HOOKS_CACHE_DIR (the Node reader's HOOKS_CACHE_ENV) so a probe can drive
+# this into a fixture tree; the literal default is the reader's default, byte for byte.
+_SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start"
 # printf '%s', never echo — echo appends a newline, the hasher hashes it, and this digest
 # would then never equal the Node side's for the same session.
 # Digest chain: sha256sum, then shasum -a 256 (macOS) — the dhx/poll-guard.sh SESSION_HASH
@@ -45,20 +47,50 @@ _SCH_HB_KEY=$(_dhx_digest16 "$SID") || _SCH_HB_KEY=""
 # forbidden channel. Correcting the sentence matters because the false premise is what made a
 # second, independent hash in the child look necessary.
 _SCH_EV_KEY=$(_dhx_digest16 "$INPUT") || _SCH_EV_KEY=""
+# RECORD LAYOUT (schema_version 2 — cross-repo docs/research/2026-08-23-dhx-schedule-beat-record-
+# layout-and-gc-design.md §1-§2): one directory per session, one IMMUTABLE file per occurrence,
+#   <root>/session-start/<session16>/<event16|none>.<fired_ms>.<pid>.<nonce>.json
+# Never overwritten, no `count` field — "how many" is the cardinality of the directory, and
+# repeated byte-identical events (startup|resume|clear|compact) are MEANT to produce N files
+# sharing one <event16>. The name is for uniqueness only; dating is the record's `fired_at`.
+# Field names/types must pass the Node side's `validateRecord` exactly (the schedule-only
+# `result`/`due_hash` fields are deliberately absent on a reference record).
+#
+# _dhx_sch_record IS the whole transaction: mkdir -p the session dir, printf to a `.tmp.$$`
+# sibling, rename. It is called a second time on failure because the schedule driver's GC
+# quarantines an idle session directory by RENAMING it away — a writer that had already opened
+# its temp file inside then loses the rename target; re-running the three steps recreates the
+# directory, and the orphaned temp dies with the quarantine. That retry is what makes the
+# GC's directory removal lossless.
+_dhx_sch_record() {
+  mkdir -p "$_SCH_REC_DIR" 2>/dev/null || return 1
+  printf '{"schema_version":2,"kind":"%s","leg":"%s","fired_at":"%s","event_hash":%s,"session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
+    "$_SCH_KIND" "$_SCH_LEG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SCH_EV_JSON" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
+    > "$_SCH_REC_F.tmp.$$" 2>/dev/null \
+    && mv -f "$_SCH_REC_F.tmp.$$" "$_SCH_REC_F" 2>/dev/null && return 0
+  rm -f "$_SCH_REC_F.tmp.$$" 2>/dev/null
+  return 1
+}
 if [ -n "$_SCH_HB_KEY" ]; then
-  mkdir -p "$_SCH_HB_DIR" 2>/dev/null
-  _SCH_HB_F="$_SCH_HB_DIR/$_SCH_HB_KEY.json"
-  _SCH_HB_N=0
-  [ -f "$_SCH_HB_F" ] && _SCH_HB_N=$(sed -n 's/.*"count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$_SCH_HB_F" 2>/dev/null)
-  case "$_SCH_HB_N" in ''|*[!0-9]*) _SCH_HB_N=0 ;; esac
+  _SCH_LEG=session-start
   # D-28: BOTH identities — the one from stdin and the one visible in this process's
   # environment — so a later plan can OBSERVE whether they agree instead of assuming it.
   _SCH_ENV_KEY=$(_dhx_digest16 "${CLAUDE_CODE_SESSION_ID:-}") || _SCH_ENV_KEY=""
-  printf '{"last_fire_at":"%s","count":%d,"event_hash":"%s","session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((_SCH_HB_N+1))" "$_SCH_EV_KEY" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
-    > "$_SCH_HB_F.tmp.$$" 2>/dev/null \
-    && mv -f "$_SCH_HB_F.tmp.$$" "$_SCH_HB_F" 2>/dev/null \
-    || rm -f "$_SCH_HB_F.tmp.$$" 2>/dev/null
+  # `kind:"undigested"` (event_hash null, file part `none`) keeps the printf total. In
+  # practice the session key and the event key share one digest chain, so an empty event
+  # key with a non-empty session key does not occur — the arm exists so no shape is unwritable.
+  if [ -n "$_SCH_EV_KEY" ]; then
+    _SCH_KIND=event; _SCH_EV_JSON='"'"$_SCH_EV_KEY"'"'; _SCH_EV_NAME="$_SCH_EV_KEY"
+  else
+    _SCH_KIND=undigested; _SCH_EV_JSON=null; _SCH_EV_NAME=none
+  fi
+  # Epoch ms for the file name; BSD date prints `%3N` literally, so anything not all-digits
+  # falls back to whole seconds padded with 000. Nonce $RANDOM covers pid reuse.
+  _SCH_MS=$(date +%s%3N 2>/dev/null)
+  case "$_SCH_MS" in ''|*[!0-9]*) _SCH_MS="$(date +%s)000" ;; esac
+  _SCH_REC_DIR="$_SCH_HB_DIR/$_SCH_HB_KEY"
+  _SCH_REC_F="$_SCH_REC_DIR/$_SCH_EV_NAME.$_SCH_MS.$$.$RANDOM.json"
+  _dhx_sch_record || _dhx_sch_record || true
 fi
 # --- end /dhx:schedule beat ---------------------------------------------------------------
 

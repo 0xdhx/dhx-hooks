@@ -70,10 +70,22 @@ fi
 # --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
 # ABOVE the idempotency exit below, deliberately: this must fire on EVERY prompt, not once
 # per session, or the per-session comparison reports the schedule leg dead in every long
-# session. Warning sign that this got moved: the beat file's `count` never exceeds 1.
-# One ~200-byte write; no lock, no directory scan; every failure path silent. $UUID and
-# $INPUT are both already in hand, so this needs no additional jq call.
-_SCH_HB_DIR="$HOME/.cache/dhx/hooks/prompt"
+# session. Warning sign that this got moved: a session's record directory never holds more
+# than one file however many prompts it takes.
+# One ~200-byte write; no lock, no directory scan; every failure path silent.
+# Root honours DHX_HOOKS_CACHE_DIR (the Node reader's HOOKS_CACHE_ENV) so a probe can drive
+# this into a fixture tree; the literal default is the reader's default, byte for byte.
+_SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/prompt"
+# ELIGIBILITY PARITY with dhx/dhx-schedule-prompt.sh: that shim exits on a non-empty
+# `.agent_id` and on an empty `.session_id` before it writes anything. Per-occurrence counting
+# would turn ONE such asymmetric fire into a reference record with no schedule counterpart —
+# DEAD for an otherwise healthy session — so this writer applies the SAME predicate, from the
+# SAME jq extraction, before writing. The session key is therefore digested from `.session_id`
+# alone (never the transcript-basename fallback $UUID carries), exactly as the shim keys it.
+# The block still sits ABOVE the `case "$TRANSCRIPT"` subagent guard and the idempotency exit
+# below: only the predicate moved here; the position did not and must not.
+_SCH_FIELDS=$(printf '%s' "$INPUT" | jq -r '[(.session_id // ""), (.agent_id // "")] | @tsv' 2>/dev/null) || _SCH_FIELDS=""
+IFS=$'\t' read -r _SCH_SID _SCH_AGENT <<<"$_SCH_FIELDS"
 # printf '%s', never echo — echo appends a newline, the hasher hashes it, and this digest
 # would then never equal the Node side's for the same session.
 # Digest chain: sha256sum, then shasum -a 256 (macOS) — the dhx/poll-guard.sh SESSION_HASH
@@ -85,35 +97,60 @@ _dhx_digest16() {
   elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16
   fi
 }
-_SCH_HB_KEY=$(_dhx_digest16 "$UUID") || _SCH_HB_KEY=""
+_SCH_HB_KEY=""
+if [ -z "${_SCH_AGENT:-}" ] && [ -n "${_SCH_SID:-}" ]; then
+  _SCH_HB_KEY=$(_dhx_digest16 "$_SCH_SID") || _SCH_HB_KEY=""
+fi
 # The EVENT digest: the RAW payload this hook already holds. `$(cat)` above already stripped
 # trailing newlines — that is the canonicalisation, and the Node side strips identically. The
 # two sides therefore agree WITHOUT any inter-hook communication, which the execution model
 # forbids. Never compare beat timestamps: hooks on one event run concurrently, so a healthy
 # leg's beat can legitimately be older than this one.
-#
-# ELIGIBILITY SYMMETRY: dhx-schedule-prompt.sh exits early on a non-empty agent_id and on an
-# empty session_id. This beat sits above the `case "$TRANSCRIPT"` subagent guard below, so a
-# subagent event could in principle produce a reference beat with no schedule counterpart —
-# that combination is KNOWN-BENIGN, not a dead leg. (Vacuous in practice: a Task subagent
-# fired ZERO UserPromptSubmit at 2.1.170 per this hook's own header.) Do NOT move this below
-# the idempotency exit under any circumstance.
 _SCH_EV_KEY=$(_dhx_digest16 "$INPUT") || _SCH_EV_KEY=""
+# RECORD LAYOUT (schema_version 2 — cross-repo docs/research/2026-08-23-dhx-schedule-beat-record-
+# layout-and-gc-design.md §1-§2): one directory per session, one IMMUTABLE file per occurrence,
+#   <root>/prompt/<session16>/<event16|none>.<fired_ms>.<pid>.<nonce>.json
+# Never overwritten, no `count` field — "how many" is the cardinality of the directory, and
+# repeated byte-identical prompts are MEANT to produce N files sharing one <event16>. The name
+# is for uniqueness only; dating is the record's `fired_at`. Field names/types must pass the
+# Node side's `validateRecord` exactly (the schedule-only `result`/`due_hash` fields are
+# deliberately absent on a reference record).
+#
+# _dhx_sch_record IS the whole transaction: mkdir -p the session dir, printf to a `.tmp.$$`
+# sibling, rename (atomic, per this hook's own atomicity note). It is called a second time on
+# failure because the schedule driver's GC quarantines an idle session directory by RENAMING
+# it away — a writer that had already opened its temp file inside then loses the rename
+# target; re-running the three steps recreates the directory, and the orphaned temp dies with
+# the quarantine. That retry is what makes the GC's directory removal lossless.
+_dhx_sch_record() {
+  mkdir -p "$_SCH_REC_DIR" 2>/dev/null || return 1
+  printf '{"schema_version":2,"kind":"%s","leg":"%s","fired_at":"%s","event_hash":%s,"session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
+    "$_SCH_KIND" "$_SCH_LEG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_SCH_EV_JSON" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
+    > "$_SCH_REC_F.tmp.$$" 2>/dev/null \
+    && mv -f "$_SCH_REC_F.tmp.$$" "$_SCH_REC_F" 2>/dev/null && return 0
+  rm -f "$_SCH_REC_F.tmp.$$" 2>/dev/null
+  return 1
+}
 if [ -n "$_SCH_HB_KEY" ]; then
-  mkdir -p "$_SCH_HB_DIR" 2>/dev/null
-  _SCH_HB_F="$_SCH_HB_DIR/$_SCH_HB_KEY.json"
-  _SCH_HB_N=0
-  [ -f "$_SCH_HB_F" ] && _SCH_HB_N=$(sed -n 's/.*"count"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$_SCH_HB_F" 2>/dev/null)
-  case "$_SCH_HB_N" in ''|*[!0-9]*) _SCH_HB_N=0 ;; esac
+  _SCH_LEG=prompt
   # D-28: BOTH identities — the one from stdin and the one visible in this process's
   # environment — so a later plan can OBSERVE whether they agree instead of assuming it.
   _SCH_ENV_KEY=$(_dhx_digest16 "${CLAUDE_CODE_SESSION_ID:-}") || _SCH_ENV_KEY=""
-  # printf > tmp && mv is atomic, per this hook's own atomicity note.
-  printf '{"last_fire_at":"%s","count":%d,"event_hash":"%s","session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((_SCH_HB_N+1))" "$_SCH_EV_KEY" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
-    > "$_SCH_HB_F.tmp.$$" 2>/dev/null \
-    && mv -f "$_SCH_HB_F.tmp.$$" "$_SCH_HB_F" 2>/dev/null \
-    || rm -f "$_SCH_HB_F.tmp.$$" 2>/dev/null
+  # `kind:"undigested"` (event_hash null, file part `none`) keeps the printf total. In
+  # practice the session key and the event key share one digest chain, so an empty event
+  # key with a non-empty session key does not occur — the arm exists so no shape is unwritable.
+  if [ -n "$_SCH_EV_KEY" ]; then
+    _SCH_KIND=event; _SCH_EV_JSON='"'"$_SCH_EV_KEY"'"'; _SCH_EV_NAME="$_SCH_EV_KEY"
+  else
+    _SCH_KIND=undigested; _SCH_EV_JSON=null; _SCH_EV_NAME=none
+  fi
+  # Epoch ms for the file name; BSD date prints `%3N` literally, so anything not all-digits
+  # falls back to whole seconds padded with 000. Nonce $RANDOM covers pid reuse.
+  _SCH_MS=$(date +%s%3N 2>/dev/null)
+  case "$_SCH_MS" in ''|*[!0-9]*) _SCH_MS="$(date +%s)000" ;; esac
+  _SCH_REC_DIR="$_SCH_HB_DIR/$_SCH_HB_KEY"
+  _SCH_REC_F="$_SCH_REC_DIR/$_SCH_EV_NAME.$_SCH_MS.$$.$RANDOM.json"
+  _dhx_sch_record || _dhx_sch_record || true
 fi
 # --- end /dhx:schedule beat ---------------------------------------------------------------
 

@@ -10,8 +10,12 @@
 #   B. SessionStart leg     — dhx/dhx-schedule-context.sh, invoked as a session-start.sh
 #                             DISPATCHER CHILD (deliberately NOT a registered hook; a second
 #                             registration would run it twice).
-#   C. Two event-correlated heartbeats, one per leg's reference hook, each writing an
-#      `event_hash` digest of the identical stdin it received.
+#   C. Two event-correlated reference writers, one per leg's reference hook, each writing ONE
+#      immutable record per occurrence (schema_version 2, cross-repo design note
+#      2026-08-23-dhx-schedule-beat-record-layout-and-gc-design.md §1-§2) under
+#      `$DHX_HOOKS_CACHE_DIR/<leg>/<session16>/<event16|none>.<fired_ms>.<pid>.<nonce>.json`,
+#      carrying an `event_hash` digest of the identical stdin it received. No flat
+#      `<session16>.json` is ever written again; "how many" is the directory's cardinality.
 #
 # WHY event correlation and not a timestamp comparison: docs/hook-dev-guide.md § Execution
 # Model states hooks on one event run IN PARALLEL with no inter-hook communication. A beat
@@ -31,11 +35,19 @@
 # liveness comparison would report the schedule leg dead in every session past its first
 # turn — the precise inversion the comparison exists to prevent. [A9] asserts the ordering.
 #
+# The second: the record's field set drifting from cross-repo's `validateRecord`. Every record
+# the writers produce in the B cells is validated by THAT function (B12), never by a local
+# re-derivation — a probe that agrees with itself proves nothing.
+#
 # RESIDUAL (not closable from this repository): a probe can assert what a hook EMITS, never
 # that Claude Code RENDERS it. See dhx/dhx-cold-return-gate.sh's header for the standing note.
 #
 # Backs docs/decisions.md 2026-08-22 "/dhx:schedule delivery legs wired" row.
 # B9-B11 back the 2026-08-22 "One digest-tool policy at every /dhx:schedule computing site" row.
+# A10-A11, A13, B6, B7b, B12-B14 back the 2026-08-23 "reference writers emit per-occurrence
+# records (schema_version 2)" row. The `kind:"undigested"` arm is NOT behaviourally reachable
+# from a probe: both keys share one digest chain, so with no digest tool the session key is
+# empty and the guarded block is skipped before the arm is reached (B9-B11 cover the chain).
 # Run: bash tests/probes/probe-schedule-wiring.sh
 
 set -uo pipefail
@@ -105,16 +117,32 @@ IDEM_LINE=$(grep -n 'grep -qF -- "\$MATCH"' "$REGISTRY_HOOK" 2>/dev/null | head 
 if [ -n "$BEAT_LINE" ] && [ -n "$IDEM_LINE" ] && [ "$BEAT_LINE" -lt "$IDEM_LINE" ]; then
   check "[A9] registry beat sits ABOVE the idempotency exit (line $BEAT_LINE < $IDEM_LINE) — fires every turn" ok
 else
-  check "[A9] registry beat sits ABOVE the idempotency exit" fail "beat=${BEAT_LINE:-none} idem=${IDEM_LINE:-none} — below means count never exceeds 1 and the leg reads DEAD in every long session"
+  check "[A9] registry beat sits ABOVE the idempotency exit" fail "beat=${BEAT_LINE:-none} idem=${IDEM_LINE:-none} — below means one record per session and the leg reads DEAD in every long session"
 fi
 
-# A10-A11 — both heartbeats write the shared event digest.
-grep -q '"event_hash"' "$REGISTRY_HOOK" 2>/dev/null \
-  && check "[A10] dhx-session-registry-prompt.sh beat writes an event_hash field" ok \
-  || check "[A10] dhx-session-registry-prompt.sh beat writes an event_hash field" fail
-grep -q '"event_hash"' "$DISPATCHER" 2>/dev/null \
-  && check "[A11] session-start.sh beat writes an event_hash field" ok \
-  || check "[A11] session-start.sh beat writes an event_hash field" fail
+# A10-A11 — both reference writers emit the schema_version-2 record through the retrying
+# transaction function, honour the reader's cache-root override, and never write the legacy
+# flat slot (a `count` field or `last_fire_at` is the tell that the old printf came back).
+for pair in "A10:REGISTRY_HOOK:dhx-session-registry-prompt.sh" "A11:DISPATCHER:session-start.sh"; do
+  id="${pair%%:*}"; rest="${pair#*:}"; var="${rest%%:*}"; name="${rest##*:}"; f="${!var}"
+  if grep -q '"schema_version":2,"kind":"%s","leg":"%s","fired_at":"%s","event_hash":%s,"session_hash_stdin":"%s","session_hash_env":"%s"' "$f" \
+     && grep -q '^_dhx_sch_record()' "$f" \
+     && grep -q '_dhx_sch_record || _dhx_sch_record' "$f" \
+     && grep -q 'DHX_HOOKS_CACHE_DIR:-\$HOME/.cache/dhx/hooks' "$f" \
+     && ! grep -q '"count"\|last_fire_at' "$f"; then
+    check "[$id] $name writes the v2 record shape via _dhx_sch_record (retry once, DHX_HOOKS_CACHE_DIR root, no flat-file fields)" ok
+  else
+    check "[$id] $name writes the v2 record shape via _dhx_sch_record" fail
+  fi
+done
+# A13 — eligibility parity: the registry writer applies the shim's predicate (skip on a
+# non-empty agent_id / empty session_id) from the SAME jq extraction.
+if grep -qF "jq -r '[(.session_id // \"\"), (.agent_id // \"\")] | @tsv'" "$REGISTRY_HOOK" \
+   && grep -q '\[ -z "\${_SCH_AGENT:-}" \] && \[ -n "\${_SCH_SID:-}" \]' "$REGISTRY_HOOK"; then
+  check "[A13] registry writer gates its record on the shim's eligibility predicate (agent_id empty, session_id non-empty)" ok
+else
+  check "[A13] registry writer gates its record on the shim's eligibility predicate" fail
+fi
 
 # A12 — the never-emit-JSON rule for the dispatcher child. A JSON child corrupts the
 # dispatcher's WHOLE concatenated payload, not merely its own contribution.
@@ -184,19 +212,83 @@ JSEOF
     printf '%s' "$PAYLOAD" | env HOME="$FH" bash "$REGISTRY_HOOK" >/dev/null 2>&1
     printf '%s' "$PAYLOAD" | env HOME="$FH" bash "$REGISTRY_HOOK" >/dev/null 2>&1
     A=$(head -1 "$REC" 2>/dev/null)
-    BEAT=$(ls "$FH"/.cache/dhx/hooks/prompt/*.json 2>/dev/null | head -1)
+    SESS_DIR=$(ls -d "$FH"/.cache/dhx/hooks/prompt/*/ 2>/dev/null | head -1)
+    BEAT=$(ls "$SESS_DIR"*.json 2>/dev/null | head -1)
     B=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$BEAT" 2>/dev/null)
-    N=$(sed -n 's/.*"count":\([0-9]*\).*/\1/p' "$BEAT" 2>/dev/null)
     if [ -n "$A" ] && [ "$A" = "$B" ]; then
       check "[B5] both legs derive the SAME event digest from identical stdin ($A)" ok
     else
       check "[B5] both legs derive the same event digest" fail "shim=${A:-none} beat=${B:-none}"
     fi
-    # Runtime companion to [A9]: two fires of one session must reach count 2.
-    if [ "${N:-0}" -gt 1 ]; then
-      check "[B6] reference beat count reaches $N after two prompts (fires every turn, not once)" ok
+    # Runtime companion to [A9], and THE REPEATED-EVENT CASE: two byte-identical prompts must
+    # yield two DISTINCT record files in one session directory, both named by the same
+    # <event16>, no flat `<session16>.json` beside the directory.
+    N=$(ls "$SESS_DIR"*.json 2>/dev/null | wc -l | tr -d ' ')
+    NH=$(ls "$SESS_DIR" 2>/dev/null | sed -n 's/^\([0-9a-f]\{16\}\)\..*\.json$/\1/p' | sort -u | wc -l | tr -d ' ')
+    FLAT=$(ls "$FH"/.cache/dhx/hooks/prompt/*.json 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${N:-0}" -eq 2 ] && [ "${NH:-0}" -eq 1 ] && [ "${FLAT:-0}" -eq 0 ]; then
+      check "[B6] two identical prompts -> two distinct records sharing one <event16>, no legacy flat slot (fires every turn, not once)" ok
     else
-      check "[B6] reference beat count exceeds 1 after two prompts" fail "count=${N:-none} — beat is below the idempotency exit"
+      check "[B6] two identical prompts -> two distinct records sharing one <event16>" fail "records=${N:-0} hashes=${NH:-0} flat=${FLAT:-0} — one record means the writer is below the idempotency exit"
+    fi
+    # B12 — every record the registry writer produced passes cross-repo's validateRecord
+    # (the closed validator the health reader applies), checked by THAT function. Skipped
+    # when the store is not on this host; its absence is a different repo's concern.
+    STORE="$HOME/repos/cross-repo/scripts/schedule/dhx-schedule-store.cjs"
+    if [ -r "$STORE" ] && node -e 'if(typeof require(process.argv[1]).validateRecord!=="function")process.exit(1)' "$STORE" 2>/dev/null; then
+      V=$(node -e '
+const s=require(process.argv[1]),fs=require("fs"),p=require("path");
+const root=process.argv[2];let n=0,bad=0;
+for(const leg of ["prompt","session-start"]){const d=p.join(root,leg);if(!fs.existsSync(d))continue;
+  for(const k of fs.readdirSync(d)){const sd=p.join(d,k);if(!fs.statSync(sd).isDirectory())continue;
+    for(const f of fs.readdirSync(sd)){n++;let doc=null;
+      try{doc=JSON.parse(fs.readFileSync(p.join(sd,f),"utf8"));}catch(e){}
+      const pr=s.validateRecord(doc,{leg,sessionKey:k,fileName:f});
+      if(pr.length){bad++;console.error(leg+"/"+k+"/"+f+": "+pr.join("; "));}}}}
+console.log(n+" "+bad);' "$STORE" "$FH/.cache/dhx/hooks" 2>"$SB/v-err")
+      VN="${V%% *}"; VB="${V##* }"
+      if [ "${VN:-0}" -ge 2 ] && [ "${VB:-1}" -eq 0 ]; then
+        check "[B12] all $VN registry records pass cross-repo validateRecord byte-for-byte ([] problems)" ok
+      else
+        check "[B12] registry records pass cross-repo validateRecord" fail "records=${VN:-0} problems=${VB:-?} $(head -c 300 "$SB/v-err" 2>/dev/null)"
+      fi
+    else
+      echo "SKIP [B12] validateRecord cross-check — cross-repo store absent on this host"
+    fi
+    # B13 — ELIGIBILITY PARITY (design §1): a non-empty agent_id must produce NO reference
+    # record, exactly as the shim writes nothing; likewise an empty session_id. Anything else
+    # is one unpaired occurrence that the multiset reader scores DEAD.
+    FH5="$SB/home5"; mkdir -p "$FH5/.claude"
+    SUBP='{"session_id":"probe-sched-0001","transcript_path":"/probe/x.jsonl","agent_id":"agent-9","cwd":"/probe","prompt":"p"}'
+    printf '%s' "$SUBP" | env HOME="$FH5" bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    NOSID='{"transcript_path":"/probe/probe-sched-0002.jsonl","cwd":"/probe","prompt":"p"}'
+    printf '%s' "$NOSID" | env HOME="$FH5" bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    SUBN=$(find "$FH5/.cache/dhx/hooks" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${SUBN:-0}" -eq 0 ]; then
+      check "[B13] registry writer emits NO record on a non-empty agent_id or an empty session_id (parity with the shim)" ok
+    else
+      check "[B13] registry writer emits NO record on a non-empty agent_id / empty session_id" fail "records=$SUBN"
+    fi
+    # B14 — DHX_HOOKS_CACHE_DIR is honoured (the reader's HOOKS_CACHE_ENV) and the writer
+    # re-runs its whole transaction when the session directory vanishes mid-write: a stub
+    # `mv` that deletes the target directory on its first call models the GC's quarantine
+    # rename; the record must still land on the retry.
+    RR="$SB/root14"; mkdir -p "$SB/fakemv"
+    cat > "$SB/fakemv/mv" <<'MVEOF'
+#!/bin/sh
+# First call: model the GC renaming the session directory away under the writer.
+if [ ! -e "$DHX_PROBE_MV_ONCE" ]; then : > "$DHX_PROBE_MV_ONCE"; rm -rf "$(dirname "$2")"; fi
+exec /bin/mv "$@"
+MVEOF
+    chmod +x "$SB/fakemv/mv"
+    printf '%s' "$PAYLOAD" | env HOME="$FH5" PATH="$SB/fakemv:$PATH" DHX_PROBE_MV_ONCE="$SB/mv-once" \
+      DHX_HOOKS_CACHE_DIR="$RR" bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    R14=$(find "$RR/prompt" -name '*.json' -type f 2>/dev/null | wc -l | tr -d ' ')
+    T14=$(find "$RR" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+    if [ -e "$SB/mv-once" ] && [ "${R14:-0}" -eq 1 ] && [ "${T14:-0}" -eq 0 ]; then
+      check "[B14] DHX_HOOKS_CACHE_DIR honoured; record lands on the retried transaction after the session dir vanished mid-write, no temp orphan" ok
+    else
+      check "[B14] DHX_HOOKS_CACHE_DIR honoured + whole-transaction retry" fail "mv-called=$([ -e "$SB/mv-once" ] && echo yes || echo no) records=${R14:-0} temps=${T14:-0}"
     fi
   else
     echo "SKIP [B5-B6] correlation smoke — node absent"
@@ -241,13 +333,38 @@ FBEOF
     DHX_SCHEDULE_RENDERER="$SB/render2.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache2" \
     /bin/bash "$DISPATCHER" >/dev/null 2>&1
   CTX_SEEN=$(head -1 "$REC2" 2>/dev/null)
-  BEAT2=$(ls "$FH2"/.cache/dhx/hooks/session-start/*.json 2>/dev/null | head -1)
+  BEAT2=$(ls "$FH2"/.cache/dhx/hooks/session-start/*/*.json 2>/dev/null | head -1)
   CTX_REF=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$BEAT2" 2>/dev/null)
   if [ -n "$CTX_SEEN" ] && [ "$CTX_SEEN" != "<none>" ] && [ "$CTX_SEEN" = "$CTX_REF" ]; then
     check "[B7] context leg: the dispatcher's reference digest reaches the renderer verbatim ($CTX_SEEN)" ok
   else
     check "[B7] context leg: the dispatcher's reference digest reaches the renderer" fail \
       "renderer=${CTX_SEEN:-none} reference=${CTX_REF:-none}"
+  fi
+  # B7b — THE REPEATED-EVENT CASE on the SessionStart leg: the same payload fired again
+  # (compact storms are byte-identical) must add a SECOND record under the same <event16>,
+  # and every record in the session directory must pass cross-repo's validateRecord.
+  printf '%s\n\n\n' "$P2" | env PATH="$SB/fakebin:$PATH" HOME="$FH2" REC="$REC2" \
+    DHX_SCHEDULE_RENDERER="$SB/render2.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache2" \
+    /bin/bash "$DISPATCHER" >/dev/null 2>&1
+  SD2=$(dirname "$BEAT2")
+  N2=$(ls "$SD2"/*.json 2>/dev/null | wc -l | tr -d ' ')
+  NH2=$(ls "$SD2" 2>/dev/null | sed -n 's/^\([0-9a-f]\{16\}\)\..*\.json$/\1/p' | sort -u | wc -l | tr -d ' ')
+  FLAT2=$(ls "$FH2"/.cache/dhx/hooks/session-start/*.json 2>/dev/null | wc -l | tr -d ' ')
+  STORE="$HOME/repos/cross-repo/scripts/schedule/dhx-schedule-store.cjs"
+  V2=""
+  if [ -r "$STORE" ]; then
+    V2=$(node -e '
+const s=require(process.argv[1]),fs=require("fs"),p=require("path");
+const sd=process.argv[2],k=p.basename(sd);let bad=0;
+for(const f of fs.readdirSync(sd)){let doc=null;try{doc=JSON.parse(fs.readFileSync(p.join(sd,f),"utf8"));}catch(e){}
+  const pr=s.validateRecord(doc,{leg:"session-start",sessionKey:k,fileName:f});if(pr.length){bad++;console.error(f+": "+pr.join("; "));}}
+console.log(String(bad));' "$STORE" "$SD2" 2>/dev/null)
+  fi
+  if [ "${N2:-0}" -eq 2 ] && [ "${NH2:-0}" -eq 1 ] && [ "${FLAT2:-0}" -eq 0 ] && [ "${V2:-0}" = 0 ]; then
+    check "[B7b] SessionStart repeated event -> two distinct records, one <event16>, no flat slot, both pass validateRecord" ok
+  else
+    check "[B7b] SessionStart repeated event -> two distinct valid records under one <event16>" fail "records=${N2:-0} hashes=${NH2:-0} flat=${FLAT2:-0} invalid=${V2:-?}"
   fi
   # B8 — the shim must REFUSE a forged or malformed digest rather than forward it. The variable
   # is environment-sourced, so a non-digest value must degrade to the pre-forwarding floor
@@ -295,13 +412,13 @@ if command -v sha256sum >/dev/null 2>&1 && command -v shasum >/dev/null 2>&1 \
     # B9 — registry hook (prompt leg reference beat)
     FH3="$SB/home3"; mkdir -p "$FH3/.claude"
     printf '%s' "$P3" | env PATH="$NS" HOME="$FH3" bash "$REGISTRY_HOOK" >/dev/null 2>&1
-    B9F="$FH3/.cache/dhx/hooks/prompt/$EXP_SK.json"
+    B9F=$(ls "$FH3/.cache/dhx/hooks/prompt/$EXP_SK/$EXP_EV".*.json 2>/dev/null | head -1)
     B9E=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$B9F" 2>/dev/null)
-    if [ -f "$B9F" ] && [ "$B9E" = "$EXP_EV" ]; then
+    if [ -n "$B9F" ] && [ -f "$B9F" ] && [ "$B9E" = "$EXP_EV" ]; then
       check "[B9] registry reference beat written via shasum fallback; session key + event digest identical to sha256sum's ($EXP_SK/$EXP_EV)" ok
     else
       check "[B9] registry reference beat written via shasum fallback with sha256sum-identical keys" fail \
-        "beat=$( [ -f "$B9F" ] && echo present || echo ABSENT ) event=${B9E:-none} want=$EXP_EV"
+        "beat=$( [ -n "$B9F" ] && [ -f "$B9F" ] && echo present || echo ABSENT ) event=${B9E:-none} want=$EXP_EV"
     fi
     # B10 — dispatcher (session-start leg reference beat + forwarded digest)
     FH4="$SB/home4"; mkdir -p "$FH4/.claude"
@@ -323,13 +440,13 @@ FB4EOF
     printf '%s' "$P3" | env PATH="$SB/fakebin4:$NS" HOME="$FH4" REC="$REC4" \
       DHX_SCHEDULE_RENDERER="$SB/render4.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache4" \
       /bin/bash "$DISPATCHER" >/dev/null 2>&1
-    B10F="$FH4/.cache/dhx/hooks/session-start/$EXP_SK.json"
+    B10F=$(ls "$FH4/.cache/dhx/hooks/session-start/$EXP_SK/$EXP_EV".*.json 2>/dev/null | head -1)
     B10E=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$B10F" 2>/dev/null)
-    if [ -f "$B10F" ] && [ "$B10E" = "$EXP_EV" ]; then
+    if [ -n "$B10F" ] && [ -f "$B10F" ] && [ "$B10E" = "$EXP_EV" ]; then
       check "[B10] dispatcher reference beat written via shasum fallback; session key + event digest identical to sha256sum's" ok
     else
       check "[B10] dispatcher reference beat written via shasum fallback with sha256sum-identical keys" fail \
-        "beat=$( [ -f "$B10F" ] && echo present || echo ABSENT ) event=${B10E:-none} want=$EXP_EV"
+        "beat=$( [ -n "$B10F" ] && [ -f "$B10F" ] && echo present || echo ABSENT ) event=${B10E:-none} want=$EXP_EV"
     fi
     # B11 — prompt shim (already had the fallback; pinned so the chain stays symmetric)
     : > "$REC4"
