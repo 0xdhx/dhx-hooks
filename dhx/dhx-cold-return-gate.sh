@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # dhx-cold-return-gate.sh — UserPromptSubmit hook (matchless)
-# Patterns: HP-008, HP-009, HP-012, HP-017, HP-019, HP-027, HP-049
+# Patterns: HP-008, HP-009, HP-012, HP-017, HP-019, HP-027, HP-049, HP-055
 #
-# HP-049 SCOPE CAVEAT (read before trusting the advisory lane): HP-049 verifies
-# the `systemMessage` (operator) / `additionalContext` (model) split on
-# PreToolUse. This hook uses that channel on UserPromptSubmit, where
-# docs/hook-dev-guide.md § Output JSON Schema documents `systemMessage` as
-# universal and cross-version-portable — documented, NOT probe-verified for this
-# event. tests/probes/probe-cold-return-gate.sh asserts the hook EMITS valid
-# `{systemMessage:…}` JSON at exit 0; it cannot assert that CC RENDERS it. If CC
-# ever fails to parse the JSON, the failure mode is a raw JSON blob injected into
-# the model's context (ugly + a few tokens), never a block and never a lost
-# prompt. Close the gap with a live one-shot probe when convenient.
+# HP-049 / HP-055 SCOPE NOTE (read before trusting the advisory lane): HP-049
+# verifies the `systemMessage` (operator) / `additionalContext` (model) split on
+# PreToolUse. This hook uses that channel on UserPromptSubmit, which HP-055 now
+# covers: on 2026-08-22, CC 2.1.241, a `systemMessage` emitted by a
+# UserPromptSubmit hook was OBSERVED RENDERING in an interactive TUI — on its own
+# line beneath the submitted prompt, prefixed `UserPromptSubmit says:` and
+# attributed to the hook, outside the model's reply. Note the position: it is the
+# hook-attribution line under the prompt, NOT the SessionStart vitals-banner
+# position that was assumed before the observation. The assumption is closed;
+# the specific styling it guessed at was wrong.
+# tests/probes/probe-cold-return-gate.sh asserts the hook EMITS valid
+# `{systemMessage:…}` JSON at exit 0; it still cannot assert that CC RENDERS it,
+# and no in-process probe can — which is why HP-055's evidence is a dated operator
+# observation rather than a probe. If CC ever fails to parse the JSON, the failure
+# mode is a raw JSON blob injected into the model's context (ugly + a few tokens),
+# never a block and never a lost prompt.
 #
 # Cold-return advisory gate. Blocks exactly ONE prompt (exit 2) when the
 # session is about to pay a full cold-cache prefix rewrite, names the cost

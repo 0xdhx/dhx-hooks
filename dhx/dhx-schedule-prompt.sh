@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # dhx-schedule-prompt.sh — UserPromptSubmit delivery leg for /dhx:schedule.
-# Patterns: HP-009 (advisory, exit 0), HP-046 (hookSpecificOutput.additionalContext)
+# Patterns: HP-009 (advisory, exit 0), HP-046 (hookSpecificOutput.additionalContext),
+#           HP-055 (systemMessage RENDERS to the operator on UserPromptSubmit)
 #
 # OUTPUT CONTRACT: EXACTLY ONE JSON object on stdout, or NOTHING. Every error path exits 0
 # with no output. This shim holds NONE of that contract itself — the whole of it (the object
