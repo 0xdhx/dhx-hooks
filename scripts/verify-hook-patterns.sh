@@ -44,9 +44,10 @@ set -euo pipefail
 #
 # Exit codes: 0 = pass, 1 = block.
 #
-# NOTE on DHX_RED_COMMIT=1: it skips ONLY check #8. Checks #1-#7 and #9 still
-# gate — #9 in particular, because a corpus cell staged under a TDD-RED opt-out
-# is still published evidence.
+# NOTE on DHX_RED_COMMIT=1: it affects ONLY check #8, and even there it no
+# longer skips anything — see 8d. Checks #1-#7 and #9 gate regardless; #9 in
+# particular, because a corpus cell staged under a TDD-RED opt-out is still
+# published evidence.
 
 REGISTRY="docs/hook-patterns.md"
 
@@ -330,18 +331,73 @@ fi
 #    updated before the regression lands. Trigger scoped narrowly: dhx/*.sh
 #    edits don't pay the suite cost (#6/#7 cover hook-side regressions).
 #
-#    DHX_RED_COMMIT=1 opt-out: TDD-RED probe commits intentionally fail
-#    the suite (target machinery for the assertion doesn't exist yet — the
-#    paired GREEN commit closes RED). Setting DHX_RED_COMMIT=1 skips ONLY
-#    this check; the other 7 checks above still gate. Targeted bypass
-#    preferred over `--no-verify` (which disables all 8). Repo precedent:
-#    f8fbab1, ae2e5db, b7333b4, 3aa2eed all needed this opt-out.
+#    DHX_RED_COMMIT=1 (8d, reworked 2026-08-23): the opt-out buys PERMISSION
+#    TO BE RED, not a skip. The tier runs either way. On red it is honoured
+#    only when every probe in the `red:` roster is a probe file THIS commit
+#    stages — the mechanical form of "a TDD-RED commit is red because of its
+#    own new assertion". It also demands DHX_RED_COMMIT_REASON up front and
+#    refuses outright if the commit-msg audit hook is not wired.
+#
+#    It used to be a bare unconditional `skip`, which is a different and much
+#    wider contract than its own comment claimed. Audit of all five
+#    identifiable uses: f8fbab1, ae2e5db, b7333b4, 3aa2eed (2026-05-01, all
+#    probe-only, all genuine TDD-RED — all still ALLOWED under attribution)
+#    and 24afeee (2026-08-23), which shipped production hooks under a red it
+#    did not cause and concealed a dead drift-detector for four days — REFUSED
+#    under attribution, because none of its reds were probes it staged.
+#    Still preferred over `--no-verify`, which disables all nine checks and is
+#    equally untraceable.
 PROBE_TRIGGER=$(git diff --cached --name-only -- 'dhx/*.js' 'tests/probes/' || true)
 if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
-  if [ "${DHX_RED_COMMIT:-0}" = "1" ]; then
-    echo "Skipping probe suite — DHX_RED_COMMIT=1 (TDD-RED commit; pair with GREEN to close)."
-  else
+  {
     STAGED_ALL=$(git diff --cached --name-only || true)
+
+    # ---- 8d. DHX_RED_COMMIT preconditions — CHEAP, before the tier runs ----
+    # The opt-out no longer buys SPEED, only PERMISSION TO BE RED. The tier runs
+    # either way; DHX_RED_COMMIT=1 changes only what happens when it comes back
+    # red. That is a friction increase over the old instant skip and it is the
+    # point: the bypass was never meant to be a speed feature, and an unmeasured
+    # skip is exactly how 24afeee shipped production hooks under a red it did
+    # not cause, hiding a dead drift-detector for four days.
+    RED_COMMIT=0
+    if [ "${DHX_RED_COMMIT:-0}" = "1" ]; then
+      RED_COMMIT=1
+
+      # A reason, before anything expensive. The commit-msg hook turns this into
+      # a DHX-Red-Commit: trailer so the bypass is greppable in history.
+      if [ -z "${DHX_RED_COMMIT_REASON:-}" ]; then
+        echo "" >&2
+        echo "BLOCKED: DHX_RED_COMMIT=1 requires DHX_RED_COMMIT_REASON." >&2
+        echo "" >&2
+        echo "  The opt-out leaves no record on its own. Say why, once:" >&2
+        echo "    DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON='<why>' git commit ..." >&2
+        echo "" >&2
+        echo "  The commit-msg hook writes it into the message as a" >&2
+        echo "  'DHX-Red-Commit: <reason>' trailer; you do not type it twice." >&2
+        echo "" >&2
+        exit 1
+      fi
+
+      # FAIL CLOSED on a missing audit hook. `scripts/hooks/commit-msg` existing
+      # in the tree is NOT deployment — install-hooks.sh's sweep only wires it
+      # when the installer is RUN, and this repo sets core.hooksPath to the fleet
+      # dispatcher, which chains to <common-dir>/hooks/<event>. Without this
+      # check the very commit that introduces the trailer gate — and every clone
+      # until it reruns the installer — could bypass with no trace at all.
+      _cdir=$(git rev-parse --git-common-dir 2>/dev/null || echo ".git")
+      case "$_cdir" in /*) ;; *) _cdir="$GIT_TOPLEVEL/$_cdir" ;; esac
+      if [ ! -e "$_cdir/hooks/commit-msg" ]; then
+        echo "" >&2
+        echo "BLOCKED: DHX_RED_COMMIT=1 refused — the commit-msg audit hook is not installed." >&2
+        echo "  expected: $_cdir/hooks/commit-msg" >&2
+        echo "" >&2
+        echo "  Without it the opt-out leaves no trace in history, which is half of what" >&2
+        echo "  this gate exists to fix. Wire it (idempotent, one command):" >&2
+        echo "    bash scripts/install-hooks.sh" >&2
+        echo "" >&2
+        exit 1
+      fi
+    fi
 
     # ---- 8a. Hermetic tier ----------------------------------------------
     # Phase 25 D-06 (2026-05-24) re-synced the hooks-side `### Gate 6` doc section
@@ -351,8 +407,84 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     # plainly; a mismatch again means real drift and blocks (its original
     # REQ-04 contract).
     echo "Running hermetic probe tier (dhx/*.js or tests/probes/* staged)..."
-    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no \
-      || { echo "FAILED: hermetic probe tier"; exit 1; }
+    TIER_LOG=$(mktemp)
+    set +e
+    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no 2>&1 | tee "$TIER_LOG"
+    TIER_RC=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$TIER_RC" -ne 0 ]; then
+      if [ "$RED_COMMIT" -eq 1 ]; then
+        # ---- 8d. ATTRIBUTION -------------------------------------------------
+        # A TDD-RED commit is red BECAUSE OF ITS OWN NEW ASSERTION. So the opt-out
+        # is honoured exactly when every probe in the `red:` roster is a probe
+        # file THIS commit stages. Anything else is someone else's red.
+        #
+        # This replaces the brief's proposed "run the tier against a git archive
+        # HEAD export" oracle, which was measured on 2026-08-23 against a live
+        # tree that is green and does not work:
+        #     git archive HEAD                    -> 4 false reds
+        #     git worktree add --detach           -> VETOED by the XR-29 guard
+        #     git clone --shared                  -> 2 false reds
+        #     git clone --shared + install-hooks  -> 1 false red, IRREDUCIBLE
+        # The irreducible one is probe-v1-1-1-gate.sh, which is in this very tier
+        # and shells out to verify-hooks.sh, which asserts that ~/.claude/hooks/*
+        # resolve into this repo's absolute path. No copy of the repo anywhere
+        # else can satisfy it. Every reconstruction has a false-red floor, and a
+        # gate that false-reds refuses LEGITIMATE RED halves — which pushes
+        # people to --no-verify, wider and equally untraceable. Attribution needs
+        # no reconstruction: it reads the roster of the run that just happened.
+        #
+        # Companion assertions: tests/probes/probe-red-commit-attribution.sh.
+        RED_NAMES=$(sed -n 's/^  red: //p' "$TIER_LOG" || true)
+        rm -f "$TIER_LOG"
+
+        if [ -z "$RED_NAMES" ]; then
+          echo "" >&2
+          echo "BLOCKED: DHX_RED_COMMIT=1 refused — the tier failed without naming any probe." >&2
+          echo "  Nothing can be attributed to this commit, so the opt-out cannot apply." >&2
+          echo "  Read the tier output above; this is a runner-level failure, not a red probe." >&2
+          echo "" >&2
+          exit 1
+        fi
+
+        UNATTRIBUTED=""
+        for _rn in $RED_NAMES; do
+          if grep -qxF "tests/probes/$_rn" <<<"$STAGED_ALL"; then continue; fi
+          UNATTRIBUTED="$UNATTRIBUTED $_rn"
+        done
+
+        if [ -n "$UNATTRIBUTED" ]; then
+          echo "" >&2
+          echo "BLOCKED: DHX_RED_COMMIT=1 refused — the tier is red on probe(s) this commit does not touch." >&2
+          echo "" >&2
+          for _rn in $UNATTRIBUTED; do echo "  unattributed red: $_rn" >&2; done
+          echo "" >&2
+          echo "  A TDD-RED commit is red because of its OWN new assertion. These reds are" >&2
+          echo "  inherited, so this commit cannot be the RED half of a pair — it would be" >&2
+          echo "  committing past a red someone else left. That is exactly how a dead" >&2
+          echo "  production guard stayed hidden for four days (24afeee, 2026-08-23)." >&2
+          echo "" >&2
+          echo "  Diagnose them:" >&2
+          for _rn in $UNATTRIBUTED; do echo "    bash tests/probes/$_rn" >&2; done
+          echo "" >&2
+          exit 1
+        fi
+
+        echo "DHX_RED_COMMIT=1 honoured — every red probe is staged in this commit."
+        for _rn in $RED_NAMES; do echo "  attributed red: $_rn"; done
+        echo "  Pair this with a GREEN commit that closes it."
+      else
+        rm -f "$TIER_LOG"
+        echo "FAILED: hermetic probe tier"
+        exit 1
+      fi
+    else
+      rm -f "$TIER_LOG"
+      if [ "$RED_COMMIT" -eq 1 ]; then
+        echo "DHX_RED_COMMIT=1 was unnecessary — the tier is green. Nothing was skipped."
+      fi
+    fi
 
     # ---- 8b. Live probes whose own subject is staged ---------------------
     # A live differential must still gate the file it mirrors. `grep -qxF` reads
@@ -412,7 +544,7 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
         echo "" >&2
       fi
     fi
-  fi
+  }
 fi
 
 # 9. Staged multi-cc corpus cells — validate the INDEX, never the worktree.

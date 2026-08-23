@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# scripts/hooks/commit-msg — DHX_RED_COMMIT audit trailer gate.
+#
+# Wired by scripts/install-hooks.sh's generic self-contained-hook sweep (any
+# dot-free regular file directly under scripts/hooks/), so this file needs no
+# installer edit — but it DOES need the installer to have been RUN. Adding the
+# file is not deploying it: check #8d in verify-hook-patterns.sh refuses the
+# opt-out outright when this hook is not wired, so the audit guarantee can never
+# be silently absent while the bypass stays live.
+#
+# WHY A SECOND HOOK AT ALL. A pre-commit hook cannot see the commit message —
+# git's order is pre-commit -> prepare-commit-msg -> commit-msg — so the only
+# place a trailer can be required is here. Env vars propagate from `git commit`
+# to every hook, so this gate reads DHX_RED_COMMIT the same way check #8d does.
+#
+# WHAT IT BUYS. `DHX_RED_COMMIT=1` is an environment variable and leaves no
+# record. The 2026-08-23 audit of its five identifiable uses was only possible
+# because four of them volunteered "(RED)" in the subject line; "how many, and
+# why" was unanswerable for any commit that did not choose to say so. A gate
+# whose bypass cannot be counted cannot be known to be working. With this
+# trailer:
+#
+#     git log --grep='^DHX-Red-Commit:' --format='%h %ad %s%n  %b'
+#
+# Behaviour (inert unless DHX_RED_COMMIT=1):
+#   trailer present with a non-empty reason  -> pass, untouched
+#   trailer present but blank                -> BLOCK (a blank reason is no reason)
+#   no trailer, DHX_RED_COMMIT_REASON set    -> append it, pass
+#   no trailer, no reason                    -> BLOCK
+#
+# The append path is deliberate: check #8d already demands
+# DHX_RED_COMMIT_REASON before it will run the tier, so by the time the message
+# is written the operator has said why. Making them type it twice would be
+# friction with no audit value — and friction on the sanctioned narrow opt-out
+# is what pushes people to `--no-verify`, which is wider AND equally untraceable.
+#
+# Companion assertions: tests/probes/probe-red-commit-attribution.sh (cases 6-11).
+# Backs: .planning/backlog/2026-08-23-red-commit-optout-is-a-general-untraceable-bypass.md
+
+set -uo pipefail
+
+MSG_FILE="${1:-}"
+[ -n "$MSG_FILE" ] && [ -f "$MSG_FILE" ] || exit 0
+
+# Inert for every ordinary commit.
+[ "${DHX_RED_COMMIT:-0}" = "1" ] || exit 0
+
+TRAILER_RE='^DHX-Red-Commit:[[:space:]]*[^[:space:]]'
+
+refuse() {
+  echo "" >&2
+  echo "BLOCKED: this commit sets DHX_RED_COMMIT=1 and needs a DHX-Red-Commit: <reason> trailer." >&2
+  echo "  $1" >&2
+  echo "" >&2
+  echo "  The opt-out is an environment variable and leaves no record. The trailer is" >&2
+  echo "  what makes it countable:" >&2
+  echo "    git log --grep='^DHX-Red-Commit:'" >&2
+  echo "" >&2
+  echo "  Either add the trailer to the message body:" >&2
+  echo "    DHX-Red-Commit: probe asserts machinery that lands in the paired GREEN" >&2
+  echo "  or export the reason and let this hook write it for you:" >&2
+  echo "    DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON='<why>' git commit ..." >&2
+  echo "" >&2
+  exit 1
+}
+
+if grep -qE "$TRAILER_RE" "$MSG_FILE"; then
+  exit 0
+fi
+
+if grep -qE '^DHX-Red-Commit:' "$MSG_FILE"; then
+  refuse "A DHX-Red-Commit: trailer is present but its reason is empty."
+fi
+
+if [ -n "${DHX_RED_COMMIT_REASON:-}" ]; then
+  # Trailers live in the body, separated from what precedes them by a blank
+  # line. Append one only when the message does not already end in blank.
+  if [ -n "$(tail -c 1 "$MSG_FILE")" ]; then printf '\n' >> "$MSG_FILE"; fi
+  if [ -n "$(tail -n 1 "$MSG_FILE")" ]; then printf '\n' >> "$MSG_FILE"; fi
+  printf 'DHX-Red-Commit: %s\n' "$DHX_RED_COMMIT_REASON" >> "$MSG_FILE"
+  echo "DHX-Red-Commit trailer appended from DHX_RED_COMMIT_REASON."
+  exit 0
+fi
+
+refuse "No DHX-Red-Commit: trailer, and DHX_RED_COMMIT_REASON is unset."
