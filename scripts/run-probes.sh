@@ -58,6 +58,8 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
 FILTER_KEYS=()
 FILTER_VALS=()
 STAMP=0
+ONLY_NAMES=()
+ONLY_SEEN=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --filter)
@@ -85,8 +87,29 @@ while [[ $# -gt 0 ]]; do
       STAMP=1
       shift
       ;;
+    --only)
+      # Restrict the run to named probe BASENAMES (repeatable). Composes with
+      # --filter: a name still has to survive the filters, so --only can never
+      # widen a run past what the filters allow.
+      #
+      # Exists for pre-commit check #8e (unpaired RED debt), which re-checks the
+      # specific probes a DHX_RED_COMMIT shipped red. #8e must NOT re-implement
+      # the exit-code taxonomy to do that: Convention A probes have non-standard
+      # semantics (exit 2 + supersession_found_* is informational, not a
+      # failure), and a fourth private copy of that interpretation is exactly the
+      # drift the 2026-08-23 taxonomy unification removed. Selecting probes here
+      # keeps ONE consumer of the rules.
+      shift
+      _only="${1:-}"
+      if [ -z "$_only" ]; then
+        echo "run-probes: --only expects a probe basename (e.g. probe-foo.sh)" >&2
+        exit 2
+      fi
+      ONLY_NAMES+=("$_only")
+      shift
+      ;;
     *)
-      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no, --filter LIVE_RUNTIME=yes|no, --stamp)" >&2
+      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no, --filter LIVE_RUNTIME=yes|no, --stamp, --only <probe-basename>)" >&2
       exit 2
       ;;
   esac
@@ -197,6 +220,16 @@ matches_filter() {
 
 for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   [ -e "$p" ] || continue
+  # --only selection runs BEFORE the filter separator so a targeted run does not
+  # emit 130-odd `---` lines for everything it skipped. Unlike a filter miss,
+  # a non-selection is not an event worth printing.
+  if [ "${#ONLY_NAMES[@]}" -gt 0 ]; then
+    _sel=0
+    for _on in "${ONLY_NAMES[@]}"; do
+      if [ "$_on" = "$(basename "$p")" ]; then _sel=1; ONLY_SEEN+=("$_on"); break; fi
+    done
+    [ "$_sel" -eq 1 ] || continue
+  fi
   if ! matches_filter "$p"; then
     echo "---"
     continue
@@ -302,6 +335,26 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
   fi
   echo "---"
 done
+# --only: a name that matched NO probe is an error, never a quiet no-op. #8e
+# passes the roster a RED commit shipped red; if a typo or a stale name silently
+# selected nothing, the runner would report a clean sweep and the debt check
+# would read that as "paid". Callers that legitimately tolerate a vanished probe
+# (a probe deleted since the RED commit) must filter the name out themselves —
+# #8e does exactly that, by stat-ing each roster entry before it gets here.
+if [ "${#ONLY_NAMES[@]}" -gt 0 ]; then
+  _unmatched=""
+  for _on in "${ONLY_NAMES[@]}"; do
+    _hit=0
+    for _seen in ${ONLY_SEEN[@]+"${ONLY_SEEN[@]}"}; do
+      [ "$_seen" = "$_on" ] && { _hit=1; break; }
+    done
+    [ "$_hit" -eq 1 ] || _unmatched="$_unmatched $_on"
+  done
+  if [ -n "$_unmatched" ]; then
+    echo "run-probes: --only matched no probe for:$_unmatched" >&2
+    exit 2
+  fi
+fi
 echo "Probes: $PASS passed, $FAIL failed (incl. $TIMEOUT timed out, $SKIPPED skipped), $SUPERSESSION supersession-observed"
 # Roster after the count, unconditionally. `--stamp` also records this set in
 # status.json, but the stamp is written only for the live tier — the hermetic

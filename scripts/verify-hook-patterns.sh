@@ -35,6 +35,14 @@ set -euo pipefail
 #        8c LIVE-TIER FRESHNESS — blocks if the installed gsd-core VERSION
 #           differs from the version the live tier last RAN against. The
 #           fix is one command, printed in the message.
+#        8e UNPAIRED RED DEBT — runs UNARMED, on every commit. A commit that
+#           landed under DHX_RED_COMMIT=1 promised a paired GREEN; nothing
+#           checked that it arrived. Check #8 is armed only by dhx/*.js or
+#           tests/probes/*, so a RED followed by commits touching neither
+#           never re-runs the tier at all — which is exactly how 24afeee hid
+#           a dead drift-detector for four days. #8e re-checks only the
+#           roster the RED commit recorded (DHX-Red-Probes: trailer), warns
+#           while the debt is young, and BLOCKS past the grace window.
 #   9. Staged multi-cc corpus cells (2026-08-23). Validates cells staged under
 #      tests/probes/.results/v1.3-multi-cc-ver/ against the corpus contract,
 #      reading them from the INDEX. This is where corpus blocking authority
@@ -482,6 +490,28 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
         echo "DHX_RED_COMMIT=1 honoured — every red probe is staged in this commit."
         for _rn in $RED_NAMES; do echo "  attributed red: $_rn"; done
         echo "  Pair this with a GREEN commit that closes it."
+
+        # ---- 8d. ROSTER HANDOFF to the commit-msg trailer -------------------
+        # "Pair this with a GREEN commit" was, until 2026-08-23, advice with
+        # nothing behind it. Check #8e now enforces it — but #8e needs to know
+        # WHICH probes were red, and re-running the whole tier to find out costs
+        # ~4 min on every commit, which is the kind of tax that pushes people to
+        # --no-verify. So the roster is recorded in history, in a DHX-Red-Probes:
+        # trailer, and #8e re-checks only those probes (seconds).
+        #
+        # commit-msg is a SEPARATE process and cannot see $RED_NAMES, but it is
+        # the only hook that can write the message (git's order: pre-commit ->
+        # prepare-commit-msg -> commit-msg). The handoff is a file under the git
+        # dir, stamped with the sha this roster was measured against. The stamp
+        # is the load-bearing half: pre-commit can run and commit-msg never
+        # follow (an abandoned editor, a failed later check), and an unstamped
+        # leftover would then attach a stale roster to an unrelated commit days
+        # later. commit-msg refuses any drop whose stamp is not the current HEAD.
+        _rd_pending="$(git rev-parse --git-dir 2>/dev/null || echo .git)/dhx-red-probes.pending"
+        {
+          git rev-parse HEAD 2>/dev/null || echo "none"
+          for _rn in $RED_NAMES; do echo "$_rn"; done
+        } > "$_rd_pending" 2>/dev/null || true
       else
         rm -f "$TIER_LOG"
         echo "FAILED: hermetic probe tier"
@@ -553,6 +583,139 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
       fi
     fi
   }
+fi
+
+# 8e. Unpaired RED debt — the GREEN half of a TDD-RED pair, enforced.
+#
+#     DELIBERATELY OUTSIDE check #8's `if [ -n "$PROBE_TRIGGER" ]`. That is the
+#     entire point. #8d already makes an ARMED commit unable to inherit a red:
+#     it runs the tier unconditionally and refuses by name when a red probe is
+#     not one this commit stages. The hole is the arming pathspec — a RED commit
+#     followed by any number of commits touching neither dhx/*.js nor
+#     tests/probes/* never re-runs the tier, so the red is simply invisible. The
+#     harm in 24afeee (2026-08-23) was not the red; it was four days of nobody
+#     being told. This check is the telling.
+#
+#     COST. The common path is one `git log` over a 7-day window that finds
+#     nothing — RED commits are rare (5 in this repo's entire history). When one
+#     IS outstanding, only its recorded roster re-runs, via run-probes.sh --only
+#     so the conclusion taxonomy stays single-sourced (a private re-read of exit
+#     codes here would be a fourth consumer, and Convention A probes would be
+#     misjudged: exit 2 + supersession_found_* is informational, not a failure).
+#
+#     WARN-THEN-BLOCK, not block-on-sight. A hard block on the first inherited
+#     red freezes the repo on someone else's failure with no escape but
+#     --no-verify — the 2026-08-19 blast radius the 2026-08-20 tier split exists
+#     to prevent. The grace window leaves room for a genuine multi-hour fix; past
+#     it, the four-day-invisible case becomes a hard stop. Reverting the RED
+#     commit is always an honest exit and is named in the message.
+#
+#     Companion assertions: tests/probes/probe-red-debt-pairing.sh.
+RED_DEBT_LOOKBACK_DAYS=7
+RED_DEBT_GRACE_DAYS=2
+
+_rd_log=$(git log --since="${RED_DEBT_LOOKBACK_DAYS} days ago" \
+            --grep='^DHX-Red-Commit:' --format='%H%x09%ct' HEAD 2>/dev/null || true)
+
+if [ -n "$_rd_log" ] && [ -x "scripts/run-probes.sh" ]; then
+  declare -A _rd_ct=() _rd_sha=()
+  _rd_names=""
+  _rd_precontract=""
+
+  # Herestring, never a pipe: the loop must run in THIS shell or the arrays it
+  # fills vanish with the subshell (and HP-028's SIGPIPE shape is avoided too).
+  while IFS=$'\t' read -r _sha _ct; do
+    [ -n "$_sha" ] || continue
+    _roster=$(git log -1 --format='%(trailers:key=DHX-Red-Probes,valueonly)' "$_sha" 2>/dev/null | tr '\n' ' ')
+    if [ -z "${_roster// /}" ]; then
+      # A RED commit from before the trailer existed (or one that bypassed it).
+      # Nothing to re-check; say so rather than silently reporting no debt.
+      _rd_precontract="$_rd_precontract ${_sha:0:8}"
+      continue
+    fi
+    for _pn in $_roster; do
+      # A probe deleted since the RED commit is not an outstanding debt. Filtered
+      # HERE and not by run-probes.sh, which treats an unmatched --only as an
+      # error precisely so a typo cannot read as "paid".
+      [ -f "tests/probes/$_pn" ] || continue
+      case " $_rd_names " in *" $_pn "*) ;; *) _rd_names="$_rd_names $_pn" ;; esac
+      if [ -z "${_rd_ct[$_pn]:-}" ] || [ "$_ct" -lt "${_rd_ct[$_pn]}" ]; then
+        _rd_ct[$_pn]=$_ct
+        _rd_sha[$_pn]=$_sha
+      fi
+    done
+  done <<< "$_rd_log"
+
+  if [ -n "$_rd_precontract" ]; then
+    echo "NOTE: RED commit(s) with no DHX-Red-Probes: roster —$_rd_precontract" >&2
+    echo "  Predate the 2026-08-23 trailer contract; their debt cannot be re-checked." >&2
+  fi
+
+  if [ -n "${_rd_names// /}" ]; then
+    _rd_only=()
+    for _pn in $_rd_names; do _rd_only+=(--only "$_pn"); done
+    _rd_tmp=$(mktemp)
+    set +e
+    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes "${_rd_only[@]}" >"$_rd_tmp" 2>&1
+    _rd_rc=$?
+    set -e
+    _rd_still=$(sed -n 's/^  red: //p' "$_rd_tmp" || true)
+
+    if [ "$_rd_rc" -ne 0 ] && [ -z "$_rd_still" ]; then
+      # Red without a roster line is a runner-level failure, not a probe verdict.
+      # Surface it; do not silently treat an unreadable answer as "paid".
+      echo "" >&2
+      echo "NOTE: RED-debt re-check could not be resolved (run-probes exited $_rd_rc," >&2
+      echo "  naming no probe). Treating the debt as unresolved but NOT blocking." >&2
+      echo "  Reproduce: bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes${_rd_only[*]/#/ }" >&2
+      echo "" >&2
+    fi
+    rm -f "$_rd_tmp"
+
+    if [ -n "$_rd_still" ]; then
+      _rd_now=$(date +%s)
+      _rd_worst=0
+      _rd_worst_sha=""
+      for _pn in $_rd_still; do
+        _c=${_rd_ct[$_pn]:-$_rd_now}
+        _d=$(( (_rd_now - _c) / 86400 ))
+        if [ "$_d" -ge "$_rd_worst" ]; then
+          _rd_worst=$_d
+          _rd_worst_sha=${_rd_sha[$_pn]:-}
+        fi
+      done
+      _rd_reason=$(git log -1 --format='%(trailers:key=DHX-Red-Commit,valueonly)' "$_rd_worst_sha" 2>/dev/null | head -1)
+
+      echo "" >&2
+      if [ "$_rd_worst" -gt "$RED_DEBT_GRACE_DAYS" ]; then
+        echo "BLOCKED: a DHX_RED_COMMIT shipped red ${_rd_worst}d ago and is still red." >&2
+      else
+        echo "WARNING: a DHX_RED_COMMIT shipped red ${_rd_worst}d ago and is still red." >&2
+      fi
+      echo "" >&2
+      echo "  red commit: ${_rd_worst_sha:0:8}  ($(git log -1 --format='%s' "$_rd_worst_sha" 2>/dev/null | cut -c1-52))" >&2
+      [ -n "$_rd_reason" ] && echo "  its reason: $_rd_reason" >&2
+      echo "" >&2
+      for _pn in $_rd_still; do echo "  still red: $_pn" >&2; done
+      echo "" >&2
+      echo "  The opt-out buys permission to be red, on the promise of a paired GREEN." >&2
+      echo "  That GREEN has not landed. Check #8 is armed only by dhx/*.js and" >&2
+      echo "  tests/probes/*, so commits touching neither never re-run the tier —" >&2
+      echo "  which is how 24afeee concealed a dead drift-detector for four days." >&2
+      echo "" >&2
+      echo "  Diagnose:" >&2
+      for _pn in $_rd_still; do echo "    bash tests/probes/$_pn" >&2; done
+      echo "" >&2
+      if [ "$_rd_worst" -gt "$RED_DEBT_GRACE_DAYS" ]; then
+        echo "  Past the ${RED_DEBT_GRACE_DAYS}-day grace window, so this now blocks. Land the fix, or" >&2
+        echo "  revert ${_rd_worst_sha:0:8} — reverting is an honest exit, --no-verify is not." >&2
+        FAIL=1
+      else
+        echo "  Grace: ${RED_DEBT_GRACE_DAYS} days. This does NOT block yet; past that it will." >&2
+      fi
+      echo "" >&2
+    fi
+  fi
 fi
 
 # 9. Staged multi-cc corpus cells — validate the INDEX, never the worktree.
