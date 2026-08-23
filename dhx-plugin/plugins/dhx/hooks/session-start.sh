@@ -23,9 +23,18 @@ _SCH_HB_KEY=$(printf '%s' "$SID" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_H
 [ "$SID" = "unknown" ] && _SCH_HB_KEY=""
 # The EVENT digest: the RAW payload this dispatcher already holds. `$(cat)` above already
 # stripped trailing newlines — that is the canonicalisation, and the Node side strips
-# identically. The two sides therefore agree WITHOUT any inter-hook communication, which the
-# execution model forbids. Never compare beat timestamps: hooks on one event run
-# concurrently, so a healthy leg's beat can legitimately be older than this one.
+# identically. Never compare beat timestamps: hooks on one event run concurrently, so a
+# healthy leg's beat can legitimately be older than this one.
+#
+# THIS VALUE IS FORWARDED TO THE SCHEDULE CHILD (see its dispatch line below) rather than
+# recomputed there. An earlier revision of this comment claimed the two sides agree "without
+# any inter-hook communication, which the execution model forbids" — that sentence was
+# inherited verbatim from dhx-session-registry-prompt.sh and is FALSE here. It is true of the
+# PROMPT leg, whose two sides are separately registered hooks that genuinely cannot talk. This
+# leg's schedule side is this dispatcher's own CHILD, in this process (hooks.json registers
+# only this dispatcher for SessionStart), so handing it the value is parent-to-child, not the
+# forbidden channel. Correcting the sentence matters because the false premise is what made a
+# second, independent hash in the child look necessary.
 _SCH_EV_KEY=$(printf '%s' "$INPUT" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_EV_KEY=""
 if [ -n "$_SCH_HB_KEY" ]; then
   mkdir -p "$_SCH_HB_DIR" 2>/dev/null
@@ -81,7 +90,7 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
 # clean path, and empty until the renderer's session-start mode lands in a later cross-repo
 # plan, which is a designed graceful absence rather than a gap. Sits in the same D-11
 # "direct ask on the user" tier as the vet-closure offers above.
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
+printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
 # Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
 # description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
 # via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one

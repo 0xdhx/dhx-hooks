@@ -76,9 +76,9 @@ else
 fi
 
 # A4 — dispatcher child line, hardcoded absolute path form (matches every sibling).
-grep -qE '^printf .%s. "\$INPUT" \| bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true$' "$DISPATCHER" 2>/dev/null \
-  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (hardcoded absolute path)" ok \
-  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (hardcoded absolute path)" fail
+grep -qE '^printf .%s. "\$INPUT" \| DHX_SCHEDULE_EVENT_HASH="\$_SCH_EV_KEY" bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true$' "$DISPATCHER" 2>/dev/null \
+  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + forwarded digest)" ok \
+  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + forwarded digest)" fail
 
 # A5-A6 — both shims are structurally unable to break their event.
 for pair in "PROMPT_SHIM:dhx-schedule-prompt.sh" "CTX_SHIM:dhx-schedule-context.sh"; do
@@ -202,6 +202,67 @@ JSEOF
   fi
 else
   echo "SKIP [B5-B6] correlation smoke — sha256sum/jq absent"
+fi
+
+# B7 — THE CONTEXT LEG'S DIGEST, END TO END, THROUGH THE REAL DISPATCHER.
+# This is the assertion whose absence let the leg ship inert: [B5] above exercises the PROMPT
+# pair only, so a context leg that passed no digest at all stayed green for a full phase.
+#
+# It is deliberately BEHAVIOURAL, not a source-level re-derivation. Re-implementing the hash in
+# the probe would only prove the probe agrees with itself; what matters is that the value the
+# dispatcher WROTE to its reference beat is the value the renderer RECEIVED. The dispatcher
+# invokes each child as `bash <abs-path>`, so a fake `bash` earlier on PATH runs the real
+# schedule child and silently no-ops every sibling — the dispatcher's own shebang has already
+# resolved by then, so it is unaffected.
+if command -v sha256sum >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
+   && command -v node >/dev/null 2>&1 && [ -e "$HOME/.claude/hooks/dhx-schedule-context.sh" ]; then
+  FH2="$SB/home2"; mkdir -p "$FH2/.claude"
+  REC2="$SB/rec2.txt"; : > "$REC2"
+  cat > "$SB/render2.cjs" <<'JS2EOF'
+const a=process.argv.slice(2);
+const i=a.indexOf('--event-hash');
+require('fs').appendFileSync(process.env.REC,(i>=0?a[i+1]:'<none>')+'\n');
+JS2EOF
+  mkdir -p "$SB/fakebin"
+  cat > "$SB/fakebin/bash" <<'FBEOF'
+#!/bin/sh
+case "$*" in
+  *dhx-schedule-context.sh*) exec /bin/bash "$@" ;;
+  *) cat >/dev/null 2>&1; exit 0 ;;
+esac
+FBEOF
+  chmod +x "$SB/fakebin/bash"
+  # The payload carries the shapes that could plausibly break canonicalisation: a percent sign
+  # (data under printf '%s', never a format), multibyte UTF-8, and TRAILING NEWLINES that
+  # `$(cat)` must strip identically on both sides.
+  P2='{"session_id":"probe-ctx-0001","source":"startup","note":"100% - cafe UTF8 check"}'
+  printf '%s\n\n\n' "$P2" | env PATH="$SB/fakebin:$PATH" HOME="$FH2" REC="$REC2" \
+    DHX_SCHEDULE_RENDERER="$SB/render2.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache2" \
+    /bin/bash "$DISPATCHER" >/dev/null 2>&1
+  CTX_SEEN=$(head -1 "$REC2" 2>/dev/null)
+  BEAT2=$(ls "$FH2"/.cache/dhx/hooks/session-start/*.json 2>/dev/null | head -1)
+  CTX_REF=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$BEAT2" 2>/dev/null)
+  if [ -n "$CTX_SEEN" ] && [ "$CTX_SEEN" != "<none>" ] && [ "$CTX_SEEN" = "$CTX_REF" ]; then
+    check "[B7] context leg: the dispatcher's reference digest reaches the renderer verbatim ($CTX_SEEN)" ok
+  else
+    check "[B7] context leg: the dispatcher's reference digest reaches the renderer" fail \
+      "renderer=${CTX_SEEN:-none} reference=${CTX_REF:-none}"
+  fi
+  # B8 — the shim must REFUSE a forged or malformed digest rather than forward it. The variable
+  # is environment-sourced, so a non-digest value must degrade to the pre-forwarding floor
+  # (empty -> isDigestKey() null), never reach the beat as if it were real.
+  : > "$REC2"
+  printf '%s' "$P2" | env HOME="$FH2" REC="$REC2" DHX_SCHEDULE_RENDERER="$SB/render2.cjs" \
+    DHX_SCHEDULE_CACHE_DIR="$SB/cache2" DHX_SCHEDULE_EVENT_HASH='not-a-digest; rm -rf /' \
+    /bin/bash "$CTX_SHIM" >/dev/null 2>&1
+  FORGED=$(head -1 "$REC2" 2>/dev/null)
+  if [ -z "$FORGED" ] || [ "$FORGED" = "<none>" ]; then
+    check "[B8] context shim rejects a malformed forwarded digest (empty, not forwarded)" ok
+  else
+    check "[B8] context shim rejects a malformed forwarded digest" fail "forwarded=${FORGED}"
+  fi
+else
+  echo "SKIP [B7-B8] context-leg digest smoke — sha256sum/jq/node or the installed shim absent"
 fi
 
 echo "---"
