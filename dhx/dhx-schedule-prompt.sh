@@ -44,14 +44,19 @@ IFS=$'\t' read -r SESSION_ID TRANSCRIPT AGENT_ID <<<"$FIELDS"
 CACHE_DIR="${DHX_SCHEDULE_CACHE_DIR:-$HOME/.cache/dhx/schedule}"
 export DHX_SCHEDULE_CACHE_DIR="$CACHE_DIR"
 
-# The shared event digest. printf '%s', never echo: echo appends a newline and sha256sum
-# hashes it, and the two legs would then silently disagree forever.
-EVENT_HASH=""
-if command -v sha256sum >/dev/null 2>&1; then
-  EVENT_HASH=$(printf '%s' "$INPUT" | sha256sum 2>/dev/null | cut -c1-16)
-elif command -v shasum >/dev/null 2>&1; then
-  EVENT_HASH=$(printf '%s' "$INPUT" | shasum -a 256 2>/dev/null | cut -c1-16)
-fi
+# The shared event digest. printf '%s', never echo: echo appends a newline and the hasher
+# hashes it, and the two legs would then silently disagree forever. This shim computes no
+# session key of its own (the renderer derives that in Node from --session-id), so the event
+# digest is its only chain consumer.
+# Digest chain: sha256sum, then shasum -a 256 (macOS) — the dhx/poll-guard.sh SESSION_HASH
+# precedent. Inlined (no sourced lib) so this file stays a single self-contained unit. Neither
+# tool present -> empty, and the renderer records the pre-forwarding floor, as before.
+_dhx_digest16() {
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-16
+  elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16
+  fi
+}
+EVENT_HASH=$(_dhx_digest16 "$INPUT") || EVENT_HASH=""
 
 # Graceful no-op when the cross-repo installer has not provisioned the symlink yet. Without
 # this the hook would emit a node error into the model's context on every prompt.

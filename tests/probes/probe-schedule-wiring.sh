@@ -35,6 +35,7 @@
 # that Claude Code RENDERS it. See dhx/dhx-cold-return-gate.sh's header for the standing note.
 #
 # Backs docs/decisions.md 2026-08-22 "/dhx:schedule delivery legs wired" row.
+# B9-B11 back the 2026-08-22 "One digest-tool policy at every /dhx:schedule computing site" row.
 # Run: bash tests/probes/probe-schedule-wiring.sh
 
 set -uo pipefail
@@ -263,6 +264,86 @@ FBEOF
   fi
 else
   echo "SKIP [B7-B8] context-leg digest smoke — sha256sum/jq/node or the installed shim absent"
+fi
+
+# B9-B11 — DIGEST-TOOL PORTABILITY (cross-repo brief 2026-08-23 "schedule digest tool policy").
+# Policy: every computing site runs ONE chain, `sha256sum` then `shasum -a 256`, for BOTH the
+# session key and the event key (the dhx/poll-guard.sh SESSION_HASH precedent). Before this,
+# a shasum-only host (macOS) produced NO reference beat at all — the guarded block was skipped
+# on an empty session key — while the renderer still wrote its own beat, so health reported
+# MISSING-REFERENCE and FAILed. Driven with a PATH that holds every tool EXCEPT sha256sum.
+# The expected values come from the real sha256sum, so this also pins that the two tools
+# agree byte-for-byte on the same canonicalised input.
+if command -v sha256sum >/dev/null 2>&1 && command -v shasum >/dev/null 2>&1 \
+   && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  NS="$SB/nosha"; mkdir -p "$NS"
+  IFS=: read -r -a _PDIRS <<<"$PATH"
+  for d in "${_PDIRS[@]}"; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+      b=$(basename "$f")
+      [ "$b" = sha256sum ] && continue
+      [ -x "$f" ] && [ ! -e "$NS/$b" ] && ln -s "$f" "$NS/$b" 2>/dev/null
+    done
+  done
+  if env PATH="$NS" sh -c 'command -v sha256sum' >/dev/null 2>&1; then
+    echo "SKIP [B9-B11] could not build a sha256sum-less PATH"
+  else
+    P3='{"session_id":"probe-nosha-0001","transcript_path":"/probe/probe-nosha-0001.jsonl","cwd":"/probe","prompt":"100% - cafe"}'
+    EXP_EV=$(printf '%s' "$P3" | sha256sum | cut -c1-16)
+    EXP_SK=$(printf '%s' "probe-nosha-0001" | sha256sum | cut -c1-16)
+    # B9 — registry hook (prompt leg reference beat)
+    FH3="$SB/home3"; mkdir -p "$FH3/.claude"
+    printf '%s' "$P3" | env PATH="$NS" HOME="$FH3" bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    B9F="$FH3/.cache/dhx/hooks/prompt/$EXP_SK.json"
+    B9E=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$B9F" 2>/dev/null)
+    if [ -f "$B9F" ] && [ "$B9E" = "$EXP_EV" ]; then
+      check "[B9] registry reference beat written via shasum fallback; session key + event digest identical to sha256sum's ($EXP_SK/$EXP_EV)" ok
+    else
+      check "[B9] registry reference beat written via shasum fallback with sha256sum-identical keys" fail \
+        "beat=$( [ -f "$B9F" ] && echo present || echo ABSENT ) event=${B9E:-none} want=$EXP_EV"
+    fi
+    # B10 — dispatcher (session-start leg reference beat + forwarded digest)
+    FH4="$SB/home4"; mkdir -p "$FH4/.claude"
+    REC4="$SB/rec4.txt"; : > "$REC4"
+    cat > "$SB/render4.cjs" <<'JS4EOF'
+const a=process.argv.slice(2);
+const i=a.indexOf('--event-hash');
+require('fs').appendFileSync(process.env.REC,(i>=0?a[i+1]:'<none>')+'\n');
+JS4EOF
+    mkdir -p "$SB/fakebin4"
+    cat > "$SB/fakebin4/bash" <<'FB4EOF'
+#!/bin/sh
+case "$*" in
+  *dhx-schedule-context.sh*) exec /bin/bash "$@" ;;
+  *) cat >/dev/null 2>&1; exit 0 ;;
+esac
+FB4EOF
+    chmod +x "$SB/fakebin4/bash"
+    printf '%s' "$P3" | env PATH="$SB/fakebin4:$NS" HOME="$FH4" REC="$REC4" \
+      DHX_SCHEDULE_RENDERER="$SB/render4.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache4" \
+      /bin/bash "$DISPATCHER" >/dev/null 2>&1
+    B10F="$FH4/.cache/dhx/hooks/session-start/$EXP_SK.json"
+    B10E=$(sed -n 's/.*"event_hash":"\([^"]*\)".*/\1/p' "$B10F" 2>/dev/null)
+    if [ -f "$B10F" ] && [ "$B10E" = "$EXP_EV" ]; then
+      check "[B10] dispatcher reference beat written via shasum fallback; session key + event digest identical to sha256sum's" ok
+    else
+      check "[B10] dispatcher reference beat written via shasum fallback with sha256sum-identical keys" fail \
+        "beat=$( [ -f "$B10F" ] && echo present || echo ABSENT ) event=${B10E:-none} want=$EXP_EV"
+    fi
+    # B11 — prompt shim (already had the fallback; pinned so the chain stays symmetric)
+    : > "$REC4"
+    printf '%s' "$P3" | env PATH="$NS" HOME="$FH4" REC="$REC4" DHX_SCHEDULE_RENDERER="$SB/render4.cjs" \
+      DHX_SCHEDULE_CACHE_DIR="$SB/cache4" bash "$PROMPT_SHIM" >/dev/null 2>&1
+    B11=$(head -1 "$REC4" 2>/dev/null)
+    if [ "$B11" = "$EXP_EV" ]; then
+      check "[B11] prompt shim event digest via shasum fallback identical to sha256sum's" ok
+    else
+      check "[B11] prompt shim event digest via shasum fallback identical to sha256sum's" fail "got=${B11:-none} want=$EXP_EV"
+    fi
+  fi
+else
+  echo "SKIP [B9-B11] digest-tool portability — sha256sum/shasum/jq/node absent"
 fi
 
 echo "---"

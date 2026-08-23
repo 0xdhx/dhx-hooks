@@ -74,9 +74,18 @@ fi
 # One ~200-byte write; no lock, no directory scan; every failure path silent. $UUID and
 # $INPUT are both already in hand, so this needs no additional jq call.
 _SCH_HB_DIR="$HOME/.cache/dhx/hooks/prompt"
-# printf '%s', never echo — echo appends a newline, sha256sum hashes it, and this digest
+# printf '%s', never echo — echo appends a newline, the hasher hashes it, and this digest
 # would then never equal the Node side's for the same session.
-_SCH_HB_KEY=$(printf '%s' "$UUID" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_HB_KEY=""
+# Digest chain: sha256sum, then shasum -a 256 (macOS) — the dhx/poll-guard.sh SESSION_HASH
+# precedent. Inlined (no sourced lib) so this file stays a single self-contained unit. Both
+# the SESSION key and the EVENT key go through it; neither tool present -> empty -> the
+# guarded beat block below skips, fail-open, exactly as an empty key always did.
+_dhx_digest16() {
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-16
+  elif command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16
+  fi
+}
+_SCH_HB_KEY=$(_dhx_digest16 "$UUID") || _SCH_HB_KEY=""
 # The EVENT digest: the RAW payload this hook already holds. `$(cat)` above already stripped
 # trailing newlines — that is the canonicalisation, and the Node side strips identically. The
 # two sides therefore agree WITHOUT any inter-hook communication, which the execution model
@@ -89,7 +98,7 @@ _SCH_HB_KEY=$(printf '%s' "$UUID" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_
 # that combination is KNOWN-BENIGN, not a dead leg. (Vacuous in practice: a Task subagent
 # fired ZERO UserPromptSubmit at 2.1.170 per this hook's own header.) Do NOT move this below
 # the idempotency exit under any circumstance.
-_SCH_EV_KEY=$(printf '%s' "$INPUT" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_EV_KEY=""
+_SCH_EV_KEY=$(_dhx_digest16 "$INPUT") || _SCH_EV_KEY=""
 if [ -n "$_SCH_HB_KEY" ]; then
   mkdir -p "$_SCH_HB_DIR" 2>/dev/null
   _SCH_HB_F="$_SCH_HB_DIR/$_SCH_HB_KEY.json"
@@ -98,7 +107,7 @@ if [ -n "$_SCH_HB_KEY" ]; then
   case "$_SCH_HB_N" in ''|*[!0-9]*) _SCH_HB_N=0 ;; esac
   # D-28: BOTH identities — the one from stdin and the one visible in this process's
   # environment — so a later plan can OBSERVE whether they agree instead of assuming it.
-  _SCH_ENV_KEY=$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | sha256sum 2>/dev/null | cut -c1-16) || _SCH_ENV_KEY=""
+  _SCH_ENV_KEY=$(_dhx_digest16 "${CLAUDE_CODE_SESSION_ID:-}") || _SCH_ENV_KEY=""
   # printf > tmp && mv is atomic, per this hook's own atomicity note.
   printf '{"last_fire_at":"%s","count":%d,"event_hash":"%s","session_hash_stdin":"%s","session_hash_env":"%s"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((_SCH_HB_N+1))" "$_SCH_EV_KEY" "$_SCH_HB_KEY" "$_SCH_ENV_KEY" \
