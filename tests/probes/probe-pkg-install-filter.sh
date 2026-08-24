@@ -131,6 +131,63 @@ for c in "ls -la" "npm test" "npm run build" "npm run install" "pip download six
          "pip install six 2>&1" "/home/u/.venv/bin/pip install six 2>&1"; do
   [ "$(decision_of "$c")" = "NOOP" ]; ck $? "bypass no-op: $c"
 done
+echo "=== rewriter: HEAD-anchored is_install + bare-& / paren compound bail (2026-08-23) ==="
+# Producer disjointness is STRUCTURAL: this hook classifies at the command HEAD,
+# so it can never claim a command whose head belongs to another PreToolUse:Bash
+# rewriter. The two shapes below are the families measured OVERLAPPING with
+# dhx-pytest-cgroup-cap.sh at dbac90c — CC resolves competing updatedInput in
+# COMPLETION ORDER (nondeterministic; see docs/hook-dev-guide.md § Two hooks
+# rewriting the same Bash input), so an overlap silently drops one rewrite
+# wholesale. Cross-producer enforcement:
+# tests/probes/probe-updatedinput-producer-disjointness.sh.
+#
+# (A) bare `&`, `(`, `)` are compound separators this hook's header already
+#     declares out of scope; the old bail-list carried `&&` but not `&`, so it
+#     wrapped both halves and summarized the SECOND command's output as install
+#     noise — wrong on its own terms, before disjointness enters.
+for c in "pip install six & pytest" "npm install & pytest" \
+         "pip install -e . & pytest tests/" "(pip install six)" \
+         "pip install six ( x )" "npm install &"; do
+  [ "$(decision_of "$c")" = "NOOP" ]; ck $? "compound bail (bare & / parens): $c"
+done
+# (B) an install token in ARGUMENT position is NOT an install invocation. The old
+#     leading class (^|[[:space:]]|/) matched anywhere, so a pytest-headed command
+#     merely carrying one fired this hook too.
+for c in "echo pip install six" "pytest tests/ pip install" \
+         "pytest --rootdir=/x/npm i" "pytest /x/yarn add" \
+         "pytest --basetemp=/tmp/pip install" "python -m pytest pip install"; do
+  [ "$(decision_of "$c")" = "NOOP" ]; ck $? "head-anchored (install token in arg position): $c"
+done
+# (D) a NEWLINE is a separator too, and grep -E anchors ^ at every LINE start —
+#     so without a newline bail, is_install matches an install on line 2 of a
+#     command whose real head is something else. Found by adversarial review of
+#     the head-anchoring change itself; ~half of all Bash calls are multi-line.
+for c in "$(printf 'pytest\npip install six')" \
+         "$(printf 'pip install -e .\npytest')" \
+         "$(printf 'set -e\npip install six\npytest')" \
+         "$(printf 'npm install\npytest tests/')"; do
+  [ "$(decision_of "$c")" = "NOOP" ]; ck $? "newline bail: multi-line command not claimed"
+done
+# (E) ACCEPTED COVERAGE REGRESSION, pinned so restoring it is a deliberate flip.
+#     Only env-assignments are stripped before the head anchor, so any COMMAND-
+#     PREFIX wrapper blocks the match. These are REAL installs that used to
+#     compact and no longer do — a lost optimization on a fail-open hook, not a
+#     correctness break. Restoring the wrapper set is deferred to
+#     .planning/backlog/2026-08-23-pkg-install-filter-command-prefix-coverage.md;
+#     when it lands, these assertions flip to "allow" and that is the signal.
+for c in "sudo pip install six" "timeout 600 pip install six" \
+         "nice -n 10 npm install" "poetry run pip install six" \
+         "env pip install six" "command pip install six"; do
+  [ "$(decision_of "$c")" = "NOOP" ]; ck $? "known regression (command-prefix wrapper not stripped): $c"
+done
+
+# (C) the head may still be whitespace- or env-assignment-prefixed, and
+#     path-prefixed heads keep firing (the venv-direct-call pattern).
+for c in "FOO=bar pip install six" "FOO=bar BAZ=qux npm ci" "  pip install six" \
+         "/home/u/.venv/bin/pip install six"; do
+  [ "$(decision_of "$c")" = "allow" ]; ck $? "head-anchored (env/whitespace/path prefix still fires): $c"
+done
+
 # Idempotency: an already-wrapped command must not double-wrap.
 rw=$(rewrite_of "npm install")
 [ "$(decision_of "$rw")" = "NOOP" ];      ck $? "idempotent: already-wrapped command not re-wrapped"
