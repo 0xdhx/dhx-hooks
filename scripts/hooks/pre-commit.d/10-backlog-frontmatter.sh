@@ -122,6 +122,25 @@ STAGED_TREE="$(mktemp -d)" || exit 0   # fail-OPEN: cannot make temp dir (D-06)
 trap 'rm -rf "$STAGED_TREE"' EXIT
 materialize_staged_paths "$STAGED_TREE" "${staged[@]}" || exit 1   # fail-CLOSED
 
+# Non-brief-pool markers. A directory under .planning/backlog/ that is not a
+# brief pool declares itself with a `.not-a-brief-pool` marker, and the
+# validator's classify() skips everything under it (see NON_BRIEF_MARKER there).
+# The validator runs FROM the hermetic staged tree, which holds only the staged
+# briefs, so a marker that is not materialized here is invisible and the
+# declaration silently does nothing. Resolved from the INDEX first — so a marker
+# added in this very commit counts — falling back to HEAD for the usual case
+# where it is already committed. The marker's CONTENT is not part of the
+# contract; only its existence is, so an empty file is materialized.
+for p in "${staged[@]}"; do
+  sub="${p#.planning/backlog/}"
+  case "$sub" in */*) sub="${sub%%/*}" ;; *) continue ;; esac
+  marker=".planning/backlog/$sub/.not-a-brief-pool"
+  [ -e "$STAGED_TREE/$marker" ] && continue
+  if git cat-file -e ":$marker" 2>/dev/null || git cat-file -e "HEAD:$marker" 2>/dev/null; then
+    mkdir -p "$STAGED_TREE/$(dirname "$marker")" && : > "$STAGED_TREE/$marker"
+  fi
+done
+
 # The validator names each offending brief + reason on stderr (repo-relative
 # paths, because we run it from the staged tree); exit code propagates
 # (0 pass, 1 block — fail-CLOSED on violation, D-06).

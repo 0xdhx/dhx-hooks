@@ -177,6 +177,17 @@ const ALLOWED_ACTIVE_STATUS = ['captured', 'in-progress'];
 // Terminal subdirs (D-04 — fixed to the subdir name, not discretion).
 const TERMINAL_SUBDIRS = ['shipped', 'rejected', 'superseded'];
 
+// A directory under .planning/backlog/ that is NOT a brief pool declares itself
+// by carrying this marker file (frozen records, tombstoned history, an index —
+// anything that is not a brief). Its CONTENT is ignored; existence is the whole
+// signal. This is the third category IN-01 previously lacked: before it, a
+// subdir was either a recognized terminal pool or an unrecognized typo, so a
+// legitimate non-brief directory had no way to say so and its files were
+// refused as malformed briefs. The marker does NOT weaken IN-01 — an
+// UNDECLARED unknown subdir still blocks fail-CLOSED, which is what catches
+// `ship/` for `shipped/`.
+const NON_BRIEF_MARKER = '.not-a-brief-pool';
+
 // present-and-non-empty: absent (undefined) and empty-string ('') both fail.
 function present(v) {
   return typeof v === 'string' && v.trim() !== '';
@@ -197,6 +208,20 @@ function present(v) {
 function classify(relPath) {
   // Normalize to forward slashes for a stable match regardless of platform.
   const norm = relPath.split(path.sep).join('/');
+
+  // Declared-non-brief check FIRST, and at ANY depth. Unlike the classification
+  // below it is not anchored to a single level, so a file nested arbitrarily
+  // deep under a declared directory is skipped too. The marker is resolved
+  // relative to the process cwd, which the calling leaf sets to the hermetic
+  // staged tree — the leaf is responsible for materializing the marker there.
+  const first = norm.match(/(?:^|\/)\.planning\/backlog\/([^/]+)\//);
+  if (first && !TERMINAL_SUBDIRS.includes(first[1])) {
+    const marker = path.join('.planning', 'backlog', first[1], NON_BRIEF_MARKER);
+    if (fs.existsSync(marker)) {
+      return { kind: 'non-brief-pool', subdir: first[1] };
+    }
+  }
+
   const m = norm.match(/(?:^|\/)\.planning\/backlog\/([^/]+)\/[^/]+\.md$/);
   if (m) {
     if (TERMINAL_SUBDIRS.includes(m[1])) {
@@ -212,6 +237,13 @@ function main() {
   const violations = [];
 
   for (const p of paths) {
+    // Classified BEFORE the file is read or parsed: a tombstone README in a
+    // declared non-brief directory has no frontmatter to parse, so deferring
+    // this until after parseFrontmatter would refuse it as unparseable — which
+    // is exactly the failure this category exists to remove.
+    const cls = classify(p);
+    if (cls.kind === 'non-brief-pool') continue;
+
     let raw;
     try {
       raw = fs.readFileSync(p, 'utf8');
@@ -230,7 +262,7 @@ function main() {
       continue;
     }
 
-    const { kind, subdir } = classify(p);
+    const { kind, subdir } = cls;
 
     if (kind === 'unknown-subdir') {
       // IN-01 fail-CLOSED: a brief nested under an UNRECOGNIZED backlog subdir
