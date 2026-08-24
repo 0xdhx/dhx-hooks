@@ -81,8 +81,43 @@ set -euo pipefail
 #
 # Safe to re-run. Escape hatch for the installed hook: `git commit --no-verify`.
 
+# ─── THE ROOT COMES FROM THIS SCRIPT, NOT FROM THE CALLER (XR-40 follow-up) ──
+# The worktree guard below compares --absolute-git-dir against --git-common-dir. Those two AGREE
+# under GIT_DIR/GIT_WORK_TREE, while GIT_TOPLEVEL — the value the symlink TARGETS are built from —
+# was taken from `git rev-parse --show-toplevel` in the CALLER'S cwd and returned the lane. The
+# guard and the thing it guarded read different inputs — the IDENTICAL defect fixed in
+# install-dhx-tools.sh (XR-40 B-09, 601359200), and worse here: the targets land in the SHARED
+# .git/hooks/, so a lane-pointing link dangles when the lane is removed and silently disables the
+# pre-commit gate (the XR-29 reftxn guard included) for the primary and every worktree.
+#
+# REACHABILITY IS NOT THEORETICAL: git exports GIT_DIR into every hook it runs, and this script
+# IS the hook-adjacent installer. Same two changes as the sibling, and both are needed: clear the
+# environment before git is asked anything, and derive the root from this script's OWN location —
+# the only tree whose paths it is entitled to wire into the shared hooks dir.
+# Guard-shape parity with install-dhx-tools.sh is asserted by
+# scripts/tests/probe-install-hooks-guard.sh (same unset list, same three legs).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES 2>/dev/null || true
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"   # scripts/ -> the repository root
+cd "$SCRIPT_ROOT"
+
 if ! GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null); then
   echo "install-hooks: not in a git repository" >&2
+  exit 1
+fi
+GIT_TOPLEVEL="$(cd -- "$GIT_TOPLEVEL" && pwd -P)"
+
+# The third signal, and the one that makes the other two an actual guard rather than two
+# readings of the same lie: git must AGREE with the script about which tree this is.
+if [ "$GIT_TOPLEVEL" != "$SCRIPT_ROOT" ]; then
+  echo "install-hooks: refusing — git and this script disagree about the repository root." >&2
+  echo "  this script lives in: $SCRIPT_ROOT" >&2
+  echo "  git reports:          $GIT_TOPLEVEL" >&2
+  echo "  The hook symlink TARGETS are built from the root, so a disagreement means they would" >&2
+  echo "  point into a tree this installer does not live in. Run it from the checkout it belongs" >&2
+  echo "  to, with no GIT_DIR/GIT_WORK_TREE in the environment." >&2
   exit 1
 fi
 cd "$GIT_TOPLEVEL"
