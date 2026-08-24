@@ -34,8 +34,13 @@ SUMMARIZE="$ROOT/dhx/dhx-pkg-install-summarize.sh"
 PASS=0; FAIL=0
 ck() { if [ "$1" -eq 0 ]; then printf 'OK   %s\n' "$2"; PASS=$((PASS+1)); else printf 'FAIL %s\n' "$2"; FAIL=$((FAIL+1)); fi; }
 
-# JSON PreToolUse payload for a Bash command.
-j() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(jq -Rn --arg c "$1" '$c')"; }
+# JSON PreToolUse payload for a Bash command. Carries the OPTIONAL Bash fields
+# (timeout / description / run_in_background) every real CC call can carry:
+# updatedInput REPLACES the whole tool-input object (CC consumes
+# `updatedInput ?? t`, no merge — verified from CC 2.1.241 source, see
+# .planning/backlog 2026-08-18 updatedInput brief), so a rewrite emitting
+# {command} alone silently drops them and the probe must be able to see that.
+j() { printf '{"tool_name":"Bash","tool_input":{"command":%s,"timeout":600000,"description":"probe payload","run_in_background":true}}' "$(jq -Rn --arg c "$1" '$c')"; }
 # Rewritten command (empty string if the hook emitted {}).
 rewrite_of() { j "$1" | bash "$FILTER" | jq -r '.hookSpecificOutput.updatedInput.command // empty'; }
 decision_of() { j "$1" | bash "$FILTER" | jq -r '.hookSpecificOutput.permissionDecision // "NOOP"'; }
@@ -129,6 +134,21 @@ done
 # Idempotency: an already-wrapped command must not double-wrap.
 rw=$(rewrite_of "npm install")
 [ "$(decision_of "$rw")" = "NOOP" ];      ck $? "idempotent: already-wrapped command not re-wrapped"
+
+echo "=== rewriter: caller's optional fields SURVIVE the rewrite (whole-object updatedInput) ==="
+# updatedInput replaces the entire tool_input, so the rewrite must re-emit the
+# original object with only .command overridden — {command} alone reverts the
+# caller's timeout to the default (and auto-backgrounds a capped 600000ms call)
+# and silently flips run_in_background:true to false.
+full=$(j "npm install" | bash "$FILTER")
+[ "$(jq -r '.hookSpecificOutput.updatedInput.timeout // empty' <<< "$full")" = "600000" ]; \
+                                          ck $? "preserve: timeout 600000 re-emitted in updatedInput"
+[ "$(jq -r '.hookSpecificOutput.updatedInput.description // empty' <<< "$full")" = "probe payload" ]; \
+                                          ck $? "preserve: description re-emitted in updatedInput"
+[ "$(jq -r '.hookSpecificOutput.updatedInput.run_in_background // empty' <<< "$full")" = "true" ]; \
+                                          ck $? "preserve: run_in_background true re-emitted in updatedInput"
+[ "$(jq -r '.hookSpecificOutput.updatedInput.command // empty' <<< "$full")" != "npm install" ]; \
+                                          ck $? "preserve: command is still the REWRITTEN one, not the original"
 
 # ============================ (3) HYBRID END-TO-END =======================
 echo "=== end-to-end: SUCCESS path compacts; exit 0 ==="

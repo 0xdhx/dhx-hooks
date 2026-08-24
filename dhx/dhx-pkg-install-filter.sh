@@ -97,11 +97,17 @@ summarizer="$hook_dir/dhx-pkg-install-summarize.sh"
 # summarizer path survives a directory with spaces.
 rewritten="T=\$(mktemp 2>/dev/null); if [ -z \"\$T\" ]; then $cmd; else { $cmd ; } >\"\$T\" 2>&1; rc=\${PIPESTATUS[0]}; if [ \"\$rc\" -eq 0 ]; then bash '$summarizer' <\"\$T\" || cat \"\$T\"; else cat \"\$T\"; fi; rm -f \"\$T\"; exit \$rc; fi"
 
-jq -cn --arg cmd "$rewritten" '{
+# updatedInput REPLACES the whole tool-input object — CC consumes it as
+# `updatedInput ?? original`, never a merge (verified from CC 2.1.241 source;
+# see docs/hook-patterns.md HP-041). Emitting {command} alone would silently
+# drop the caller's timeout / description / run_in_background. So: re-emit the
+# ORIGINAL tool_input with only .command overridden. $input parsed successfully
+# above (cmd extraction gated on it), so this jq cannot fail on parse.
+printf '%s' "$input" | jq -c --arg cmd "$rewritten" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     permissionDecisionReason: "dhx-pkg-install-filter: success collapses to summary; failure passes through full; exit code preserved",
-    updatedInput: { command: $cmd }
+    updatedInput: (.tool_input | .command = $cmd)
   }
 }'

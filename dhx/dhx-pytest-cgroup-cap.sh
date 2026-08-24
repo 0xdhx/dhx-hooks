@@ -216,11 +216,20 @@ prefix=$(dhx_cgroup_prefix_tokens "$MEM" "$TIME" | tr '\n' ' ') || emit_noop
 esc=${cmd//\'/\'\\\'\'}
 rewritten="${prefix}bash -c '$esc'"
 
-jq -cn --arg cmd "$rewritten" '{
+# updatedInput REPLACES the whole tool-input object — CC consumes it as
+# `updatedInput ?? original`, never a merge (verified from CC 2.1.241 source;
+# see docs/hook-patterns.md HP-041). Emitting {command} alone would silently
+# drop the caller's timeout / description / run_in_background — the caller's
+# 600000ms suite timeout reverts to the default (and auto-backgrounds), which
+# defeats the header's "CC's own Bash tool timeout bounds a hung command"
+# premise. So: re-emit the ORIGINAL tool_input with only .command overridden.
+# $input parsed successfully above (cmd extraction gated on it), so this jq
+# cannot fail on parse.
+printf '%s' "$input" | jq -c --arg cmd "$rewritten" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     permissionDecisionReason: "dhx-pytest-cgroup-cap: wrapped mid-session pytest in a MemoryMax cgroup (DHX-7 OOM cap); exit code preserved",
-    updatedInput: { command: $cmd }
+    updatedInput: (.tool_input | .command = $cmd)
   }
 }'

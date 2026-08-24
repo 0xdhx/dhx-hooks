@@ -38,7 +38,12 @@ FAIL=0
 rw() {  # CMD [ENV=VAL ...]
   local cmd="$1"; shift
   local json
-  json=$(jq -cn --arg c "$cmd" '{tool_input:{command:$c}}')
+  # Payload carries the optional Bash fields a real CC call can carry (timeout /
+  # description / run_in_background) so fixtures match production shape. NOTE:
+  # no preservation assertion here — dhx-grep-vsz-cap.sh still emits {command}
+  # alone; its fate (fix vs retire) is decided by the separate grep-cap
+  # function-level arc, see the 2026-08-18 updatedInput brief's close note.
+  json=$(jq -cn --arg c "$cmd" '{tool_input:{command:$c, timeout:600000, description:"probe payload", run_in_background:true}}')
   printf '%s' "$json" \
     | env "$@" bash "$HOOK" 2>/dev/null \
     | jq -r '.hookSpecificOutput.updatedInput.command // "NOOP"' 2>/dev/null

@@ -73,8 +73,12 @@ fi
 # Ask the hook to produce the rewrite for `pytest` with a given mem cap.
 # Returns the rewritten command string on stdout (empty on no-op).
 get_rewrite() {  # MEM
+  # Payload carries the optional Bash fields (timeout / description /
+  # run_in_background) like a real CC call would — updatedInput replaces the
+  # whole tool_input, so the rewrite must re-emit them (asserted hermetically in
+  # probe-pytest-cgroup-cap.sh; here they just ride along like production).
   local mem="$1"
-  printf '%s' '{"tool_input":{"command":"pytest"}}' \
+  printf '%s' '{"tool_input":{"command":"pytest","timeout":600000,"description":"probe payload","run_in_background":true}}' \
     | env "DHX_PYTEST_CAP_MEM=$mem" bash "$HOOK" 2>/dev/null \
     | jq -r '.hookSpecificOutput.updatedInput.command // empty' 2>/dev/null
 }

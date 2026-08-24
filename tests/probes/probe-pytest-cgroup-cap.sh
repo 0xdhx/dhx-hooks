@@ -62,9 +62,19 @@ done   # deliberately NOT linking systemd-run
 HOOK_OUT=""
 run_hook() {
   local json="$1"; shift
+  # Enrich every well-formed payload with the OPTIONAL Bash fields a real CC
+  # call can carry (timeout / description / run_in_background): updatedInput
+  # REPLACES the whole tool-input object (CC consumes `updatedInput ?? t`, no
+  # merge — verified from CC 2.1.241 source), so a rewrite emitting {command}
+  # alone silently drops them. Deliberately-invalid JSON fixtures pass through
+  # untouched (jq fails → keep the original string).
+  local enriched
+  enriched=$(jq -c '.tool_input += {timeout:600000, description:"probe payload", run_in_background:true}' \
+               <<< "$json" 2>/dev/null) || enriched="$json"
+  [ -n "$enriched" ] || enriched="$json"
   local env_args=("PATH=$AVAIL_BIN:$PATH")
   [ "$#" -gt 0 ] && env_args+=("$@")
-  HOOK_OUT=$(printf '%s' "$json" | env "${env_args[@]}" bash "$HOOK" 2>/dev/null)
+  HOOK_OUT=$(printf '%s' "$enriched" | env "${env_args[@]}" bash "$HOOK" 2>/dev/null)
 }
 
 # extract the rewritten command (empty if {} / no rewrite)
@@ -82,8 +92,15 @@ assert_rewritten() {  # LABEL  ORIGINAL_CMD
   grep -Eq 'MemorySwapMax=0' <<< "$rc"             || ok=0
   grep -Fq "bash -c '" <<< "$rc"                   || ok=0
   grep -Fq "$orig" <<< "$rc"                       || ok=0
+  # Preservation: updatedInput replaces the WHOLE tool_input, so the rewrite
+  # must re-emit the caller's optional fields intact ({command} alone drops
+  # them — the caller's 600000ms timeout reverts to the default and
+  # run_in_background:true silently becomes false).
+  [ "$(jq -r '.hookSpecificOutput.updatedInput.timeout // empty' <<< "$HOOK_OUT" 2>/dev/null)" = "600000" ] || ok=0
+  [ "$(jq -r '.hookSpecificOutput.updatedInput.description // empty' <<< "$HOOK_OUT" 2>/dev/null)" = "probe payload" ] || ok=0
+  [ "$(jq -r '.hookSpecificOutput.updatedInput.run_in_background // empty' <<< "$HOOK_OUT" 2>/dev/null)" = "true" ] || ok=0
   if [ "$ok" -eq 1 ]; then echo "OK   $label"; PASS=$((PASS+1))
-  else echo "FAIL $label (rewrite missing an expected token): $rc"; FAIL=$((FAIL+1)); fi
+  else echo "FAIL $label (rewrite missing an expected token or a preserved field): $HOOK_OUT"; FAIL=$((FAIL+1)); fi
 }
 
 assert_noop() {  # LABEL
