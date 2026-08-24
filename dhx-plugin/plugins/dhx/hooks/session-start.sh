@@ -98,6 +98,11 @@ fi
 # Run each even if one fails — they are independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
+# Function-level grep address-space cap (successor to the retired PreToolUse:Bash
+# rewriter dhx-grep-vsz-cap.sh — DHX-8b, HP-057): appends a `grep` wrapper to
+# $CLAUDE_ENV_FILE, which this dispatcher inherits from CC and its children see.
+# < /dev/null: the hook ignores stdin (no JSON parsing). Silent on happy path.
+bash /home/dhx/.claude/hooks/dhx-grep-fn-cap.sh < /dev/null || true
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || true
 # Heal plugin registry drift (HP-025 companion) — runs BEFORE stale-worktree-sweep

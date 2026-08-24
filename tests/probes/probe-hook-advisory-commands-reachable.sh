@@ -120,9 +120,16 @@ bash_patterns() {
 # on the filename would leave these rows matching nothing in the mirrored tree,
 # i.e. the inventory would rot the moment it was published.
 # ---------------------------------------------------------------------------
+# Class SOURCED (added 2026-08-23): heredoc body lines that are shell CODE a
+# hook writes into a machine-consumed file ($CLAUDE_ENV_FILE — sourced by CC,
+# never rendered to the operator). Not advice, so never actionable; rows exist
+# only so the completeness arm stays loud for lines that ARE new advice.
 inventory() {
   cat <<'INV'
 dhx-agent-leak-check.sh|POINTER|cross-repo
+dhx-grep-fn-cap.sh|SOURCED|eval "$(declare -f grep
+dhx-grep-fn-cap.sh|SOURCED|if declare -F __dhx_orig_grep
+dhx-grep-fn-cap.sh|SOURCED|fi
 dhx-git-destructive-guard.sh|ECHOBACK|command: $CMD
 dhx-git-destructive-guard.sh|ECHOBACK|segment: $SEGMENT
 dhx-git-destructive-guard.sh|POINTER|cross-repo

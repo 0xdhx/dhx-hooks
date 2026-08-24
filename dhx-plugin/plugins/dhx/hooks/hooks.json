@@ -144,11 +144,6 @@
           },
           {
             "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-grep-vsz-cap.sh\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-pkg-install-filter.sh\"",
             "timeout": 5
           },
