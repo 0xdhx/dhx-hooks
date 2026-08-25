@@ -12,16 +12,22 @@
 # result — structurally too late). See docs/decisions.md 2026-07-21 + 2026-08-03 rows.
 #
 # Four ways past this gate, in order of preference:
-#   1. `/dhx:upstream <report-path>`  — new issue (run.sh writes the marker at Stage 7)
-#   2. `/dhx:upstream reply <issue>`  — comment    (run-comment.sh, identical marker)
-#   3. `/dhx:upstream revise <pr>`     — PR comment (post-pr-comment.sh), retitle
-#                                        (edit-pr-title.sh, RV7) and published-comment
-#                                        correction (edit-pr-comment.sh, RV9.5). NO marker on
+#   1. `/dhx:upstream <report-path>`  — new issue (the create driver writes the marker at Stage 7)
+#   2. `/dhx:upstream reply <issue>`  — anything on an existing ISSUE: post a comment, amend a
+#                                        comment already posted, or edit the issue body
+#                                        (the reply driver writes the identical marker)
+#   3. `/dhx:upstream revise <pr>`     — anything on an existing PR: response comment, retitle,
+#                                        body edit, published-comment correction. NO marker on
 #                                        any of them — the child-process invisibility below is
-#                                        the mechanism, and all three drivers landed BEFORE the
-#                                        verb widening precisely so it would deny into a
-#                                        sanctioned route rather than into the bypass.
+#                                        the mechanism, and every such driver lands BEFORE the
+#                                        verb it needs is widened in, precisely so the deny
+#                                        routes into a sanctioned path rather than the bypass.
 #   4. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, 60s window
+#   DELIBERATELY NOT ENUMERATED HERE OR IN THE DENY REASON: the driver script FILENAMES, and
+#   the skills-repo rule for when an edit beats a follow-up. Both are another repo's canon on
+#   another repo's clock; enumerating them aged this file three separate ways in three weeks
+#   (see the 2026-08-25 row in docs/decisions.md). Route by SKILL MODE — those names are the
+#   stable surface — and let the skill own its own route list and its own doctrine.
 # Own-owner writes (see OWN_OWNERS) never reach the gate at all — silent allow.
 #
 # --- Ownership scoping (the no-friction-on-my-own-repos rule) ---
@@ -127,19 +133,33 @@
 # ALSO NOT matched (token-anchoring, as before): `gh issue list`, `gh issue create-else`,
 # `mygh issue comment`.
 #
-# ACCEPTED FALSE POSITIVE (stated up front rather than discovered later, 2026-08-03). Once
-# the stdin parse stopped truncating at the first escaped newline, a command that merely
-# CONTAINS a covered verb at the start of a line became visible to the matcher — including
-# one inside a heredoc body. So writing a doc/report whose prose has a covered verb at
-# line-start AND any foreign `github.com/<owner>/` URL anywhere in the same command now
-# DENIES. That is this repo's own upstream reports, near enough exactly. It is accepted, for
-# the reason the positional-URL rung above already states: over-matching is the correct
-# direction on an irreversible outward write, and the cost is one `dhx-upstream-bypass.sh`
-# invocation against a write that cannot be taken back. Two facts bound it: the SAME false
-# positive has been live for every mid-line occurrence since 565b9c4 with no report or
-# backlog row complaining, and the no-URL case still resolves to the cwd's own origin and
-# stays silent. If this ever does become friction, narrow the URL rung — do NOT re-narrow
-# the verb set or reinstate the truncating parse.
+# ACCEPTED FALSE POSITIVE — RE-PRICED 2026-08-25, the original pricing was wrong.
+# Stated 2026-08-03 as: a doc whose prose carries a covered verb at line-start AND a foreign
+# `github.com/<owner>/` URL now denies. **The AND was never in the code.** The verb arm above
+# requires no URL at all — the URL-bearing condition belongs to the `gh api` arm — so the real
+# surface is every command that merely CONTAINS a covered verb, mid-line included (live since
+# 565b9c4) and heredoc bodies included (visible since the 2026-08-03 parse fix). The 2026-08-03
+# clause "no complaint on record" is also retired: it was measured twice in one session on
+# 2026-08-24, the second time on the probe written to characterise the first, so the defect
+# briefly made itself unprobeable.
+# STILL ACCEPTED, and now for a stated reason rather than a mis-priced one. What turned those
+# two matches into DENIES was the ownership rung reading a local path (fixed above), not the
+# verb match; with that fixed, a doc-authoring command whose cwd is an own repo resolves the
+# own owner and stays SILENT. What remains is a doc that ALSO quotes a foreign
+# `github.com/<owner>/` URL — that resolves foreign on the deliberately-loose positional rung
+# and denies. Over-matching is the correct direction on an irreversible outward write.
+# REJECTED FIX, so nobody reaches for it again: stripping quoted heredoc bodies from $CMD
+# before the greps (proposed in reports/2026-08-24-gh-write-deny-false-positives-…md § 1b on
+# the argument that a quoted heredoc is inert). It is not inert —
+#   `cat <<'X' >/tmp/f; bash /tmp/f`  and  `tee >(bash) <<'X'`
+# both execute the body in the same command, so an allowlist keyed on the heredoc's opener
+# cannot prove the compound command inert, and a strip would hide an invocation that really
+# runs. A sound version needs shell tokenization, which HP-037 scoped out and which
+# docs/backlog.md `command-substitution-blind-spot` already records as refused.
+# THE MITIGATION IS NOW IN THE DENY REASON, not just in the sibling skill: an author who is
+# writing a document rather than making a call is told to assemble the verb tokens from shell
+# variables (as tests/probes/probe-gh-issue-write.sh does) or to use the Write/Edit tool.
+# Do NOT re-narrow the verb set and do NOT reinstate the truncating parse.
 
 set -euo pipefail
 
@@ -176,15 +196,16 @@ CMD=$(jq -r '.tool_input.command // ""' <<<"$INPUT" 2>/dev/null || true)
 # --- Match: gh issue|pr MUTATION verb (token-anchored) OR gh api write-method to an
 #     issue/PR thread OR a gh api graphql MUTATION (widened 2026-08-03 — see header) ---
 MATCHED=0
+MATCH_ARM=""
 if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+(issue[[:space:]]+(create|comment|edit|close|reopen)|pr[[:space:]]+(comment|edit|review|close|reopen|merge|ready))([[:space:]]|$)' <<< "$CMD"; then
-  MATCHED=1
+  MATCHED=1; MATCH_ARM=verb
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(-X|--method)[[:space:]]+(POST|PATCH|PUT|DELETE)([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(^|[^[:alnum:]_])repos/[^[:space:]/]+/[^[:space:]/]+/(issues|pulls)/' <<< "$CMD"; then
-  MATCHED=1
+  MATCHED=1; MATCH_ARM=api
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api[[:space:]]+graphql([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(^|[^[:alnum:]_])mutation([^[:alnum:]_]|$)' <<< "$CMD"; then
-  MATCHED=1
+  MATCHED=1; MATCH_ARM=graphql
 fi
 [ "$MATCHED" = "1" ] || exit 0
 
@@ -192,8 +213,31 @@ fi
 # 1. explicit --repo / -R <owner>/<name>
 OWNER=$(grep -oE '(--repo|-R)[[:space:]]+[\"'"'"']?[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
           | head -1 | grep -oE '[A-Za-z0-9_.-]+/$' | tr -d '/' || true)
-# 2. gh api path shape: repos/<owner>/<name>/…
-if [ -z "$OWNER" ]; then
+# 2. gh api path shape: repos/<owner>/<name>/… — SCOPED TO THE api ARM (2026-08-25).
+#    This rung reads a path, and a path is only an ownership signal on the arm that
+#    matched ON a path. It used to run for every arm, which broke BOTH ways and both
+#    were measured, not theorised:
+#      - FALSE DENY: a purely local file write whose command merely contained
+#        `repos/cross-repo/scripts/…` — a directory under ~/repos, never a GitHub
+#        account — resolved OWNER=cross-repo, missed OWN_OWNERS and denied a write
+#        whose real destination was an own repo. Twice in one session, the second time
+#        on the probe written to characterise the first.
+#      - FALSE ALLOW (the worse half, and the one nobody had found): a FOREIGN
+#        `issue comment` from a FOREIGN checkout whose --body prose mentioned
+#        `repos/0xdhx/…` resolved an OWN owner out of the prose and was SILENTLY
+#        ALLOWED. Same failure mode the positional-URL rung was added for on
+#        2026-08-02 ("a FOREIGN target resolved to an OWN owner and the deny silently
+#        no-opped"), living on a different rung.
+#    Strict no-op for the api arm: that arm already REQUIRES a literal
+#    `repos/<o>/<r>/(issues|pulls)/`, so every command it matched resolves the same
+#    owner as before. The issue/pr verbs take a number, a URL or --repo — never a
+#    filesystem path — so nothing legitimate is lost on the verb arm.
+#    STATED RESIDUAL: a foreign target supplied DYNAMICALLY (e.g. a `$(cat …)` whose
+#    file happens to live under a `repos/` directory) denied here by accident before
+#    and now falls to the cwd-origin rung. That coverage was incidental — the same
+#    call with the file anywhere outside `repos/` already allowed — and this guard is
+#    documented blind to `$(…)` anyway (docs/backlog.md `command-substitution-blind-spot`).
+if [ -z "$OWNER" ] && [ "$MATCH_ARM" = "api" ]; then
   OWNER=$(grep -oE '(^|[^[:alnum:]_])repos/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
             | head -1 | sed -E 's|.*repos/||; s|/$||' || true)
 fi
@@ -239,7 +283,7 @@ fi
 
 # --- Deny (structured, exit 0 — see "Emit shape" in the header) ---
 TARGET="${OWNER:-<unresolved owner>}"
-REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare gh call skips all of it, and the write cannot be taken back. Take one of these paths: (1) new issue -> '/dhx:upstream <report-path>'; (2) reply on an existing issue -> '/dhx:upstream reply <issue-url-or-number>'; (3) anything on an EXISTING PR of yours — response comment, retitle, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>', whose RV7/RV9/RV9.5 steps call the sanctioned drivers under dhx-tools/dhx-upstream/ (edit-pr-title.sh, edit-pr-comment.sh, post-pr-comment.sh); prefer posting a follow-up over editing published text, which rewrites what a maintainer may already have read; (4) deliberate one-off, audited + 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
+REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare call skips all of it, and the write cannot be taken back. Take one of these routes: (1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply <issue-url-or-number>' — that mode covers posting a comment, amending a comment you already posted, and editing the issue body, so an edit is NOT a reason to reach for the bypass; (3) anything on an EXISTING PR of yours — response comment, retitle, body edit, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>'. The skill owns the current route list and the current rule for when an edit is preferred over a follow-up; read it there rather than inferring either from this message, which deliberately names no driver scripts and restates no doctrine. (4) deliberate one-off, audited + 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. NOT ACTUALLY MAKING A CALL? This gate greps the whole command string, so a command that merely AUTHORS OR QUOTES A DOCUMENT containing one of the covered verbs matches too, heredoc bodies included — nothing upstream is written by such a command. Assemble the verb tokens from shell variables, or write the file with the Write/Edit tool instead of a shell heredoc, and this deny disappears. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
 MSG="Blocked: upstream write to $TARGET outside /dhx:upstream. Use '/dhx:upstream reply <issue>' or '/dhx:upstream <report-path>' — or run dhx-tools/dhx-upstream-bypass.sh --reason \"...\" for a deliberate one-off."
 
 if DENY_JSON=$(jq -cn --arg r "$REASON" --arg m "$MSG" \

@@ -422,6 +422,46 @@ _assert "[79] CHAR (pre-existing): pr edit line 2, SPACE-indented -> deny" "deny
 _assert "[80] own-owner at START of line 2 -> silent (scoping survives the parse fix)" "silent" \
   "$(_verdict "$(_json s1 "export D=/tmp${NL}$GH $ISSUE $CREATE --repo 0xdhx/dhx-hooks --title x --body y")")"
 
+# --- Ownership rung 2 is SCOPED TO THE api ARM (2026-08-25) ---------------------------
+# The rung greps `repos/<name>/` out of the raw command. Before this change it ran for
+# every match arm, so a LOCAL FILESYSTEM PATH quoted anywhere in a command decided who
+# owned the target. That broke both ways and both are pinned here as BITE arms:
+#   [81] FALSE DENY  — a doc-authoring command naming a directory under ~/repos was
+#        denied even though its real destination was an own repo. Measured twice on
+#        2026-08-24, the second time on the probe written to characterise the first.
+#   [82] FALSE ALLOW — the worse half, and the one the source report never found: a
+#        FOREIGN write from a FOREIGN checkout whose --body prose mentions `repos/0xdhx/…`
+#        resolved an OWN owner out of the prose and was SILENTLY ALLOWED. Same failure
+#        mode the positional-URL rung was added for on 2026-08-02, on a different rung.
+# [83]/[84] are non-vacuity controls: fail-closed survives, and the api arm — the ONE arm
+# that legitimately reads a path — keeps resolving exactly as before.
+DOCPATH="repos/cross-repo/scripts/upstream/ci-verdict.sh"
+_assert "[81] BITE: doc-authoring cmd quoting a local repos/<dir>/ path, own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "cat > note.md <<'X'${NL}run $GH $PR $EDIT to retitle; see $DOCPATH${NL}X" "$OWN_REPO")")"
+_assert "[82] BITE: foreign write, foreign cwd, own-looking repos/ path in prose -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 2507 --body \"see repos/0xdhx/hooks/scripts for the fix\"" "$FOREIGN_REPO")")"
+_assert "[83] CTRL: same doc-authoring cmd, cwd not a git repo -> deny (fail-closed survives)" "deny" \
+  "$(_verdict "$(_json s1 "cat > note.md <<'X'${NL}run $GH $PR $EDIT to retitle; see $DOCPATH${NL}X" "$BARE_DIR")")"
+_assert "[84] CTRL: api arm still resolves owner from its own path (own cwd, foreign path) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API repos/open-gsd/gsd-core/issues/1/comments -X POST -f body=x" "$OWN_REPO")")"
+
+# --- The deny REASON carries NO cross-repo coupling (2026-08-25) ----------------------
+# The message used to enumerate sibling-repo driver FILENAMES and restate that repo's
+# editing doctrine. Both aged three separate ways in three weeks (missing the PR-body
+# driver from 2026-08-12; missing both issue-side edit routes from 2026-08-23/24; still
+# carrying the edit doctrine retired 2026-08-24). The ruling was to DELETE the coupling,
+# not instrument it — so [85]/[86] assert its ABSENCE, which is the whole invariant:
+# completeness cannot be proven from this repo without re-creating the dependency being
+# removed. [87]/[88] pin the two routing facts a blocked session actually needs.
+_assert "[85] reason enumerates no sibling driver script filename" "no" \
+  "$(grep -qE 'edit-pr-(title|body|comment)\.sh|post-pr-comment\.sh|run-comment\.sh' <<< "$DENY_REASON" && echo yes || echo no)"
+_assert "[86] reason does not restate the retired follow-up-over-edit doctrine" "no" \
+  "$(grep -qi 'prefer posting a follow-up' <<< "$DENY_REASON" && echo yes || echo no)"
+_assert "[87] reason routes an issue-BODY edit (not just posting a comment)" "yes" \
+  "$(grep -qi 'editing the issue body' <<< "$DENY_REASON" && echo yes || echo no)"
+_assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
+  "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
+
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]
               | any(contains("pre-tool-use-gh-issue-write"))' "$MANIFEST" >/dev/null 2>&1 \
