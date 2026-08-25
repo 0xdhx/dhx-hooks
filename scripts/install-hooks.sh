@@ -95,7 +95,7 @@ set -euo pipefail
 # environment before git is asked anything, and derive the root from this script's OWN location —
 # the only tree whose paths it is entitled to wire into the shared hooks dir.
 # Guard-shape parity with install-dhx-tools.sh is asserted by
-# scripts/tests/probe-install-hooks-guard.sh (same unset list, same three legs).
+# ~/repos/cross-repo/scripts/tests/probe-install-hooks-guard.sh (same unset list, same three legs).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES 2>/dev/null || true
 
@@ -141,8 +141,9 @@ if [ -z "$_gdir" ] || [ "$_gdir" != "$_cdir" ]; then
 fi
 
 # ── CONTAINMENT: this installer writes ONLY inside this repository ────────────
-# Filed 2026-08-24 (.planning/backlog/2026-08-24-install-hooks-writes-outside-the-repo-via-symlinked-git-hooks.md)
-# after a close-gate reviewer demonstrated TWO paths out of the tree in disposable fixtures:
+# Filed 2026-08-24; brief now at ~/repos/cross-repo/.planning/backlog/shipped/
+# 2026-08-24-install-hooks-writes-outside-the-repo-via-symlinked-git-hooks.md — after a close-gate
+# reviewer demonstrated TWO paths out of the tree in disposable fixtures:
 #
 #   HOOKS_ESCAPE          rc=0  external_pre_commit=present  external_pre_merge=present
 #   GENERIC_HOOK_SYMLINK  rc=0  external_mode_before=644  external_mode_after=755
@@ -151,6 +152,14 @@ fi
 #       symlinked at an external directory RECEIVED the hook symlinks.
 #   (b) the generic hook sweep below tests candidates with `[ -f "$_hook" ]`, which FOLLOWS
 #       symlinks, and then chmod +x's them — changing the mode of a file outside the repository.
+#
+# EVERY PROSE POINTER AT A cross-repo ARTIFACT IN THIS FILE IS ABSOLUTE (~/repos/cross-repo/...),
+# deliberately. This file is spliced VERBATIM into fourteen vendored copies, where a bare
+# repo-relative pointer is false in thirteen of them — the same false-in-every-copy-but-one header
+# WR-05 / d70afd0c removed from the validator. forgefinder's 25-pointer-rot.sh is the only gate in
+# the fleet that catches it, and it REFUSED this file on 2026-08-24 for exactly that. Runtime paths
+# (scripts/hooks/..., resolved against the target at run time) stay relative — they are correct in
+# every copy; only prose references to cross-repo's OWN artifacts get qualified.
 #
 # ONE BOUNDARY, APPLIED TO EVERY PATH. Deliberately the SAME SHAPE the scaffold's install.sh uses:
 # canonicalise with `realpath -m`, then require a true prefix match on a `/`-TERMINATED boundary, so
@@ -187,7 +196,7 @@ fi
 # core.hooksPath, so on a fleet-enrolled repo it resolves to the root-owned
 # dispatcher dir → install_hook refuse-to-clobbers at the FIRST hook, every run.
 # $_cdir was resolved + realpath'd absolute by the worktree guard above.
-# Proof: scripts/fleet/tests/probe-chain-worktree-delegation.sh.
+# Proof: ~/repos/cross-repo/scripts/fleet/tests/probe-chain-worktree-delegation.sh.
 HOOKS_DIR="$_cdir/hooks"
 if [ -z "$HOOKS_DIR" ]; then
   echo "install-hooks: could not resolve git hooks dir" >&2
