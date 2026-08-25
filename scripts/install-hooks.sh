@@ -140,6 +140,95 @@ if [ -z "$_gdir" ] || [ "$_gdir" != "$_cdir" ]; then
   exit 1
 fi
 
+# ── CONTAINMENT: this installer writes ONLY inside this repository ────────────
+# Filed 2026-08-24 (.planning/backlog/2026-08-24-install-hooks-writes-outside-the-repo-via-symlinked-git-hooks.md)
+# after a close-gate reviewer demonstrated TWO paths out of the tree in disposable fixtures:
+#
+#   HOOKS_ESCAPE          rc=0  external_pre_commit=present  external_pre_merge=present
+#   GENERIC_HOOK_SYMLINK  rc=0  external_mode_before=644  external_mode_after=755
+#
+#   (a) HOOKS_DIR was built as "$_cdir/hooks" and used with NO canonical check, so a .git/hooks
+#       symlinked at an external directory RECEIVED the hook symlinks.
+#   (b) the generic hook sweep below tests candidates with `[ -f "$_hook" ]`, which FOLLOWS
+#       symlinks, and then chmod +x's them — changing the mode of a file outside the repository.
+#
+# ONE BOUNDARY, APPLIED TO EVERY PATH. Deliberately the SAME SHAPE the scaffold's install.sh uses:
+# canonicalise with `realpath -m`, then require a true prefix match on a `/`-TERMINATED boundary, so
+# `/repo-evil` cannot pass as inside `/repo`. A second, divergent boundary would be worse than one
+# boundary applied twice.
+#
+# CHECKED BEFORE THE FIRST MUTATION, deliberately. install.sh learned this across three review
+# rounds: a containment check that runs after the first write leaves a PARTIAL install behind an
+# error message claiming nothing was written. Every chmod, mkdir, ln and snapshot write in this file
+# is downstream of this block.
+#
+# DECISION — a redirected .git/hooks is REFUSED, not followed-but-contained (the brief's open
+# question, settled here). Refusing is the conservative default; the refusal is LOUD (exit 1 with
+# guidance, never a silent skip); and the scaffold's install.sh treats a bundled-installer refusal as
+# NON-FATAL (install.sh: "the dispatcher symlink was NOT wired ... The payload copy SUCCEEDED"), so
+# an adopter deliberately sharing a hooks directory still gets the payload and is TOLD the symlink
+# was not wired. Following-but-containing would mean writing this repo's ABSOLUTE hook targets into a
+# directory shared with OTHER repositories — precisely the dangling-hook hazard the worktree guard
+# above exists to refuse, with a wider blast radius.
+#
+# NARROWING, MEASURED 2026-08-24 and judged acceptable: rooting the boundary at the worktree TOPLEVEL
+# also refuses any repo whose git common-dir lives outside it — a submodule, or a `.git` FILE
+# pointing elsewhere. Across all 32 repos under ~/repos the only such trees are LINKED WORKTREES,
+# which the unconditional worktree hard-fail above already refuses. This narrows nothing that
+# reaches here today.
+_root_abs="$(realpath -m -- "$GIT_TOPLEVEL" 2>/dev/null || true)"
+if [ -z "$_root_abs" ]; then
+  echo "install-hooks: cannot resolve the repository root — refusing" >&2
+  exit 1
+fi
+
+# INVARIANT (fleet-composed worktree bypass, 2026-07-13): target the COMMON-dir
+# hooks/ explicitly, NEVER `git rev-parse --git-path hooks` — the latter FOLLOWS
+# core.hooksPath, so on a fleet-enrolled repo it resolves to the root-owned
+# dispatcher dir → install_hook refuse-to-clobbers at the FIRST hook, every run.
+# $_cdir was resolved + realpath'd absolute by the worktree guard above.
+# Proof: scripts/fleet/tests/probe-chain-worktree-delegation.sh.
+HOOKS_DIR="$_cdir/hooks"
+if [ -z "$HOOKS_DIR" ]; then
+  echo "install-hooks: could not resolve git hooks dir" >&2
+  exit 1
+fi
+
+# The boundary itself. Takes a LABEL and a path; refuses the whole install if the path canonicalises
+# anywhere other than strictly inside $_root_abs. `realpath -m` resolves every symlink component and
+# does NOT require the path to exist, so a destination that does not exist yet (an uncreated
+# .git/hooks) is checked at the location it WOULD be created.
+_refuse_if_outside() {
+  local _label="$1" _path="$2" _abs
+  _abs="$(realpath -m -- "$_path" 2>/dev/null || true)"
+  if [ -z "$_abs" ] || [ "${_abs#"$_root_abs"/}" = "$_abs" ]; then
+    echo "install-hooks: $_label resolves OUTSIDE this repository — REFUSING." >&2
+    echo "  path:       $_path" >&2
+    echo "  resolves to: ${_abs:-<unresolvable>}" >&2
+    echo "  repository:  $_root_abs" >&2
+    echo "  A directory in that path is probably a symlink out of the repository (a shared or" >&2
+    echo "  redirected .git/hooks, or a hook file symlinked elsewhere)." >&2
+    echo "  NOTHING was created and NO file's mode was changed — this check runs before every" >&2
+    echo "  write in this installer. Resolve the redirection, then re-run." >&2
+    exit 1
+  fi
+}
+
+# Destination (a): the git hooks directory every symlink below is created in.
+_refuse_if_outside "the git hooks directory" "$HOOKS_DIR"
+
+# Sources (b): scripts/hooks/ and EVERY entry directly under it. Checking every entry rather than
+# re-deriving the sweep's own selection rule is deliberate — a containment check that duplicates the
+# selection logic drifts away from it. This superset covers the dispatcher, reference-transaction,
+# pre-commit.d/, the generated reftxn-veto-snapshot.sh, and every generic-sweep candidate at once.
+_refuse_if_outside "the hook source directory" "scripts/hooks"
+for _cand in scripts/hooks/*; do
+  # A dangling symlink is neither chmod-able nor writable-through, and both the sweep's `[ -f ]` and
+  # find's `-type f` skip it; an empty scripts/hooks/ yields the literal glob, which -e also rejects.
+  [ -e "$_cand" ] || continue
+  _refuse_if_outside "hook source '$_cand'" "$_cand"
+done
+
 DISPATCHER="scripts/hooks/pre-commit"
 if [ ! -f "$DISPATCHER" ]; then
   echo "install-hooks: $DISPATCHER not found — refusing to install" >&2
@@ -169,17 +258,8 @@ if [ -d "scripts/hooks/pre-commit.d" ]; then
     -exec chmod +x {} +
 fi
 
-# INVARIANT (fleet-composed worktree bypass, 2026-07-13): target the COMMON-dir
-# hooks/ explicitly, NEVER `git rev-parse --git-path hooks` — the latter FOLLOWS
-# core.hooksPath, so on a fleet-enrolled repo it resolves to the root-owned
-# dispatcher dir → install_hook refuse-to-clobbers at the FIRST hook, every run.
-# $_cdir was resolved + realpath'd absolute by the worktree guard above.
-# Proof: scripts/fleet/tests/probe-chain-worktree-delegation.sh.
-HOOKS_DIR="$_cdir/hooks"
-if [ -z "$HOOKS_DIR" ]; then
-  echo "install-hooks: could not resolve git hooks dir" >&2
-  exit 1
-fi
+# HOOKS_DIR was resolved AND containment-checked in the boundary block above (it is the first
+# destination this installer writes to, so it cannot be resolved any later than that check).
 mkdir -p "$HOOKS_DIR"
 
 # ── D-11: install_hook NAME TARGET_ABS — wires one hook, RETURNs (never exits) ─
