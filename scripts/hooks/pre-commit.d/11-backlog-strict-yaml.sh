@@ -2,7 +2,7 @@
 # scripts/hooks/pre-commit.d/11-backlog-strict-yaml.sh
 #
 # Pre-commit check -- strict-YAML gate over the ACTIVE backlog tier.
-# Ported into hooks on 2026-08-21, re-vendored 2026-08-21 from skills@06382ed3b
+# Ported into hooks on 2026-08-21, re-vendored 2026-08-27 from skills@231b85fb5
 # (skills:scripts/hooks/pre-commit.d/11-backlog-strict-yaml.sh). The executable
 # half below is byte-identical to that source; only this header is local.
 #
@@ -14,31 +14,36 @@
 #   ~/repos/cross-repo/docs/conventions/2026-08-20-backlog-strict-yaml-fleet-gating.md
 #     -- the fleet pointer, if you are reading from a cross-repo session.
 #
-# INSTALL EVIDENCE (2026-08-21). This repo measured 44/44 active-tier
+# INSTALL EVIDENCE (2026-08-27). This repo measured 43/43 active-tier
 # briefs passing yaml.safe_load with line-anchored extraction at install time --
-# a 5-brief sweep. Firing was demonstrated here, not assumed: a known-bad brief
-# staged in an isolated tree exited 1 and named the offending file, and a
-# known-good brief exited 0. See "PROVE IT FIRES" below -- this matters more than
-# it looks.
+# a 5-brief sweep. That is a PARSE measurement only. The porter that rendered this
+# header does NOT run the gate -- it says so in its own header -- so nothing
+# above attests that this leaf FIRES. Demonstrate that separately, do not assume
+# it: a known-bad brief staged in an isolated tree must exit 1 and name the
+# offending file, and a known-good brief must exit 0. See "PROVE IT FIRES" below
+# -- this matters more than it looks.
 #
 # -- Scope: ACTIVE tier only --------------------------------------------------
 # Only top-level .planning/backlog/*.md is strict-checked. The terminal subdirs
 # shipped/ rejected/ superseded/ are deliberately EXCLUDED as read-only history:
 # no consumer scopes a strict read there, and each edit carries real corruption
 # risk because the line-based consumers read quotes literally. This repo's
-# archive carries 8 failing brief(s) of 60, left untouched on purpose -- do NOT
+# archive carries 11 failing brief(s) of 67, left untouched on purpose -- do NOT
 # conclude the exclusion is a shortcut around them. It
 # is what stops a future `git mv` of an archived brief from blocking on unrelated
 # work, and the archive converges LAZILY on the REOPEN vector: `git mv
 # shipped/x.md ./x.md` lands a brief in the active tier, where this gate DOES
 # apply, so a dirty legacy brief is fixed exactly when it re-enters service.
 #
-# One further exclusion: the exact filename .planning/backlog/BACKLOG.md. Some
-# repos keep the AUTO-GENERATED backlog index inside the briefs directory rather
-# than at .planning/BACKLOG.md; it carries no frontmatter and never can, so
-# without the exclusion this leaf would block on it every time it is staged, over
-# a file with no author to fix. The pattern is the EXACT name, not a prefix glob:
-# a real brief merely named BACKLOG-something.md is still a brief.
+# One further exclusion, by EXACT basename: a generated backlog index named
+# BACKLOG.md kept INSIDE the briefs directory rather than at .planning/BACKLOG.md.
+# Measured upstream 2026-08-22 and again 2026-08-27: NO repo in the fleet uses
+# that placement, and no producer writes one -- backlog-regen.cjs always writes
+# the root path. The case arm below is therefore PROSPECTIVE INSURANCE, not
+# active protection. It is kept because such an index carries no frontmatter and
+# never can, so a repo that later adopted the placement would block on it every
+# time it is staged, over a file with no author to fix. EXACT basename, never a
+# prefix glob: a real brief merely named BACKLOG-something.md is still a brief.
 #
 # --no-renames is LOAD-BEARING for that reopen vector: with rename detection ON a
 # `git mv` shows as R (excluded by --diff-filter=ACM) and the reopened brief would
@@ -66,8 +71,11 @@
 # -- nine false positives, four of them in a tier a live gate holds at zero.
 # This repo currently has NO brief carrying an inline `---` in a value, so it has
 # no local negative control for that behaviour; the contract is pinned upstream by
-# skills:tests/probe-backlog-strict-yaml.sh (16 cases, 9 mutations killed), which
-# does NOT travel with this file.
+# skills:tests/probe-backlog-strict-yaml.sh, which does NOT travel with this file.
+# That probe's case count is deliberately NOT quoted here: this header is rendered
+# verbatim into every ported repo, so a hand-kept number goes stale in all of them
+# at once on the next case added upstream, and no local check can catch it. Read
+# the count off the probe's own PASS line if you need it.
 #
 # -- PROVE IT FIRES, do not just observe green -------------------------------
 # This leaf has four `exit 0` paths that run BEFORE any validation: no staged
@@ -204,8 +212,9 @@ if violations:
         "  silently REWRITES the value. It is what produced the two 2026-08-21\n"
         "  fleet regressions this gate's own advice was meant to prevent.\n"
         "  Value contains BOTH quote styles? SCALAR fields may escape (\\\" inside\n"
-        "  \"...\", or '' inside '...'): both frontmatter readers share\n"
-        "  scripts/lib/parse-frontmatter-scalar.cjs, which UNESCAPES (2026-08-15).\n"
+        "  \"...\", or '' inside '...'): both frontmatter readers share the\n"
+        "  scalar reader ~/repos/skills/scripts/lib/parse-frontmatter-scalar.cjs,\n"
+        "  which UNESCAPES (2026-08-15).\n"
         "  Block-LIST items may NOT — backlog-close.cjs's list wrapper strips the\n"
         "  outer quotes only, so an escape leaks into the value verbatim.\n"
         "  Verify each edit on the ROUND TRIP (consumer view before vs after),\n"
