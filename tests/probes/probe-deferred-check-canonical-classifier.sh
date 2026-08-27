@@ -88,24 +88,74 @@ else
   check "hook contains $inline_count inline marker grep filters — should source classify_deferred_lines" 0
 fi
 
-# --- Section 3: header comment lists all 5 canonical markers ---
+# --- Section 3: every canonical marker actually SILENCES, in both positions ---
+#
+# 2026-08-27 — DE-PINNED. This section used to be:
+#     CANONICAL_MARKERS=$(grep '^CLASSIFY_DEFERRED_MARKERS=' "$CLASSIFIER" | sed …)
+#     for m in $CANONICAL_MARKERS; do grep -q "\[${m}" "$HOOK"; done
+# i.e. scrape the PEER repo's source text for its marker vocabulary, then assert this
+# repo's hook header comment enumerates each one. Two failure modes, both measured:
+#
+#   * SHAPE: re-indenting the assignment, single-quoting it, or building the value
+#     from an array reds the extraction — zero behavioural change, hooks commits
+#     blocked. ~/.claude/dhx-tools/ is 36 top-level symlinks into peer WORKING TREES,
+#     so this fires on an uncommitted keystroke in another repo.
+#   * VOCABULARY: renaming a marker (measured: preserved-in -> preserved-at) reds it
+#     because a COMMENT went stale — a documentation defect, charged to whoever
+#     commits next in this repo rather than to whoever renamed the marker.
+#
+# The vocabulary half is a real contract and is NOT dropped — it moved to the repo
+# that owns it. `~/repos/skills/scripts/hooks/pre-commit.d/12-classifier-cross-repo.sh`
+# runs it when, and only when, the classifier itself is staged, so the red lands on
+# the rename that caused it, at the moment it is made. Moving the WHOLE sister probe
+# there was considered and rejected: it also reads this repo's live working tree, so
+# it would merely reverse the contamination.
+#
+# What replaces it here is the half this repo genuinely consumes: that the hook's
+# runtime filter silences every marker in the canonical set. The expectation is
+# DERIVED from the sourced classifier rather than hand-written — sourcing exports
+# CLASSIFY_DEFERRED_MARKERS as a live shell variable, which is a runnable seam, not a
+# text scrape. So an added or renamed marker is picked up and exercised automatically
+# instead of reddening. Same pattern as the 2026-08-19 §4h behavioural oracle.
+#
+# WHAT WAS GIVEN UP, stated rather than glossed: this repo no longer detects a stale
+# marker enumeration in its own hook header. That is documentation drift with no
+# behavioural consequence (the hook sources the classifier, so it acquires new
+# vocabulary automatically), and it is now detected skills-side at the point of change.
 
-CANONICAL_MARKERS=$(grep '^CLASSIFY_DEFERRED_MARKERS=' "$CLASSIFIER" | sed -E 's/^[^"]+"([^"]+)"$/\1/' | tr '|' ' ')
+CANONICAL_MARKERS=$(bash -c '. "'"$CLASSIFIER"'"; printf "%s" "${CLASSIFY_DEFERRED_MARKERS:-}"' | tr '|' ' ')
 if [[ -z "$CANONICAL_MARKERS" ]]; then
-  check "could not extract CLASSIFY_DEFERRED_MARKERS from canonical script" 0
+  check "sourcing the canonical script exports CLASSIFY_DEFERRED_MARKERS" 0
 else
-  all_present=1
-  missing=""
+  check "sourcing the canonical script exports CLASSIFY_DEFERRED_MARKERS: $CANONICAL_MARKERS" 1
+
+  marker_failures=""
   for m in $CANONICAL_MARKERS; do
-    if ! grep -q "\[${m}" "$HOOK"; then
-      all_present=0
-      missing="$missing $m"
-    fi
+    # Both recognized positions: body PREFIX and END-of-bullet. The hook's header
+    # documents both (Section 4 asserts that phrasing survives), so both are
+    # exercised — a filter that silenced only the prefix form would otherwise pass.
+    prefix_out=$(bash -c '. "'"$CLASSIFIER"'"; printf "%s\n" "- ['"$m"'] body text" | classify_deferred_lines')
+    end_out=$(bash -c '. "'"$CLASSIFIER"'"; printf "%s\n" "- Long bullet body with end marker ['"$m"': detail]" | classify_deferred_lines')
+    [[ -n "$(printf '%s' "$prefix_out" | tr -d '[:space:]')" ]] && marker_failures="$marker_failures ${m}(prefix)"
+    [[ -n "$(printf '%s' "$end_out" | tr -d '[:space:]')" ]] && marker_failures="$marker_failures ${m}(end)"
   done
-  if [[ "$all_present" == "1" ]]; then
-    check "header comment mentions all canonical markers: $CANONICAL_MARKERS" 1
+
+  if [[ -z "$marker_failures" ]]; then
+    check "every canonical marker silences in BOTH prefix and end-of-bullet position" 1
   else
-    check "header comment missing markers:$missing (canonical: $CANONICAL_MARKERS)" 0
+    check "marker(s) failed to silence:$marker_failures" 0
+  fi
+
+  # Negative control. Without this, a filter that silenced EVERY bullet — including
+  # unmarked ones — would pass every cell above while destroying the hook's entire
+  # purpose. The token is marker-shaped but not in the canonical set.
+  # stderr suppressed: the classifier correctly WARNS about an unknown marker here,
+  # and that warning is the expected path, not a probe failure.
+  bogus_out=$(bash -c '. "'"$CLASSIFIER"'"; printf "%s\n" "- [not-a-real-marker] body text" | classify_deferred_lines' 2>/dev/null)
+  if [[ -n "$(printf '%s' "$bogus_out" | tr -d '[:space:]')" ]]; then
+    check "negative control — a non-canonical marker does NOT silence" 1
+  else
+    check "negative control FAILED — [not-a-real-marker] silenced; the filter silences everything" 0
   fi
 fi
 
@@ -196,17 +246,203 @@ fi
 #     HP-028 invariant this section guards is unchanged: still a single
 #     short-circuiting `-q` command, no `grep -rl … | head -1` pipeline.
 #     See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
-if grep -qE 'grep -rqE[[:space:]]+"\$rid_def_pat"[[:space:]]+"\$project_root/\.planning/backlog/"' "$CLASSIFIER"; then
-  check "backlog containment in canonical script uses definition-anchored 'grep -rqE \$rid_def_pat' short-circuit form" 1
-else
-  check "backlog containment in canonical script does NOT use definition-anchored 'grep -rqE \$rid_def_pat' — form missing/regressed" 0
+# 2026-08-27 — 6.3 and 6.4 DE-PINNED from the canonical script's source text.
+#
+# Both used to grep $CLASSIFIER for an exact command form:
+#     grep -qE 'grep -rqE[[:space:]]+"\$rid_def_pat"…'
+#     grep -qE 'find[[:space:]]+"\$project_root/\.planning/todos"…-print[[:space:]]+-quit'
+# A rename of the `$rid_def_pat` local — or any reflow of those lines — reds them, and
+# with them every hooks-repo commit, on an uncommitted edit in a peer working tree.
+#
+# The invariant they guard is real and is NOT dropped. It is asserted through the
+# consequence instead: under `set -o pipefail`, an early-exit reader (`head -1`) closes
+# the pipe, the upstream producer takes SIGPIPE (141), the pipeline returns non-zero,
+# the `if` takes the false branch, and an item that HAS a durable home silently FAILS
+# TO BE SILENCED. That is observable from `auto_silence_deferred_lines` alone.
+#
+# TWO cells, not one: 6.3a covers the backlog `grep` branch and 6.4a the todos `find`
+# branch. They are separate contracts with separate trigger conditions, and a single
+# REQ-ID fixture exercises only the first.
+#
+# FIXTURE SIZING IS LOAD-BEARING, and it is sized to be DETERMINISTIC rather than
+# merely usually-true. Only MATCHING files write to the pipe, so non-matching files add
+# traversal but cannot bring SIGPIPE closer.
+#
+# Sizing by file COUNT alone was tried first and is not sound: 400 matching files
+# produced ~28 KiB, under the 64 KiB default pipe buffer, so whether the producer was
+# still writing when the reader exited came down to scheduling. It passed in isolation
+# and RED IN THE COMMIT GATE under parallel load the same afternoon. A flaky probe in a
+# commit gate is strictly worse than the deterministic text pin this de-pin removed.
+#
+# The fix is volume, not count: pad the paths so total output DECISIVELY exceeds the
+# pipe buffer. Above it the producer physically cannot finish without blocking, so the
+# reader's exit guarantees EPIPE and the divergence stops being a race. Measured
+# 2026-08-27 under 6-way CPU load: 20/20 SIGPIPE on both branches, both volumes kept
+# well clear of the buffer rather than just above it. Cell 6.5 asserts the VOLUME as
+# well as the divergence, so a
+# future platform with a larger pipe buffer names the cause instead of just flapping.
+
+_SIGPIPE_FIXTURE=$(mktemp -d /tmp/probe-deferred-pipefail.XXXXXX)
+trap 'rm -rf "${_SIGPIPE_FIXTURE:-}"' EXIT
+
+# SIGPIPE DISPOSITION MUST BE NORMALIZED, and this is not optional plumbing.
+#
+# SIGPIPE's disposition is INHERITED across exec, and an ignored SIGPIPE stays ignored
+# in every descendant. The pre-commit chain that runs the hermetic tier invokes this
+# probe with SIGPIPE already SIG_IGN, and under SIG_IGN the broken pipeline does not
+# die at all: the producer gets EPIPE instead of a signal, the pipeline returns 0, and
+# the HP-028 bug BECOMES INVISIBLE. Measured 2026-08-27 — the count-sized fixture was
+# blamed for this first; re-running the probe under an explicit SIG_IGN reproduced the
+# pre-commit failure exactly, including cell 6.5b's tell-tale `rc 1 vs 0`.
+#
+# So the ambient disposition decides whether these cells can detect anything, and the
+# ambient disposition belongs to whoever invoked the probe. The hook this probe guards
+# runs at Stop inside a Claude Code session, where SIGPIPE is default. Asserting under
+# the caller's disposition would therefore test the wrong environment AND flip verdicts
+# depending on who ran the suite. The cells below run through a shim that restores
+# SIG_DFL, and cell 6.5c proves the restoration took effect rather than assuming it.
+_PF_SIGDFL=""
+if command -v python3 >/dev/null 2>&1; then
+  _PF_SIGDFL="$_SIGPIPE_FIXTURE/sigdfl"
+  cat > "$_PF_SIGDFL" <<'SIGDFL_SHIM'
+#!/usr/bin/env python3
+# Restore SIGPIPE to its default disposition, then exec the real command. exec
+# preserves SIG_DFL, so the whole descendant tree gets default SIGPIPE back.
+import signal, os, sys
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])
+SIGDFL_SHIM
+  chmod +x "$_PF_SIGDFL"
 fi
 
-# 6.4 Canonical script's todos basename lookup uses `find -print -quit` short-circuit form.
-if grep -qE 'find[[:space:]]+"\$project_root/\.planning/todos"[[:space:]]+-name[[:space:]]+"\$bname"[[:space:]]+-print[[:space:]]+-quit' "$CLASSIFIER"; then
-  check "todos basename lookup in canonical script uses 'find … -print -quit' (collapsed form)" 1
+# Run a command with SIGPIPE forced to default. Falls back to a direct run when
+# python3 is unavailable; cell 6.5c reports which path was taken.
+_pf_sh() {
+  if [[ -n "$_PF_SIGDFL" ]]; then "$_PF_SIGDFL" bash -c "$1"
+  else bash -c "$1"; fi
+}
+
+_PF_ROOT="$_SIGPIPE_FIXTURE/proj"
+mkdir -p "$_PF_ROOT/.planning/phases/00-fixture" "$_PF_ROOT/.planning/backlog" "$_PF_ROOT/.planning/todos"
+_PF_CTX="$_PF_ROOT/.planning/phases/00-fixture/CONTEXT.md"; : > "$_PF_CTX"
+> "$_PF_ROOT/.planning/REQUIREMENTS.md" printf '# Requirements\n\nNo REQ-PIPE ids are defined here. That is deliberate — see below.\n'
+
+# ARM ORDER IS LOAD-BEARING. Check 1 tries REQUIREMENTS.md, then ROADMAP.md, then
+# milestones/, and only THEN backlog/ — breaking on the first hit. An id defined in
+# REQUIREMENTS.md therefore resolves on arm 1 and the backlog `grep -rqE` is never
+# reached, so a cell written that way passes no matter how badly the backlog arm is
+# broken. Measured: the first draft of 6.3a did exactly that and scored 0/5 against a
+# deliberately regressed classifier while reporting PASS. REQ-PIPE-02 is consequently
+# defined ONLY inside .planning/backlog/, so arms 1-3 must miss and arm 4 must run.
+#
+# 400 matching files: only MATCHING files write to the pipe, so non-matching ones add
+# traversal without bringing SIGPIPE any closer. Measured 2026-08-27 on this platform:
+# 50 matching files do not diverge, 200 do. Cell 6.5a re-checks the divergence at run
+# time rather than trusting this number.
+# _PF_PAD lengthens every emitted path so the OUTPUT VOLUME, not the file count,
+# carries the pipe past its buffer. See the sizing note above.
+_PF_PAD='deeply-nested-fixture-directory-whose-long-name-makes-each-emitted-path-line-large-enough-that-the-total-exceeds-the-pipe-buffer'
+
+_PF_BACKLOG="$_PF_ROOT/.planning/backlog/$_PF_PAD/$_PF_PAD"
+mkdir -p "$_PF_BACKLOG"
+# printf -v, not $(printf ...): the command-substitution form forks a subshell per
+# iteration. The write itself is a builtin redirect and costs no process.
+for ((_i = 1; _i <= 400; _i++)); do
+  printf -v _pf_n '%04d' "$_i"
+  printf '**REQ-PIPE-02** defined only in the backlog corpus\n' > "$_PF_BACKLOG/brief-${_pf_n}.md"
+done
+# 600 nested todo dirs sharing ONE basename — the find branch's trigger shape. The
+# count is set for HEADROOM over the pipe buffer, not for the minimum that passes:
+# 300 measured only ~1 KiB clear of the floor, which is a fixture one path-shortening
+# away from going racy again.
+# Batched: one mkdir and one touch across the whole set. Six hundred separate
+# mkdir/touch pairs cost ~4s of process spawn, which is paid on every commit because
+# this probe sits in the hermetic tier the pre-commit gate runs.
+_pf_dirs=()
+for ((_i = 1; _i <= 600; _i++)); do
+  printf -v _pf_n '%04d' "$_i"
+  _pf_dirs+=("$_PF_ROOT/.planning/todos/${_PF_PAD}-sub-${_pf_n}")
+done
+mkdir -p "${_pf_dirs[@]}"
+printf '%s/2026-04-20-target-todo.md\0' "${_pf_dirs[@]}" | xargs -0 touch
+
+# 6.3a — backlog branch, behavioural. Runs the helper under pipefail explicitly: the
+# hook's own Stop path inherits pipefail, and without it here a regressed pipeline
+# would return the reader's status and the cell would pass against the broken form.
+_pf_out=$(printf '%s\n' "- Deferred work tracked under REQ-PIPE-02" \
+  | _pf_sh 'set -o pipefail; . "'"$CLASSIFIER"'"; auto_silence_deferred_lines "'"$_PF_CTX"'"' 2>/dev/null)
+if [[ -z "$_pf_out" ]]; then
+  check "6.3a backlog branch (arm 4, id defined ONLY in backlog/) silences across 400 matching briefs under pipefail" 1
 else
-  check "todos basename lookup in canonical script does not use 'find … -print -quit' — collapsed form missing" 0
+  check "6.3a backlog branch FAILED to silence a defined REQ-ID — early-exit reader regression (HP-028)" 0
+fi
+
+# 6.4a — todos branch, behavioural. A dated-filename citation resolving through the
+# basename lookup, against 100 nested copies of the same basename.
+_pf_out=$(printf '%s\n' "- Follow-up captured in 2026-04-20-target-todo" \
+  | _pf_sh 'set -o pipefail; . "'"$CLASSIFIER"'"; auto_silence_deferred_lines "'"$_PF_CTX"'"' 2>/dev/null)
+if [[ -z "$_pf_out" ]]; then
+  check "6.4a todos branch silences a dated-filename citation across 600 nested duplicates under pipefail" 1
+else
+  check "6.4a todos branch FAILED to silence a dated-filename citation — early-exit reader regression (HP-028)" 0
+fi
+
+# 6.4b — negative control for both. An item resolving to NOTHING must survive. Without
+# it, a helper that silenced unconditionally would pass 6.3a and 6.4a outright.
+_pf_out=$(printf '%s\n' "- Nothing here resolves at all" \
+  | _pf_sh 'set -o pipefail; . "'"$CLASSIFIER"'"; auto_silence_deferred_lines "'"$_PF_CTX"'"' 2>/dev/null)
+if [[ -n "$_pf_out" ]]; then
+  check "6.4b negative control — an unresolvable item survives both branches" 1
+else
+  check "6.4b negative control FAILED — an unresolvable item was silenced" 0
+fi
+
+# 6.5 — fixture-adequacy self-check. Runs the KNOWN-BROKEN and KNOWN-GOOD idioms
+# directly against this fixture and requires them to DISAGREE. This is what converts
+# 6.3a/6.4a from "we hope the fixture is big enough" into a checked claim: if a future
+# platform, shell, or grep buffers enough that the broken form stops diverging, this
+# cell reds and names the cells that have gone vacuous — rather than all three passing
+# for the wrong reason.
+# Volume first: this is the DETERMINISM precondition, and asserting it separately is
+# what lets a failure say "the fixture shrank below the pipe buffer" rather than just
+# "the forms agreed". 64 KiB is the default Linux pipe capacity.
+_PIPE_FLOOR=65536
+_grep_bytes=$(grep -rlE "\*\*REQ-PIPE-02\*\*" "$_PF_ROOT/.planning/backlog/" 2>/dev/null | wc -c)
+_find_bytes=$(find "$_PF_ROOT/.planning/todos" -name '2026-04-20-target-todo.md' 2>/dev/null | wc -c)
+if [[ "$_grep_bytes" -gt "$_PIPE_FLOOR" && "$_find_bytes" -gt "$_PIPE_FLOOR" ]]; then
+  check "6.5 fixture output exceeds the pipe buffer — SIGPIPE is forced, not raced (grep ${_grep_bytes}B, find ${_find_bytes}B > ${_PIPE_FLOOR}B)" 1
+else
+  check "6.5 fixture output BELOW the pipe buffer (grep ${_grep_bytes}B, find ${_find_bytes}B vs ${_PIPE_FLOOR}B) — 6.3a/6.4a would be racy; enlarge the fixture" 0
+fi
+
+_broken_grep=$(_pf_sh 'set -o pipefail; grep -rlE "\*\*REQ-PIPE-02\*\*" "'"$_PF_ROOT"'/.planning/backlog/" 2>/dev/null | head -1 | grep -q .; echo $?')
+_good_grep=$(_pf_sh 'set -o pipefail; grep -rqE "\*\*REQ-PIPE-02\*\*" "'"$_PF_ROOT"'/.planning/backlog/" 2>/dev/null; echo $?')
+if [[ "$_broken_grep" != "$_good_grep" ]]; then
+  check "6.5a fixture is large enough — broken grep pipeline diverges from the short-circuit form (rc $_broken_grep vs $_good_grep)" 1
+else
+  check "6.5a fixture NO LONGER triggers the grep-branch regression (both rc=$_good_grep) — 6.3a is now vacuous, enlarge it" 0
+fi
+
+# 6.5c — proof that the disposition shim actually fired. A shim that silently no-ops
+# would leave every cell above running under the caller's SIGPIPE, which is exactly the
+# failure this section exists to remove; "we wrapped it" is not evidence it worked.
+# `head -c1` closes the pipe immediately, so under DEFAULT SIGPIPE `yes` is killed (141)
+# and under SIG_IGN it is not.
+_sig_probe=$(_pf_sh 'set -o pipefail; yes 2>/dev/null | head -c1 >/dev/null; echo ${PIPESTATUS[0]}')
+if [[ "$_sig_probe" == "141" ]]; then
+  check "6.5c SIGPIPE restored to default for the cells above (producer killed, rc=141)" 1
+elif [[ -z "$_PF_SIGDFL" ]]; then
+  check "6.5c python3 absent — cells ran under the caller's SIGPIPE disposition (producer rc=$_sig_probe); a SIG_IGN caller makes 6.3a/6.4a undetecting" 0
+else
+  check "6.5c SIGPIPE NOT restored (producer rc=$_sig_probe, expected 141) — the shim did not take effect and 6.3a/6.4a cannot see an HP-028 regression" 0
+fi
+
+_broken_find=$(_pf_sh 'set -o pipefail; find "'"$_PF_ROOT"'/.planning/todos" -name "2026-04-20-target-todo.md" 2>/dev/null | head -1 | grep -q .; echo $?')
+_good_find=$(_pf_sh 'set -o pipefail; [ -n "$(find "'"$_PF_ROOT"'/.planning/todos" -name "2026-04-20-target-todo.md" -print -quit 2>/dev/null)" ]; echo $?')
+if [[ "$_broken_find" != "$_good_find" ]]; then
+  check "6.5b fixture is large enough — broken find pipeline diverges from -print -quit (rc $_broken_find vs $_good_find)" 1
+else
+  check "6.5b fixture NO LONGER triggers the find-branch regression (both rc=$_good_find) — 6.4a is now vacuous, enlarge it" 0
 fi
 
 # --- Section 7: behavioral smoke for the collapsed forms ---
@@ -216,7 +452,7 @@ fi
 # $bname present and verify `find -print -quit` detects it. These exercise
 # the exact idioms the hook now uses, not the hook's full Stop pipeline.
 TMP_FIXTURE=$(mktemp -d /tmp/probe-deferred-collapse.XXXXXX)
-trap 'rm -rf "$TMP_FIXTURE"' EXIT
+trap 'rm -rf "$TMP_FIXTURE" "${_SIGPIPE_FIXTURE:-}"' EXIT
 
 mkdir -p "$TMP_FIXTURE/.planning/backlog"
 # Multiple files in the backlog; $rid only present in one. grep -rq must
@@ -550,7 +786,7 @@ fi
 #      item (REQ-ID resolvable in REQUIREMENTS.md, no Stage-1 marker) — the
 #      two-stage pipeline must silence it; the single-stage pipeline would NOT.
 TMP_FIXTURE_HF=$(mktemp -d /tmp/probe-deferred-hf-stage2.XXXXXX)
-trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF"' EXIT
+trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF" "${_SIGPIPE_FIXTURE:-}"' EXIT
 
 mkdir -p "$TMP_FIXTURE_HF/.planning/phases/01-stage2-test"
 mkdir -p "$TMP_FIXTURE_HF/.planning/backlog"
@@ -635,7 +871,7 @@ fi
 # Source: docs/prompts/done/2026-07-14-deferred-check-indent-blind-count-prompt.md
 
 TMP_FIXTURE_E2E=$(mktemp -d /tmp/probe-deferred-e2e-indent.XXXXXX)
-trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF" "$TMP_FIXTURE_E2E"' EXIT
+trap 'rm -rf "$TMP_FIXTURE" "$TMP_FIXTURE_HF" "$TMP_FIXTURE_E2E" "${_SIGPIPE_FIXTURE:-}"' EXIT
 
 mkdir -p "$TMP_FIXTURE_E2E/.planning/phases/01-indent-bypass"
 E2E_CTX="$TMP_FIXTURE_E2E/.planning/phases/01-indent-bypass/01-CONTEXT.md"

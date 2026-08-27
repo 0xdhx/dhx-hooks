@@ -229,10 +229,14 @@ sed -i 's|^# deferred block\. Drift between this hook and the skills-repo consum
 sed -i '/^# (\/dhx:defer-review, \/dhx:backlog audit, \/dhx:capture) is enforced by$/d' dhx/dhx-deferred-check.sh
 sed -i '/^# ~\/repos\/skills\/tests\/probe-classifier-cross-repo\.sh\.$/d' dhx/dhx-deferred-check.sh
 #
-# probe-milestone-close-vocab-parity.sh:21: single-line "Mirrors `~/repos/skills/..."
-# reference at the head of the probe's design memo block. Rewrite to drop the
-# cross-repo path while preserving the parity-intent documentation.
-sed -i 's|^# Mirrors `~/repos/skills/tests/probe-classifier-cross-repo\.sh` discovery +$|# Mirrors the sister classifier-cross-repo probe discovery +|' tests/probes/probe-milestone-close-vocab-parity.sh
+# RETIRED 2026-08-27 — probe-milestone-close-vocab-parity.sh no longer carries the
+# single-line "Mirrors `~/repos/skills/tests/probe-classifier-cross-repo.sh` discovery +"
+# comment this rule was anchored on. The probe was rewritten from a source-text pin on
+# backlog-regen.cjs to a rendered-output differential (docs/decisions.md 2026-08-27
+# de-pin row) and that comment went with the design-memo block it headed. The rule is
+# removed rather than left in place because an anchored sed whose anchor no longer
+# exists is a silent no-op that reads as coverage. Any residual `repos/skills` in this
+# file is still scrubbed by the Class D/E catch-all sweep further down.
 
 # Fixture: forgefinder pattern reference
 sed -i 's|original forgefinder 22\.1 pattern|real-world 22.1 pattern|' tests/fixtures/backtick-collision.md
