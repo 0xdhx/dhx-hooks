@@ -15,8 +15,8 @@
 # its own scoped pathspec — the committer-adaptation half of the zero-touch story.
 # That roster is brief-writers ONLY and is not the full set of aggregate inputs: the
 # committers that mutate reports/skills/*/actionable/ membership (the defect-row
-# input) do NOT carry the aggregate and are covered by neither half — see skills:
-# .planning/backlog/2026-07-29-report-committers-do-not-carry-the-backlog-aggregate.md
+# input) do NOT carry the aggregate and are covered by neither half — see
+# ~/repos/skills/.planning/backlog/2026-07-29-report-committers-do-not-carry-the-backlog-aggregate.md
 # The uncovered residue is AD-HOC brief commits (observed 2026-07-12: a manually-
 # shipped brief left the aggregate stale a full day, hiding it from navigation).
 # This leaf makes that drift UNCOMMITTABLE, with the exact fix in the block message.
