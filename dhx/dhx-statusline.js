@@ -201,7 +201,7 @@ function readGsdState(dir) {
         try {
           const roadmap = path.join(path.dirname(candidate), 'ROADMAP.md');
           if (fs.existsSync(roadmap)) {
-            const rp = parseRoadmapProgress(fs.readFileSync(roadmap, 'utf8'));
+            const rp = parseRoadmapProgress(fs.readFileSync(roadmap, 'utf8'), state.milestone);
             if (rp) {
               state.completedPhases = rp.completedPhases;
               state.totalPhases = rp.totalPhases;
@@ -321,45 +321,129 @@ function parseStateMd(content) {
  * don't-regress ratchet cements a stale-high total. The ROADMAP progress
  * table is verb-/human-maintained and stays current.
  *
- * Reach is narrow BY DESIGN: only a minority of repos maintain this table
- * (most keep only the `- [x] Phase N` checkbox list, which cannot be reliably
- * scoped to the active milestone across differing heading conventions). The
- * table is the one ROADMAP structure that IS reliably active-scoped, so it's
- * the right primary where present; everything else falls back to STATE.
+ * The table is NOT active-scoped on its own. Measured 2026-08-29 across the
+ * 17 repos under ~/repos that carry one: 12 are whole-project tables of mixed
+ * granularity — historical milestones collapsed to range rows (`| 52-60.1 |
+ * v4.0 | 28/28 | Complete |`) alongside per-phase rows for the live one — and
+ * the only thing separating them is a `Milestone` column. Counting every row
+ * yields a fraction belonging to no milestone (sideline: 11/16). So when that
+ * column is present the caller's active milestone is REQUIRED, and a table we
+ * cannot scope is withheld (null → STATE fallback) rather than widened. The
+ * remaining 5 tables have no Milestone column and are counted whole, exactly
+ * as before.
  *
- * Mirrors gsd-core's deriveProgressFromRoadmap (phase-lifecycle.cjs) table-
- * location regex, but scopes counting to the located table and applies the
- * ^999 backlog exclusion init.cjs:1211 uses (`!/^999(?:\.|$)/`) — which the
- * gsd-core derive omits (the upstream bug this read-time fix also references).
+ * @param {string} content            ROADMAP.md text.
+ * @param {string} [activeMilestone]  STATE frontmatter's `milestone:` value.
+ *                                    Required whenever the table has a
+ *                                    Milestone column; ignored when it doesn't.
+ *
+ * Mirrors gsd-core's deriveProgressFromRoadmap (phase-lifecycle.cjs), which
+ * moved to name-based column lookup under ADR-2143 §3 — read by column NAME so
+ * the parse is order- and injection-invariant. Deliberately NOT a require() of
+ * that module: gsd-core is a separately-versioned tree and a hard dependency
+ * would break the statusline on its upgrades (D-14 class). Two intentional
+ * divergences from upstream: only `Phase` + `Status` are required (upstream
+ * also demands `Plans Complete`, which is why its own derive returns null on
+ * alembic, whose column is named `Plans`), and the sentinel exclusion is
+ * applied at the table parse (upstream's derive omits it — the bug this
+ * read-time fix references).
  */
-function parseRoadmapProgress(content) {
+function parseRoadmapProgress(content, activeMilestone) {
+  if (typeof content !== 'string' || content === '') return null;
+
   // Locate the active progress table. If archived-milestone tables are also
   // present, anchor on the **Active milestone:** marker that precedes the live
   // one; otherwise take the first table.
-  const tableRe = /\|\s*Phase\s*\|[^|]*\|[^|]*Status[^|]*\|[^|]*Completed[^|]*\|[\s\S]*?(?=\n\n|\n##|$)/i;
   let scope = content;
   const activeIdx = content.search(/\*\*Active milestone:/i);
   if (activeIdx !== -1) scope = content.slice(activeIdx);
-  const m = scope.match(tableRe) || content.match(tableRe);
-  if (!m) return null;
+  const table = findProgressTable(scope) ||
+                (scope === content ? null : findProgressTable(content));
+  if (!table) return null;
 
-  // ^999 backlog-row predicate — the table-row form of init.cjs:1211's
-  // !/^999(?:\.|$)/. A leading phase cell of 999 or 999.x is a backlog row,
-  // not a milestone phase, so it counts toward neither numerator nor total.
-  const is999 = (row) => /^\|\s*999(?:\.|\s|\|)/.test(row);
+  const { columns, rows } = table;
+  const phaseAt = columns.indexOf('phase');
+  const statusAt = columns.indexOf('status');
+  const msAt = columns.indexOf('milestone');
+
+  // Milestone scoping — load-bearing, not polish. Withhold rather than guess:
+  // a Milestone column with no milestone to match it, or one matching no row,
+  // returns null so the STATE block answers instead. Silently widening to the
+  // unscoped count is the 11/16 failure by another route.
+  let want = null;
+  if (msAt !== -1) {
+    want = (activeMilestone == null ? '' : String(activeMilestone)).trim().toLowerCase();
+    if (want === '') return null;
+  }
+
+  // Sentinel backlog rows count toward neither numerator nor total. gsd-core's
+  // canonical form is `isSentinelPhaseId` (bin/lib/phase-id.cjs), backed by
+  // SENTINEL_RANGES = [0, 999]; this parser deliberately still excludes 999.x
+  // only. Widening to admit phase 0 is a real behaviour change with no repo
+  // affected today — tracked in .planning/backlog/, not smuggled in here.
+  const isSentinel = (phase) => /^999(?:\.|\s|$)/.test(phase);
 
   let total = 0;
   let completed = 0;
-  for (const row of m[0].split('\n')) {
-    if (!/^\|\s*\d/.test(row)) continue;   // data row: leading pipe + phase number
-    if (is999(row)) continue;              // exclude 999.x backlog rows
+  for (const cells of rows) {
+    const phase = (cells[phaseAt] || '').trim();
+    if (!/^\d/.test(phase)) continue;   // data row: phase cell starts with a number
+    if (isSentinel(phase)) continue;
+    if (msAt !== -1 && (cells[msAt] || '').trim().toLowerCase() !== want) continue;
     total++;
-    // Columns: | Phase | Plans Complete | Status | Completed | → split[3] = Status
-    const statusCell = (row.split('|')[3] || '').trim();
-    if (/^Complete$/i.test(statusCell)) completed++;
+    if (/^Complete$/i.test((cells[statusAt] || '').trim())) completed++;
   }
   if (total === 0) return null;
   return { completedPhases: completed, totalPhases: total };
+}
+
+/**
+ * Split a markdown table row into trimmed cells: `| a | b |` → ['a', 'b'].
+ * The leading and trailing pipes are stripped first so the cell list carries
+ * no phantom empties — that is what lets a name→index map built from the
+ * header line index straight into every data row.
+ */
+function splitTableRow(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+/**
+ * Locate the progress table and return { columns, rows } — `columns` being
+ * lowercased/trimmed names, `rows` being cell arrays indexed the same way.
+ *
+ * Located by column NAME: the first table row whose cells include both `Phase`
+ * and `Status` (case-insensitive), followed by a matching delimiter row. The
+ * delimiter requirement is what keeps a prose row that happens to mention both
+ * words from being read as a header.
+ *
+ * Returns null if no such table exists, or if any data row's cell count
+ * disagrees with the header — an unescaped pipe shifts every cell after it, so
+ * the honest answer there is "don't know", which falls back to STATE.
+ */
+function findProgressTable(text) {
+  const isDelimiterCell = (c) => /^:?-{1,}:?$/.test(c);
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t.startsWith('|') || t.indexOf('|', 1) === -1) continue;
+    const columns = splitTableRow(lines[i]).map((c) => c.toLowerCase());
+    if (columns.indexOf('phase') === -1 || columns.indexOf('status') === -1) continue;
+    if (lines[i + 1] === undefined) continue;
+    const delim = splitTableRow(lines[i + 1]);
+    if (delim.length !== columns.length || !delim.every(isDelimiterCell)) continue;
+    const rows = [];
+    for (let j = i + 2; j < lines.length; j++) {
+      if (!lines[j].trim().startsWith('|')) break;
+      const cells = splitTableRow(lines[j]);
+      if (cells.length !== columns.length) return null;
+      rows.push(cells);
+    }
+    return { columns, rows };
+  }
+  return null;
 }
 
 // --- Line 2 assembly ---------------------------------------------------------

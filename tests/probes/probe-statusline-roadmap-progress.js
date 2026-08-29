@@ -1,10 +1,10 @@
 // Probe: statusline milestone count derived from the ROADMAP progress table.
 //
-// Locks: parseRoadmapProgress (table-scoped Complete/total counting with the
-// ^999 backlog exclusion) and readGsdState's source preference — the ROADMAP
-// progress table overrides the STATE.md progress: block when present, and
-// falls back to the STATE block cleanly on any miss (no ROADMAP, no table,
-// unreadable).
+// Locks: parseRoadmapProgress (NAME-based column lookup, milestone-scoped
+// Complete/total counting, ^999 backlog exclusion) and readGsdState's source
+// preference — the ROADMAP progress table overrides the STATE.md progress:
+// block when present, and falls back to the STATE block cleanly on any miss
+// (no ROADMAP, no table, unscopable table, unreadable).
 //
 // Why: the STATE progress: block is orphan-prone (only verb-written, so
 // hand-completed phases freeze it) and carries two gsd-core bugs — 999.x
@@ -15,13 +15,32 @@
 // "statforge reads 5/5" proves nothing once its STATE block is hand-patched
 // to 5/5 — both sources agree. The fixture forces them to disagree.)
 //
-// Pairs with: docs/decisions.md 2026-06-18 statusline-roadmap-progress row;
-// dhx/dhx-statusline.js parseRoadmapProgress + readGsdState.
+// Pairs with: docs/decisions.md 2026-06-18 statusline-roadmap-progress row and
+// the 2026-08-29 name-based-columns + milestone-scoping row;
+// dhx/dhx-statusline.js parseRoadmapProgress + findProgressTable + readGsdState.
 //
 // INVARIANT: the ^999 exclusion must apply IDENTICALLY to numerator and
-// denominator — it is the table-row form of gsd-core init.cjs:1211's
-// `!/^999(?:\.|$)/`. A 999.x backlog row is neither a completed phase nor a
+// denominator. A 999.x backlog row is neither a completed phase nor a
 // milestone phase; counting it in either place reintroduces gsd-core bug #1.
+// Resolve the canonical upstream form by SYMBOL, never by line: gsd-core's
+// `isSentinelPhaseId` in bin/lib/phase-id.cjs, backed by SENTINEL_RANGES.
+// (The originating spec cited `init.cjs:1211`; that literal no longer exists
+// upstream. This parser still excludes 999.x only — upstream's range also
+// admits phase 0 — see .planning/backlog/2026-08-29-statusline-sentinel-
+// phase-zero-divergence.md.)
+//
+// INVARIANT: columns are read by NAME, never by position. 12 of the 17 repos
+// carrying a progress table use a 5-column shape with a Milestone column, so
+// `split('|')[3]` is the Plans cell on most of the fleet, not Status. § 3's
+// column-order permutation case is the discriminating test: it passes only on
+// a name→index map.
+//
+// INVARIANT: when the table has a Milestone column, counting MUST be scoped to
+// the active milestone, and a table that cannot be scoped MUST be withheld
+// (null → STATE fallback) rather than widened. These tables are whole-project
+// and mixed-granularity — historical milestones as collapsed range rows beside
+// per-phase rows for the live one — so an unscoped count is a fraction
+// belonging to no milestone (sideline: 11/16).
 //
 // Run: node tests/probes/probe-statusline-roadmap-progress.js
 //
@@ -200,6 +219,194 @@ okObj('parse: anchors on **Active milestone:** marker, skips archived table',
 }
 
 // --- summary ----------------------------------------------------------------
+
+
+// --- § 3 name-based columns + milestone scoping (2026-08-29) ---------------
+//
+// Everything above § 3 uses a 4-column table, which is why this file was green
+// on a defect present since the day it shipped: an ABSENT FIXTURE, not a weak
+// assertion. 12 of the 17 repos carrying a progress table use a 5-column shape
+// with a Milestone column, and both the old header regex (which pinned cell 3
+// to Status) and the old `row.split('|')[3]` status read were positional.
+
+const fiveCol = `| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 10. A | v2.0 | 2/2 | Complete | 2026-01-01 |
+| 11. B | v2.0 | 0/3 | In progress | - |
+| 12. C | v2.0 | 0/TBD | Not started | - |
+`;
+
+okObj('parse: 5-column (Milestone) table parses when scoped',
+  parseRoadmapProgress(fiveCol, 'v2.0'), { completedPhases: 1, totalPhases: 3 });
+
+// THE discriminating case: passes only on a name→index map. Any positional
+// implementation reads the wrong cell for Status and returns 0 completed.
+okObj('parse: column-order permutation (Status before Plans Complete) → same result',
+  parseRoadmapProgress(`| Phase | Milestone | Status | Plans Complete | Completed |
+|-------|-----------|--------|----------------|-----------|
+| 10. A | v2.0 | Complete | 2/2 | 2026-01-01 |
+| 11. B | v2.0 | In progress | 0/3 | - |
+| 12. C | v2.0 | Not started | 0/TBD | - |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 3 });
+
+// alembic names the plans column `Plans`; everyone else `Plans Complete`.
+// Neither is required — only Phase and Status are.
+okObj("parse: `Plans` (alembic) and `Plans Complete` both parse",
+  parseRoadmapProgress(fiveCol.replace('Plans Complete', 'Plans'), 'v2.0'),
+  { completedPhases: 1, totalPhases: 3 });
+
+okObj('parse: plans column absent entirely → still parses (Phase+Status only)',
+  parseRoadmapProgress(`| Phase | Milestone | Status | Completed |
+|---|---|---|---|
+| 10. A | v2.0 | Complete | 2026-01-01 |
+| 11. B | v2.0 | Not started | - |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 2 });
+
+okObj('parse: unrecognized extra columns are ignored, not fatal',
+  parseRoadmapProgress(`| Phase | Owner | Milestone | Risk | Plans Complete | Status | Completed |
+|---|---|---|---|---|---|---|
+| 10. A | dhx | v2.0 | low | 2/2 | Complete | 2026-01-01 |
+| 11. B | dhx | v2.0 | high | 0/3 | Not started | - |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 2 });
+
+okObj('parse: column names match case-insensitively and trimmed',
+  parseRoadmapProgress(`|  PHASE  |  milestone  |  Status  |
+|---|---|---|
+| 10. A | v2.0 | Complete |
+| 11. B | v2.0 | Not started |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 2 });
+
+// --- milestone scoping ------------------------------------------------------
+//
+// These tables are ONE whole-project table of mixed granularity: historical
+// milestones collapsed to range rows, plus per-phase rows for the live one.
+// Counting every row yields a fraction belonging to no milestone.
+
+const mixedGranularity = `| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1-4 | v1.0 | 9/9 | Complete | 2026-02-27 |
+| 5-11 | v1.0 | 7/7 | Complete | 2026-03-09 |
+| 12-22 | v1.5 | 15/15 | Complete | 2026-03-10 |
+| 61. Evidence Base | v2.0 | 2/2 | Complete | 2026-08-28 |
+| 62. Vocabulary Tuning | v2.0 | 0/11 | In progress | - |
+| 63. Per-Section Batching | v2.0 | 0/1 | Not started | - |
+`;
+
+okObj('parse: mixed-granularity table counts ONLY the active milestone (v2.0 → 1/3)',
+  parseRoadmapProgress(mixedGranularity, 'v2.0'), { completedPhases: 1, totalPhases: 3 });
+
+// Explicit negative: the unscoped whole-table count (4 Complete of 6 rows) is
+// a fraction belonging to no milestone. A name-based fix WITHOUT scoping
+// returns it — that is the failure this assertion exists to catch.
+{
+  const got = parseRoadmapProgress(mixedGranularity, 'v2.0');
+  okObj('parse: unscoped whole-table count (4/6) is NOT returned',
+    got && got.completedPhases === 4 && got.totalPhases === 6, false);
+}
+
+okObj('parse: scoping to a historical milestone counts its range rows (v1.0 → 2/2)',
+  parseRoadmapProgress(mixedGranularity, 'v1.0'), { completedPhases: 2, totalPhases: 2 });
+
+okObj('parse: milestone match is case-insensitive and trimmed',
+  parseRoadmapProgress(mixedGranularity, '  V2.0  '), { completedPhases: 1, totalPhases: 3 });
+
+// Withhold rather than guess — both misses must fall back to STATE, never
+// silently widen to the unscoped count.
+okObj('parse: Milestone column present but no active milestone → null',
+  parseRoadmapProgress(mixedGranularity, undefined), null);
+
+okObj('parse: Milestone column present, STATE milestone null → null',
+  parseRoadmapProgress(mixedGranularity, null), null);
+
+okObj('parse: Milestone column present, milestone matches no row → null',
+  parseRoadmapProgress(mixedGranularity, 'v9.9'), null);
+
+// No Milestone column → count all rows exactly as before, milestone ignored.
+// This is the 4-column repos' path; their numbers must not move.
+okObj('parse: no Milestone column → unscoped count, active milestone irrelevant',
+  parseRoadmapProgress(tableFiveComplete, 'v-does-not-matter'),
+  { completedPhases: 5, totalPhases: 5 });
+
+okObj('parse: no Milestone column and no milestone argument → unchanged 4-col behaviour',
+  parseRoadmapProgress(tableFiveComplete), { completedPhases: 5, totalPhases: 5 });
+
+// The ^999 exclusion still applies identically to numerator and denominator
+// INSIDE a milestone-scoped table.
+okObj('parse: ^999 exclusion applies within a milestone-scoped table',
+  parseRoadmapProgress(`| Phase | Milestone | Status |
+|---|---|---|
+| 10. A | v2.0 | Complete |
+| 11. B | v2.0 | Not started |
+| 999.1 Backlog | v2.0 | Complete |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 2 });
+
+// Non-numeric phase cells are not data rows (alembic's `Phases 0-6` range
+// rows, and the delimiter row itself).
+okObj('parse: non-numeric Phase cells are not counted as data rows',
+  parseRoadmapProgress(`| Phase | Milestone | Status |
+| --- | --- | --- |
+| Phases 0-6 | v2.0 | Complete |
+| 10. A | v2.0 | Complete |
+| 11. B | v2.0 | Not started |
+`, 'v2.0'), { completedPhases: 1, totalPhases: 2 });
+
+// A row whose cell count disagrees with the header (an unescaped pipe shifts
+// every cell after it) is ambiguous — withhold the whole table.
+okObj('parse: cell-count mismatch → null (ambiguous, falls back to STATE)',
+  parseRoadmapProgress(`| Phase | Milestone | Status |
+|---|---|---|
+| 10. A | v2.0 | Complete |
+| 11. B | pipe | in | name | v2.0 | Not started |
+`, 'v2.0'), null);
+
+// A prose row mentioning both words is not a header — the delimiter row is
+// what makes the locate specific.
+okObj('parse: Phase/Status row with no delimiter row is not read as a header',
+  parseRoadmapProgress(`| Phase | Status | notes about the phase and its status |
+| 10. A | Complete | prose |
+`, 'v2.0'), null);
+
+// --- § 4 readGsdState threads STATE's milestone through (integration) ------
+
+// End-to-end on the sideline shape: STATE says 0/6 (stale verb-written block),
+// the table says the milestone's first phase is Complete. The table wins AND
+// is scoped — the unscoped 4/6 must not appear.
+{
+  const dir = mkFixture(`---
+gsd_state_version: 1.0
+milestone: v2.0
+status: executing
+progress:
+  total_phases: 6
+  completed_phases: 0
+---
+
+# Project State
+`, mixedGranularity);
+  const s = readGsdState(dir);
+  okObj('readGsdState: mixed-granularity table scoped by STATE milestone (v2.0 → 1/3)',
+    { completedPhases: s.completedPhases, totalPhases: s.totalPhases },
+    { completedPhases: 1, totalPhases: 3 });
+}
+
+// STATE declares no milestone but the table has a Milestone column → withhold
+// the table and keep the STATE block, rather than widening to 4/6.
+{
+  const dir = mkFixture(`---
+gsd_state_version: 1.0
+status: executing
+progress:
+  total_phases: 6
+  completed_phases: 2
+---
+
+# Project State
+`, mixedGranularity);
+  const s = readGsdState(dir);
+  okObj('readGsdState: Milestone column but no STATE milestone → STATE block (2/6)',
+    { completedPhases: s.completedPhases, totalPhases: s.totalPhases },
+    { completedPhases: 2, totalPhases: 6 });
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
