@@ -376,11 +376,33 @@ function parseRoadmapProgress(content, activeMilestone) {
     if (want === '') return null;
   }
 
-  // Sentinel backlog rows count toward neither numerator nor total. gsd-core's
-  // canonical form is `isSentinelPhaseId` (bin/lib/phase-id.cjs), backed by
-  // SENTINEL_RANGES = [0, 999]; this parser deliberately still excludes 999.x
-  // only. Widening to admit phase 0 is a real behaviour change with no repo
-  // affected today — tracked in .planning/backlog/, not smuggled in here.
+  // Sentinel backlog rows count toward neither numerator nor total.
+  //
+  // INVARIANT: this predicate excludes 999 / 999.x ONLY, and that scope is
+  // DELIBERATE and SETTLED (2026-08-29) — not a lag behind upstream. Do NOT
+  // widen it to gsd-core's range to "align with canon". The canonical upstream
+  // form is `isSentinelPhaseId` (bin/lib/phase-id.cjs), backed by
+  // `SENTINEL_RANGES = Object.freeze([0, 999])`, applied to progress by
+  // `deriveProgressFromRoadmap` (bin/lib/phase-lifecycle.cjs). Resolve all
+  // three by SYMBOL, NEVER by line number — gsd-core is a separately-versioned
+  // tree that moves every release; the spec that authored this predicate cited
+  // `init.cjs:1211`, and that literal no longer exists anywhere upstream.
+  //
+  // Why the divergence is correct here: in GSD's canon `0` is the backlog
+  // range. In THIS fleet `Phase 0` is a front-loaded validation spike or fork
+  // skeleton — a real phase with plans, SUMMARYs and a completion date. Three
+  // of the 17 ROADMAP progress tables carry one (measured 2026-08-29:
+  // xpression-ndi, inkling, ff-dogfood-sandbox). Adopting {0, 999} moves
+  // xpression-ndi from 3/5 to 2/4 — silently deleting a Complete 6-plan phase
+  // from a repo used as a CONTROL for this parser's own name-based-columns fix.
+  // The fleet-convention question behind this (renumber those three repos onto
+  // GSD's `0-*`-is-backlog convention, vs. keep diverging) was put to the
+  // operator on 2026-08-29 and CLOSED: keep the divergence permanently.
+  //
+  // The pressure to widen comes from OUTSIDE this file, so no code here can
+  // resist it. The guard is the probe: probe-statusline-roadmap-progress.js
+  // asserts a `| 0. …| Complete |` row COUNTS toward both numerator and
+  // denominator. See docs/decisions.md 2026-08-29 sentinel-divergence row.
   const isSentinel = (phase) => /^999(?:\.|\s|$)/.test(phase);
 
   let total = 0;

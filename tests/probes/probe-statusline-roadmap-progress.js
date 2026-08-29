@@ -22,12 +22,21 @@
 // INVARIANT: the ^999 exclusion must apply IDENTICALLY to numerator and
 // denominator. A 999.x backlog row is neither a completed phase nor a
 // milestone phase; counting it in either place reintroduces gsd-core bug #1.
-// Resolve the canonical upstream form by SYMBOL, never by line: gsd-core's
-// `isSentinelPhaseId` in bin/lib/phase-id.cjs, backed by SENTINEL_RANGES.
-// (The originating spec cited `init.cjs:1211`; that literal no longer exists
-// upstream. This parser still excludes 999.x only — upstream's range also
-// admits phase 0 — see .planning/backlog/2026-08-29-statusline-sentinel-
-// phase-zero-divergence.md.)
+//
+// INVARIANT: the exclusion is 999-ONLY, and Phase 0 COUNTS. That divergence
+// from upstream is SETTLED and DELIBERATE (2026-08-29), not a lag — do not
+// "align" it. Resolve the canonical upstream form by SYMBOL, never by line:
+// `isSentinelPhaseId` in bin/lib/phase-id.cjs, backed by
+// `SENTINEL_RANGES = Object.freeze([0, 999])`, applied to progress by
+// `deriveProgressFromRoadmap` in bin/lib/phase-lifecycle.cjs. (The originating
+// spec cited `init.cjs:1211`; that literal no longer exists upstream.) In GSD's
+// canon `0` is the backlog range; in this fleet `Phase 0` is a validation
+// spike / fork skeleton — a real phase. Three of 17 tables carry one, and
+// adopting {0, 999} moves xpression-ndi 3/5 -> 2/4, dropping a Complete 6-plan
+// phase from a CONTROL repo. The § 1 Phase-0 cell below is what makes a silent
+// re-alignment impossible; see docs/decisions.md 2026-08-29 sentinel-divergence
+// row and .planning/backlog/shipped/2026-08-29-statusline-sentinel-phase-zero-
+// divergence.md.
 //
 // INVARIANT: columns are read by NAME, never by position. 12 of the 17 repos
 // carrying a progress table use a 5-column shape with a Milestone column, so
@@ -129,6 +138,20 @@ okObj('parse: 999.x row marked Complete still excluded (no numerator inflation)'
 | 1. A | 2/2 | Complete | 2026-01-01 |
 | 999.4 Backlog shipped | 1/1 | Complete | 2026-06-05 |
 `), { completedPhases: 1, totalPhases: 1 });
+
+// The mirror image of the two cells above, and the reason they are 999-only.
+// Modelled on xpression-ndi's real shape (4-column, no Milestone column) so it
+// exercises the UNSCOPED path — nothing else can remove the row. Under the
+// shipped 999-only predicate this is 2/3; under gsd-core's {0, 999} it would be
+// 1/2. A cell that passes under both predicates asserts nothing.
+okObj('parse: Phase 0 COUNTS (deliberate divergence from gsd-core SENTINEL_RANGES)',
+  parseRoadmapProgress(`| Phase | Plans Complete | Status | Completed |
+|---|---|---|---|
+| 0. Fork + CI Skeleton | 6/6 | Complete | 2026-06-19 |
+| 1. A | 2/2 | Complete | 2026-01-01 |
+| 2. B | 1/2 | In Progress |  |
+| 999.1 Backlog | 0/1 | Pending |  |
+`), { completedPhases: 2, totalPhases: 3 });
 
 okObj('parse: no progress table → null', parseRoadmapProgress(`# Roadmap
 
