@@ -81,6 +81,17 @@
 # free to ignore. Results are written beside this script (PROBE_DIR), never relative
 # to $PWD, and a `skipped` run will not overwrite a real row already on record.
 #
+# LOAD-BEARING (2026-08-29, HP-058): NEVER add `Read` (or `REPL`) to any cell's
+# `--tools` list. CC's read-before-edit guard is MODEL-GATED and is SKIPPED unless
+# at least one conjunct fails; withholding Read is what keeps it ACTIVE here, so
+# every cell below measures the guard-active path. On this machine's default model
+# (a 5-family id, outside the guard's hardcoded set) a cell that also exposed `Read`
+# would ALLOW unconditionally — control included — and this probe would report a
+# green satisfier set having tested nothing. That is precisely the false pass the
+# sibling `probe-read-guard-native-enforcement-tripwire.sh` was found emitting.
+# The `--add-dir "$WORK"` below is the same story from the other side: it makes the
+# path reachable, which is required for the PRECONDITION grep to run at all.
+#
 # AUTH: ANTHROPIC_API_KEY required (a sandboxed claude -p authenticates ONLY via
 # an inherited API key; seeding OAuth credentials_file is UNSAFE — rotates &
 # invalidates the source credential, measured 2026-05-24, see the tripwire header).
