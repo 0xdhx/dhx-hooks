@@ -431,5 +431,49 @@ progress:
     { completedPhases: 2, totalPhases: 6 });
 }
 
+// --- § 5 annotated `Complete (…)` cells do NOT count (2026-08-29) ----------
+//
+// INVARIANT: the Status numerator test is EXACT — `/^Complete$/i` on the
+// trimmed cell — and that strictness is DELIBERATE and RETAINED, not an
+// oversight to be tidied away. Do NOT loosen it to `/^Complete\b/i` or to a
+// parenthetical-tolerant form without first landing the write-time detector
+// (.planning/backlog/2026-08-29-roadmap-status-vocabulary-validator.md).
+//
+// Why, precisely: five rows across three repos wrote a parenthetical into the
+// Status cell over ~4 months, and BOTH consumers reject it — this predicate
+// and gsd-core's own `/^complete$/i` in deriveProgressFromRoadmap
+// (bin/lib/phase-lifecycle.cjs — resolve by SYMBOL, never by line). The five
+// rows were normalized on 2026-08-29 instead of the predicate being widened,
+// because normalization fixes BOTH consumers while loosening fixes only this
+// one and leaves upstream's rollup — which feeds /gsd-next's whole-table
+// milestone-complete parity gate — still undercounting.
+//
+// The strictness is therefore load-bearing as a DETECTOR. With the five known
+// rows normalized there is no standing noise floor, so the next annotated row
+// anyone writes shows up as a milestone fraction low by exactly one against a
+// baseline that was right. Loosening deletes that signal before its
+// replacement exists. These cells are what makes deleting it impossible in
+// silence: both go RED under `/^Complete\b/i`.
+//
+// Note the second cell. `\b` is the tempting "minimal" loosening, and it
+// would silently count `Complete pending review` — prose asserting the exact
+// opposite of completion — as a completed phase.
+//
+// See docs/decisions.md 2026-08-29 annotated-Status-cells row.
+
+okObj('parse: annotated `Complete (partial-by-design, …)` counts in total, NOT numerator',
+  parseRoadmapProgress(`| Phase | Plans Complete | Status | Completed |
+|---|---|---|---|
+| 1. A | 2/2 | Complete | 2026-01-01 |
+| 2. B | 7/7 | Complete (partial-by-design, 6/7 reqs) | 2026-08-15 |
+`), { completedPhases: 1, totalPhases: 2 });
+
+okObj('parse: trailing prose after Complete does not count either (`\\b` red-test)',
+  parseRoadmapProgress(`| Phase | Plans Complete | Status | Completed |
+|---|---|---|---|
+| 1. A | 2/2 | Complete | 2026-01-01 |
+| 2. B | 3/3 | Complete pending review | - |
+`), { completedPhases: 1, totalPhases: 2 });
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

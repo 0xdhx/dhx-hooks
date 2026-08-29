@@ -413,6 +413,33 @@ function parseRoadmapProgress(content, activeMilestone) {
     if (isSentinel(phase)) continue;
     if (msAt !== -1 && (cells[msAt] || '').trim().toLowerCase() !== want) continue;
     total++;
+    // INVARIANT: this numerator test is EXACT, and the strictness is DELIBERATE
+    // and RETAINED (2026-08-29) — do NOT relax it to /^Complete\b/i or to a
+    // parenthetical-tolerant form. Unlike the sentinel predicate above, this one
+    // deliberately AGREES with gsd-core: `deriveProgressFromRoadmap`
+    // (bin/lib/phase-lifecycle.cjs) tests `/^complete$/i`, and
+    // `plan-drift-guard.cjs`'s PHASE_STATUS_RANKS lookup does a trim+lowercase
+    // with no paren strip. Resolve both by SYMBOL, never by line — gsd-core is a
+    // separately-versioned tree.
+    //
+    // The history this pins: five rows across three repos wrote
+    // `Complete (<caveat>)` into the Status cell over ~4 months, and every one
+    // read as not-complete here AND in upstream's own rollup. They were
+    // NORMALIZED on 2026-08-29 rather than tolerated, because normalizing fixes
+    // both consumers — upstream's count feeds /gsd-next's whole-table
+    // milestone-complete parity gate (`isComplete`, bin/lib/smart-entry.cjs) —
+    // while loosening here would fix only this renderer and leave that gate
+    // undercounting, in a disagreement nothing surfaces.
+    //
+    // With those rows normalized there is no standing noise floor, so this
+    // strict test is now a live DETECTOR: the next annotated row shows up as a
+    // milestone fraction low by exactly one. Loosening deletes that signal
+    // before its replacement exists. The replacement is scoped in
+    // .planning/backlog/2026-08-29-roadmap-status-vocabulary-validator.md; that
+    // detector landing is the precondition for revisiting this line, not a
+    // gsd-core upgrade. Enforced by § 5 of
+    // tests/probes/probe-statusline-roadmap-progress.js (both cells red under a
+    // \b widening). See docs/decisions.md 2026-08-29 annotated-Status-cells row.
     if (/^Complete$/i.test((cells[statusAt] || '').trim())) completed++;
   }
   if (total === 0) return null;
