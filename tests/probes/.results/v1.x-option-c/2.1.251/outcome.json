@@ -1,0 +1,1 @@
+{"probe":"read-guard-native-enforcement-tripwire","cc_version":"2.1.251","conclusion":"supersession_found_revive_signal","observed_model":"claude-opus-5[1m]","legacy_control_model":"claude-sonnet-4-5","path_reachable":true,"note":"guard skipped for claude-opus-5[1m]; legacy control blocked","ts":1787991068}
