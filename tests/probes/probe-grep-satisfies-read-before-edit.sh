@@ -58,6 +58,13 @@
 #     CLAUDE_CONFIG_DIR has it + auths via live OAuth; sidesteps the 2026-05-24
 #     sandbox cred-seeding hazard). Cell B still records it; not exit-asserted
 #     (running Cell B needs an API key).
+#   - The OBSERVATIONAL COMPOUND cell (Cell D) pins the half of the rule that is
+#     operationally load-bearing and went unpinned until 2026-08-29: a `;`-compound
+#     command disqualifies the satisfier EVEN with a single literal absolute path and
+#     grep in first position. Expect BLOCK. This corrects a superseded reading that
+#     blamed an unexpanded `$VAR` for the block — defining a variable requires a `;`,
+#     so that test could never separate the variable from the compound. A lone simple
+#     `grep PAT "$HOME/f.txt"` ALLOWs; `$TMPDIR` and shell-locals BLOCK.
 #
 # METHOD (mirrors the tripwire): drive a real `claude -p` subprocess against a
 # sandbox CLAUDE_CONFIG_DIR over a file created OUT-OF-BAND via printf (NOT the
@@ -67,7 +74,7 @@
 # a HARD tool error is unambiguously CC-native.
 #
 # Each cell is driven with an EXPLICIT `--tools` surface (control: Edit; Cell A:
-# Bash Edit; Cell B: Grep Edit). Two reasons: a `claude -p` child does not surface
+# Bash Edit; Cell B: Grep Edit; Cell D: Bash Edit). Two reasons: a `claude -p` child does not surface
 # the Grep tool by default on this machine, so Cell B could otherwise never observe
 # anything but "precondition tool did not run"; and naming the surface makes the
 # "do not use Read" constraint STRUCTURAL rather than an instruction the model is
@@ -79,12 +86,19 @@
 # invalidates the source credential, measured 2026-05-24, see the tripwire header).
 # No key → emit skipped, exit 0.
 #
+# THE KEY EXISTS ON THIS HOST: `~/.env-keys` (chmod 600) holds ANTHROPIC_API_KEY.
+# A running Claude Code session carries the env snapshot it launched with, so a
+# session started before the key was added reports it unset and `dhx-keys status`
+# shows STALE-restart. You do NOT need to restart to run this probe — it is a
+# subprocess, so sourcing the file in the invoking shell is enough:
+#   set -a; . ~/.env-keys; set +a; bash tests/probes/probe-grep-satisfies-read-before-edit.sh
+# Never echo the value; `dhx-keys status` prints length + last-4 only.
+#
 # Operator-invoked (NOT via run-probes.sh's 30s loop — claude -p turns exceed it;
-# SAFE_FOR_LIVE=no keeps it out of the default pre-commit suite). Run:
-#   ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-grep-satisfies-read-before-edit.sh
+# SAFE_FOR_LIVE=no keeps it out of the default pre-commit suite).
 #
 # SAFE_FOR_LIVE: no    (spawns claude -p subprocesses; sandbox CLAUDE_CONFIG_DIR + mktemp targets)
-# RUNTIME: ~90-180s    (three claude -p turns: control + single-file-grep + grep-tool)
+# RUNTIME: ~120-240s   (four claude -p turns: control + single-file-grep + grep-tool + compound)
 set -uo pipefail
 
 BLOCK_RE='has not been read yet'
@@ -92,6 +106,10 @@ EDIT_OK_RE='updated successfully|has been updated'
 AUTH_FAIL_RE='Not logged in|Please run /login|Invalid API key|invalid x-api-key|authentication_error|authentication_failed|Invalid authentication credentials|Failed to authenticate|api_error_status":401|Credit balance is too low|OAuth token has expired'
 # The model defeating the test by reading first → cell is invalid, never a result.
 READ_USED_RE='"name":"Read"'
+# CC refuses a Bash grep whose file arg escapes the session's allowed working dirs.
+# The precondition regex cannot see this (a Bash call DID happen), so without an
+# explicit detector the refusal masquerades as a genuine BLOCK — a false FAIL.
+SEARCH_REFUSED_RE='was blocked\. For security, Claude Code may only search'
 
 SANDBOX=$(mktemp -d)
 WORK=$(mktemp -d)
@@ -131,8 +149,16 @@ emit_outcome() { # $1 = conclusion, $2 = note
     echo "WARN emit_outcome: cannot create $outdir — result NOT recorded" >&2
     return 0
   fi
-  if ! printf '{"probe":"grep-satisfies-read-before-edit","cc_version":"%s","exit_code_convention":"exit_0_means_pass","expected_single_file_grep":"%s","conclusion":"%s","note":"%s","ts":%s}\n' \
-    "$CC_VERSION" "$EXPECTED" "$1" "$2" "$(date +%s)" > "$outdir/outcome.json" 2>/dev/null; then
+  # Emit the observed cells as FIRST-CLASS fields, not just prose in `note`. The two
+  # hand-written baselines (2.1.159 / 2.1.161) carry method + observed_* and are what a
+  # consumer actually queries; a generated row without them is not comparable to them.
+  # `${x:-}` throughout: emit_outcome also fires on the early auth-skip path, before any
+  # cell variable exists, and `set -u` would abort there.
+  if ! printf '{"probe":"grep-satisfies-read-before-edit","cc_version":"%s","exit_code_convention":"exit_0_means_pass","expected_single_file_grep":"%s","conclusion":"%s","method":"sandbox-claude-p","observed_no_view_control":"%s","observed_single_file_grep":"%s","observed_grep_tool":"%s","observed_compound_literal_path":"%s","note":"%s","ts":%s}\n' \
+    "$CC_VERSION" "$EXPECTED" "$1" \
+    "$([ "${CONTROL_OK:-0}" = "1" ] && echo BLOCK || echo NOT-OBSERVED)" \
+    "${A_OBSERVED:-NOT-RUN}" "${B_OBSERVED:-NOT-RUN}" "${D_OBSERVED:-NOT-RUN}" \
+    "$2" "$(date +%s)" > "$outdir/outcome.json" 2>/dev/null; then
     echo "WARN emit_outcome: cannot write $outdir/outcome.json — result NOT recorded" >&2
     return 0
   fi
@@ -152,11 +178,36 @@ fi
 # cell tripped "precondition tool did not run" and returned INCONCLUSIVE forever
 # (measured 2026-08-29). Naming the surface also makes the cells structurally airtight —
 # the model cannot reach for Read when Read is not on the list.
+# --add-dir "$WORK" is LOAD-BEARING, not hygiene. Targets are created under
+# `mktemp -d` (/tmp), which is outside the child's allowed working directories, and
+# CC refuses a Bash `grep` whose file argument escapes them:
+#   grep in '<path>' was blocked. For security, Claude Code may only search for
+#   patterns in files from the allowed working directories for this session: '<dir>'.
+# The precondition grep then never runs, no read-state is registered, and the Edit
+# blocks — so Cell A reported BLOCK, tripped the version gate, and exited FAIL as
+# though the 2.1.160 changelog claim had regressed. It had not; the probe was
+# measuring its own sandbox's directory policy. Diagnosed 2026-08-29 by dumping the
+# stream: the tool_result on the grep is an explicit refusal, and the identical
+# prompt against a LIVE config dir (where /tmp is reachable) ALLOWs.
+# Note this failure mode is invisible without instrumentation — the cell's
+# precondition regex only checks that a Bash call HAPPENED, not that it succeeded.
+#
+# --permission-mode acceptEdits is the SECOND half of the same problem. With
+# --add-dir alone the grep succeeds but the Edit dies on a permission gate:
+#   Claude requested permissions to write to <path>, but you haven't granted it yet.
+# A bare sandbox config has no allow rules and a headless child has nobody to ask,
+# so the Edit never reaches a read-state verdict and the cell reads INCONCLUSIVE.
+# The two gates fire in a fixed order — read-state FIRST, write-permission SECOND
+# (measured 2026-08-29: without --add-dir the Edit returns "File has not been read
+# yet"; with it, the same Edit returns the permission error instead) — which is why
+# the control cell remains the trustworthiness anchor: it must still BLOCK on
+# read-state UNDER acceptEdits, proving the mode did not disable the thing under
+# test. If the control ever stops blocking here, this probe is measuring nothing.
 drive() { # $1 = prompt; $2.. = exact tool names to expose
   local prompt="$1"; shift
   CLAUDE_CONFIG_DIR="$SANDBOX/.claude" timeout 120 \
     claude -p "$prompt" --output-format stream-json --include-hook-events --verbose \
-      --tools "$@" 2>&1 || true
+      --permission-mode acceptEdits --add-dir "$WORK" --tools "$@" 2>&1 || true
 }
 
 PASS=0; FAIL=0; INCONCLUSIVE=0
@@ -194,6 +245,7 @@ CRITICAL CONSTRAINTS: Do NOT use the Read tool at any point. Use ONLY the Bash t
 classify_grep_cell() { # $1=label $2=out $3=precondition-regex(tool that should have run)
   local label="$1" out="$2" pre_re="$3" observed=""
   if grep -qiE "$AUTH_FAIL_RE" <<< "$out"; then echo "SKIP $label → auth failure" >&2; observed="INCONCLUSIVE";
+  elif grep -qE "$SEARCH_REFUSED_RE" <<< "$out"; then echo "SKIP $label → the precondition grep was REFUSED (target outside the child's allowed working dirs) — this is NOT a read-state observation; check --add-dir" >&2; observed="INCONCLUSIVE";
   elif grep -qE "$READ_USED_RE" <<< "$out"; then echo "SKIP $label → model used Read despite instruction (cell invalid)" >&2; observed="INCONCLUSIVE";
   elif ! grep -qE "$pre_re" <<< "$out"; then echo "SKIP $label → precondition tool did not run (model deviated, or the tool is absent from the --tools surface)" >&2; observed="INCONCLUSIVE";
   elif grep -qi "$BLOCK_RE" <<< "$out"; then echo "  → $label observed BLOCK" >&2; observed="BLOCK";
@@ -226,17 +278,37 @@ CRITICAL CONSTRAINTS: Do NOT use the Read tool or the Bash tool at any point. Us
 B_OBSERVED="$(classify_grep_cell "Grep-tool → Edit (observational)" "$B_OUT" '"name":"Grep"' | tail -1)"
 echo "INFO Grep-tool → Edit: observed=$B_OBSERVED (observational — not asserted; pins the bash-grep-vs-Grep-tool boundary)"
 
+# ---- Cell D (observational only): COMPOUND bash command containing a single-file grep
+# with a LITERAL ABSOLUTE path, grep in first position → Edit. Expect BLOCK.
+#
+# This is the operative half of the rule and nothing pinned it before 2026-08-29. The
+# `D=...;` prefix is a deliberate no-op decoy: it makes the command compound WITHOUT
+# introducing a variable into the grep's path argument, which is exactly what isolates
+# compounding from variable-expansion. An earlier reading of this boundary concluded
+# "an unexpanded $VAR defeats the satisfier" — wrong, and it could not have been right:
+# defining a variable REQUIRES a `;`, so every test of the variable was also a test of
+# the compound, and the compound is what actually blocks. (A lone simple
+# `grep PAT "$HOME/f.txt"` ALLOWs; `$TMPDIR` and shell-locals BLOCK.)
+# Observational, not exit-asserted — same posture as Cell B.
+D_TGT="$WORK/compound-grep.txt"; printf 'alpha\nbeta\ngamma\n' > "$D_TGT"
+D_OUT="$(drive "Do EXACTLY this and nothing else, in order:
+1. Use the Bash tool to run this as ONE single command, verbatim, including the semicolon: D=${WORK}; grep beta ${D_TGT}
+2. Then use the Edit tool to change the word 'beta' to 'BETA' in ${D_TGT}.
+CRITICAL CONSTRAINTS: step 1 must be a SINGLE Bash tool call containing both statements separated by the semicolon — do NOT split it into two calls, and do NOT drop the 'D=' assignment. Do NOT use the Read tool at any point. If the Edit tool returns an error, report the exact error text verbatim." Bash Edit)"
+D_OBSERVED="$(classify_grep_cell "compound (D=…; grep literal-abs) → Edit (observational)" "$D_OUT" '"name":"Bash"' | tail -1)"
+echo "INFO compound grep → Edit: observed=$D_OBSERVED (observational — expect BLOCK; pins that ;-compounding disqualifies the satisfier even with a literal absolute path)"
+
 # ---- Roll-up.
 if [ "$FAIL" -ne 0 ]; then
-  emit_outcome "fail" "single-file grep observed != version-expected ($EXPECTED); grep-tool observed=$B_OBSERVED"
+  emit_outcome "fail" "single-file grep observed != version-expected ($EXPECTED); grep-tool observed=$B_OBSERVED; compound-literal-path observed=$D_OBSERVED"
   echo "[FAIL] grep-satisfies-read-before-edit"
   exit 1
 fi
 if [ "$PASS" -eq 1 ]; then
-  emit_outcome "pass" "single-file grep observed=$EXPECTED as expected; grep-tool observed=$B_OBSERVED"
+  emit_outcome "pass" "single-file grep observed=$EXPECTED as expected; grep-tool observed=$B_OBSERVED; compound-literal-path observed=$D_OBSERVED"
   echo "[PASS] grep-satisfies-read-before-edit: single-file grep read-state behavior matches CC $CC_VERSION expectation ($EXPECTED)"
   exit 0
 fi
-emit_outcome "skipped" "inconclusive; grep-tool observed=$B_OBSERVED"
+emit_outcome "skipped" "inconclusive; grep-tool observed=$B_OBSERVED; compound-literal-path observed=$D_OBSERVED"
 echo "[SKIP] grep-satisfies-read-before-edit: inconclusive — no trustworthy assertion produced"
 exit 0
