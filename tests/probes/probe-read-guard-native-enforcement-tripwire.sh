@@ -30,6 +30,18 @@
 # requires ANTHROPIC_API_KEY; without it, it emits `skipped` (a sandboxed claude -p
 # cannot authenticate, and there is no SAFE workaround — see below).
 #
+# THE KEY IS AVAILABLE ON THIS HOST (clarified 2026-08-29): `~/.env-keys` (0600).
+# A session reporting it unset is holding a stale launch-env snapshot, not missing
+# the key — `dhx-keys status` says STALE-restart. No restart needed for a probe,
+# which is a subprocess: `set -a; . ~/.env-keys; set +a` in the invoking shell.
+# This probe has NOT been run since that was established. Expect it to hit the two
+# sandbox gates its sibling probe-grep-satisfies-read-before-edit.sh hit: targets
+# under `mktemp -d` are outside the child's allowed working dirs (needs --add-dir),
+# and a bare sandbox config has no write-allow rules with nobody to prompt (needs
+# --permission-mode acceptEdits). Read-state is checked BEFORE write-permission, so
+# an Edit that reaches the permission error has already passed the read-state check.
+# Verify those before believing any failure this probe reports.
+#
 # WHY NOT SEED OAUTH CREDENTIALS (rejected — 2026-05-24, measured): copying a live
 # ~/.claude/.credentials.json into the sandbox so the subprocess "inherits" OAuth was
 # tried and is UNSAFE. A copied credential authenticated once, then the identical
