@@ -30,7 +30,7 @@
 // equals the frontmatter `current_phase`. A lint that fired on the forward
 // transition would train the operator to ignore it — worse than no lint.
 //
-// MIRROR PROVENANCE (last re-verified against gsd-core 1.11.0, 2026-08-19 —
+// MIRROR PROVENANCE (last re-verified against gsd-core 1.12.0, 2026-08-30 —
 // re-verify on gsd-core bumps). Resolve every entry by SYMBOL, never by line
 // number: these modules are build artifacts compiled from src/*.cts and replaced
 // wholesale on every install, so a line cite here is stale the moment it is
