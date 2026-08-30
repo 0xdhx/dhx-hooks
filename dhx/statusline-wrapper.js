@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// gsd-hook-version: 1.11.0
+// gsd-hook-version: 1.12.0
 //   ^ MIRRORS live gsd-core VERSION (~/.claude/gsd-core/VERSION) — do NOT hand-bump
 //     on wrapper edits. Only /dhx:sym gsd-update (step 9) sets this; it is a
 //     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
