@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { splitTableRow, findProgressTable } = require('../scripts/lib/markdown-progress-table.js');
 
 // Shared plugins/cache allowlist (D-14) — the RAT-04 `⚠ cc-novel` segment
 // re-applies isAllowlisted to cc-novel-patterns.json entries AT RENDER TIME so
@@ -431,68 +432,42 @@ function parseRoadmapProgress(content, activeMilestone) {
     // while loosening here would fix only this renderer and leave that gate
     // undercounting, in a disagreement nothing surfaces.
     //
-    // With those rows normalized there is no standing noise floor, so this
-    // strict test is now a live DETECTOR: the next annotated row shows up as a
-    // milestone fraction low by exactly one. Loosening deletes that signal
-    // before its replacement exists. The replacement is scoped in
-    // .planning/backlog/2026-08-29-roadmap-status-vocabulary-validator.md; that
-    // detector landing is the precondition for revisiting this line, not a
-    // gsd-core upgrade. Enforced by § 5 of
-    // tests/probes/probe-statusline-roadmap-progress.js (both cells red under a
-    // \b widening). See docs/decisions.md 2026-08-29 annotated-Status-cells row.
+    // THE SEQUENCING ARGUMENT IS SPENT, AND THE ANSWER IS STILL "STRICT"
+    // (2026-08-30). The 2026-08-29 reason to hold was sequencing: with those
+    // rows normalized this strict test became a live DETECTOR (the next
+    // annotated row shows up as a milestone fraction low by exactly one), and
+    // loosening would have deleted that signal before its replacement existed.
+    // That replacement HAS now landed — dhx/dhx-roadmap-status-vocab.js plus
+    // scripts/lib/roadmap-status-vocab.js validate the whole Status vocabulary
+    // at SessionStart, and report the row, the line and the value instead of a
+    // fraction that is wrong by one. So relaxing this line is a LIVE option and
+    // was genuinely re-decided, not carried forward by inertia.
+    //
+    // It stays strict on the two reasons the detector does NOT touch:
+    //   (1) The UPSTREAM half is unfixed. gsd-core's deriveProgressFromRoadmap
+    //       still tests /^complete$/i and PHASE_STATUS_RANKS still does a bare
+    //       trim+lowercase lookup. Loosening here makes THIS renderer read
+    //       correct over data upstream still reads wrong — and because the two
+    //       numbers are different quantities (milestone-scoped here, whole-table
+    //       there, feeding /gsd-next's parity gate via smart-entry.cjs's
+    //       isComplete) that disagreement is structurally invisible. Same shape
+    //       as the positional-columns defect that survived two months (aebb086).
+    //   (2) The annotation is not durable regardless: the next
+    //       `roadmap update-plan-progress` / `phase complete` splices a bare
+    //       literal through updateTableCell's verbatim-replace contract and
+    //       ERASES it. Tolerating a form the writer deletes buys nothing.
+    // The validator WARNS; it does not fix. Loosening would make an ignored
+    // warning silently agree with a row upstream disagrees with. Revisit only
+    // if gsd-core's own readers stop being exact-match — resolve them by SYMBOL.
+    //
+    // Enforced by § 5 of tests/probes/probe-statusline-roadmap-progress.js
+    // (both cells red under a \b widening). See docs/decisions.md 2026-08-29
+    // annotated-Status-cells row and the 2026-08-30 validator row; the brief is
+    // .planning/backlog/shipped/2026-08-29-roadmap-status-vocabulary-validator.md.
     if (/^Complete$/i.test((cells[statusAt] || '').trim())) completed++;
   }
   if (total === 0) return null;
   return { completedPhases: completed, totalPhases: total };
-}
-
-/**
- * Split a markdown table row into trimmed cells: `| a | b |` → ['a', 'b'].
- * The leading and trailing pipes are stripped first so the cell list carries
- * no phantom empties — that is what lets a name→index map built from the
- * header line index straight into every data row.
- */
-function splitTableRow(line) {
-  let s = line.trim();
-  if (s.startsWith('|')) s = s.slice(1);
-  if (s.endsWith('|')) s = s.slice(0, -1);
-  return s.split('|').map((c) => c.trim());
-}
-
-/**
- * Locate the progress table and return { columns, rows } — `columns` being
- * lowercased/trimmed names, `rows` being cell arrays indexed the same way.
- *
- * Located by column NAME: the first table row whose cells include both `Phase`
- * and `Status` (case-insensitive), followed by a matching delimiter row. The
- * delimiter requirement is what keeps a prose row that happens to mention both
- * words from being read as a header.
- *
- * Returns null if no such table exists, or if any data row's cell count
- * disagrees with the header — an unescaped pipe shifts every cell after it, so
- * the honest answer there is "don't know", which falls back to STATE.
- */
-function findProgressTable(text) {
-  const isDelimiterCell = (c) => /^:?-{1,}:?$/.test(c);
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (!t.startsWith('|') || t.indexOf('|', 1) === -1) continue;
-    const columns = splitTableRow(lines[i]).map((c) => c.toLowerCase());
-    if (columns.indexOf('phase') === -1 || columns.indexOf('status') === -1) continue;
-    if (lines[i + 1] === undefined) continue;
-    const delim = splitTableRow(lines[i + 1]);
-    if (delim.length !== columns.length || !delim.every(isDelimiterCell)) continue;
-    const rows = [];
-    for (let j = i + 2; j < lines.length; j++) {
-      if (!lines[j].trim().startsWith('|')) break;
-      const cells = splitTableRow(lines[j]);
-      if (cells.length !== columns.length) return null;
-      rows.push(cells);
-    }
-    return { columns, rows };
-  }
-  return null;
 }
 
 // --- Line 2 assembly ---------------------------------------------------------

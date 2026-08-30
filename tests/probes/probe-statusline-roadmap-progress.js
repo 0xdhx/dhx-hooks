@@ -436,8 +436,18 @@ progress:
 // INVARIANT: the Status numerator test is EXACT — `/^Complete$/i` on the
 // trimmed cell — and that strictness is DELIBERATE and RETAINED, not an
 // oversight to be tidied away. Do NOT loosen it to `/^Complete\b/i` or to a
-// parenthetical-tolerant form without first landing the write-time detector
-// (.planning/backlog/2026-08-29-roadmap-status-vocabulary-validator.md).
+// parenthetical-tolerant form.
+//
+// The write-time detector this INVARIANT once named as the precondition HAS
+// LANDED (2026-08-30: dhx/dhx-roadmap-status-vocab.js +
+// scripts/lib/roadmap-status-vocab.js, brief closed to
+// .planning/backlog/shipped/2026-08-29-roadmap-status-vocabulary-validator.md).
+// Relaxing was therefore re-decided on the merits, not carried forward: it
+// stays strict because the UPSTREAM readers are still exact-match, so loosening
+// would make this renderer read correct over data gsd-core's rollup still reads
+// wrong — an invisible disagreement, since the two are different quantities —
+// and because the annotation is erased by the next verb write regardless. The
+// full argument is at the predicate site in dhx/dhx-statusline.js.
 //
 // Why, precisely: five rows across three repos wrote a parenthetical into the
 // Status cell over ~4 months, and BOTH consumers reject it — this predicate

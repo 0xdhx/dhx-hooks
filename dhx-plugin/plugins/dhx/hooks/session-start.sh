@@ -105,6 +105,15 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
 bash /home/dhx/.claude/hooks/dhx-grep-fn-cap.sh < /dev/null || true
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || true
+# ROADMAP Progress-table Status vocabulary check (2026-08-30). Per-repo, one read
+# of one file; silent unless this repo's ROADMAP carries a Status cell outside the
+# set both readers recognize. Sits beside the drift surface above because both are
+# GSD-planning-artifact advisories. Skips linked worktrees (duplicate copies that
+# converge on merge) and non-data rows (milestone-RANGE summaries neither parser
+# reads). Fleet sweep is a CLI, deliberately not this hook:
+#   node ~/repos/hooks/scripts/lib/roadmap-status-vocab.js --fleet
+# Suppression DHX_SKIP_ROADMAP_VOCAB=1. Fail-open on every path.
+printf '%s' "$INPUT" | node /home/dhx/.claude/hooks/dhx-roadmap-status-vocab.js || true
 # Heal plugin registry drift (HP-025 companion) — runs BEFORE stale-worktree-sweep
 # so the heal establishes a valid baseline before downstream checks touch state.
 # No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
