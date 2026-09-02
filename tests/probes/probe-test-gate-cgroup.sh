@@ -302,7 +302,7 @@ assert_log_contains "$PROJ" "Last-failed tests still failing (exit 1)" "[4] log 
 # The probe does NOT pin the kill status: HP-045 records 137 in every controlled
 # cell but 143 in the field, and the gate's `137|143|124` cascade treats them
 # identically — so the observable asserted here is the FAIL-OPEN, not the code.
-# Faults a 256 MB allocation under DHX_TEST_GATE_MEM=128M; SwapMax=0 is what
+# Faults a 256 MB allocation under DHX_TEST_GATE_MEM=64M; SwapMax=0 is what
 # makes this deterministic on hosts with swap (verified in design memo).
 # ----------------------------------------------------------------------------
 if [ "$HOST_HAS_CGROUP" -eq 1 ]; then
