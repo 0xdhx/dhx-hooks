@@ -582,9 +582,15 @@ EOF
   # this scenario asserted the ABSENCE of the new "emitted no prefix" warning — which
   # passed against the broken commit too, because that log line did not exist there.
   # An absence assertion has no teeth against code that predates the message. A
-  # wrapped runner reports `…/app.slice/run-<hex>.scope`; an unwrapped one reports
-  # the gate's own cgroup (`/init.scope` on this host). That distinction is exactly
-  # the regression, so that is what gets asserted.
+  # wrapped runner reports `…/app.slice/dhx-cap-testgate-<repo>-<pid>-<rand>.scope`;
+  # an unwrapped one reports the gate's own cgroup (`/init.scope` on this host). That
+  # distinction is exactly the regression, so that is what gets asserted.
+  #
+  # RE-ANCHORED on the `dhx-cap-` prefix 2026-09-02, deliberately STRICTER than the
+  # `run-*.scope` shape it replaces. Every scope the factory builds is now named, so
+  # an anonymous `run-r<hex>.scope` here means the runner reached a cap WITHOUT going
+  # through dhx-cgroup-cap.sh — a factory bypass. Accepting both shapes would have
+  # kept the empty-prefix guard while admitting exactly that.
   clear_state; PROJ=$(setup_project s19)
   cat > "$PROJ/.venv/bin/python" <<EOF
 #!/usr/bin/env bash
@@ -594,11 +600,11 @@ exit 0
 EOF
   chmod +x "$PROJ/.venv/bin/python"
   set_source_flag "s19"; run_hook "$PROJ" "s19" false "DHX_TEST_GATE_MEM=infinity"
-  if grep -qE 'run-[A-Za-z0-9]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
+  if grep -qE 'dhx-cap-[A-Za-z0-9_-]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
     echo "OK   [19] trusted env 'infinity' → runner RAN INSIDE a cgroup scope (not uncapped)"
     PASS=$((PASS + 1))
   else
-    echo "FAIL [19] trusted env 'infinity' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected run-*.scope; empty prefix = UNCAPPED)"
+    echo "FAIL [19] trusted env 'infinity' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected dhx-cap-*.scope; empty prefix = UNCAPPED, anonymous run-r*.scope = factory BYPASSED)"
     FAIL=$((FAIL + 1))
   fi
 
@@ -613,11 +619,29 @@ exit 0
 EOF
   chmod +x "$PROJ/.venv/bin/python"
   set_source_flag "s19b"; run_hook "$PROJ" "s19b" false "DHX_TEST_GATE_MEM=50%"
-  if grep -qE 'run-[A-Za-z0-9]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
+  if grep -qE 'dhx-cap-[A-Za-z0-9_-]+\.scope' "$PROJ/.runner-cgroup.txt" 2>/dev/null; then
     echo "OK   [19b] trusted env '50%' → runner RAN INSIDE a cgroup scope (not uncapped)"
     PASS=$((PASS + 1))
   else
-    echo "FAIL [19b] trusted env '50%' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected run-*.scope; empty prefix = UNCAPPED)"
+    echo "FAIL [19b] trusted env '50%' → runner cgroup was '$(cat "$PROJ/.runner-cgroup.txt" 2>/dev/null)' (expected dhx-cap-*.scope; empty prefix = UNCAPPED, anonymous run-r*.scope = factory BYPASSED)"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # Scenario 19c — DEFINITION-ORDER INVARIANT (2026-09-02, scope naming).
+  # `dhx_cgroup_prefix_tokens` calls `dhx_cgroup_unit_label`, and BOTH consumers
+  # guard a truncated lib by checking only for `dhx_cgroup_prefix_tokens`. Files
+  # truncate from the end, so while the helper is defined FIRST that single guard
+  # still covers both. Reversed, a truncation can leave the caller present and the
+  # helper gone — emitting a prefix with an empty `--unit=`, which fails at exec on
+  # the Stop path. Static, non-mutating: it reads the lib, it does not run it.
+  _s19c_lib="$(dirname "$HOOK")/dhx-cgroup-cap.sh"
+  _s19c_helper=$(grep -n '^dhx_cgroup_unit_label()' "$_s19c_lib" | head -1 | cut -d: -f1)
+  _s19c_caller=$(grep -n '^dhx_cgroup_prefix_tokens()' "$_s19c_lib" | head -1 | cut -d: -f1)
+  if [ -n "$_s19c_helper" ] && [ -n "$_s19c_caller" ] && [ "$_s19c_helper" -lt "$_s19c_caller" ]; then
+    echo "OK   [19c] dhx_cgroup_unit_label (L$_s19c_helper) defined before dhx_cgroup_prefix_tokens (L$_s19c_caller)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL [19c] definition order broken — helper='$_s19c_helper' caller='$_s19c_caller' (helper MUST come first; see the INVARIANT comment in dhx-cgroup-cap.sh)"
     FAIL=$((FAIL + 1))
   fi
 

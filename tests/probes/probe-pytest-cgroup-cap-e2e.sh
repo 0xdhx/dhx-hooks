@@ -16,7 +16,7 @@
 #     isolated — so this probe accepts `137|143` and proves the cap fired from
 #     the CGROUP instead:
 #       - `memory.max` inside the scope equals the requested cap (67108864)
-#       - the scope path is a transient `run-*.scope`, not the caller's cgroup
+#       - the scope path is a NAMED transient `dhx-cap-*.scope`, not the caller's cgroup
 #       - `memory.events` `oom_kill > 0`
 #     The first two are published BY THE WORKLOAD ITSELF before it allocates, so
 #     they cannot race teardown. `oom_kill` is polled by an out-of-cgroup watcher
@@ -206,11 +206,15 @@ else
   # [A3] it ran in a TRANSIENT SCOPE, not the caller's own cgroup. An empty
   # CGROUP_PREFIX regression (HP-051) leaves the workload in the probe's cgroup,
   # where memory.max is whatever the session cap happens to be.
+  #
+  # Re-anchored on the `dhx-cap-` prefix 2026-09-02 (was `run-*.scope`). The factory
+  # names every scope it builds, so an anonymous `run-r<hex>.scope` reaching here
+  # means the interceptor got a cap from somewhere OTHER than dhx-cgroup-cap.sh.
   case "$A_CGPATH" in
-    */run-[A-Za-z0-9]*.scope)
-      echo "OK   [A3] scope cgroup is transient: ${A_CGPATH##*/}"; PASS=$((PASS+1)) ;;
+    */dhx-cap-[A-Za-z0-9]*.scope)
+      echo "OK   [A3] scope cgroup is a NAMED transient scope: ${A_CGPATH##*/}"; PASS=$((PASS+1)) ;;
     *)
-      echo "FAIL [A3] workload did not run in a transient run-*.scope"; FAIL=$((FAIL+1))
+      echo "FAIL [A3] workload did not run in a transient dhx-cap-*.scope"; FAIL=$((FAIL+1))
       echo "     cgroup: '${A_CGPATH:-<unpublished>}'" ;;
   esac
 

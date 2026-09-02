@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-cgroup-cap.sh — shared cgroup memory-cap factory (NOT a hook; sourced).
-# Patterns: HP-045, HP-051
+# Patterns: HP-045, HP-051, HP-057
 #
 # Single source of truth for the `systemd-run --user --scope` memory-cap wrap.
 # Sourced by BOTH consumers so the cap construction can never copy-drift:
@@ -141,8 +141,39 @@ dhx_cgroup_mem_bytes() {
   printf '%s\n' "$out"
 }
 
-# dhx_cgroup_prefix_tokens MEM [TIME] — emit the systemd-run scope prefix as one
-# token per line, terminated by `--`. Every token is whitespace-free, so a caller
+# INVARIANT: dhx_cgroup_unit_label MUST stay defined ABOVE dhx_cgroup_prefix_tokens.
+# Both consumers guard a truncated lib with `declare -F dhx_cgroup_prefix_tokens` and
+# neither checks for this helper. A file truncates from the END, so while the label
+# helper precedes its caller, losing the helper necessarily loses the caller too and
+# the existing guard still catches it. Reorder them and a truncation lands squarely
+# between: `dhx_cgroup_prefix_tokens` exists, calls a missing function, and emits a
+# prefix with an empty `--unit=` — an argument error at exec time on the gate's Stop
+# path. Asserted by probe-test-gate-cgroup.sh [19c].
+#
+# dhx_cgroup_unit_label RAW — normalize RAW into a unit-name-safe, whitespace-free
+# slug on stdout. NEVER returns nonzero and NEVER emits empty: a refusal here would
+# be a brand-new way for `dhx_cgroup_prefix_tokens` to produce no prefix, which is
+# an UNCAPPED run the gate's `mapfile` cannot even see (HP-051). Sanitize and
+# continue; there is no input this may reject.
+#
+# Systemd unit names accept `[A-Za-z0-9:_.-]`; everything outside `[A-Za-z0-9_]` is
+# collapsed to `-` (the two dropped characters, `:` and `.`, are legal in a unit name
+# but earn nothing here and `.` in particular reads as a unit-type suffix). Runs of
+# `-` are squeezed and the ends trimmed so a label like `//repo//` cannot produce
+# `--repo--`, and the result is bounded at 40 chars — a repo basename reaches this
+# and repo basenames are not length-bounded.
+dhx_cgroup_unit_label() {
+  local s="${1:-}"
+  s="${s//[^A-Za-z0-9_]/-}"
+  while [ "${s//--/-}" != "$s" ]; do s="${s//--/-}"; done
+  s="${s#-}"; s="${s%-}"
+  s="${s:0:40}"; s="${s%-}"
+  [ -n "$s" ] || s="run"
+  printf '%s\n' "$s"
+}
+
+# dhx_cgroup_prefix_tokens MEM [TIME] [LABEL] — emit the systemd-run scope prefix as
+# one token per line, terminated by `--`. Every token is whitespace-free, so a caller
 # may either `mapfile` it into an array (direct argv exec — the gate) OR join it
 # with spaces into a command string (the rewrite — the interceptor).
 #
@@ -168,15 +199,60 @@ dhx_cgroup_mem_bytes() {
 #         it by default (the DHX-7 threat is OOM, not a hang — and CC's own Bash
 #         tool timeout already backstops a hung command, so a runtime cap here
 #         would only add a false-positive class on legitimately-slow suites).
+#   LABEL who is being capped, and where — e.g. `testgate-myrepo`, `pytest-myrepo`.
+#         OPTIONAL — sanitized through dhx_cgroup_unit_label; omit/empty/unusable
+#         yields `run`, so every existing call site keeps working unchanged.
 #
-# Token order is identical to the gate's former inline array, so a `mapfile`d
-# array with TIME present is byte-for-byte what the gate built pre-refactor.
+# --- NAMING (2026-09-02) -------------------------------------------------------
+# `--unit=dhx-cap-<label>-<pid>-<rand>` exists so a journal sweep can answer the
+# only question it is really asking of an OOM kill on this box: *is this an
+# incident, or is this containment doing its job?* Some scopes this factory builds
+# are DESIGNED to be OOM-killed (the cap probes assert exactly that), and before
+# the name they landed as anonymous `run-r<hex>.scope` records indistinguishable
+# from a real memory event — a 2026-09-02 investigation spent a full session
+# attributing 56 such kills back to this repo's own probes. Every scope this
+# factory builds now carries the `dhx-cap-` prefix; a `run-r<hex>` OOM kill on
+# this host is therefore NOT from here.
+#
+# UNIQUENESS IS LOAD-BEARING, not hygiene. A repeated unit name fails with
+# `Unit NAME.scope was already loaded or has a fragment file`, rc 1 — and rc 1
+# means the workload NEVER RAN, which neither consumer's fail-open cascade
+# (137|143|124) treats as a kill: the gate would read it as a test failure and
+# block Stop. Measured 2026-09-02 via live `systemd-run --user --scope` on systemd
+# 255: two OVERLAPPING same-name scopes → rc 1, and same-name reuse immediately
+# after a SUCCESSFUL scope → rc 1. `CollectMode` reaps a *failed* scope fast
+# enough for back-to-back OOM runs (137 x3, zero lingering units), but not a clean
+# one — and a green suite is the common path, so a fixed name would break the
+# ordinary case rather than the rare one. Hence pid + a random suffix expanded
+# HERE, at token-emission time, so the emitted token is a literal: the interceptor
+# space-joins these tokens into a command string that a shell it does not control
+# re-parses, and an unexpanded `$RANDOM` in that string would be re-expanded there.
+#
+# `-p CollectMode=inactive-or-failed` is what makes a *named* scope safe to build
+# repeatedly at all: without it a failed named unit LINGERS and blocks reuse until
+# `systemctl --user reset-failed`, which matters far more here than in general
+# because these scopes are designed to fail. (Same measurement, 2026-09-02.)
+#
+# `-p Description=` was considered and refused: measured 2026-09-02, the
+# `Failed with result 'oom-kill'` line a sweep greps carries ONLY the unit name —
+# the description reaches just the `Started` line — and a description readable
+# enough to be worth having contains spaces, which the interceptor's space-join
+# cannot carry.
+#
+# Token order otherwise follows the gate's former inline array. The `--unit` and
+# `CollectMode` tokens are additions, so a `mapfile`d array is NO LONGER
+# byte-for-byte what the gate built pre-refactor; the ordering of the tokens that
+# predate this change is unchanged, and `systemd-run --user --scope` remains
+# contiguous at the head (three probe assertions substring-match it).
 dhx_cgroup_prefix_tokens() {
-  local mem="$1" time="${2:-}"
+  local mem="$1" time="${2:-}" label="${3:-}" unit
   dhx_cgroup_mem_shell_safe "$mem" || return 1
+  unit="dhx-cap-$(dhx_cgroup_unit_label "$label")-$$-${RANDOM}${RANDOM}"
   printf '%s\n' systemd-run --user --scope --quiet \
+    "--unit=$unit" \
     -p "MemoryMax=$mem" \
-    -p "MemorySwapMax=0"
+    -p "MemorySwapMax=0" \
+    -p "CollectMode=inactive-or-failed"
   if [ -n "$time" ]; then
     printf '%s\n' -p "RuntimeMaxSec=${time}s"
   fi

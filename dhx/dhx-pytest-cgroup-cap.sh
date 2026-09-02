@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # dhx-pytest-cgroup-cap.sh — PreToolUse:Bash memory-cap interceptor (DHX-7).
-# Patterns: HP-003, HP-041, HP-045
+# Patterns: HP-003, HP-041, HP-045, HP-057
 #
 # Closes the DHX-7 OOM gap: dhx-test-gate.sh wraps pytest in a memory-capped
 # cgroup, but ONLY at Stop-hook time around the gate's OWN runner. A subagent (or
@@ -212,7 +212,16 @@ dhx_cgroup_mem_token_valid "$MEM" || MEM="$DEFAULT_MEM"
 # subtree without argv-surgery. Single-quote escaping is the standard '\'' idiom;
 # jq --arg then handles JSON escaping. Tokens from the factory are whitespace-free
 # so the space-join is safe.
-prefix=$(dhx_cgroup_prefix_tokens "$MEM" "$TIME" | tr '\n' ' ') || emit_noop
+#
+# Scope LABEL — `dhx-cap-pytest-<repo>-…` (2026-09-02). The factory names every
+# scope it builds so an OOM kill in `journalctl --user` is attributable on sight.
+# THIS consumer's kills are the ones a future investigation is most likely to
+# misread: they happen during ordinary work, not during a probe run someone
+# remembers starting. `dhx_cgroup_unit_label` sanitizes and never refuses, and the
+# emitted `--unit=` token is a whitespace-free literal — required, because the
+# space-join below hands the result to a shell this hook does not control.
+CAP_LABEL="pytest-${cwd##*/}"
+prefix=$(dhx_cgroup_prefix_tokens "$MEM" "$TIME" "$CAP_LABEL" | tr '\n' ' ') || emit_noop
 esc=${cmd//\'/\'\\\'\'}
 rewritten="${prefix}bash -c '$esc'"
 

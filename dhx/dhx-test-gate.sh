@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045, HP-051
+# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045, HP-051, HP-057
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Cgroup wrap (2026-05-03): when systemd-run + active user@.service are
@@ -432,7 +432,18 @@ if [ -f "$_CAP_LIB" ] && . "$_CAP_LIB" 2>/dev/null && dhx_cgroup_available; then
     TEST_BUDGET_MEM="$TEST_GATE_MEM_FALLBACK"
   fi
 
-  mapfile -t CGROUP_PREFIX < <(dhx_cgroup_prefix_tokens "$TEST_BUDGET_MEM" "$TEST_BUDGET_TIME")
+  # (b2) Scope LABEL — `dhx-cap-testgate-<repo>-…` (2026-09-02). The factory names
+  # every scope it builds so a `journalctl --user` OOM-kill record is attributable
+  # without a session of forensics; the repo half answers WHICH suite, which a bare
+  # consumer label cannot. `dhx_cgroup_unit_label` sanitizes and never refuses, so a
+  # weird basename cannot become an empty prefix (i.e. an uncapped run). See that
+  # function's header and `dhx_cgroup_prefix_tokens`' NAMING block.
+  # `${x##*/}` not `basename`: this is on the Stop path and a fork per firing buys
+  # nothing. A trailing slash or a bare `.` yields an empty/`.` tail, which the
+  # sanitizer collapses to plain `testgate` — degraded, never broken.
+  _TG_CAP_LABEL="testgate-${PROJECT_DIR##*/}"
+
+  mapfile -t CGROUP_PREFIX < <(dhx_cgroup_prefix_tokens "$TEST_BUDGET_MEM" "$TEST_BUDGET_TIME" "$_TG_CAP_LABEL")
 
   # (c) HP-051 backstop. `mapfile` cannot report the producer's refusal, so assert
   # the OUTCOME instead of trusting the status. An empty array here means the factory
@@ -443,7 +454,7 @@ if [ -f "$_CAP_LIB" ] && . "$_CAP_LIB" 2>/dev/null && dhx_cgroup_available; then
   if [ "${#CGROUP_PREFIX[@]}" -eq 0 ]; then
     log "DHX-7c/HP-051: factory emitted no prefix for mem='$TEST_BUDGET_MEM' → retrying with $TEST_GATE_MEM_FALLBACK"
     TEST_BUDGET_MEM="$TEST_GATE_MEM_FALLBACK"
-    mapfile -t CGROUP_PREFIX < <(dhx_cgroup_prefix_tokens "$TEST_BUDGET_MEM" "$TEST_BUDGET_TIME")
+    mapfile -t CGROUP_PREFIX < <(dhx_cgroup_prefix_tokens "$TEST_BUDGET_MEM" "$TEST_BUDGET_TIME" "$_TG_CAP_LABEL")
     [ "${#CGROUP_PREFIX[@]}" -eq 0 ] && \
       log "DHX-7c/HP-051: WARNING factory still emitted no prefix → runner will be UNCAPPED"
   fi
