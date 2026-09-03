@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # dhx-pytest-cgroup-cap.sh — PreToolUse:Bash memory-cap interceptor (DHX-7).
-# Patterns: HP-003, HP-041, HP-045, HP-057
+# Patterns: HP-003, HP-041, HP-045, HP-059
 #
 # Closes the DHX-7 OOM gap: dhx-test-gate.sh wraps pytest in a memory-capped
 # cgroup, but ONLY at Stop-hook time around the gate's OWN runner. A subagent (or
@@ -15,7 +15,20 @@
 # wrapped in the SAME `systemd-run --user --scope` MemoryMax cgroup the gate uses
 # (single-sourced via dhx-cgroup-cap.sh — no copy-drift). The cap then fires
 # inside the runaway pytest's OWN scope (OOM SIGKILL → exit 137), so the blast
-# radius of the cap is the runaway command, never the session. PreToolUse:Bash
+# radius of the cap is the runaway command, never the session.
+#
+# KNOWN HOLE (2026-09-03, open brief
+# `.planning/backlog/2026-09-02-cgroup-oom-kill-can-surface-as-exit-0.md`):
+# the "→ exit 137" above holds only while the wrapped command's MAIN process is
+# the one the kernel kills. This hook rewrites to `prefix + bash -c '<original>'`,
+# and bash exec-optimizes the LAST command of a -c string — so a bare
+# `pytest …` becomes pytest, which is the 137 case. A COMPOUND original with a
+# trailing non-pytest step (`pytest …; echo done`) leaves bash as the main
+# process: the OOM killer takes pytest, bash runs the trailing step, and the
+# caller sees bash's status — measured as **rc 0** with `Failed with result
+# 'oom-kill'` in the journal. The gate's `137|143|124` cascade is STRUCTURALLY
+# blind to that, because 0 is also what a passing suite returns. Do not try to
+# widen the cascade; detection has to read the cgroup or the scope's UNIT_RESULT. PreToolUse:Bash
 # fires for a SUBAGENT's Bash calls too (HP-003), which is exactly the executor /
 # subagent pytest that the source incident OOM-killed.
 #

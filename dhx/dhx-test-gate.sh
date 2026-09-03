@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # dhx-test-gate.sh — Stop hook
-# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045, HP-051, HP-057
+# Patterns: HP-001, HP-002, HP-009, HP-020, HP-028, HP-045, HP-051, HP-059
 # Blocks task completion if tests fail. Dual-guard prevents infinite loops.
 #
 # Cgroup wrap (2026-05-03): when systemd-run + active user@.service are
 # present, the test runner is wrapped in `systemd-run --user --scope` with
-# MemoryMax + MemorySwapMax=0 (cgroup OOM kill → exit 137, though 143 has also
-# been observed for a memory overrun in the field — see HP-045) and
+# MemoryMax + MemorySwapMax=0 (cgroup OOM kill → 137 when the scope's main
+# process is the kernel's victim, else 143 — see HP-045) and
 # RuntimeMaxSec (SIGTERM at runtime cap → exit 143). Both fail open via the
 # exit-code cascade so resource-exhausted gates don't block Stop. Falls back
 # to bare invocation when host preconditions are absent. Plugin manifest's
@@ -357,10 +357,12 @@ elif [ -n "$DISCOVERED_ROOTDIR" ]; then
 fi
 
 # --- Cgroup wrap factory (single-sourced via dhx-cgroup-cap.sh) ---
-# MemoryMax + MemorySwapMax=0 → SIGKILL/exit 137 on overrun in every controlled
-# cell tested; a field memory overrun has also surfaced as 143 (HP-045 — cause
-# not isolated, so the exit code does NOT reliably distinguish a memory kill from
-# a runtime kill). (MemoryMax alone is advisory on hosts with swap available —
+# MemoryMax + MemorySwapMax=0 → cgroup OOM kill on overrun. The status is 137
+# when the scope's MAIN process is the kernel's victim and 143 when it is not
+# (systemd SIGTERMs the survivors under OOMPolicy=stop) — isolated 2026-09-03,
+# HP-045; cap magnitude is not causal. The exit code still does NOT distinguish a
+# memory kill from a runtime kill: for that, read the named scope's UNIT_RESULT
+# (`oom-kill` vs `timeout`), not `$?`. (MemoryMax alone is advisory on hosts with swap available —
 # verified empirically on this
 # WSL2 host; see reports/2026-05-03-test-gate-collection-cost.md). RuntimeMaxSec
 # is the systemd-native runtime ceiling (NOT TimeoutStopSec, which is the

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-cgroup-cap.sh — shared cgroup memory-cap factory (NOT a hook; sourced).
-# Patterns: HP-045, HP-051, HP-057
+# Patterns: HP-045, HP-051, HP-059
 #
 # Single source of truth for the `systemd-run --user --scope` memory-cap wrap.
 # Sourced by BOTH consumers so the cap construction can never copy-drift:
@@ -10,11 +10,21 @@
 #
 # Runtime behavior this lib relies on is HP-045: on this WSL2 host a
 # `systemd-run --user --scope` with `MemoryMax` + `MemorySwapMax=0` OOM-kills an
-# overrunning child — exit 137 in every controlled cell tested, though a memory
-# overrun has ALSO been observed surfacing as 143 in the field (see HP-045; cause
-# not isolated, so do not rely on the code to distinguish memory from runtime).
-# `RuntimeMaxSec` SIGTERMs at the runtime ceiling (exit 143). Both consumers
-# treat 137 and 143 identically, which is what makes the ambiguity harmless.
+# overrunning child. The kill is categorical; the STATUS it surfaces as is not,
+# and the rule was isolated 2026-09-03:
+#
+#   the kernel's victim IS the scope's main process  -> 137
+#   the victim is some OTHER process in the scope    -> systemd (OOMPolicy=stop)
+#                                                       SIGTERMs the survivors,
+#                                                       so the main process
+#                                                       usually exits 143 —
+#                                                       or with ITS OWN code,
+#                                                       INCLUDING 0
+#
+# Cap magnitude is NOT causal (verified across 64M/1G/4G). `RuntimeMaxSec`
+# SIGTERMs at the runtime ceiling (exit 143). Both consumers treat 137 and 143
+# identically, which is what makes THAT ambiguity harmless — but see the exit-0
+# hole flagged in `dhx/dhx-pytest-cgroup-cap.sh`, which the cascade cannot see.
 # `MemorySwapMax=0` is load-bearing — `MemoryMax` alone is
 # advisory on a swap-enabled host (verified in
 # reports/2026-05-03-test-gate-collection-cost.md).
@@ -213,6 +223,28 @@ dhx_cgroup_unit_label() {
 # attributing 56 such kills back to this repo's own probes. Every scope this
 # factory builds now carries the `dhx-cap-` prefix; a `run-r<hex>` OOM kill on
 # this host is therefore NOT from here.
+#
+# --- READING ONE BACK (2026-09-03) ---------------------------------------------
+# The name is only useful if you can query it, and the obvious query silently
+# returns nothing. `journalctl -u <name>` appends `.service` to a suffixless
+# argument, so a SCOPE asked for by bare name matches a unit that does not exist —
+# clean exit 0, zero lines, which reads as "that scope logged nothing." Spell the
+# suffix. `UNIT=` is the SYSTEM manager's field; `--user` records carry
+# `USER_UNIT=`. Both wrong forms are silently empty:
+#
+#   journalctl --user -u dhx-cap-foo-123-456.scope        # correct
+#   journalctl --user -u dhx-cap-foo-123-456              # 0 lines, exit 0
+#   journalctl --user UNIT=dhx-cap-foo-123-456.scope      # 0 lines, exit 0
+#
+# And prefer the structured field over grepping the message text — the cause is
+# already parsed, and it is the ONLY reliable memory-vs-runtime discriminator
+# (the wait status is not; see the rule at the top of this file):
+#
+#   journalctl --user -u <name>.scope -o json \
+#     | jq -r 'select(.UNIT_RESULT).UNIT_RESULT'    # oom-kill | timeout
+#
+# HP-059 has the matrix; cross-repo `2026-07-10-shell-git-os-gotchas.md` section 49
+# has the general form of the trap.
 #
 # UNIQUENESS IS LOAD-BEARING, not hygiene. A repeated unit name fails with
 # `Unit NAME.scope was already loaded or has a fragment file`, rc 1 — and rc 1
