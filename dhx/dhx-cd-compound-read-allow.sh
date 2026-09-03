@@ -29,16 +29,20 @@
 # THE RISK THIS ACCEPTS, STATED PLAINLY. A hook that mutates commands can silently change
 # what one does, which is strictly worse than the prompt it removes. The whole defence is
 # refusing to rewrite anything whose grammar is not fully understood:
-#   * grep family ONLY (`grep`/`egrep`/`fgrep`/`rg`) — the entire measured defect. `diff`,
-#     `git`, `cp`, `mv` also arm the circuit but are REFUSED: their operand grammars differ
-#     and `cp`/`mv` write. A compound containing one is left alone.
+#   * grep family ONLY (`grep`/`egrep`/`fgrep`/`rg`) is REWRITTEN — the entire measured
+#     defect. `diff`, `cp`, `mv` also arm the circuit and are refused outright (different
+#     grammars; cp/mv write). `git` is tolerated only with NO positional operand, since a
+#     relative pathspec would arm the circuit and git's pathspec grammar is not implemented.
 #   * the PATTERN operand is never rewritten. `cd /repo; grep -rn docs src/` is the shape
 #     that punishes a naive rewriter — `docs` is also a real directory, and prefixing it
 #     would silently change what is being searched FOR.
 #   * `-e` / `-f` / `--regexp` / `--file` are refused outright, so the pattern is always the
 #     first non-option word and the grammar stays decidable.
-#   * any short bundle carrying an argument-consuming letter, and any long option not on the
-#     known-no-argument list, is refused rather than guessed at.
+#   * options that consume one argument are handled EXPLICITLY, not refused: `-A 60`, `-C 2`,
+#     `-t md`, `-g '*.md'`, `--context 3` consume their argument as an option-argument, never
+#     as a path. Attached forms (`-A5`, `--context=3`) are positionally inert. Only a BUNDLE
+#     carrying such a letter (`-nA`) and an UNKNOWN long option are refused — in both the
+#     argument position is genuinely undecidable, and guessing shifts every operand after it.
 #   * every rewritten operand must already EXIST under the cd target. A path that does not
 #     resolve is not silently prefixed.
 #   * if ANY path operand cannot be rewritten, the whole command is refused — a partial
@@ -58,7 +62,35 @@ CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) |
 
 # Hot-path bail: almost no Bash call is a `cd <abs>`-prefixed compound. Everything past
 # this line is cold, so the cost on the common path is one jq plus one pattern match.
-case "$CMD" in 'cd /'*) ;; *) exit 0 ;; esac
+case "$CMD" in 'cd /'*|'cd ~/'*) ;; *) exit 0 ;; esac
+
+# --- Decision breadcrumb ---------------------------------------------------------------
+# Installed AFTER the hot-path bail, so only cd-compound commands ever write. A hook that
+# silently declines gives the operator no way to tell "refused by design" from "never ran" —
+# which is exactly the question that could not be answered when this hook's coverage gaps
+# were reported from the field on 2026-09-03. A coarse DHX_STAGE marker names the phase
+# that refused, so a refusal is diagnosable without re-deriving it by bisection. (A line
+# number was tried first and is NOT available: inside an EXIT trap `${BASH_LINENO[0]}`
+# reports the trap's own invocation context — always 1 — not the exit site.)
+# DHX_CD_ALLOW_LOG redirects the file (probes point it at mktemp; D-20 convention).
+DHX_LOG=${DHX_CD_ALLOW_LOG-$HOME/.cache/dhx/cd-compound-read-allow.log}
+DHX_EMITTED=0
+_dhx_breadcrumb() {
+  local rc=$?
+  [ -n "$DHX_LOG" ] || return 0
+  mkdir -p "$(dirname "$DHX_LOG")" 2>/dev/null || return 0
+  # Cheap unbounded-growth guard: hooks.log's failure mode, avoided (docs/hook-dev-guide.md
+  # § Known Gotchas 2). Truncate rather than rotate — this is a breadcrumb, not an audit log.
+  if [ -f "$DHX_LOG" ] && [ "$(stat -c%s "$DHX_LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    : > "$DHX_LOG" 2>/dev/null || true
+  fi
+  printf '%s\t%s\tstage=%s\trc=%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$([ "$DHX_EMITTED" -eq 1 ] && echo REWROTE || echo refused)" \
+    "${DHX_STAGE:-init}" "$rc" "$CMD" >> "$DHX_LOG" 2>/dev/null || true
+}
+trap _dhx_breadcrumb EXIT
+DHX_STAGE=prefilter
 
 # Multi-line is refused before any parsing: a newline is a bash separator in its own right,
 # and roughly half of all Bash tool calls are multi-line. (The sandbox-escape hook's
@@ -75,8 +107,9 @@ case "$CMD" in *'$'*|*'`'*|*'>'*|*'<'*) exit 0 ;; esac
 # with their identity intact — the reason a normalize-to-one-sentinel splitter cannot be
 # used here. Quote tracking is mandatory rather than defensive: `grep "a;b" f` carries a
 # separator inside an operand, and splitting on it would corrupt the pattern.
-# `|` and `&` (pipes, background, bare-& lists) are refused outright — they are not part of
-# the measured shape and admitting them would widen the reassembly surface for nothing.
+# A single `|` IS split on: with quote tracking an unquoted `|` is always a pipe, and
+# `grep … | head -20` is the dominant real shape — refusing pipes cost more coverage than
+# any other rule this hook had. Bare `&` (background / &-lists) stays refused.
 SEG_TEXT=(); SEG_SEP=()
 scan_segments() {
   local s="$1" n=${#1} i=0 c q="" cur=""
@@ -95,8 +128,17 @@ scan_segments() {
       ';')     SEG_TEXT+=("$cur"); SEG_SEP+=(";"); cur=""; i=$((i + 1)); continue ;;
       '&')     [ "${s:$i:2}" = "&&" ] || return 1
                SEG_TEXT+=("$cur"); SEG_SEP+=("&&"); cur=""; i=$((i + 2)); continue ;;
-      '|')     [ "${s:$i:2}" = "||" ] || return 1
-               SEG_TEXT+=("$cur"); SEG_SEP+=("||"); cur=""; i=$((i + 2)); continue ;;
+      '|')     if [ "${s:$i:2}" = "||" ]; then
+                 SEG_TEXT+=("$cur"); SEG_SEP+=("||"); cur=""; i=$((i + 2))
+               else
+                 # A single `|` is a pipe. Splitting on it is exactly as safe as splitting
+                 # on `;` now that the scanner tracks quotes — an unquoted `|` is always a
+                 # pipe, and a `|` inside a grep pattern (`-E 'a|b'`, `"a\|b"`) is quoted
+                 # and never reaches here. Refusing pipes cost more coverage than any other
+                 # single rule: `grep … | head -20` is the dominant real shape.
+                 SEG_TEXT+=("$cur"); SEG_SEP+=("|"); cur=""; i=$((i + 1))
+               fi
+               continue ;;
     esac
     cur+=$c; i=$((i + 1))
   done
@@ -164,6 +206,7 @@ norm_path() {
 # enforcement on the rewritten command. This check exists so the hook never TOUCHES a
 # deny-adjacent command at all — a bug in the rewriter can then never land on a secrets
 # path. Refusing leaves such a command at today's ask, which is the status quo.
+DHX_STAGE=deny-set
 SETTINGS=$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null) || exit 0
 [ -n "$SETTINGS" ] && [ -r "$SETTINGS" ] || exit 0
 
@@ -214,15 +257,21 @@ path_is_denied() {
 }
 
 # --- Scan --------------------------------------------------------------------------------
+DHX_STAGE=scan
 scan_segments "$CMD" || exit 0
 [ "${#SEG_TEXT[@]}" -ge 2 ] || exit 0
 
 # --- Segment 1 must be exactly `cd <existing absolute dir>` -------------------------------
+DHX_STAGE=cd-target
 split_words "$(trim "${SEG_TEXT[0]}")"
 [ "${#WORDS[@]}" -eq 2 ] || exit 0
 [ "${WORDS[0]}" = "cd" ] || exit 0
-CD_TARGET=$(strip_quotes "${WORDS[1]}")
-case "$CD_TARGET" in /*) ;; *) exit 0 ;; esac
+CD_RAW=$(strip_quotes "${WORDS[1]}")
+case "$CD_RAW" in
+  /*)    CD_TARGET=$CD_RAW ;;
+  '~/'*) CD_TARGET="$HOME/${CD_RAW#\~/}" ;;   # `cd ~/repos/x` is how agents actually write it
+  *)     exit 0 ;;
+esac
 CD_TARGET=$(norm_path "$CD_TARGET")
 [ -d "$CD_TARGET" ] || exit 0
 
@@ -241,21 +290,57 @@ done
 is_grep_family() { case "$1" in grep|egrep|fgrep|rg) return 0 ;; *) return 1 ;; esac; }
 is_other_arming() { case "$1" in diff|git|cp|mv) return 0 ;; *) return 1 ;; esac; }
 
-# Non-arming companions. They cannot raise the prompt and are never rewritten; they are
-# tolerated only so a mixed compound containing a real grep is still fixable. Deliberately
-# absent: cp, mv, tee, dd, install (write); python/node/perl/ruby/sh/bash/eval/source/xargs/
-# env/sudo (opaque or execute); git and diff (arming, refused above).
+# A git segment is acceptable only if its subcommand is read-only AND it has no positional
+# operand. A positional would be a pathspec (or a revision), and a relative pathspec is
+# exactly what arms the circuit — so allowing one would leave the ask in place and make the
+# rewrite inert. Refusing keeps the failure honest.
+git_ok() {
+  local sub w
+  [ "$#" -ge 2 ] || return 1
+  sub=$(strip_quotes "$2")
+  case "$sub" in -*) return 1 ;; esac
+  case "$sub" in
+    log|show|status|diff|rev-parse|ls-files|ls-tree|blame|describe|shortlog|cat-file|show-ref|rev-list) ;;
+    *) return 1 ;;
+  esac
+  shift 2
+  for w in "$@"; do
+    case "$w" in -*) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+
+# Companions. They are never rewritten; they are tolerated only so a mixed compound
+# containing a real grep is still fixable — every one of these appears alongside grep in
+# real commands (`| head -20`, `; echo '=== …'`, `; sed -n '1,80p' f`, `; ls dir`).
+# Deliberately absent: cp, mv, tee, dd, install (write); python/node/perl/ruby/sh/bash/
+# eval/source/xargs/env/sudo (opaque or execute); diff (arms the circuit). `git` is present
+# but unreachable except through git_ok(), which is checked before this function.
 is_allowed_companion() {
   case "$1" in
     cat|head|tail|wc|ls|sort|uniq|cut|nl|tr|stat|file|column) return 0 ;;
     basename|dirname|realpath|readlink|echo|printf|true|false|pwd|date) return 0 ;;
     sed|awk|find) return 0 ;;   # gated further below
+    git) return 0 ;;            # reachable only after git_ok() has already vetted it
     *) return 1 ;;
   esac
 }
 
 # Long grep/rg options known to take NO argument. Anything else long is refused rather than
 # guessed at, because guessing wrong shifts every operand position after it.
+# Long options that consume exactly ONE following word. Their argument is a count, a
+# glob, a type or a colour keyword — never a path this hook should rewrite — so consuming
+# it verbatim is faithful. Anything long that is on NEITHER list is refused, because
+# guessing whether it eats the next word shifts every operand position after it.
+is_known_arg_long() {
+  case "$1" in
+    --after-context|--before-context|--context|--max-count|--max-columns|--threads) return 0 ;;
+    --include|--exclude|--exclude-dir|--exclude-from|--glob|--iglob|--type|--type-not) return 0 ;;
+    --color|--colour|--binary-files|--devices|--directories|--label|--sort|--sortr) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_known_noarg_long() {
   case "$1" in
     --line-number|--ignore-case|--no-ignore-case|--recursive|--dereference-recursive) return 0 ;;
@@ -286,19 +371,31 @@ rewrite_grep_segment() {
     if [ "$endopts" -eq 0 ]; then
       case "$w" in
         '--') endopts=1; out+=("$w"); i=$((i + 1)); continue ;;
+        # `-e`/`-f` and their long forms supply the PATTERN, which would make the first
+        # positional a path instead of the pattern. Refused so the grammar stays decidable.
+        -e|-f|--regexp|--regexp=*|--file|--file=*) return 1 ;;
+        --*=*) out+=("$w"); i=$((i + 1)); continue ;;   # attached value: positionally inert
         --*)
-          case "$w" in
-            --regexp*|--file*|--include*|--exclude*|--glob*|--iglob*|--type*|--max-count*|--after-context*|--before-context*|--context*)
-              return 1 ;;                       # supplies a pattern, a path, or takes an arg
-            *=*) out+=("$w"); i=$((i + 1)); continue ;;   # attached value, positionally inert
-            *)   is_known_noarg_long "$w" || return 1
-                 out+=("$w"); i=$((i + 1)); continue ;;
-          esac ;;
+          if is_known_noarg_long "$w"; then out+=("$w"); i=$((i + 1)); continue; fi
+          if is_known_arg_long "$w"; then
+            [ $((i + 1)) -lt "$n" ] || return 1
+            out+=("$w" "${WORDS[$((i + 1))]}"); i=$((i + 2)); continue
+          fi
+          return 1 ;;                           # unknown long option: position undecidable
         '-') return 1 ;;                        # bare `-` stdin operand: nothing to fix
+        # A lone short option that takes one argument (`-A 60`, `-C 2`, `-t md`, `-g '*.md'`).
+        # The argument is consumed as an option-argument and never treated as a path — which
+        # is what makes `grep -n "x" -A 60 file.py` rewritable instead of refused. Context
+        # flags are mainstream grep usage; blanket-refusing them cost most of this hook's
+        # real-world coverage.
+        -[ABCmdgtjM])
+          [ $((i + 1)) -lt "$n" ] || return 1
+          out+=("$w" "${WORDS[$((i + 1))]}"); i=$((i + 2)); continue ;;
+        -[ABCmM][0-9]*) out+=("$w"); i=$((i + 1)); continue ;;   # attached value: inert
         -*)
-          # Short bundle. Refuse if it carries any argument-consuming letter — those either
-          # take a separate operand (shifting positions) or supply a pattern/path.
-          case "$w" in *[efmABCDdgt]*) return 1 ;; esac
+          # Any remaining bundle carrying an argument-consuming letter is still refused:
+          # in a bundle the letter's argument position is genuinely ambiguous.
+          case "$w" in *[efABCmdgtjM]*) return 1 ;; esac
           out+=("$w"); i=$((i + 1)); continue ;;
       esac
     fi
@@ -327,7 +424,9 @@ rewrite_grep_segment() {
   done
 
   [ "$seen_pattern" -eq 1 ] || return 1
-  [ "$n_paths" -ge 1 ] || return 1      # no operands => no ask to remove => nothing to do
+  # A grep with no path operand reads stdin (`… | grep -n foo`). That cannot arm the circuit
+  # and needs no rewrite, so it is accepted here; the command-level REWROTE check below is
+  # what still refuses a whole command in which nothing was actually fixed.
   SEG_OUT="${out[*]}"
   return 0
 }
@@ -349,11 +448,21 @@ for seg in "${SEG_TEXT[@]}"; do
   [ "${#WORDS[@]}" -ge 1 ] || exit 0
   head=$(strip_quotes "${WORDS[0]}")
   case "$head" in /*|*/*) head=${head##*/} ;; esac
+  DHX_STAGE="segment:$head"
 
-  is_other_arming "$head" && exit 0      # arms the circuit but grammar not implemented
+  # `git` arms the circuit (HP-060) but its pathspec grammar is not implemented. A git
+  # segment is tolerated ONLY when it carries no positional operand at all — `git log
+  # --oneline -5`, `git status --porcelain` — because with no path operand there is nothing
+  # for the circuit to catch. `git ls-files -- tests/x` refuses the whole command.
+  if [ "$head" = "git" ]; then
+    git_ok "${WORDS[@]}" || exit 0
+  else
+    is_other_arming "$head" && exit 0    # diff/cp/mv: grammar differs, or it writes
+  fi
   [ "$head" = "cd" ] && exit 0           # a second cd would move the base we resolved against
 
   if is_grep_family "$head"; then
+    DHX_STAGE="grep-grammar:$head"
     rewrite_grep_segment "$t" || exit 0
     SAW_GREP=1
     NEW="$NEW ${SEG_SEP[$((i - 1))]} $SEG_OUT"
@@ -379,6 +488,7 @@ for seg in "${SEG_TEXT[@]}"; do
   i=$((i + 1))
 done
 
+DHX_STAGE=finalize
 [ "$SAW_GREP" -eq 1 ] || exit 0
 [ "$REWROTE" -eq 1 ] || exit 0           # nothing changed => an allow would be inert (HP-061)
 
@@ -394,6 +504,7 @@ done
 TOOL_INPUT=$(printf '%s' "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null) || exit 0
 [ -n "$TOOL_INPUT" ] || exit 0
 
+DHX_EMITTED=1
 jq -n --argjson ti "$TOOL_INPUT" --arg cmd "$NEW" --arg d "$CD_TARGET" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",

