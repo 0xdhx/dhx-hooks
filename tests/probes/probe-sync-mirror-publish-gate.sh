@@ -194,7 +194,7 @@ _assert "[15] fixture remote starts empty" "EMPTY" "$(_remote_head)"
 _assert "[16] rehearsal leaves the remote untouched" "EMPTY" "$(_remote_head)"
 
 # Live publish against the fixture remote — must land a commit.
-( cd "$REPO" && PUBLIC_REMOTE="$BARE" timeout 900 bash "$SCRIPT" --push >/dev/null 2>&1 )
+PUSH_OUT=$( cd "$REPO" && PUBLIC_REMOTE="$BARE" timeout 900 bash "$SCRIPT" --push 2>&1 )
 PUSHED="$(_remote_head)"
 _assert "[17] --push lands a commit on the remote" "yes" \
   "$([[ "$PUSHED" != "EMPTY" && ${#PUSHED} -eq 40 ]] && echo yes || echo no)"
@@ -221,7 +221,13 @@ _assert "[20] probe process CANNOT authenticate to the production remote" "yes" 
 # The 2026-07-21 production push came from three assertions in this very file that
 # invoked the script without a PUBLIC_REMOTE override. Asserting it structurally beats
 # remembering it: every line that runs the script must also bind the remote.
-UNGUARDED=$(grep -n 'bash "\$SCRIPT"' "$0" | grep -vc 'PUBLIC_REMOTE=')
+# Widened 2026-09-03: the trap cells below run MUTATED COPIES of the publisher, which a
+# lint spelled `bash "$SCRIPT"` would not see at all — a new invocation path sliding past
+# the very lint that exists because invocation paths slid past people. Match every
+# script-variable invocation, not one spelling.
+# Comment lines are stripped first: this very comment block quotes the invocation shape
+# it is describing, and a lint that flags its own documentation trains people to ignore it.
+UNGUARDED=$(grep -nE 'bash "\$(SCRIPT|MUTANT[A-Z_]*)"' "$0" | grep -v '^[0-9]\+:[[:space:]]*#' | grep -vc 'PUBLIC_REMOTE=')
 _assert "[21] every script invocation in this probe binds PUBLIC_REMOTE" "0" "$UNGUARDED"
 
 # --- --print-mode is genuinely side-effect-free (Codex finding 10) -----------
@@ -249,6 +255,83 @@ _assert "[27] env DRY_RUN=1 still rehearses" "DRY" "$(_env_mode 1)"
 # --- set-but-empty override refuses rather than defaulting to production ----
 RC_EMPTY=$( cd "$REPO" && PUBLIC_REMOTE="" bash "$SCRIPT" --push --print-mode >/dev/null 2>&1; echo $? )
 _assert "[28] PUBLIC_REMOTE set-but-empty refuses" "2" "$RC_EMPTY"
+
+# --- Partial-publish honesty: the guard that was a comment (2026-09-03) ------
+# The publish-mirror workflow's FIRST real run force-pushed `main` and then died
+# `exit 128` on `git tag -a` — "fatal: empty ident name" — because a CI runner has no
+# user.name/user.email and the tag command, unlike the scrub commit beside it, did not
+# supply one inline. The run went RED OVER A SUCCESSFUL PUBLISH.
+#
+# The script already had a hand-written warning for "main is out, the tag is not." It
+# guarded the tag PUSH. The failure landed on the tag CREATION one line above, where
+# `set -e` walked straight past it — and `MAIN_PUBLISHED`, set at the push expressly to
+# power that warning, was set and NEVER READ anywhere in the file. These assertions exist
+# because a guard aimed at the one failure someone imagined is not a guard.
+
+# Static shape — cheap, and each one names a specific way the bug comes back.
+_assert "[29] git tag -a supplies a committer identity inline" "yes" \
+  "$(grep -qE '^\s+git -c user\.email=.* \\$' "$SCRIPT" \
+     && grep -qE '^\s+tag -a "\$TAG_VERSION"' "$SCRIPT" && echo yes || echo no)"
+_assert "[30] MAIN_PUBLISHED is READ, not merely assigned" "yes" \
+  "$([ "$(grep -c 'MAIN_PUBLISHED' "$SCRIPT")" -ge 2 ] \
+     && grep -qE '\$\{MAIN_PUBLISHED:-0\}' "$SCRIPT" && echo yes || echo no)"
+_assert "[31] the EXIT trap routes through _sync_on_exit" "yes" \
+  "$(grep -qE '^trap _sync_on_exit EXIT' "$SCRIPT" && echo yes || echo no)"
+
+# The CI condition itself: NO committer identity reachable. Isolate exactly that —
+# GIT_CONFIG_NOSYSTEM is already exported above, so an empty GIT_CONFIG_GLOBAL removes the
+# last source. Do NOT also redirect HOME: `git-filter-repo` here is a ~/.local/bin shim
+# that imports its module from ~/.local/lib, so a HOME override kills the build for a
+# reason that has nothing to do with identity and makes the cell fail for the wrong cause.
+# (Learned the hard way while writing this cell — a hostile-in-the-wrong-dimension fixture
+# is just a broken test wearing a rigour costume.)
+: > "$TMP/empty.gitconfig"
+BARE_NOID="$TMP/fake-mirror-noident.git"; git init --bare -q "$BARE_NOID"
+
+# Vacuity guard FIRST. If the fixture still has an identity, [33]/[34] pass for free and
+# assert nothing — which is the failure mode this whole block exists to catch elsewhere.
+_assert "[32] the fixture environment genuinely has NO committer identity" "yes" \
+  "$(env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL="$TMP/empty.gitconfig" git var GIT_COMMITTER_IDENT >/dev/null 2>&1 && echo no || echo yes)"
+
+RC_NOID=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_NOID" env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL="$TMP/empty.gitconfig" timeout 900 bash "$SCRIPT" --push >/dev/null 2>&1; echo $? )
+_assert "[33] a publish with no committer identity still succeeds" "0" "$RC_NOID"
+_assert "[34] ...and the version tag actually lands" "yes" \
+  "$(git --git-dir="$BARE_NOID" tag -l 2>/dev/null | grep -q . && echo yes || echo no)"
+
+# Drive the trap. The mutant lives under the repo's gitignored tmp/ because the publisher
+# derives REPO_ROOT from `realpath "$0"/..` — a copy in /tmp resolves to a non-repo and
+# dies before it could prove anything. Removed on EXIT.
+MUTANT_DIR="$REPO/tmp"; mkdir -p "$MUTANT_DIR"
+MUTANT_POST="$MUTANT_DIR/.probe-mutant-postpush-$$.sh"
+MUTANT_PRE="$MUTANT_DIR/.probe-mutant-prepush-$$.sh"
+trap 'rm -rf "$TMP" "$MUTANT_POST" "$MUTANT_PRE"' EXIT
+awk '{print} /^MAIN_PUBLISHED=1/ {print "false  # probe: simulated post-push failure"}' \
+  "$SCRIPT" > "$MUTANT_POST"
+awk '{print} /^echo "\[sync\] BUILD_DIR=/ {print "false  # probe: simulated PRE-push failure"}' \
+  "$SCRIPT" > "$MUTANT_PRE"
+
+BARE_TRAP="$TMP/fake-mirror-trap.git"; git init --bare -q "$BARE_TRAP"
+TRAP_OUT=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_TRAP" timeout 900 bash "$MUTANT_POST" --push 2>&1; echo "rc=$?" )
+_assert "[35] a post-push failure still exits non-zero" "yes" \
+  "$(grep -q 'rc=0' <<< "$TRAP_OUT" && echo no || echo yes)"
+_assert "[36] ...and says MAIN IS ALREADY PUBLISHED" "yes" \
+  "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$TRAP_OUT" && echo yes || echo no)"
+# The warning must be TRUE, not merely printed: the fixture really did receive the commit.
+_assert "[37] ...and the remote genuinely holds the commit it names" "yes" \
+  "$(git --git-dir="$BARE_TRAP" rev-parse --verify HEAD >/dev/null 2>&1 && echo yes || echo no)"
+
+# Negative control 1 — failed but NOT armed: an identical failure injected BEFORE the push
+# must stay silent, or the warning is just noise on every red run.
+BARE_PRE="$TMP/fake-mirror-prepush.git"; git init --bare -q "$BARE_PRE"
+PRE_OUT=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_PRE" timeout 900 bash "$MUTANT_PRE" --push 2>&1; echo "rc=$?" )
+_assert "[38] a PRE-push failure does NOT claim anything was published" "yes" \
+  "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$PRE_OUT" && echo no || echo yes)"
+_assert "[39] ...and the remote is untouched" "EMPTY" \
+  "$(git --git-dir="$BARE_PRE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)"
+
+# Negative control 2 — armed but NOT failed: free, reusing [17]'s captured output.
+_assert "[40] a SUCCESSFUL publish prints no already-published warning" "yes" \
+  "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$PUSH_OUT" && echo no || echo yes)"
 
 echo "---"
 echo "$PASSED passed, $FAILED failed"
