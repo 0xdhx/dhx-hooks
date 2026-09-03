@@ -27,6 +27,9 @@
 #      (record carries the tool's default station=prechain, not dispatch)
 #   2. change the VIOLATED arm's `exit 0` to `exit 2`  -> case [4a] reds
 #      (report-only disposition broken; a dispatch would be blocked)
+#   3. revert the on-disk disambiguation (make the `/*` arm containment-only)
+#      -> cases [11b] and [12b] red; [13] stays green, proving the two
+#      properties are independent and the fix did not just widen the guard
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/dhx/dhx-oracle-prestate-gate.sh"
 TOOL="$HOME/.claude/dhx-tools/oracle-prestate-check.cjs"
@@ -207,6 +210,40 @@ RC=$?
 set -e
 check '[10a] unparseable stdin -> exit 0' "$RC" 0
 check '[10b] ...and emits nothing' "$([ -n "$OUT" ] && echo noisy || echo empty)" empty
+
+# --- [11] the MAINLINE shape: an UNEXPANDED variable as the repo root --------
+# `${PROJECT_ROOT}/.planning/...` is how the gsd-execute-phase orchestrator
+# renders plan paths — measured in 9 resource-monitor transcripts across phases
+# 01/02/03 (2026-09-02). The regex's prefix group captures only the `/` after
+# the brace, so the hit arrives as `/.planning/...`; before the on-disk
+# disambiguation this failed the containment test and EVERY such dispatch was
+# dropped with "no plan path found". The station never ran on the path it was
+# built for. This arm is the regression pin.
+reset_audit
+run_hook gsd-executor 'Execute ${PROJECT_ROOT}/.planning/phases/01-x/01-01-PLAN.md in a worktree.'
+check '[11a] ${PROJECT_ROOT}-prefixed plan -> exit 0' "$RC" 0
+check '[11b] ...is measured, not dropped' "$(records)" 1
+contains '[11c] ...and reports a real measurement' "$OUT" 'declared pre-state matched'
+check '[11d] ...with the phase still derived through the prefix' "$(jq -r '.phase' "$AUDIT")" 1
+
+# --- [12] a tilde-rooted prefix is the same class ----------------------------
+reset_audit
+run_hook gsd-executor 'Execute ~/repos/whatever/.planning/phases/01-x/01-01-PLAN.md now.'
+check '[12a] ~-prefixed plan -> exit 0' "$RC" 0
+check '[12b] ...is measured, not dropped' "$(records)" 1
+
+# --- [13] the containment guard SURVIVES the fix -----------------------------
+# The disambiguation must not become a blanket re-root: a hit that genuinely
+# RESOLVES on disk outside this repo is another repo's plan, and mapping it onto
+# our same-named plan is the original hazard. It must still be dropped.
+reset_audit
+OTHER="$TMPROOT/otherrepo"
+mkdir -p "$OTHER/.planning/phases/01-x"
+cp "$REPO/.planning/phases/01-x/01-01-PLAN.md" "$OTHER/.planning/phases/01-x/01-01-PLAN.md"
+run_hook gsd-executor "Execute $OTHER/.planning/phases/01-x/01-01-PLAN.md now."
+check '[13a] another repo real absolute path -> exit 0' "$RC" 0
+contains '[13b] ...is refused, not re-rooted onto our same-named plan' "$OUT" 'no plan path found'
+check '[13c] ...and writes no record' "$(records)" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

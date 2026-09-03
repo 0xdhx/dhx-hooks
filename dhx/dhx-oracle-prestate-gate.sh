@@ -89,11 +89,28 @@ while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   case "$hit" in
     /*)
-      # Absolute hits must lie under this repo root, or they are not ours.
-      case "$hit" in
-        "$REPO"/*) abs="$hit" ;;
-        *) continue ;;
-      esac
+      # A leading `/` does NOT prove an absolute path. The mainline dispatch
+      # shape renders the root as an UNEXPANDED variable —
+      # `${PROJECT_ROOT}/.planning/phases/NN-…/NN-MM-PLAN.md`, measured in 9
+      # resource-monitor transcripts across phases 01/02/03 on 2026-09-02 — and
+      # the prefix group then captures only the `/` after the brace, yielding
+      # `/.planning/…`. Tested for containment that fails, so every such
+      # dispatch was dropped and the station never ran on the path the gate was
+      # built for. Resolve the ambiguity on DISK, which is the one authority:
+      #   exists  -> a real absolute path; it must lie under this repo or it is
+      #              another repo's plan and re-rooting it here would map it
+      #              onto a same-named plan of ours (the original hazard, kept).
+      #   absent  -> the leading segments are an expansion artifact; retry the
+      #              `.planning/` tail as repo-relative and let the existence
+      #              check below be the validator, exactly as for a bare hit.
+      if [ -e "$hit" ]; then
+        case "$hit" in
+          "$REPO"/*) abs="$hit" ;;
+          *) continue ;;
+        esac
+      else
+        abs="$REPO/.planning/${hit#*/.planning/}"
+      fi
       ;;
     *) abs="$REPO/$hit" ;;
   esac
