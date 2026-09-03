@@ -112,11 +112,20 @@ if [ "$DRY_RUN" = "1" ]; then
 else
   echo "[sync] MODE: LIVE PUBLISH (--push given) — will FORCE-PUSH $PUBLIC_REMOTE"
   # The sanctioned publish path is the `publish-mirror` GitHub Actions workflow, where the
-  # credential lives in GitHub's secret store and a reviewer approves in a browser. A local
-  # --push is BREAK-GLASS: it works (the operator's own key can push their own repo), but it
-  # carries no human gate beyond this line. Say so, every time.
+  # credential lives in GitHub's secret store. NO reviewer approves anything — deployment
+  # protection rules need Enterprise on a private repo (settled; see the workflow header),
+  # so the explicit dispatch IS the human checkpoint. A local --push is no longer merely
+  # discouraged: since 2026-09-03 the mirror carries an active `block-force-push-main`
+  # ruleset whose sole bypass actor is the CI deploy key, so the push is REFUSED
+  # server-side. Predict that only for the real mirror — PUBLIC_REMOTE is overridden by
+  # the probe fixtures, which carry no ruleset, and a banner that lied there would be the
+  # same defect one level up.
   if [ -z "${GITHUB_ACTIONS:-}" ]; then
-    echo "[sync]       ^ local break-glass publish. Sanctioned path: gh workflow run publish-mirror.yml -f publish=true"
+    echo "[sync]       ^ local publish attempt. Sanctioned path: gh workflow run publish-mirror.yml -f publish=true"
+    case "$PUBLIC_REMOTE" in
+      *0xdhx/dhx-hooks*)
+        echo "[sync]       ^ EXPECT REFUSAL: block-force-push-main bypasses only the CI deploy key." ;;
+    esac
   fi
 fi
 
@@ -803,9 +812,23 @@ git remote add public "$PUBLIC_REMOTE" 2>/dev/null || git remote set-url public 
 REMOTE_MAIN=$(git ls-remote public refs/heads/main 2>/dev/null | cut -f1)
 if [ -n "$REMOTE_MAIN" ]; then
   git fetch --quiet public refs/heads/main 2>/dev/null || true
-  if ! git push --force-with-lease="refs/heads/main:$REMOTE_MAIN" public HEAD:main >/dev/null 2>&1; then
-    echo "[sync] FAIL: lease refused — public main moved during this run (expected $REMOTE_MAIN)." >&2
-    echo "[sync]       Nothing was published. Re-run to rebuild against the new remote state." >&2
+  # Capture the remote's own words instead of asserting a cause. TWO different refusals
+  # land here and only the remote can tell them apart: a stale lease (public main really
+  # did move mid-run) and the mirror's `block-force-push-main` ruleset refusing a
+  # non-fast-forward push from a non-bypass actor (armed 2026-09-03). This branch used to
+  # swallow stderr and announce the first unconditionally, so the ruleset refusal — the
+  # DESIGNED outcome of every local --push — reported a lease move that had not happened.
+  # Verified 2026-09-03: local --push refused, remote tip unchanged, message wrong.
+  PUSH_ERR=$(git push --force-with-lease="refs/heads/main:$REMOTE_MAIN" public HEAD:main 2>&1 >/dev/null) && PUSH_RC=0 || PUSH_RC=$?
+  if [ "$PUSH_RC" -ne 0 ]; then
+    echo "[sync] FAIL: push to public main was REFUSED. Nothing was published." >&2
+    echo "[sync]       The remote said:" >&2
+    printf '%s\n' "$PUSH_ERR" | sed 's/^/[sync]         /' >&2
+    echo "[sync]       If that is a repository rule violation (GH013 / non-fast-forward):" >&2
+    echo "[sync]       this is the DESIGNED refusal, not a fault. The sanctioned path is" >&2
+    echo "[sync]         gh workflow run publish-mirror.yml -f publish=true" >&2
+    echo "[sync]       If instead the lease went stale (expected $REMOTE_MAIN), re-run to" >&2
+    echo "[sync]       rebuild against the new remote state." >&2
     exit 1
   fi
 else

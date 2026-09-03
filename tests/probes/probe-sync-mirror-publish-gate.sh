@@ -19,6 +19,8 @@
 #   - contradictory flags (--dry-run --push, either order) REFUSE instead of last-wins
 #   - a set-but-EMPTY PUBLIC_REMOTE refuses instead of defaulting to production
 #   - the probe process CANNOT authenticate to the production remote at all [20]
+#   - a REJECTED push surfaces the remote's own words instead of asserting a cause,
+#     and never claims "public main moved during this run" when it did not [41-44]
 #
 # INVARIANT (cross-file contract): the sibling convention lint
 # probe-publisher-scripts-rehearse-by-default.sh asserts this shape for EVERY publisher
@@ -332,6 +334,47 @@ _assert "[39] ...and the remote is untouched" "EMPTY" \
 # Negative control 2 — armed but NOT failed: free, reusing [17]'s captured output.
 _assert "[40] a SUCCESSFUL publish prints no already-published warning" "yes" \
   "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$PUSH_OUT" && echo no || echo yes)"
+
+# --- A rejected push must report the REMOTE's reason, not a guessed one ----
+# Backs the 2026-09-03 mirror-ruleset row. `0xdhx/dhx-hooks` now carries an active
+# `block-force-push-main` ruleset (non_fast_forward, bypass: DeployKey), so a local
+# --push is REFUSED server-side — the designed outcome, and now the COMMON one.
+# The branch used to swallow the push's stderr and print "lease refused — public main
+# moved during this run" for every failure, so the designed refusal announced a cause
+# that had not happened. Two different failures land here; only the remote can tell
+# them apart, so the remote's text is the payload.
+#
+# Fixture shape: a bare repo that already HAS main (so REMOTE_MAIN is non-empty and the
+# lease branch is the one exercised) whose pre-receive hook rejects. The lease therefore
+# SUCCEEDS and the rule rejects — exactly the production shape, inverted from a stale
+# lease.
+BARE_REJECT="$TMP/fake-mirror-reject.git"; git init --bare -q "$BARE_REJECT"
+SEED="$TMP/seed"; git init -q "$SEED"
+( cd "$SEED" \
+    && git -c user.email=p@probe.local -c user.name=probe commit -q --allow-empty -m seed \
+    && git branch -M main \
+    && git push -q "$BARE_REJECT" main ) >/dev/null 2>&1
+REJECT_TIP_BEFORE=$(git --git-dir="$BARE_REJECT" rev-parse --verify main 2>/dev/null || echo NONE)
+cat > "$BARE_REJECT/hooks/pre-receive" <<'HOOK'
+#!/bin/sh
+echo "PROBE_REMOTE_SAYS: Cannot force-push to this branch" >&2
+exit 1
+HOOK
+chmod +x "$BARE_REJECT/hooks/pre-receive"
+
+REJECT_OUT=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_REJECT" timeout 900 bash "$SCRIPT" --push 2>&1; echo "rc=$?" )
+
+_assert "[41] a rejected push says REFUSED and nothing was published" "yes" \
+  "$(grep -q 'REFUSED. Nothing was published' <<< "$REJECT_OUT" && echo yes || echo no)"
+# The load-bearing one: the remote's text reaches the operator. Swallowed stderr is
+# invisible to every other assertion here — [41] passes just as well without it.
+_assert "[42] ...and relays the REMOTE's own reason verbatim" "yes" \
+  "$(grep -q 'PROBE_REMOTE_SAYS: Cannot force-push to this branch' <<< "$REJECT_OUT" && echo yes || echo no)"
+# Negative control: the old misdiagnosis must not be asserted. main did not move.
+_assert "[43] ...and does NOT claim public main moved during this run" "yes" \
+  "$(grep -q 'moved during this run' <<< "$REJECT_OUT" && echo no || echo yes)"
+_assert "[44] ...and the remote is genuinely untouched" "$REJECT_TIP_BEFORE" \
+  "$(git --git-dir="$BARE_REJECT" rev-parse --verify main 2>/dev/null || echo NONE)"
 
 echo "---"
 echo "$PASSED passed, $FAILED failed"
