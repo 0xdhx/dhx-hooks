@@ -145,7 +145,19 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
 # clean path, and empty until the renderer's session-start mode lands in a later cross-repo
 # plan, which is a designed graceful absence rather than a gap. Sits in the same D-11
 # "direct ask on the user" tier as the vet-closure offers above.
-printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
+# BOTH correlation values are forwarded, for one reason: this leg's two sides are a parent and
+# its child in ONE PROCESS, not two independently registered hooks, so the child never has to
+# re-derive what the parent already computed and validated. `_SCH_EV_KEY` is the event digest
+# (2026-08-22). `_SCH_HB_KEY` is the SESSION key, added 2026-09-03 — and it is the more
+# load-bearing of the two: the health classifier groups the reference and schedule trees per
+# session by DIRECTORY key, and that directory is this variable. A child that re-parses its own
+# stdin copy and comes up empty writes under no key at all, which is exactly the shape measured
+# on 2026-09-03 — the renderer emitted the user's due block and wrote nothing, so a leg that had
+# DELIVERED scored DEAD. Forwarding an EMPTY value is correct and expected when `$SID` was
+# absent or `unknown`: the shim refuses anything that is not a 16-hex digest, and the renderer
+# then falls back to its own derivation, and failing that stays silent rather than speak
+# unaccountably. See cross-repo f7aa48df5 and its design doc § 3b.
+printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="$_SCH_HB_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
 # Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
 # description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
 # via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one

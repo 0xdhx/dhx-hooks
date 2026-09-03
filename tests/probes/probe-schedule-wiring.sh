@@ -88,10 +88,12 @@ else
   check "[A1-A3] hooks.json present + jq available" fail "missing"
 fi
 
-# A4 — dispatcher child line, hardcoded absolute path form (matches every sibling).
-grep -qE '^printf .%s. "\$INPUT" \| DHX_SCHEDULE_EVENT_HASH="\$_SCH_EV_KEY" bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true$' "$DISPATCHER" 2>/dev/null \
-  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + forwarded digest)" ok \
-  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + forwarded digest)" fail
+# A4 — dispatcher child line, hardcoded absolute path form (matches every sibling). Repinned
+# 2026-09-03 when the SESSION key joined the event digest on this line; pinning the whole line
+# is the point — it is why adding a forwarded value cannot pass silently.
+grep -qE '^printf .%s. "\$INPUT" \| DHX_SCHEDULE_EVENT_HASH="\$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="\$_SCH_HB_KEY" bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true$' "$DISPATCHER" 2>/dev/null \
+  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values)" ok \
+  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values)" fail
 
 # A5-A6 — both shims are structurally unable to break their event.
 for pair in "PROMPT_SHIM:dhx-schedule-prompt.sh" "CTX_SHIM:dhx-schedule-context.sh"; do
@@ -314,7 +316,10 @@ if command -v sha256sum >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
   cat > "$SB/render2.cjs" <<'JS2EOF'
 const a=process.argv.slice(2);
 const i=a.indexOf('--event-hash');
-require('fs').appendFileSync(process.env.REC,(i>=0?a[i+1]:'<none>')+'\n');
+const j=a.indexOf('--session-key');
+const fs=require('fs');
+fs.appendFileSync(process.env.REC,(i>=0?a[i+1]:'<none>')+'\n');
+if(process.env.REC_SK)fs.appendFileSync(process.env.REC_SK,(j>=0&&a[j+1]!==''?a[j+1]:'<none>')+'\n');
 JS2EOF
   mkdir -p "$SB/fakebin"
   cat > "$SB/fakebin/bash" <<'FBEOF'
@@ -329,7 +334,8 @@ FBEOF
   # (data under printf '%s', never a format), multibyte UTF-8, and TRAILING NEWLINES that
   # `$(cat)` must strip identically on both sides.
   P2='{"session_id":"probe-ctx-0001","source":"startup","note":"100% - cafe UTF8 check"}'
-  printf '%s\n\n\n' "$P2" | env PATH="$SB/fakebin:$PATH" HOME="$FH2" REC="$REC2" \
+  REC2SK="$SB/rec2sk.txt"; : > "$REC2SK"
+  printf '%s\n\n\n' "$P2" | env PATH="$SB/fakebin:$PATH" HOME="$FH2" REC="$REC2" REC_SK="$REC2SK" \
     DHX_SCHEDULE_RENDERER="$SB/render2.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache2" \
     /bin/bash "$DISPATCHER" >/dev/null 2>&1
   CTX_SEEN=$(head -1 "$REC2" 2>/dev/null)
@@ -379,8 +385,35 @@ console.log(String(bad));' "$STORE" "$SD2" 2>/dev/null)
   else
     check "[B8] context shim rejects a malformed forwarded digest" fail "forwarded=${FORGED}"
   fi
+  # B12 — THE SESSION KEY, END TO END, AND AGAINST THE RIGHT TARGET (2026-09-03).
+  # The assertion is NOT "a value arrived". It is that the key the renderer received is the
+  # DIRECTORY NAME the dispatcher filed its own reference beat under, because that directory is
+  # what cross-repo's classifier groups the two trees by. A beat placed anywhere else is not a
+  # weaker match — it leaves the reference session DEAD and adds a MISSING-REFERENCE row.
+  # Reads the B7 dispatcher run above; no second dispatch.
+  CTX_SK=$(head -1 "$REC2SK" 2>/dev/null)
+  REF_DIR=$(basename "$(dirname "$BEAT2")" 2>/dev/null)
+  if [ -n "$CTX_SK" ] && [ "$CTX_SK" != "<none>" ] && [ "$CTX_SK" = "$REF_DIR" ]; then
+    check "[B12] context leg: the renderer is handed the SAME session key the reference beat is filed under ($CTX_SK)" ok
+  else
+    check "[B12] context leg: the renderer's session key matches the reference beat's directory" fail \
+      "renderer=${CTX_SK:-none} reference-dir=${REF_DIR:-none}"
+  fi
+  # B13 — the forgery floor, same contract as B8. This variable picks a whole session DIRECTORY
+  # rather than one filename, so a non-digest value must degrade to empty and let the renderer
+  # fall back to its own derivation — never be honoured as a place to file records.
+  : > "$REC2"; : > "$REC2SK"
+  printf '%s' "$P2" | env HOME="$FH2" REC="$REC2" REC_SK="$REC2SK" DHX_SCHEDULE_RENDERER="$SB/render2.cjs" \
+    DHX_SCHEDULE_CACHE_DIR="$SB/cache2" DHX_SCHEDULE_SESSION_KEY='../../etc; rm -rf /' \
+    /bin/bash "$CTX_SHIM" >/dev/null 2>&1
+  FORGED_SK=$(head -1 "$REC2SK" 2>/dev/null)
+  if [ -z "$FORGED_SK" ] || [ "$FORGED_SK" = "<none>" ]; then
+    check "[B13] context shim rejects a malformed forwarded session key (empty, not forwarded)" ok
+  else
+    check "[B13] context shim rejects a malformed forwarded session key" fail "forwarded=${FORGED_SK}"
+  fi
 else
-  echo "SKIP [B7-B8] context-leg digest smoke — sha256sum/jq/node or the installed shim absent"
+  echo "SKIP [B7-B8,B12-B13] context-leg forwarding smoke — sha256sum/jq/node or the installed shim absent"
 fi
 
 # B9-B11 — DIGEST-TOOL PORTABILITY (cross-repo brief 2026-08-23 "schedule digest tool policy").

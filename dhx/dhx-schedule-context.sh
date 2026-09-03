@@ -55,11 +55,28 @@ if [ "${#EVENT_HASH}" -ne 16 ] || [ -n "${EVENT_HASH//[0-9a-f]/}" ]; then
   EVENT_HASH=""
 fi
 
+# THE SESSION KEY IS FORWARDED FOR THE SAME REASON AND ON THE SAME TERMS (2026-09-03), but it
+# matters more than the digest does. The health classifier groups the reference and schedule
+# trees per session by DIRECTORY key, so a beat written under any other key is not a weaker
+# match — it is a SECOND fault: the reference session stays DEAD and this one surfaces as
+# MISSING-REFERENCE. Deriving it here is not sufficient, and that is measured, not theoretical:
+# `SESSION_ID` above is empty whenever this copy of the envelope is empty, unparseable, or `jq`
+# is absent, and on 2026-09-03 an empty id made the renderer print the full due block and write
+# no record at all. Same validation contract as the digest — 16 lowercase hex or nothing —
+# because this too is an environment variable that anything could set, and here a forged value
+# would choose a whole session DIRECTORY rather than one filename. Empty is the safe floor: the
+# renderer falls back to its own stdin derivation, and if that is also empty it stays SILENT
+# rather than deliver context no health verb can account for.
+SESSION_KEY="${DHX_SCHEDULE_SESSION_KEY:-}"
+if [ "${#SESSION_KEY}" -ne 16 ] || [ -n "${SESSION_KEY//[0-9a-f]/}" ]; then
+  SESSION_KEY=""
+fi
+
 RENDERER="${DHX_SCHEDULE_RENDERER:-$HOME/.claude/dhx-tools/dhx-schedule-render.cjs}"
 # Graceful no-op when the symlink is not provisioned yet (the dispatcher's own dhx-tools
 # guard shape). A bare `node <absent-path>` would exit non-zero and print to stderr.
 [ -e "$RENDERER" ] || exit 0
 command -v node >/dev/null 2>&1 || exit 0
 
-node "$RENDERER" context --session-id "$SESSION_ID" --event-hash "$EVENT_HASH" 2>/dev/null </dev/null || true
+node "$RENDERER" context --session-id "$SESSION_ID" --event-hash "$EVENT_HASH" --session-key "$SESSION_KEY" 2>/dev/null </dev/null || true
 exit 0
