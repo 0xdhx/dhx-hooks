@@ -1,6 +1,32 @@
 #!/usr/bin/env bash
 # dhx-cd-compound-read-allow.sh — PreToolUse:Bash hook
-# Patterns: HP-028, HP-049, HP-052, HP-060
+# Patterns: HP-028, HP-049, HP-052, HP-060, HP-061
+#
+# ############################################################################
+# STATUS 2026-09-03: INERT FOR ITS STATED PURPOSE. DO NOT READ THIS FILE AS A
+# WORKING FIX. Everything below is correct and tested; the MECHANISM is wrong.
+#
+# HP-061: CC's combiner `Ifo` runs this hook FIRST and then re-consults the rule
+# engine. Only a hook `deny` short-circuits. A hook `allow` is discarded by any
+# rule `deny` and by any `ask` — including the very `safetyCheck` ask this hook
+# targets (HP-060, `classifierApprovable:false`). So the `permissionDecision`
+# emitted at the bottom of this file is thrown away for exactly the case it was
+# written for, and the measured prompt still appears.
+#
+# The mechanism that WOULD work is `updatedInput`: `Ifo` computes
+# `x = e.updatedInput ?? r` and adjudicates THAT, so rewriting each arming
+# segment's operands to ABSOLUTE paths removes the circuit's own precondition
+# (`!isAbsolute(Pe)`) and the ask never fires. That is a strict security
+# improvement rather than a bypass — with the operands resolvable, CC's deny
+# branch starts working again and `cd /abs; grep x .env` becomes a real DENY.
+#
+# It was not built in the same sitting because it makes this hook MUTATE the
+# model's Bash commands: a mis-parsed operand silently changes what a command
+# does, which is worse than the prompt it removes. `cd /repo; grep -rn docs src/`
+# is the shape that punishes a naive rewriter — the PATTERN `docs` is also a real
+# directory. Pending an operator decision; see `docs/decisions.md` 2026-09-03 row
+# and `docs/backlog.md` `cd-compound-read-allow-updatedinput-rewrite`.
+# ############################################################################
 #
 # Resolves the `cd <abs>;` prefix that CC's Bash classifier refuses to simulate, so a
 # read-only compound command stops raising a permission prompt under bypassPermissions.

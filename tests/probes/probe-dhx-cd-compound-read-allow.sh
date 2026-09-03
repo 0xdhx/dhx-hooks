@@ -8,8 +8,17 @@
 #    Everything else — substitution, redirection, pipes, write verbs, a deny-set path, a
 #    relative or variable cd, multi-line smuggling, an unreadable settings file — falls
 #    through with NO decision. It never emits a block and never default-allows.
-# 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow" row (2026-09-03) + HP-060.
+# 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow" row (2026-09-03) + HP-060 + HP-061.
 # 3. Run: bash tests/probes/probe-dhx-cd-compound-read-allow.sh
+#
+# READ THIS BEFORE TRUSTING A GREEN RUN. Every assertion below is about what the hook
+# EMITS. Per HP-061 the platform then DISCARDS that emission for the one circuit the hook
+# targets: a hook `allow` loses to the `safetyCheck` ask, so 85/85 green does NOT mean the
+# measured permission prompt stops. This suite pins the hook's parser and its refusal
+# surface — both of which the `updatedInput` rewrite will reuse verbatim — not its efficacy.
+# The efficacy assertion cannot live here at all; it is a live control (see the
+# decisions.md row). A probe that cannot observe the thing it would need to observe should
+# say so rather than let its own green stand in for the claim.
 #
 # Read-only: fixture JSON piped to the hook subshell, plus greps over in-repo hook source
 # and the plugin manifest. Deny-set variants inject a fixture settings tree via
@@ -199,8 +208,13 @@ s "cd $D; grep x f; install -m 755 a b"               "worktree-guard shape: ins
 s "cd $D; gh issue create --title x"                  "gh-issue-write shape: gh -> silent"
 
 echo "--- 13. wiring ---"
-grep -q '^# Patterns: HP-028, HP-049, HP-052, HP-060' "$HOOK"
-ck $? "Patterns header declares HP-028, HP-049, HP-052, HP-060"
+grep -q '^# Patterns: HP-028, HP-049, HP-052, HP-060, HP-061' "$HOOK"
+ck $? "Patterns header declares HP-028, HP-049, HP-052, HP-060, HP-061"
+# The mechanism this hook emits is REFUTED (HP-061): a hook allow is discarded by the
+# very safetyCheck ask it targets. Until the updatedInput rewrite lands, the file must
+# carry its own INERT banner so no reader mistakes 84 green assertions for a working fix.
+grep -q 'STATUS 2026-09-03: INERT FOR ITS STATED PURPOSE' "$HOOK"
+ck $? "header carries the INERT status banner (HP-061 refutation is visible at the source)"
 [ -x "$HOOK" ]; ck $? "hook is executable"
 grep -q 'dhx-cd-compound-read-allow.sh' "$PLUGIN_HOOKS"
 ck $? "registered in the plugin hooks.json Bash matcher"
