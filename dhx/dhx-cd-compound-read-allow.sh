@@ -84,10 +84,18 @@ _dhx_breadcrumb() {
   if [ -f "$DHX_LOG" ] && [ "$(stat -c%s "$DHX_LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
     : > "$DHX_LOG" 2>/dev/null || true
   fi
+  # ONE line per invocation. The command is flattened and capped before it is written:
+  # a raw multi-line command sprawls across the log and makes it unparseable — measured
+  # 2026-09-03, 254 entries occupying 3102 lines, because heredoc bodies were written
+  # verbatim. Field separators inside the command are escaped for the same reason.
+  local flat=${CMD//$'\n'/\\n}
+  flat=${flat//$'\r'/\\r}
+  flat=${flat//$'\t'/\\t}
+  [ "${#flat}" -gt 400 ] && flat="${flat:0:400}..."
   printf '%s\t%s\tstage=%s\trc=%s\t%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$([ "$DHX_EMITTED" -eq 1 ] && echo REWROTE || echo refused)" \
-    "${DHX_STAGE:-init}" "$rc" "$CMD" >> "$DHX_LOG" 2>/dev/null || true
+    "${DHX_STAGE:-init}" "$rc" "$flat" >> "$DHX_LOG" 2>/dev/null || true
 }
 trap _dhx_breadcrumb EXIT
 DHX_STAGE=prefilter

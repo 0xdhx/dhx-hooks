@@ -339,6 +339,19 @@ bc_run "cd $D; grep -n foo docs/backlog.md"
 [ "$(stat -c%s "$BC" 2>/dev/null || echo 999999)" -lt 262144 ]
 ck $? "the log is truncated past 256KB rather than growing without bound"
 
+# ONE line per invocation, whatever the command contains. A raw multi-line command sprawls
+# and makes the log unparseable — measured 2026-09-03: 254 entries occupying 3102 lines,
+# because heredoc bodies were written verbatim. This is the assertion that keeps the log
+# machine-readable enough to compute coverage from.
+: > "$BC"; bc_run "$(printf 'cd %s\ngrep -n foo docs/backlog.md\necho done' "$D")"
+[ "$(wc -l < "$BC")" -eq 1 ]
+ck $? "a multi-line command writes exactly ONE log line (newlines escaped, not raw)"
+grep -q 'echo done' "$BC"; ck $? "the flattened command is still fully readable"
+
+: > "$BC"; bc_run "cd $D; grep -n $(printf 'x%.0s' $(seq 1 600)) docs/backlog.md"
+[ "$(wc -l < "$BC")" -eq 1 ] && [ "$(wc -c < "$BC")" -lt 700 ]
+ck $? "an over-long command is truncated rather than written whole"
+
 # An empty DHX_CD_ALLOW_LOG disables the breadcrumb entirely.
 out=$(printf '%s' "$(payload "cd $D; grep -n foo docs/backlog.md")" | DHX_CD_ALLOW_LOG="" bash "$HOOK" 2>/dev/null)
 printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedInput.command' >/dev/null 2>&1
