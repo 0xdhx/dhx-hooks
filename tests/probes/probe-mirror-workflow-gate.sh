@@ -16,14 +16,20 @@
 # the 2026-07-21 incidents (a flag that read as a rehearsal, a probe that read as safe),
 # so it gets an assertion rather than a comment.
 #
-# KNOWN LIMIT: these are structural assertions about the workflow FILE. They cannot prove
-# that the `publish-mirror` Environment actually carries a required reviewer — that lives
-# in GitHub's settings, not the repo, and is verified out-of-band (gh api
-# repos/:owner/:repo/environments/publish-mirror). A green here means the workflow asks
-# for the gate; it does not prove GitHub is enforcing one. Same class of honesty as the
-# publisher-convention lint: shape present, wiring unproven.
+# KNOWN LIMIT: these are structural assertions about the workflow FILE. A green here means
+# the workflow asks for its gates; it does not prove GitHub is enforcing them. Two pieces
+# of this gate live in GitHub's settings rather than in the repo, and they are no longer
+# in the same position:
+#   - the `publish-mirror` Environment's required reviewer — still unproven here, and in
+#     fact absent (unarmable on this plan). Verified out-of-band: gh api
+#     repos/:owner/:repo/environments/publish-mirror
+#   - the mirror's `block-force-push-main` ruleset — no longer unwatched. Check [16] pins
+#     the step, and `scripts/verify-mirror-ruleset.sh` running weekly in the rehearse job
+#     does the actual asserting against the live API. Static probe pins the shape; the
+#     scheduled job pins the state.
 #
-# Backs: docs/decisions.md 2026-07-22 mirror CI promotion row.
+# Backs: docs/decisions.md 2026-07-22 mirror CI promotion row, and the 2026-09-03
+# mirror-ruleset-detection row.
 #
 # Run: bash tests/probes/probe-mirror-workflow-gate.sh
 #
@@ -62,6 +68,12 @@ fi
 REHEARSE_BODY=$(awk '/^  rehearse:/,/^  publish:/' "$WF")
 PUBLISH_BODY=$(awk '/^  publish:/,0' "$WF")
 
+# Comment-stripped view, for the checks that assert a count of ZERO. A full-line comment
+# REFERENCES nothing, so a comment warning "don't put secrets. or github.token here" was
+# itself enough to fail [6] and [17] — the assertion firing on the documentation of the
+# rule it enforces. Positive checks keep the full body; only the zero-count ones use this.
+REHEARSE_CODE=$(grep -v '^[[:space:]]*#' <<< "$REHEARSE_BODY")
+
 # --- The gate itself --------------------------------------------------------
 _assert "[2] publish job is attached to an Environment (the approval gate)" "yes" \
   "$(grep -qE '^\s*environment:\s*publish-mirror' <<< "$PUBLISH_BODY" && echo yes || echo no)"
@@ -79,7 +91,7 @@ _assert "[5] the publish input defaults to false (rehearsal)" "yes" \
 # The rehearsal's safety is that it has nothing to publish WITH. If a secret ever appears
 # in that job, the split is gone and only the script's own gate remains.
 _assert "[6] rehearse job references NO secret" "0" \
-  "$(grep -c 'secrets\.' <<< "$REHEARSE_BODY" | tr -d ' ')"
+  "$(grep -c 'secrets\.' <<< "$REHEARSE_CODE" | tr -d ' ')"
 
 _assert "[7] publish job loads the deploy key from secrets" "yes" \
   "$(grep -qE 'secrets\.MIRROR_DEPLOY_KEY' <<< "$PUBLISH_BODY" && echo yes || echo no)"
@@ -114,6 +126,22 @@ _assert "[14] workflow requests least privilege (contents: read)" "yes" \
 # between manual syncs and the next publish drowns in stale-reference failures.
 _assert "[15] a schedule exists so drift is caught between publishes" "yes" \
   "$(grep -qE '^\s*- cron:' "$WF" && echo yes || echo no)"
+
+# --- The remote-settings watchdog (2026-09-03) -------------------------------
+# The KNOWN LIMIT above is now half-closed. The mirror's `block-force-push-main`
+# ruleset still lives in GitHub's settings rather than in this repo, but the weekly
+# rehearsal asserts it, so switching it off surfaces within a week instead of never.
+# Deleting THAT step restores the silence — hence an assertion rather than a comment.
+_assert "[16] rehearse job asserts the mirror ruleset is still armed" "yes" \
+  "$(grep -qE 'verify-mirror-ruleset\.sh' <<< "$REHEARSE_BODY" && echo yes || echo no)"
+
+# Check [6] greps for `secrets.` — which `${{ github.token }}` does not match. The
+# obvious way to authenticate that read would therefore pass [6] while putting a
+# credential back into the job that is supposed to have none: the letter of the
+# assertion kept, the property it exists to protect gone. The read is unauthenticated
+# because the mirror is public and needs no token. This refuses the other spelling.
+_assert "[17] rehearse job holds no credential in ANY spelling (not even github.token)" "0" \
+  "$(grep -cE 'github\.token|GITHUB_TOKEN' <<< "$REHEARSE_CODE" | tr -d ' ')"
 
 echo "---"
 echo "$PASSED passed, $FAILED failed"
