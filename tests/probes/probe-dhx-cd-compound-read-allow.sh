@@ -334,10 +334,10 @@ grep -q "refused.*stage=grep-grammar:grep" "$BC"
 ck $? "an option-grammar refusal is attributed to stage=grep-grammar"
 
 # Unbounded growth is the one way a breadcrumb turns into a liability.
-printf '%0.sx' $(seq 1 300000) > "$BC"
+printf '%0.sx' $(seq 1 1200000) > "$BC"
 bc_run "cd $D; grep -n foo docs/backlog.md"
-[ "$(stat -c%s "$BC" 2>/dev/null || echo 999999)" -lt 262144 ]
-ck $? "the log is truncated past 256KB rather than growing without bound"
+[ "$(stat -c%s "$BC" 2>/dev/null || echo 9999999)" -lt 1048576 ]
+ck $? "the log is truncated past 1MiB rather than growing without bound"
 
 # ONE line per invocation, whatever the command contains. A raw multi-line command sprawls
 # and makes the log unparseable — measured 2026-09-03: 254 entries occupying 3102 lines,
@@ -348,9 +348,18 @@ ck $? "the log is truncated past 256KB rather than growing without bound"
 ck $? "a multi-line command writes exactly ONE log line (newlines escaped, not raw)"
 grep -q 'echo done' "$BC"; ck $? "the flattened command is still fully readable"
 
-: > "$BC"; bc_run "cd $D; grep -n $(printf 'x%.0s' $(seq 1 600)) docs/backlog.md"
-[ "$(wc -l < "$BC")" -eq 1 ] && [ "$(wc -c < "$BC")" -lt 700 ]
+: > "$BC"; bc_run "cd $D; grep -n $(printf 'x%.0s' $(seq 1 2600)) docs/backlog.md"
+[ "$(wc -l < "$BC")" -eq 1 ] && [ "$(wc -c < "$BC")" -lt 2300 ]
 ck $? "an over-long command is truncated rather than written whole"
+
+# The cap is 2000, not 400. At 400 a replay corpus built from this log lost its LONGEST
+# commands -- 289 of 614 rows truncated, measured 2026-09-03 -- i.e. exactly the
+# multi-segment population any coverage ruling turns on. A command comfortably longer than
+# the OLD cap must now survive whole, or the log has quietly gone back to halving every
+# corpus drawn from it.
+: > "$BC"; bc_run "cd $D; grep -n $(printf 'y%.0s' $(seq 1 900)) docs/backlog.md"
+grep -q 'docs/backlog.md' "$BC"
+ck $? "a command longer than the OLD 400-char cap is logged whole (replay corpus intact)"
 
 # An empty DHX_CD_ALLOW_LOG disables the breadcrumb entirely.
 out=$(printf '%s' "$(payload "cd $D; grep -n foo docs/backlog.md")" | DHX_CD_ALLOW_LOG="" bash "$HOOK" 2>/dev/null)
@@ -417,6 +426,45 @@ r "cd $D; grep -n 'cost=\$5' docs/backlog.md" \
   "'\$' inside SINGLE quotes is inert -> rewrite"
 s "cd $D; grep -n 'a docs/backlog.md
 grep -n b docs/backlog.md"                    "unterminated quote spanning lines -> refuse"
+
+echo "--- 18. sed: the \`w\` write-command test is EXPRESSION-scoped (2026-09-03 fix) ---"
+# \`w\` is sed's WRITE command and can appear only inside a script EXPRESSION. The prior gate
+# tested EVERY word, so an OPERAND FILENAME merely containing the letter refused the whole
+# command: the reported shape was `sed -n 225,262p qw-call.sh`, refused because of the `w` in
+# `qw`, while the byte-identical command against a w-free name rewrote. The two cells below
+# are that pair, using in-repo files so nothing depends on a fixture:
+# `probe-dhx-cd-compound-read-allow.sh` carries a `w` (in "allow"); `docs/backlog.md` does not.
+WF="tests/probes/probe-dhx-cd-compound-read-allow.sh"
+
+r "cd $D; sed -n 1,5p $WF; grep -n foo docs/backlog.md" \
+  "cd $D ; sed -n 1,5p $WF ; grep -n foo $D/docs/backlog.md" \
+  "an operand filename containing 'w' no longer refuses (the reported defect)"
+
+r "cd $D; sed -n 1,5p docs/backlog.md; grep -n foo docs/backlog.md" \
+  "cd $D ; sed -n 1,5p docs/backlog.md ; grep -n foo $D/docs/backlog.md" \
+  "POSITIVE CONTROL: the w-free twin still rewrites"
+
+# --- the guard must still catch a real write, wherever the expression is supplied --------
+s "cd $D; sed -n '1,5w /tmp/dhx-probe-out' docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "w write command in the first non-option word -> refuse"
+s "cd $D; sed -n -e '1,5w /tmp/dhx-probe-out' docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "w write command in an -e expression -> refuse"
+s "cd $D; sed -n -e 1p -e '5w /tmp/dhx-probe-out' docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "w in the SECOND -e expression -> refuse (not just the first)"
+s "cd $D; sed -n --expression='5w /tmp/dhx-probe-out' docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "w in --expression=... -> refuse"
+s "cd $D; sed -ne '5w /tmp/dhx-probe-out' docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "w in a BUNDLED -ne expression -> refuse"
+# -f names a script file whose BODY is unavailable here and may contain any sed command, `w`
+# included. The prior gate tolerated it whenever the script's NAME carried no w -- a hole.
+s "cd $D; sed -n -f script.sed docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "-f opaque script file -> refuse (hole the prior gate left open)"
+s "cd $D; sed -n --file=script.sed docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "--file= opaque script file -> refuse"
+s "cd $D; sed -i 1d docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "-i in-place -> refuse (unchanged)"
+s "cd $D; sed 1,5p docs/backlog.md; grep -n foo docs/backlog.md" \
+                                              "sed without -n -> refuse (unchanged)"
 
 echo "---"
 echo "$pass passed, $fail failed"

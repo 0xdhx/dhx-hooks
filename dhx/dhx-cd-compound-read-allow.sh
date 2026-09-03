@@ -81,7 +81,7 @@ _dhx_breadcrumb() {
   mkdir -p "$(dirname "$DHX_LOG")" 2>/dev/null || return 0
   # Cheap unbounded-growth guard: hooks.log's failure mode, avoided (docs/hook-dev-guide.md
   # § Known Gotchas 2). Truncate rather than rotate — this is a breadcrumb, not an audit log.
-  if [ -f "$DHX_LOG" ] && [ "$(stat -c%s "$DHX_LOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+  if [ -f "$DHX_LOG" ] && [ "$(stat -c%s "$DHX_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
     : > "$DHX_LOG" 2>/dev/null || true
   fi
   # ONE line per invocation. The command is flattened and capped before it is written:
@@ -91,7 +91,11 @@ _dhx_breadcrumb() {
   local flat=${CMD//$'\n'/\\n}
   flat=${flat//$'\r'/\\r}
   flat=${flat//$'\t'/\\t}
-  [ "${#flat}" -gt 400 ] && flat="${flat:0:400}..."
+  # 2000, not 400: at 400 a replay corpus built from this log silently lost the LONGEST
+  # commands — 289 of 614 rows truncated, measured 2026-09-03 — which is precisely the
+  # multi-segment population a coverage ruling turns on. The file guard below rises with it
+  # so retained history does not fall.
+  [ "${#flat}" -gt 2000 ] && flat="${flat:0:2000}..."
   printf '%s\t%s\tstage=%s\trc=%s\t%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$([ "$DHX_EMITTED" -eq 1 ] && echo REWROTE || echo refused)" \
@@ -542,12 +546,42 @@ for seg in "${SEG_TEXT[@]}"; do
     is_allowed_companion "$head" || exit 0
     case "$head" in
       sed)
+        # `w` is sed's WRITE command, and it may appear only inside a script EXPRESSION.
+        # Testing it against every word refused any command whose OPERAND FILENAME merely
+        # contained the letter — measured 2026-09-03, `sed -n 225,262p qw-call.sh` refused
+        # solely because of the `w` in `qw`, with `qz-call.sh` rewriting from the otherwise
+        # byte-identical command. The expression is tracked positionally instead: the
+        # argument of each `-e`/`--expression`, or — when none was given — the first
+        # non-option word, exactly as sed itself resolves it. Everything after that is a
+        # filename and cannot execute a write.
+        # `-f`/`--file` names an opaque script file whose body is unavailable here and may
+        # contain any sed command, `w` included; it is refused outright. The prior gate
+        # tolerated it, which was a hole: `sed -n -f s.sed f` passed whenever `s.sed`
+        # carried no `w` in its NAME.
         sed_has_n=0
         for w in "${WORDS[@]}"; do [ "$w" = "-n" ] && sed_has_n=1; done
         [ "$sed_has_n" -eq 1 ] || exit 0
+        sed_expr_next=0; sed_seen_expr=0; sed_idx=0
         for w in "${WORDS[@]}"; do
-          case "$w" in -*i*) exit 0 ;; esac
-          case "$w" in *w*) case "$w" in -*) ;; *) exit 0 ;; esac ;; esac
+          sed_idx=$((sed_idx + 1))
+          [ "$sed_idx" -eq 1 ] && continue          # the `sed` head itself
+          if [ "$sed_expr_next" -eq 1 ]; then
+            sed_expr_next=0; sed_seen_expr=1
+            case "$w" in *w*) exit 0 ;; esac
+            continue
+          fi
+          case "$w" in
+            -f|--file|--file=*)   exit 0 ;;         # opaque script file — body unknown
+            -*i*)                 exit 0 ;;         # -i / --in-place: writes
+            -e|--expression)      sed_expr_next=1 ;;
+            --expression=*)       sed_seen_expr=1
+                                  case "${w#--expression=}" in *w*) exit 0 ;; esac ;;
+            -*)                   ;;
+            *)  if [ "$sed_seen_expr" -eq 0 ]; then
+                  sed_seen_expr=1
+                  case "$w" in *w*) exit 0 ;; esac
+                fi ;;
+          esac
         done ;;
       awk)  for w in "${WORDS[@]}"; do case "$w" in *system*) exit 0 ;; esac; done ;;
       find) for w in "${WORDS[@]}"; do
