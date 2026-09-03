@@ -99,16 +99,59 @@ _dhx_breadcrumb() {
 }
 trap _dhx_breadcrumb EXIT
 DHX_STAGE=prefilter
+NL=$'\n'
 
-# Multi-line is refused before any parsing: a newline is a bash separator in its own right,
-# and roughly half of all Bash tool calls are multi-line. (The sandbox-escape hook's
-# pre-commit gate caught the line-2-smuggle hole on 2026-07-13; same class.)
-case "$CMD" in *$'\n'*|*$'\r'*) exit 0 ;; esac
+# Returns in UNQ the text of $1 lying OUTSIDE single/double quotes, with backslash-escaped
+# characters dropped (`\$` outside quotes is a literal `$`, not an expansion). Returns 1 on
+# an unterminated quote, where the outside/inside split is undecidable and nothing may be
+# concluded. Sets a GLOBAL rather than printing: a `$(…)` capture would run the scan in a
+# subshell and discard the unbalanced-quote signal with it.
+UNQ=""
+unquoted_text() {
+  local s="$1" n=${#1} i=0 c q="" out=""
+  UNQ=""
+  while [ "$i" -lt "$n" ]; do
+    c=${s:$i:1}
+    if [ -n "$q" ]; then
+      if [ "$c" = "$q" ]; then q=""
+      elif [ "$c" = '\' ] && [ "$q" = '"' ]; then i=$((i + 1))
+      elif [ "$q" = '"' ]; then
+        # Double quotes neutralize `>` and `<` but NOT `$` and backtick, which still expand.
+        # Those two are kept in the output so the refusal below still sees them.
+        case "$c" in '$'|'`') out+=$c ;; esac
+      fi
+      i=$((i + 1)); continue
+    fi
+    case "$c" in
+      "'"|'"') q=$c; i=$((i + 1)); continue ;;
+      '\')     i=$((i + 2)); continue ;;
+    esac
+    out+=$c; i=$((i + 1))
+  done
+  UNQ=$out
+  [ -n "$q" ] && return 1
+  return 0
+}
+
+# CR is refused outright: it is not a bash separator, so its presence mid-command means the
+# text is not what it appears to be. A newline IS a separator and is handled as one by the
+# scanner below — see its NL branch for why that is not the line-2-smuggle hole the
+# 2026-07-13 sandbox-escape gate was guarding.
+case "$CMD" in *$'\r'*) exit 0 ;; esac
+
+# Backslash-continuation splices two lines into one logical line WITHOUT a separator, so the
+# scanner's newline branch would not see a boundary and would silently concatenate two
+# commands into one segment. Refused rather than spliced.
+case "$CMD" in *'\'$'\n'*) exit 0 ;; esac
 
 # Substitution and redirection are refused rather than parsed. `$(…)`, backticks and a bare
 # `$` make the executed text runtime-determined — precisely the property this hook claims to
-# have established — and `>`/`<` move data outside the operand set.
-case "$CMD" in *'$'*|*'`'*|*'>'*|*'<'*) exit 0 ;; esac
+# have established — and `>`/`<` move data outside the operand set. The test runs on the
+# UNQUOTED text: `rg -n '<name>Task ' f` carries a `<` that is inert inside a quoted regex,
+# and refusing it cost 10 of 197 measured commands for no security return. `<<` is caught by
+# the same `<` because a heredoc operator is never quoted.
+unquoted_text "$CMD" || exit 0
+case "$UNQ" in *'$'*|*'`'*|*'>'*|*'<'*) exit 0 ;; esac
 
 # --- Quote-aware segment scanner ------------------------------------------------------
 # The command must be REASSEMBLED after rewriting, so separators have to survive scanning
@@ -119,6 +162,16 @@ case "$CMD" in *'$'*|*'`'*|*'>'*|*'<'*) exit 0 ;; esac
 # `grep … | head -20` is the dominant real shape — refusing pipes cost more coverage than
 # any other rule this hook had. Bare `&` (background / &-lists) stays refused.
 SEG_TEXT=(); SEG_SEP=()
+
+# Records one segment and the separator that ENDED it. A blank segment is dropped only when
+# a NEWLINE ended it — a blank line is legal bash and means nothing. A blank segment ended
+# by ; && || | is malformed and is pushed through so the walker refuses the command.
+# Relies on bash's dynamic scoping to see scan_segments' `cur`.
+push_seg() {
+  if [ "$1" = "$NL" ] && [ -z "${cur//[[:space:]]/}" ]; then cur=""; return 0; fi
+  SEG_TEXT+=("$cur"); SEG_SEP+=("$1"); cur=""
+}
+
 scan_segments() {
   local s="$1" n=${#1} i=0 c q="" cur=""
   SEG_TEXT=(); SEG_SEP=()
@@ -133,24 +186,31 @@ scan_segments() {
       '\')     cur+=$c; i=$((i + 1))
                if [ "$i" -lt "$n" ]; then cur+=${s:$i:1}; i=$((i + 1)); fi
                continue ;;
-      ';')     SEG_TEXT+=("$cur"); SEG_SEP+=(";"); cur=""; i=$((i + 1)); continue ;;
+      "$NL")   push_seg "$NL"; i=$((i + 1)); continue ;;
+      ';')     push_seg ";"; i=$((i + 1)); continue ;;
       '&')     [ "${s:$i:2}" = "&&" ] || return 1
-               SEG_TEXT+=("$cur"); SEG_SEP+=("&&"); cur=""; i=$((i + 2)); continue ;;
+               push_seg "&&"; i=$((i + 2)); continue ;;
       '|')     if [ "${s:$i:2}" = "||" ]; then
-                 SEG_TEXT+=("$cur"); SEG_SEP+=("||"); cur=""; i=$((i + 2))
+                 push_seg "||"; i=$((i + 2))
                else
                  # A single `|` is a pipe. Splitting on it is exactly as safe as splitting
                  # on `;` now that the scanner tracks quotes — an unquoted `|` is always a
                  # pipe, and a `|` inside a grep pattern (`-E 'a|b'`, `"a\|b"`) is quoted
                  # and never reaches here. Refusing pipes cost more coverage than any other
                  # single rule: `grep … | head -20` is the dominant real shape.
-                 SEG_TEXT+=("$cur"); SEG_SEP+=("|"); cur=""; i=$((i + 1))
+                 push_seg "|"; i=$((i + 1))
                fi
                continue ;;
     esac
     cur+=$c; i=$((i + 1))
   done
   [ -n "$q" ] && return 1            # unterminated quote — do not guess
+  # A trailing newline leaves a blank tail that is not a segment at all. Any other trailing
+  # separator leaves a blank tail that IS malformed, and is pushed so the walker refuses it.
+  if [ -z "${cur//[[:space:]]/}" ] && [ "${#SEG_SEP[@]}" -gt 0 ] \
+     && [ "${SEG_SEP[$(( ${#SEG_SEP[@]} - 1 ))]}" = "$NL" ]; then
+    return 0
+  fi
   SEG_TEXT+=("$cur"); SEG_SEP+=("")
   return 0
 }
@@ -439,6 +499,9 @@ rewrite_grep_segment() {
   return 0
 }
 
+# A newline separator is re-emitted as `;`. The two are identical in bash for every segment
+# shape this hook accepts, and collapsing to one line keeps the rewritten command legible in
+# the permission surface it is about to bypass.
 # --- Walk the segments -------------------------------------------------------------------
 SAW_GREP=0
 NEW=""
@@ -473,7 +536,8 @@ for seg in "${SEG_TEXT[@]}"; do
     DHX_STAGE="grep-grammar:$head"
     rewrite_grep_segment "$t" || exit 0
     SAW_GREP=1
-    NEW="$NEW ${SEG_SEP[$((i - 1))]} $SEG_OUT"
+    sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
+    NEW="$NEW $sep $SEG_OUT"
   else
     is_allowed_companion "$head" || exit 0
     case "$head" in
@@ -491,7 +555,8 @@ for seg in "${SEG_TEXT[@]}"; do
             done ;;
     esac
     # Companions are re-emitted byte-identical: never rewritten, never normalized.
-    NEW="$NEW ${SEG_SEP[$((i - 1))]} $t"
+    sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
+    NEW="$NEW $sep $t"
   fi
   i=$((i + 1))
 done
