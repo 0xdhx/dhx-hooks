@@ -127,7 +127,28 @@ fi
 
 REPO_ROOT=$(git -C "$(dirname "$(realpath "$0")")/.." rev-parse --show-toplevel)
 BUILD_DIR=$(mktemp -d -t dhx-hooks-public-XXXXXX)
-trap 'rm -rf "$BUILD_DIR"' EXIT
+
+# MAIN_PUBLISHED is armed to 1 the instant the force-push to `main` returns, and it is
+# READ by the EXIT trap below. Before 2026-09-03 it was set and never read: the tag-failure
+# branch that prints "main IS already published" sat further down the happy path, so it was
+# reachable only from the ONE failure it anticipated (the tag PUSH). The first real CI
+# publish died one line earlier — at `git tag -a`, on a runner with no committer identity —
+# and `set -e` aborted straight past the warning. The run went red with the mirror
+# ALREADY PUBLISHED and said nothing, which is precisely the false-confidence shape that
+# branch exists to prevent. A trap covers every failure point after the push, not just the
+# one someone thought of.
+MAIN_PUBLISHED=0
+_sync_on_exit() {
+  local rc=$?
+  rm -rf "$BUILD_DIR"
+  if [ "$rc" -ne 0 ] && [ "${MAIN_PUBLISHED:-0}" = "1" ]; then
+    echo "[sync] WARN: this run exited $rc, but MAIN IS ALREADY PUBLISHED at ${PUBLISHED_SHA:-unknown}." >&2
+    echo "[sync]       A non-zero exit here does NOT mean 'nothing was published'." >&2
+    echo "[sync]       Verify the mirror tip before re-running or reverting." >&2
+  fi
+  return "$rc"
+}
+trap _sync_on_exit EXIT
 
 echo "[sync] REPO_ROOT=$REPO_ROOT"
 echo "[sync] BUILD_DIR=$BUILD_DIR"
@@ -791,11 +812,16 @@ else
   # Empty remote (first publish / fixture): no tip to stake a lease on.
   git push --force public HEAD:main >/dev/null 2>&1
 fi
-MAIN_PUBLISHED=1   # from here on, main IS public — see the tag-failure branch below
+PUBLISHED_SHA=$(git rev-parse HEAD)
+MAIN_PUBLISHED=1   # from here on, main IS public — read by the EXIT trap above
 
 # Tag if absent (idempotent — `git tag` exits non-zero if tag already exists locally)
 if ! git rev-parse "$TAG_VERSION" >/dev/null 2>&1; then
-  git tag -a "$TAG_VERSION" -m "Release $TAG_VERSION"
+  # Identity must be supplied inline, exactly as the scrub commit above does it: a CI
+  # runner has no git user.name/user.email, and `git tag -a` refuses without one
+  # ("fatal: empty ident name"). This is what failed the first real CI publish, 2026-09-03.
+  git -c user.email=public-mirror@dhx.local -c user.name="dhx-hooks public mirror" \
+      tag -a "$TAG_VERSION" -m "Release $TAG_VERSION"
 fi
 # Partial-publish honesty (Codex review finding 8): main and the tag are two separate
 # pushes. If the tag push fails, `set -e` would exit non-zero with main ALREADY public —
