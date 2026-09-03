@@ -293,6 +293,25 @@ npm ci
 pytest"
   "   pip install six
    pytest"
+  # --- cd-compound-read-allow: the shapes this producer actually rewrites ---
+  # Registering a rewriter without corpus rows hard-reds the liveness assertion below, and
+  # a row that never draws a rewrite asserts nothing. These use /etc/passwd and /usr/share
+  # because the hook refuses to rewrite an operand that does not EXIST, so a fixture path
+  # would silently make every one of these rows inert.
+  "cd /etc; grep -n root passwd"
+  "cd /etc && grep -n root passwd"
+  "cd /usr; grep -rn bin share"
+  # --- cd-compound x install/pytest heads: the collision candidates ---
+  # A `cd /abs` head plus another producer's head in a later segment is the only shape where
+  # this hook and the other two could plausibly both claim a command. It stays disjoint
+  # because this hook allowlists neither head and refuses the whole compound.
+  "cd /etc; grep -n root passwd; pytest"
+  "cd /etc; grep -n root passwd && pip install six"
+  "cd /etc; grep -n root passwd | tee log"
+  "cd /etc; pytest tests/"
+  "cd /etc; pip install six"
+  "cd /etc; npm install"
+  "cd /tmp; grep -n x .env"
   # --- neither should fire ---
   "echo pip install six" "grep pytest dhx/" "cat pytest.ini"
   "npm test" "npm run install" "pip download six"
