@@ -464,6 +464,12 @@ _assert "[86] reason does not restate the retired follow-up-over-edit doctrine" 
   "$(grep -qi 'prefer posting a follow-up' <<< "$DENY_REASON" && echo yes || echo no)"
 _assert "[87] reason routes an issue-BODY edit (not just posting a comment)" "yes" \
   "$(grep -qi 'editing the issue body' <<< "$DENY_REASON" && echo yes || echo no)"
+# [87b] is [87]'s PR-side twin. Since the message names no driver scripts, the ONLY thing
+# standing between a denied PR-body edit and the bypass is this route sentence, and until
+# 2026-09-04 nothing asserted it existed. Pinned as the standing instrument for the amended
+# AC-7 of cross-repo's 2026-08-03-upstream-edit-pr-body-driver-and-revise-step.
+_assert "[87b] reason routes a PR-BODY edit to the revise mode" "yes" \
+  "$(grep -qi 'body edit' <<< "$DENY_REASON" && grep -qi 'revise' <<< "$DENY_REASON" && echo yes || echo no)"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
