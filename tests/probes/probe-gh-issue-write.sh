@@ -468,8 +468,25 @@ _assert "[87] reason routes an issue-BODY edit (not just posting a comment)" "ye
 # standing between a denied PR-body edit and the bypass is this route sentence, and until
 # 2026-09-04 nothing asserted it existed. Pinned as the standing instrument for the amended
 # AC-7 of cross-repo's 2026-08-03-upstream-edit-pr-body-driver-and-revise-step.
-_assert "[87b] reason routes a PR-BODY edit to the revise mode" "yes" \
-  "$(grep -qi 'body edit' <<< "$DENY_REASON" && grep -qi 'revise' <<< "$DENY_REASON" && echo yes || echo no)"
+#
+# RELATIONAL, and it has to be. Its first form grepped the whole reason for `body edit` and
+# for `revise` independently, and a close-gate reviewer refuted that within the hour: token
+# co-occurrence stays green when a message routes body edits to the WRONG mode, as long as
+# some other PR operation still mentions revise. [87c] is that exact counterexample, kept as
+# a live mutation control so the weak form cannot come back unnoticed. What is asserted now
+# is the RELATION: the first mode named after `body edit` must be revise.
+_mode_after_body_edit() { # reason -> the first /dhx:upstream <mode> following "body edit"
+  local __tail="${1#*ody edit}"
+  [ "$__tail" = "$1" ] && { echo "__no-body-edit__"; return; }
+  local __m; __m="$(grep -oiE '/dhx:upstream [a-z]+' <<< "$__tail" | head -1 | awk '{print $2}')"
+  echo "${__m:-__no-route__}"
+}
+_assert "[87b] the mode named after 'body edit' is revise" "revise" \
+  "$(_mode_after_body_edit "$DENY_REASON")"
+# MUTATION CONTROL: the refuted weak form passes this string; [87b] must not.
+_MUT87="(3) anything on an EXISTING PR: body edit -> '/dhx:upstream reply'; retitle -> '/dhx:upstream revise' (4) bypass"
+_assert "[87c] MUT CONTROL: body-edit routed to the wrong mode is caught" "reply" \
+  "$(_mode_after_body_edit "$_MUT87")"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
