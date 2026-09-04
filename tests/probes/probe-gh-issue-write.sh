@@ -484,8 +484,9 @@ _assert "[86] reason does not restate the retired follow-up-over-edit doctrine" 
 # failure: it is the kind that gets an assertion deleted rather than fixed.
 #
 # _route_mode <route-anchor-ERE, lowercase> <reason>
-#   Isolates that route's OWN segment — from the route anchor to the next `(N)` route
-#   marker — and returns the single /dhx:upstream mode that segment routes a body edit to.
+#   Isolates that route's OWN segment — from the route anchor to the NEXT ROUTE ANCHOR (or
+#   end of message) — and returns the single /dhx:upstream mode that segment routes a body
+#   edit to.
 #   Anchoring to the segment rather than to the first `ody edit` in the whole message is
 #   what makes an unrelated route's rewording unable to shadow this one. Diagnostics:
 #     __no-route-segment__  the message names no such route at all
@@ -503,13 +504,26 @@ _assert "[86] reason does not restate the retired follow-up-over-edit doctrine" 
 # RESIDUAL shared by both arms: they depend on the message keeping a literal route anchor
 # ("EXISTING issue" / "EXISTING PR"). The anchors below accept the plural and the spelled-out
 # "pull request", which narrows that dependency without removing it.
+# RESIDUAL of the anchor bound, traded knowingly for the marker bound it replaced: the LAST
+# route's segment runs to the end of the message, so a `/dhx:upstream <mode>` appearing in
+# trailing prose AFTER the last route would read as a second mode and turn that arm
+# ambiguous. Today no such mention exists past the PR route ([87b] green is that assertion),
+# and the trade is worth it — the marker bound broke on any parenthetical digit anywhere in
+# a route, a much larger class than "prose after the last route names a mode".
 _route_mode() { # <route-anchor-ERE, lowercase> <reason> -> mode | __diagnostic__
   local __anchor="$1" __reason="$2" __seg
   # awk match() is leftmost — FIRST occurrence, unlike a greedy sed `s/^.*A//`. tolower is
   # length-preserving for ASCII, so RSTART/RLENGTH still index the original string.
   __seg="$(awk -v a="$__anchor" '{ l=tolower($0); if (match(l, a)) print "OK" substr($0, RSTART+RLENGTH) }' <<< "$__reason")"
   case "$__seg" in OK*) __seg="${__seg#OK}" ;; *) echo "__no-route-segment__"; return ;; esac
-  __seg="$(sed -E 's/\([0-9]+\).*//' <<< "$__seg")"   # bound to THIS route
+  # A route segment ends where the NEXT route begins. Bounding on the next route ANCHOR
+  # rather than on the next `(N)` marker is deliberate: the close-gate reviewer defeated the
+  # marker bound in one line (2026-09-04) with a parenthetical digit INSIDE a route --
+  # `EXISTING PR (2) common edits include body edit ...` truncated at the `(2)` and returned
+  # `__no-body-edit__` on a route that routes one. Any parenthetical number did it; a route
+  # anchor cannot appear mid-clause the same way.
+  local __any='existing (issues?|pr|pull requests?)[^a-z]'
+  __seg="$(awk -v a="$__any" '{ l=tolower($0); if (match(l, a)) print substr($0, 1, RSTART-1); else print }' <<< "$__seg")"
   grep -qiE 'body edit|editing the (issue|pr) body' <<< "$__seg" \
     || { echo "__no-body-edit__"; return; }
   local __modes
@@ -572,6 +586,14 @@ _assert "[87j] CTRL vacuity: a message with no PR route resolves to no segment" 
 _MUT87NOBE="(3) anything on an EXISTING PR: retitle only -> '/dhx:upstream revise' (4) bypass"
 _assert "[87k] CTRL vacuity: a PR route routing no body edit is not silently green" "__no-body-edit__" \
   "$(_route_mode "$_ANCHOR_PR" "$_MUT87NOBE")"
+# The close-gate reviewer's counterexample, verbatim (round 1, 2026-09-04). Against the
+# `(N)`-marker bound this returned `__no-body-edit__` — a false red on a route that plainly
+# routes a body edit — because the parenthetical `(2)` mid-clause read as the next route
+# marker. The anchor bound is immune to it. Kept as a live control so the marker bound
+# cannot come back unnoticed.
+_MUT87PAREN="(3) anything on an EXISTING PR (2) common edits include body edit and retitle -> '/dhx:upstream revise' (4) bypass"
+_assert "[87l] MUT CONTROL: a parenthetical digit mid-route does not truncate the segment" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87PAREN")"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
