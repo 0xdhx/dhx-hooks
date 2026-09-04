@@ -516,14 +516,21 @@ _route_mode() { # <route-anchor-ERE, lowercase> <reason> -> mode | __diagnostic_
   # length-preserving for ASCII, so RSTART/RLENGTH still index the original string.
   __seg="$(awk -v a="$__anchor" '{ l=tolower($0); if (match(l, a)) print "OK" substr($0, RSTART+RLENGTH) }' <<< "$__reason")"
   case "$__seg" in OK*) __seg="${__seg#OK}" ;; *) echo "__no-route-segment__"; return ;; esac
-  # A route segment ends where the NEXT route begins. Bounding on the next route ANCHOR
-  # rather than on the next `(N)` marker is deliberate: the close-gate reviewer defeated the
-  # marker bound in one line (2026-09-04) with a parenthetical digit INSIDE a route --
-  # `EXISTING PR (2) common edits include body edit ...` truncated at the `(2)` and returned
-  # `__no-body-edit__` on a route that routes one. Any parenthetical number did it; a route
-  # anchor cannot appear mid-clause the same way.
-  local __any='existing (issues?|pr|pull requests?)[^a-z]'
-  __seg="$(awk -v a="$__any" '{ l=tolower($0); if (match(l, a)) print substr($0, 1, RSTART-1); else print }' <<< "$__seg")"
+  # A route segment ends where the NEXT route begins, and a route begins with a `(N)` marker
+  # AND a route anchor, with no other bracket between them. BOTH halves are load-bearing, and
+  # each was learned from a defeat -- two close-gate rounds on 2026-09-04 killed the one-half
+  # forms in one line each:
+  #   marker alone  -> `EXISTING PR (2) common edits include body edit ...` truncated at the
+  #                    parenthetical `(2)`      ([87l] is that counterexample)
+  #   anchor alone  -> `EXISTING PR: unlike an EXISTING issue, a PR body edit ...` truncated
+  #                    at the cross-reference   ([87m] is that one)
+  # Both returned `__no-body-edit__` on a route that plainly routes one -- a false red, on the
+  # arm whose false reds get assertions deleted rather than fixed. Neither a bare digit nor a
+  # bare anchor mention can satisfy the conjunction.
+  # Brackets are matched as [(] / [)] rather than escaped: a backslash escape inside an
+  # awk -v string is processed by the string literal first, and POSIX leaves that undefined.
+  local __next='[(][0-9]+[)][^()]*existing (issues?|pr|pull requests?)[^a-z]'
+  __seg="$(awk -v a="$__next" '{ l=tolower($0); if (match(l, a)) print substr($0, 1, RSTART-1); else print }' <<< "$__seg")"
   grep -qiE 'body edit|editing the (issue|pr) body' <<< "$__seg" \
     || { echo "__no-body-edit__"; return; }
   local __modes
@@ -594,6 +601,13 @@ _assert "[87k] CTRL vacuity: a PR route routing no body edit is not silently gre
 _MUT87PAREN="(3) anything on an EXISTING PR (2) common edits include body edit and retitle -> '/dhx:upstream revise' (4) bypass"
 _assert "[87l] MUT CONTROL: a parenthetical digit mid-route does not truncate the segment" "revise" \
   "$(_route_mode "$_ANCHOR_PR" "$_MUT87PAREN")"
+# The round-2 reviewer's counterexample, verbatim. Against the anchor-ONLY bound that round 1
+# produced, this returned `__no-body-edit__` — the mid-clause cross-reference to the other
+# route read as the start of that route. Requiring a `(N)` marker alongside the anchor is
+# what separates a cross-reference from a route start.
+_MUT87XREF="(3) anything on an EXISTING PR: unlike an EXISTING issue, a PR body edit -> /dhx:upstream revise (4) bypass"
+_assert "[87m] MUT CONTROL: an in-route cross-reference is not read as the next route" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87XREF")"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
