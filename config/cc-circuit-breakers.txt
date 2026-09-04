@@ -1,0 +1,58 @@
+# baseline-build: 2.1.261
+registry dangerousRemoval bypassImmune=1 classifierRouted=1
+registry backgroundOperator bypassImmune=0 classifierRouted=1
+registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1
+registry isolatePeerMachines bypassImmune=1 classifierRouted=0
+registry restrictedMode bypassImmune=1 classifierRouted=0
+registry outsideReadsBlocked bypassImmune=1 classifierRouted=0
+reducer .mcpInfo
+reducer .isReadOnly
+reducer .behavior
+reducer "passthrough"
+reducer .mode
+reducer "plan"
+reducer "ask"
+reducer .name
+reducer "mode"
+reducer "plan"
+reducer .behavior
+reducer "deny"
+reducer "ask"
+reducer .behavior
+reducer "ask"
+reducer "ask"
+reducer "rule"
+reducer .name
+reducer .requiresUserInteraction
+reducer .behavior
+reducer "ask"
+reducer "ask"
+reducer .name
+reducer "other"
+reducer "requiresUserInteraction"
+reducer .behavior
+reducer "ask"
+reducer .mcpInfo
+reducer .effectiveMaxPermission
+reducer "ask"
+reducer "other"
+reducer "ask"
+reducer .name
+reducer "bypassPermissions"
+reducer "plan"
+reducer .isBypassPermissionsModeAvailable
+reducer .forRemoteExecution
+reducer .behavior
+reducer "ask"
+reducer .decisionReason
+reducer .behavior
+reducer "ask"
+reducer .decisionReason
+reducer .behavior
+reducer "ask"
+reducer .decisionReason
+reducer .decisionReason
+reducer .type
+reducer "sandboxOverride"
+reducer .decisionReason
+generic other

@@ -293,18 +293,14 @@ npm ci
 pytest"
   "   pip install six
    pytest"
-  # --- cd-compound-read-allow: the shapes this producer actually rewrites ---
-  # Registering a rewriter without corpus rows hard-reds the liveness assertion below, and
-  # a row that never draws a rewrite asserts nothing. These use /etc/passwd and /usr/share
-  # because the hook refuses to rewrite an operand that does not EXIST, so a fixture path
-  # would silently make every one of these rows inert.
+  # --- cd-compound heads (RETIRED producer, kept as negative rows) ---
+  # dhx-cd-compound-read-allow.sh rewrote `cd <abs>; grep ... <rel>` and pipe-consuming grep
+  # segments until 2026-09-04, when it was retired (docs/decisions.md row of that date). Its
+  # rows stay in the corpus as shapes NO surviving producer may claim: a future rewriter that
+  # starts matching a `cd` head would have to collide with the other two here to be caught.
   "cd /etc; grep -n root passwd"
   "cd /etc && grep -n root passwd"
   "cd /usr; grep -rn bin share"
-  # --- cd-compound x install/pytest heads: the collision candidates ---
-  # A `cd /abs` head plus another producer's head in a later segment is the only shape where
-  # this hook and the other two could plausibly both claim a command. It stays disjoint
-  # because this hook allowlists neither head and refuses the whole compound.
   "cd /etc; grep -n root passwd; pytest"
   "cd /etc; grep -n root passwd && pip install six"
   "cd /etc; grep -n root passwd | tee log"

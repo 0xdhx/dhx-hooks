@@ -188,6 +188,17 @@ node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
 # after the critical health/heal/worktree hooks — belt-and-suspenders, not
 # critical-path. See docs/decisions.md 2026-06-02 cc-version-guard wiring row.
 [ -e ~/.claude/dhx-tools/cc-version-guard.sh ] && bash ~/.claude/dhx-tools/cc-version-guard.sh < /dev/null || true
+# CC permission circuit-breaker DRIFT MONITOR (2026-09-04). Sibling to the version guard
+# above: that one asserts WHICH build runs; this one asserts that the build's bypass-immune
+# registry and permission reducer still match config/cc-circuit-breakers.txt. It exists
+# because 2.1.259 added a bypassImmune circuit that nothing local could see until a prompt
+# storm hit, and 2.1.260 removed it again — a set-drift diff names such a change at the
+# first session start on the new build. Runs HERE, not in CI: the hosted runner has no
+# ~/.local/share/claude/versions/ and would pass vacuously. Cached per executable identity,
+# so repeat starts cost one stat per build. Silent on match; stderr advisory on drift or on
+# an EMPTY extraction (exit 2 — an anchor stopped matching is not a clean result). Fail-open
+# via the trailing || true. See docs/decisions.md 2026-09-04 row.
+[ -e /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh ] && bash /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh < /dev/null || true
 # Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh || true
 
