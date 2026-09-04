@@ -462,31 +462,116 @@ _assert "[85] reason enumerates no sibling driver script filename" "no" \
   "$(grep -qE 'edit-pr-(title|body|comment)\.sh|post-pr-comment\.sh|run-comment\.sh' <<< "$DENY_REASON" && echo yes || echo no)"
 _assert "[86] reason does not restate the retired follow-up-over-edit doctrine" "no" \
   "$(grep -qi 'prefer posting a follow-up' <<< "$DENY_REASON" && echo yes || echo no)"
-_assert "[87] reason routes an issue-BODY edit (not just posting a comment)" "yes" \
-  "$(grep -qi 'editing the issue body' <<< "$DENY_REASON" && echo yes || echo no)"
-# [87b] is [87]'s PR-side twin. Since the message names no driver scripts, the ONLY thing
-# standing between a denied PR-body edit and the bypass is this route sentence, and until
-# 2026-09-04 nothing asserted it existed. Pinned as the standing instrument for the amended
-# AC-7 of cross-repo's 2026-08-03-upstream-edit-pr-body-driver-and-revise-step.
+# --- [87] / [87b]: the two BODY-EDIT ROUTE arms ------------------------------------
+# Since the message names no driver scripts, these two route sentences are the ONLY thing
+# standing between a denied body edit and the audited bypass. [87b] is pinned as the
+# standing instrument for the amended AC-7 of cross-repo's
+# 2026-08-03-upstream-edit-pr-body-driver-and-revise-step.
 #
-# RELATIONAL, and it has to be. Its first form grepped the whole reason for `body edit` and
-# for `revise` independently, and a close-gate reviewer refuted that within the hour: token
-# co-occurrence stays green when a message routes body edits to the WRONG mode, as long as
-# some other PR operation still mentions revise. [87c] is that exact counterexample, kept as
-# a live mutation control so the weak form cannot come back unnoticed. What is asserted now
-# is the RELATION: the first mode named after `body edit` must be revise.
-_mode_after_body_edit() { # reason -> the first /dhx:upstream <mode> following "body edit"
-  local __tail="${1#*ody edit}"
-  [ "$__tail" = "$1" ] && { echo "__no-body-edit__"; return; }
-  local __m; __m="$(grep -oiE '/dhx:upstream [a-z]+' <<< "$__tail" | head -1 | awk '{print $2}')"
-  echo "${__m:-__no-route__}"
+# RELATIONAL, and they have to be. [87b]'s first form grepped the whole reason for
+# `body edit` and for `revise` independently, and a close-gate reviewer refuted that within
+# the hour: token co-occurrence stays green when a message routes body edits to the WRONG
+# mode, as long as some other PR operation still mentions revise. Its second form read the
+# first `/dhx:upstream <mode>` after the first `ody edit` anywhere in the message — better,
+# but still POSITIONAL, and the round-3 review (2026-09-04, APPROVED-WITH-FINDINGS) recorded
+# three mutations that defeat token order. What is asserted now is the ROUTING RELATION:
+# within a named route's OWN segment, the single mode that route sends a body edit to.
+#
+# [87] was a bare `grep -qi 'editing the issue body'` until 2026-09-04 and carried the
+# identical hazard one arm over — the very rewording that mutation (c) describes (route (2)
+# saying "issue body edit") would have turned it RED against a correct message. It is a
+# relation now too, off the same helper. A false red on either arm is not a harmless
+# failure: it is the kind that gets an assertion deleted rather than fixed.
+#
+# _route_mode <route-anchor-ERE, lowercase> <reason>
+#   Isolates that route's OWN segment — from the route anchor to the next `(N)` route
+#   marker — and returns the single /dhx:upstream mode that segment routes a body edit to.
+#   Anchoring to the segment rather than to the first `ody edit` in the whole message is
+#   what makes an unrelated route's rewording unable to shadow this one. Diagnostics:
+#     __no-route-segment__  the message names no such route at all
+#     __no-body-edit__      the route exists but routes no body edit
+#     __no-mode__           the route names no /dhx:upstream mode
+#     __ambiguous:a+b__     the route names >1 mode, so it routes a body edit to none singly
+#
+# KNOWN LIMIT — stated HERE, in the probe, because the brief requires the limitation live
+# with the instrument rather than in prose elsewhere. Mutation (a) — "body edit is NOT
+# supported by /dhx:upstream revise; use ... reply" — is caught by the mode-SET check, i.e.
+# by CARDINALITY, not by reading the negation. A negation naming ONLY the correct mode
+# ("retitle -> revise; a body edit is not supported") still passes. That is prose semantics
+# and is not decidable syntactically; [87i] PINS the wrong answer so the limit is measured
+# rather than asserted, and will go red the day someone closes it.
+# RESIDUAL shared by both arms: they depend on the message keeping a literal route anchor
+# ("EXISTING issue" / "EXISTING PR"). The anchors below accept the plural and the spelled-out
+# "pull request", which narrows that dependency without removing it.
+_route_mode() { # <route-anchor-ERE, lowercase> <reason> -> mode | __diagnostic__
+  local __anchor="$1" __reason="$2" __seg
+  # awk match() is leftmost — FIRST occurrence, unlike a greedy sed `s/^.*A//`. tolower is
+  # length-preserving for ASCII, so RSTART/RLENGTH still index the original string.
+  __seg="$(awk -v a="$__anchor" '{ l=tolower($0); if (match(l, a)) print "OK" substr($0, RSTART+RLENGTH) }' <<< "$__reason")"
+  case "$__seg" in OK*) __seg="${__seg#OK}" ;; *) echo "__no-route-segment__"; return ;; esac
+  __seg="$(sed -E 's/\([0-9]+\).*//' <<< "$__seg")"   # bound to THIS route
+  grep -qiE 'body edit|editing the (issue|pr) body' <<< "$__seg" \
+    || { echo "__no-body-edit__"; return; }
+  local __modes
+  __modes="$(grep -oiE '/dhx:upstream [a-z]+' <<< "$__seg" \
+             | awk '{print tolower($2)}' | sort -u | tr '\n' '+' | sed 's/+$//')"
+  case "$__modes" in
+    "")  echo "__no-mode__" ;;
+    *+*) echo "__ambiguous:${__modes}__" ;;
+    *)   echo "$__modes" ;;
+  esac
 }
-_assert "[87b] the mode named after 'body edit' is revise" "revise" \
-  "$(_mode_after_body_edit "$DENY_REASON")"
-# MUTATION CONTROL: the refuted weak form passes this string; [87b] must not.
+_ANCHOR_ISSUE='existing issues?[^a-z]'
+_ANCHOR_PR='existing (pr|pull requests?)[^a-z]'
+_assert "[87] the EXISTING-issue route sends a body edit to reply" "reply" \
+  "$(_route_mode "$_ANCHOR_ISSUE" "$DENY_REASON")"
+_assert "[87b] the EXISTING-PR route sends a body edit to revise" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$DENY_REASON")"
+# MUTATION CONTROLS. [87c]-[87d] kill the FIRST form (token co-occurrence). [87e]-[87h] are
+# the round-3 review's three mutations, one control each, per the brief's requirement that
+# every mutation the fix claims to close carries its own control. [87i] pins the one it
+# does NOT close. [87j]-[87k] are vacuity controls: without them a helper that always
+# returned the mode would pass every arm above.
 _MUT87="(3) anything on an EXISTING PR: body edit -> '/dhx:upstream reply'; retitle -> '/dhx:upstream revise' (4) bypass"
-_assert "[87c] MUT CONTROL: body-edit routed to the wrong mode is caught" "reply" \
-  "$(_mode_after_body_edit "$_MUT87")"
+_assert "[87c] MUT CONTROL: two modes in one route routes a body edit to neither" "__ambiguous:reply+revise__" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87")"
+_MUT87D="(3) anything on an EXISTING PR: body edit -> '/dhx:upstream reply' (4) bypass"
+_assert "[87d] MUT CONTROL: body-edit routed to the wrong mode is caught" "reply" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87D")"
+# (c) — the realistic one: an issue route reworded to shadow the PR route's phrasing. BOTH
+# arms must survive it. This is the false-red the segment anchor exists to prevent.
+# NOTE the shape: the issue route names its mode AFTER its body-edit token. That ordering is
+# load-bearing — with the mode named FIRST the positional form skips the whole route and
+# stays green, so a fixture written that way is a control with no tooth. Measured against
+# the pre-fix helper 2026-09-04: this string yields `reply` (red), the mode-first variant
+# yields `revise` (green).
+_MUT87C="(2) anything on an EXISTING issue: an issue body edit -> '/dhx:upstream reply'; (3) anything on an EXISTING PR: body edit, retitle -> '/dhx:upstream revise' (4) bypass"
+_assert "[87e] MUT CONTROL (c): a shadowing issue route does not capture the PR arm" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87C")"
+_assert "[87f] MUT CONTROL (c): the issue arm still resolves under the same rewording" "reply" \
+  "$(_route_mode "$_ANCHOR_ISSUE" "$_MUT87C")"
+# (b) — mode named BEFORE the body-edit token. Fatal to any positional form; fine here,
+# because within a bounded route segment the order of the two facts does not matter.
+_MUT87B="(3) anything on an EXISTING PR: use '/dhx:upstream revise' for a PR body edit, retitle, or response comment (4) bypass"
+_assert "[87g] MUT CONTROL (b): mode named before the body-edit token still resolves" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87B")"
+# (a) — the body edit disclaimed and re-routed. Caught by CARDINALITY (two modes), not by
+# reading the negation. See KNOWN LIMIT above, and [87i] for what that leaves open.
+_MUT87A="(3) anything on an EXISTING PR: body edit is NOT supported by '/dhx:upstream revise'; use '/dhx:upstream reply' (4) bypass"
+_assert "[87h] MUT CONTROL (a): a disclaimer naming a second mode is caught" "__ambiguous:reply+revise__" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87A")"
+# KNOWN LIMIT, pinned. This message routes NO body edit, yet the arm reads `revise`. The
+# expectation below documents a defect, it does not endorse one — if a future form decides
+# prose negation, this goes red and is deleted, not "fixed" back.
+_MUT87NEG="(3) anything on an EXISTING PR: retitle -> '/dhx:upstream revise'; a body edit is not supported (4) bypass"
+_assert "[87i] KNOWN LIMIT: a negation naming only the correct mode still passes" "revise" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87NEG")"
+_MUT87NOPR="(1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply', including an issue body edit (4) bypass"
+_assert "[87j] CTRL vacuity: a message with no PR route resolves to no segment" "__no-route-segment__" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87NOPR")"
+_MUT87NOBE="(3) anything on an EXISTING PR: retitle only -> '/dhx:upstream revise' (4) bypass"
+_assert "[87k] CTRL vacuity: a PR route routing no body edit is not silently green" "__no-body-edit__" \
+  "$(_route_mode "$_ANCHOR_PR" "$_MUT87NOBE")"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
