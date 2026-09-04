@@ -23,8 +23,16 @@
 //      "Xm ago" (ms-precision ISO exercised — the producer's real format, which
 //      needs the fractional-second strip before fromdateiso8601); a missing or
 //      malformed last_checked_at renders the row BARE (fail-silent, never throws).
+//   7. UPSTREAM-STATE EXCLUSION (Gap 7 / AC9) — WR-04's upstream twin. An item whose
+//      last_seen_state is "closed" or "merged" HIDES even while its stored action_state
+//      still reads awaiting_us; "open" and a never-polled item (field absent) RENDER.
+//      The banner is level-triggered on the STORED action_state, which the checker only
+//      recomputes to `resolved` on that item's next due poll -- so without this clause a
+//      closed-upstream item demands action for up to cadence_hours (24h). Both selects
+//      (count + rows) carry the clause, asserted together so divergence is caught.
 //
-// Backs docs/decisions.md 2026-05-28 watch action-required banner-consumer row.
+// Backs docs/decisions.md 2026-05-28 watch action-required banner-consumer row
+// + the 2026-09-04 Gap 7 / AC9 row.
 // Hermetic: each spawn points DHX_WATCH_DIR at a throwaway mktemp dir holding only a
 // fixtured watchlist.json, and DHX_WATCH_HEALTH_CACHE at a nonexistent path — so the
 // banner reads ONLY the fixture (no live ~/repos/cross-repo/watch, no live health
@@ -192,6 +200,45 @@ for (const c of SILENT_CASES) {
   check('(6) malformed last_checked_at → row renders bare + exit 0',
     rBad.status === 0 && rBad.stdout.includes('age-malformed') && !rBad.stdout.includes('polled'),
     `status=${rBad.status} out=${j(rBad.stdout)}`);
+}
+
+// ── (7) UPSTREAM-STATE EXCLUSION (Gap 7 / AC9) — closed/merged never demand action ──
+// Negative control: every HIDE case below FAILS against the pre-Gap-7 selects (measured
+// 2026-09-04 — a 3-item fixture counted 3, of which only 1 was actionable). The RENDER
+// cases pass both before and after; they are the guard that the clause did not become a
+// blanket suppression, and the never-polled case pins the jq null-safety (`null != "closed"`
+// is true, so an item the checker has never reached still surfaces).
+const UPSTREAM_HIDE = [
+  { name: 'last_seen_state=closed (the #2140 shape)', over: { id: 'up-closed', last_seen_state: 'closed' } },
+  { name: 'last_seen_state=merged',                   over: { id: 'up-merged', last_seen_state: 'merged' } },
+];
+const UPSTREAM_RENDER = [
+  { name: 'last_seen_state=open',            over: { id: 'up-open', last_seen_state: 'open' } },
+  { name: 'last_seen_state absent (never polled)', over: { id: 'up-unpolled' } },
+];
+for (const c of UPSTREAM_HIDE) {
+  const r = runBanner([build(c)]);
+  check(`(7) HIDE: ${c.name}`,
+    r.status === 0 && !r.stdout.includes(c.over.id) && !r.stdout.includes(SECTION),
+    `status=${r.status} out=${j(r.stdout)}`);
+}
+for (const c of UPSTREAM_RENDER) {
+  const r = runBanner([build(c)]);
+  check(`(7) RENDER: ${c.name}`,
+    r.status === 0 && r.stdout.includes(SECTION) && r.stdout.includes(c.over.id),
+    `status=${r.status} out=${j(r.stdout)}`);
+}
+// Combined: the COUNT select and the ROWS select must agree. A clause added to only one
+// would show here as a header count that does not match the rows rendered beneath it.
+{
+  const items = [...UPSTREAM_HIDE, ...UPSTREAM_RENDER].map(build);
+  const r = runBanner(items);
+  check('(7) combined: header count is 2 (count select carries the clause)',
+    r.stdout.includes('Action required (2)'), `out=${j(r.stdout)}`);
+  check('(7) combined: exactly the 2 render ids appear (rows select carries it too)',
+    UPSTREAM_RENDER.every((c) => r.stdout.includes(c.over.id))
+      && UPSTREAM_HIDE.every((c) => !r.stdout.includes(c.over.id)), `out=${j(r.stdout)}`);
+  check('(7) combined: banner does not throw', r.status === 0, `status=${r.status}`);
 }
 
 console.log('');

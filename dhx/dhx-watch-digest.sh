@@ -277,11 +277,27 @@ fi
 # left at "awaiting_us" on an item later closed/paused must NOT render; action_state
 # is NOT re-cleared on status change, so dropping the clause re-surfaces resolved/
 # closed items.
+#
+# Gap 7 / AC9 (2026-09-04): the `last_seen_state` clauses are WR-04's UPSTREAM twin.
+# WR-04 guards LOCAL drift (our `status` moved, action_state did not). These guard
+# UPSTREAM drift: the issue closed on GitHub, but this banner is LEVEL-triggered on the
+# STORED action_state, and the checker only recomputes it to `resolved` on that item's
+# next due poll -- up to `cadence_hours` (24h default) later. Without the clauses a
+# closed-upstream item keeps demanding action for the whole blind window (measured
+# 2026-07-12: gsd-core #2140, one of 3 false positives in a 4-item banner).
+# No new API and no new field -- `last_seen_state` is the SAME poll-maintained value the
+# `closed_upstream_still_active` drift line below already keys on, so a closed item now
+# shows in the drift line and NOT the action line; the two banners agree by construction.
+# Residual window narrows from "closed but action_state not-yet-RECOMPUTED" to "closed but
+# not-yet-RECORDED" (one poll). `!=` is null-safe in jq -- an item that has never been
+# polled has no `last_seen_state`, and `null != "closed"` is true, so it still renders.
 ACTION_BLOCK=""
 if [ -f "$WATCHLIST" ]; then
   ACTION_COUNT=$(jq '[.items[]
     | select(.status == "active"
         and .action_state == "awaiting_us"
+        and .last_seen_state != "closed"
+        and .last_seen_state != "merged"
         and (.snooze_until == null
              or (.snooze_until != "perma"
                  and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))]
@@ -306,6 +322,8 @@ if [ -f "$WATCHLIST" ]; then
     ACTION_ROWS=$(jq -r '.items[]
       | select(.status == "active"
           and .action_state == "awaiting_us"
+          and .last_seen_state != "closed"
+          and .last_seen_state != "merged"
           and (.snooze_until == null
                or (.snooze_until != "perma"
                    and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
