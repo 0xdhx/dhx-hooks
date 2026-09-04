@@ -317,6 +317,11 @@ _assert "[58] foreign pr ready -> deny" "deny" \
 # [59] is measured incident #2: the PATCH that rewrote an already-published comment.
 _assert "[59] foreign api PATCH on a comment (INCIDENT 2) -> deny" "deny" \
   "$(_verdict "$(_json s1 "$GH $API --method PATCH repos/open-gsd/gsd-core/issues/comments/5164385953 -F body=@b")")"
+# [59b] is the PR-BODY REST endpoint. `gh pr edit --body-file` (arms [74]-[76], [79]) is one of the
+# two canonical ways to rewrite a foreign PR body; a PATCH on `pulls/<N>` is the other, and until
+# 2026-09-04 no arm exercised it — the only `pulls/` arm was [19], a POST to `pulls/<N>/comments`.
+_assert "[59b] foreign api PATCH on a PR body (pulls/<N>) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API --method PATCH repos/open-gsd/gsd-core/pulls/2290 -F body=@b")")"
 _assert "[60] foreign api -X PUT on an issue path -> deny" "deny" \
   "$(_verdict "$(_json s1 "$GH $API -X PUT repos/open-gsd/gsd-core/issues/1/lock")")"
 _assert "[61] foreign api --method DELETE on a comment -> deny" "deny" \
