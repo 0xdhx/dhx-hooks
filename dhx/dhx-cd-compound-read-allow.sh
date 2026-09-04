@@ -2,9 +2,23 @@
 # dhx-cd-compound-read-allow.sh — PreToolUse:Bash hook (input rewriter)
 # Patterns: HP-028, HP-041, HP-049, HP-052, HP-060, HP-061
 #
-# Rewrites `cd <abs>; grep … <relative path>` so the relative operands become ABSOLUTE,
-# which removes the precondition of the classifier ask-circuit that otherwise raises a
-# permission prompt on every such command under `defaultMode: bypassPermissions`.
+# THE NAME IS HALF-WRONG AND IS KEPT DELIBERATELY. Since 2026-09-03 this hook has TWO arms,
+# and only the first involves a `cd`. Renaming would touch the plugin manifest's absolute
+# path, the ~/.claude symlink, the probe filename and cross-references in four docs, and
+# would need a session restart (HP-012) — for a harm this paragraph fixes. Read the arms,
+# not the filename:
+#
+#   ARM 1 (CD_MODE=1) — `cd <abs>; grep … <relative path>`: rewrites the relative operands
+#   ABSOLUTE, removing the ask-circuit's `!isAbsolute` precondition.
+#
+#   ARM 2 (CD_MODE=0) — `… | grep <pattern>` with NO path operand: appends ` -- -`. CC's
+#   extractor defaults a missing grep operand to `["."]`, `.` resolves to the cwd, and the
+#   cwd CONTAINS the literal prefix of a `Read(./.env*)` deny rule — so a pipeline filter
+#   that opens ZERO files is charged with reading the whole repo. Measured: 1,403 of 3,314
+#   arming commands carry no `cd`, and 1,321 of those are this one shape. The arm has its
+#   own kill switch, DHX_CD_ALLOW_STDIN_ARM=0.
+#
+# Both arms answer the same bypass-immune circuit (HP-060), which no permission mode clears.
 #
 # THE DEFECT (HP-060, CC 2.1.259). The Bash classifier does not simulate `cd`, so a
 # relative operand is unresolvable. With any `Read()` deny rule configured it cannot rule
@@ -60,9 +74,36 @@ command -v jq >/dev/null 2>&1 || exit 0
 CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$CMD" ] || exit 0
 
-# Hot-path bail: almost no Bash call is a `cd <abs>`-prefixed compound. Everything past
-# this line is cold, so the cost on the common path is one jq plus one pattern match.
-case "$CMD" in 'cd /'*|'cd ~/'*) ;; *) exit 0 ;; esac
+# Hot-path bail. TWO entry modes, because the circuit has two ways in (HP-060):
+#
+#   CD_MODE=1  `cd <abs>` compound — a relative operand is unresolvable, so it arms.
+#   CD_MODE=0  no `cd` at all — a grep-family segment CONSUMING A PIPE with no path
+#              operand. CC's extractor defaults a missing grep operand to `["."]`
+#              (`Rst(p,_uo,["."])`), `.` resolves to the cwd, and the cwd CONTAINS the
+#              literal prefix of a `Read(./.env*)` deny rule — so `gf` matches and a
+#              bypass-immune prompt fires on a filter that touches ZERO files.
+#
+# Measured 2026-09-03 over 400 session transcripts / 35,553 Bash invocations: 3,314
+# commands arm the circuit, 1,403 of them with NO `cd` — and 1,321 of those 1,403 are the
+# pipe-consumer shape. The hook was structurally blind to all of them, whoever issued them.
+# The prefilter stays narrow (a pipe followed by a grep-family token) rather than "any
+# pipe": measured, narrow takes 50.1% -> 62.8% of invocations into the parser, broad takes
+# it to 82.5% and catches nothing extra, since the arm needs a grep-family head anyway.
+#
+# DHX_CD_ALLOW_STDIN_ARM=0 disables the stdin arm ALONE, leaving the cd-mode rewriter live.
+# The two arms share one hook on purpose: HP-041 resolves competing `updatedInput` on one
+# matcher in COMPLETION ORDER (last finisher wins, nondeterministically), so a second Bash
+# rewriter would race this one on every command both match.
+STDIN_ARM=1
+[ "${DHX_CD_ALLOW_STDIN_ARM:-1}" = "0" ] && STDIN_ARM=0
+CD_MODE=1
+case "$CMD" in
+  'cd /'*|'cd ~/'*)                                     CD_MODE=1 ;;
+  *'|'*grep*|*'|'*rg*|*'|'*egrep*|*'|'*fgrep*)          CD_MODE=0 ;;
+  *) exit 0 ;;
+esac
+# With the arm off there is nothing a no-cd command can be rewritten for.
+[ "$CD_MODE" -eq 0 ] && [ "$STDIN_ARM" -eq 0 ] && exit 0
 
 # --- Decision breadcrumb ---------------------------------------------------------------
 # Installed AFTER the hot-path bail, so only cd-compound commands ever write. A hook that
@@ -334,6 +375,11 @@ scan_segments "$CMD" || exit 0
 [ "${#SEG_TEXT[@]}" -ge 2 ] || exit 0
 
 # --- Segment 1 must be exactly `cd <existing absolute dir>` -------------------------------
+# CD_MODE=1 only. In CD_MODE=0 there is no cd to resolve against and NOTHING is made
+# absolute — the stdin arm appends an operand, it never rewrites one — so segment 0 is
+# walked like any other segment instead, under the same allowlist.
+CD_TARGET=""
+if [ "$CD_MODE" -eq 1 ]; then
 DHX_STAGE=cd-target
 split_words "$(trim "${SEG_TEXT[0]}")"
 [ "${#WORDS[@]}" -eq 2 ] || exit 0
@@ -355,6 +401,7 @@ for f in "$CD_TARGET/.claude/settings.json" "$CD_TARGET/.claude/settings.local.j
 $extra"
 done
 [ -n "$PROJECT_DENIES" ] && DENY_PATTERNS="$DENY_PATTERNS$PROJECT_DENIES"
+fi
 
 # --- Command classification ---------------------------------------------------------------
 # The grep family is what this hook rewrites. `diff`/`git`/`cp`/`mv` also arm the circuit
@@ -432,11 +479,17 @@ REWROTE=0
 # Returns non-zero to refuse the entire command.
 SEG_OUT=""
 rewrite_grep_segment() {
-  local seg="$1"
+  local seg="$1" is_consumer="${2:-0}"
   split_words "$seg" || return 1
-  local n=${#WORDS[@]} i=1 w bare abs
+  local n=${#WORDS[@]} i=1 w bare abs hw
   local seen_pattern=0 endopts=0 n_paths=0
   local -a out=("${WORDS[0]}")
+  # `-r` is a DIVERGENT option between the two families and must be read head-aware:
+  # for grep/egrep/fgrep it is `--recursive` and takes no argument; for rg it is
+  # `--replace` and CONSUMES one. Treating them alike silently corrupted rg commands —
+  # `rg -r REPL pat file` made REPL the pattern and absolutized `pat` as a path.
+  local fam_head; fam_head=$(strip_quotes "${WORDS[0]}")
+  case "$fam_head" in */*) fam_head=${fam_head##*/} ;; esac
 
   while [ "$i" -lt "$n" ]; do
     w=${WORDS[$i]}
@@ -464,10 +517,19 @@ rewrite_grep_segment() {
           [ $((i + 1)) -lt "$n" ] || return 1
           out+=("$w" "${WORDS[$((i + 1))]}"); i=$((i + 2)); continue ;;
         -[ABCmM][0-9]*) out+=("$w"); i=$((i + 1)); continue ;;   # attached value: inert
+        -r|-R)
+          # See fam_head above. rg's -r consumes the replacement; grep's does not.
+          if [ "$fam_head" = "rg" ]; then
+            [ $((i + 1)) -lt "$n" ] || return 1
+            out+=("$w" "${WORDS[$((i + 1))]}"); i=$((i + 2)); continue
+          fi
+          out+=("$w"); i=$((i + 1)); continue ;;
         -*)
           # Any remaining bundle carrying an argument-consuming letter is still refused:
           # in a bundle the letter's argument position is genuinely ambiguous.
           case "$w" in *[efABCmdgtjM]*) return 1 ;; esac
+          # `r` joins that set for rg only — a bundled `-nr X` hides an argument position.
+          if [ "$fam_head" = "rg" ]; then case "$w" in *r*) return 1 ;; esac; fi
           out+=("$w"); i=$((i + 1)); continue ;;
       esac
     fi
@@ -485,6 +547,12 @@ rewrite_grep_segment() {
     case "$bare" in
       /*|'~'/*) out+=("$w"); i=$((i + 1)); continue ;;   # already resolvable by the classifier
     esac
+    # CD_MODE=0: there is no cd, so a relative operand already resolves against the real
+    # cwd and the classifier can evaluate it. Nothing to fix — pass it through untouched.
+    # (An explicit `.` operand DOES still arm, and is deliberately left alone: such a
+    # command genuinely walks a tree containing the denied file, so the prompt is the
+    # guard working as 2.1.259's changelog describes. Decided 2026-09-03.)
+    if [ "$CD_MODE" -eq 0 ]; then out+=("$w"); i=$((i + 1)); continue; fi
     abs=$(norm_path "$CD_TARGET/$bare")
     # Only rewrite to a path that actually exists and needs no quoting. Anything else is a
     # refusal, never a guess.
@@ -496,9 +564,49 @@ rewrite_grep_segment() {
   done
 
   [ "$seen_pattern" -eq 1 ] || return 1
-  # A grep with no path operand reads stdin (`… | grep -n foo`). That cannot arm the circuit
-  # and needs no rewrite, so it is accepted here; the command-level REWROTE check below is
-  # what still refuses a whole command in which nothing was actually fixed.
+
+  # --- The stdin arm -------------------------------------------------------------------
+  # This block replaces a comment that asserted the opposite and was WRONG for a year:
+  # "a grep with no path operand reads stdin … that cannot arm the circuit". It does.
+  # CC's extractor ends `return p ? o : [...o, ...r]` with `r = ["."]`, so a segment that
+  # collected no positional gets `.` appended, `.` resolves to the cwd, and the cwd
+  # contains the literal prefix of `Read(./.env*)` — `gf` matches and the circuit fires on
+  # a filter that opens no file at all.
+  #
+  # WHY ` -- -` AND NOT ` -` OR ` /dev/stdin`, all three measured 2026-09-03:
+  #   ` -`           semantically perfect, but INERT — `p ||= k || (!F.startsWith("-") …)`
+  #                  stays false for a token beginning with `-`, so `.` is appended anyway
+  #                  and the prompt still fires. Reading only the head of `Rst` hid this.
+  #   ` /dev/stdin`  clears the circuit but rg then prefixes EVERY line `/dev/stdin:`,
+  #                  a visible output change on all seven flag variants tested.
+  #   ` -- -`        `--` sets `k`, so `p ||= k` is true and `Rst` returns `["-"]` with NO
+  #                  default appended; `-` then resolves to `<cwd>/-`, whose path relative
+  #                  to the deny location starts with `..`, so `gf` returns false.
+  #                  Byte-identical to implicit stdin on 16/16 cells — grep and rg, flags
+  #                  -n -l -H -c -o -v -i, `(standard input)`/`<stdin>` labels intact,
+  #                  matching exit codes, matching counts over 200k streamed lines.
+  #
+  # REFUSALS, each measured rather than assumed. These flags make the tool ignore stdin and
+  # walk the filesystem, so appending an operand would CHANGE WHAT THE COMMAND DOES:
+  #   grep -r / -R / --recursive / --directories=recurse / -d  -> searches cwd, ignores stdin
+  #   rg --files                                               -> enumerates files, ignores stdin
+  #   -z / -Z / --null / --null-data                           -> fidelity untested, refused
+  # (`rg --type-list` was tested and IS safe, but is refused by the unknown-long-option
+  # rule upstream of here anyway.)
+  #
+  # A segment that already carries a bare `--` gets ` -` alone: appending a second `--`
+  # would make it a literal filename operand.
+  if [ "$n_paths" -eq 0 ] && [ "$is_consumer" -eq 1 ] && [ "$STDIN_ARM" -eq 1 ]; then
+    for hw in "${WORDS[@]}"; do
+      case "$hw" in
+        --recursive|--files|--directories=recurse|--null|--null-data|-d) return 1 ;;
+        --*) ;;
+        -*) case "$hw" in *[rRzZ]*) return 1 ;; esac ;;
+      esac
+    done
+    if [ "$endopts" -eq 1 ]; then out+=("-"); else out+=("--" "-"); fi
+    REWROTE=1
+  fi
   SEG_OUT="${out[*]}"
   return 0
 }
@@ -512,12 +620,24 @@ NEW=""
 i=0
 for seg in "${SEG_TEXT[@]}"; do
   t=$(trim "$seg")
-  if [ "$i" -eq 0 ]; then
+  # CD_MODE=1: segment 0 is the already-validated `cd` and becomes the base of the rebuild.
+  # CD_MODE=0: there is no cd, so segment 0 is an ordinary segment and is walked under the
+  # SAME allowlist as every other one. It can never be a pipe consumer (nothing precedes
+  # it), so it is only ever validated and re-emitted verbatim — but it must be validated,
+  # because this hook pairs its rewrite with permissionDecision:"allow" and must never hand
+  # that to a segment whose grammar it does not understand.
+  if [ "$i" -eq 0 ] && [ "$CD_MODE" -eq 1 ]; then
     NEW="$t"
     i=$((i + 1)); continue
   fi
 
   [ -n "$t" ] || exit 0                  # empty interior segment: malformed, do not guess
+
+  # A segment is a pipe CONSUMER when the separator that ended the PREVIOUS segment was a
+  # single `|`. That is the whole discriminator for the stdin arm: with a pipe on its left
+  # and no path operand, a grep-family segment is reading stdin and nothing else.
+  is_consumer=0
+  if [ "$i" -gt 0 ] && [ "${SEG_SEP[$((i - 1))]}" = "|" ]; then is_consumer=1; fi
 
   split_words "$t"
   [ "${#WORDS[@]}" -ge 1 ] || exit 0
@@ -538,10 +658,14 @@ for seg in "${SEG_TEXT[@]}"; do
 
   if is_grep_family "$head"; then
     DHX_STAGE="grep-grammar:$head"
-    rewrite_grep_segment "$t" || exit 0
+    rewrite_grep_segment "$t" "$is_consumer" || exit 0
     SAW_GREP=1
-    sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
-    NEW="$NEW $sep $SEG_OUT"
+    if [ "$i" -eq 0 ]; then
+      NEW="$SEG_OUT"
+    else
+      sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
+      NEW="$NEW $sep $SEG_OUT"
+    fi
   else
     is_allowed_companion "$head" || exit 0
     case "$head" in
@@ -589,8 +713,12 @@ for seg in "${SEG_TEXT[@]}"; do
             done ;;
     esac
     # Companions are re-emitted byte-identical: never rewritten, never normalized.
-    sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
-    NEW="$NEW $sep $t"
+    if [ "$i" -eq 0 ]; then
+      NEW="$t"
+    else
+      sep=${SEG_SEP[$((i - 1))]}; [ "$sep" = "$NL" ] && sep=";"
+      NEW="$NEW $sep $t"
+    fi
   fi
   i=$((i + 1))
 done
@@ -616,7 +744,7 @@ jq -n --argjson ti "$TOOL_INPUT" --arg cmd "$NEW" --arg d "$CD_TARGET" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
-    permissionDecisionReason: ("dhx-cd-compound-read-allow: grep operands resolved absolute under " + $d + " so the classifier can evaluate the deny set"),
+    permissionDecisionReason: ("dhx-cd-compound-read-allow: " + (if $d == "" then "explicit stdin operand appended to pipeline filter(s)" else "grep operands resolved absolute under " + $d end) + " so the classifier can evaluate the deny set"),
     updatedInput: ($ti | .command = $cmd)
   }
 }' 2>/dev/null

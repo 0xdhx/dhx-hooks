@@ -55,6 +55,25 @@ s() {
   if [ -z "$got" ]; then ok "$2"; else bad "$2 (emitted: $(printf '%s' "$got" | tr -d '\n' | cut -c1-160))"; fi
 }
 
+# Same pair, with the stdin arm disabled by its kill switch.
+firen()   { payload "$1" | DHX_CD_ALLOW_STDIN_ARM=0 bash "$HOOK" 2>/dev/null; }
+newcmdn() { firen "$1" | jq -r '.hookSpecificOutput.updatedInput.command // empty' 2>/dev/null; }
+rn() { local got; got=$(newcmdn "$1")
+  if [ "$got" = "$2" ]; then ok "$3"; else bad "$3"$'\n'"       want: $2"$'\n'"       got:  ${got:-<silent>}"; fi; }
+sn() { local got; got=$(firen "$1")
+  if [ -z "$got" ]; then ok "$2"; else bad "$2 (emitted: ${got:0:120})"; fi; }
+
+# eqx <original> <rewritten> <label> — EXECUTES both and asserts identical stdout+rc.
+# The load-bearing fidelity cell for the stdin arm: the whole claim is that appending an
+# explicit stdin operand changes what the CLASSIFIER sees and nothing about what runs.
+eqx() {
+  local a b ra rb
+  a=$(cd "$REPO" && eval "$1" 2>&1); ra=$?
+  b=$(cd "$REPO" && eval "$2" 2>&1); rb=$?
+  if [ "$a" = "$b" ] && [ "$ra" -eq "$rb" ]; then ok "$3"
+  else bad "$3 (rc $ra vs $rb)"; fi
+}
+
 echo "--- 1. the measured defect shape is rewritten absolute ---"
 r "cd $D; grep -n -iE \"foo\" docs/backlog.md" \
   "cd $D ; grep -n -iE \"foo\" $D/docs/backlog.md" \
@@ -465,6 +484,75 @@ s "cd $D; sed -i 1d docs/backlog.md; grep -n foo docs/backlog.md" \
                                               "-i in-place -> refuse (unchanged)"
 s "cd $D; sed 1,5p docs/backlog.md; grep -n foo docs/backlog.md" \
                                               "sed without -n -> refuse (unchanged)"
+
+
+echo "--- 19. the stdin arm: a pipe-consuming grep with no path operand (2026-09-03) ---"
+# CC's extractor defaults a missing grep operand to ["."] (Rst(p,_uo,["."])), `.` resolves to
+# the cwd, and the cwd CONTAINS the literal prefix of a Read(./.env*) deny rule — so `gf`
+# matches and the bypass-immune circuit fires on a filter that opens no file at all.
+# ` -- -` is the only spelling that works: `--` sets Rst's `k`, so `p ||= k` is true and the
+# `.` default is NOT appended. A bare ` -` leaves p false (it starts with `-`) and is inert;
+# `/dev/stdin` clears the circuit but makes rg prefix every output line.
+r "ls | rg -v 'zzz' | head -3" \
+  "ls | rg -v 'zzz' -- - | head -3" \
+                                              "no-cd pipeline filter gains an explicit stdin operand"
+r "rg -n 'EXIT_OK' scripts/verify.py | rg -v '^10' | head -30" \
+  "rg -n 'EXIT_OK' scripts/verify.py | rg -v '^10' -- - | head -30" \
+                                              "the reported field shape (Sideline, 2026-09-03)"
+r "git ls-files | grep '^docs'" \
+  "git ls-files | grep '^docs' -- -" \
+                                              "git producer + grep consumer"
+r "cd $D; git ls-files | grep '^docs'" \
+  "cd $D ; git ls-files | grep '^docs' -- -" \
+                                              "consumer inside a cd compound (hole in the shipped scope)"
+r "ls | grep -- 'docs'" \
+  "ls | grep -- 'docs' -" \
+                                              "segment already carrying a bare -- gets ' -' alone"
+# INVARIANT: appending a second `--` to a segment that already has one would make it a
+# literal filename operand, not an end-of-options marker. The cell above is what guards it.
+
+echo "--- 19b. the stdin arm refuses what would change behaviour ---"
+# Each refusal below was MEASURED, not assumed: these flags make the tool ignore stdin and
+# walk the filesystem, so appending an operand would change what the command does.
+s "ls | grep -r 'x'"                          "grep -r searches cwd and ignores stdin -> refuse"
+s "ls | grep -rn 'x'"                         "recursive letter inside a bundle -> refuse"
+s "ls | grep --recursive 'x'"                 "grep --recursive -> refuse"
+s "ls | grep --directories=recurse 'x'"       "grep --directories=recurse -> refuse"
+s "ls | rg --files"                           "rg --files enumerates files, ignores stdin -> refuse"
+s "ls | grep -z 'x'"                          "-z (null-data / search-zip) fidelity untested -> refuse"
+s "rg -n 'zzz' | head -3"                     "PRODUCER with no operand genuinely reads the tree -> refuse"
+s "rg -l 'zzz' . | head -3"                   "explicit . operand is left alone by decision -> refuse"
+s "curl example.com | rg -v 'x'"              "non-allowlisted head anywhere -> refuse whole command"
+s "ls | cd /tmp | rg -v 'x'"                  "a cd in a no-cd command moves the base -> refuse"
+
+echo "--- 19c. the kill switch disables the ARM ONLY ---"
+sn "ls | rg -v 'zzz' | head -3"               "DHX_CD_ALLOW_STDIN_ARM=0 -> no-cd command refused"
+rn "cd $D; grep -n foo docs/backlog.md" \
+   "cd $D ; grep -n foo $D/docs/backlog.md" \
+                                              "DHX_CD_ALLOW_STDIN_ARM=0 leaves cd-mode rewriting live"
+
+echo "--- 19d. FIDELITY: the rewrite must not change what runs ---"
+# Measured 2026-09-03 across grep and rg for -n -l -H -c -o -v -i: byte-identical output,
+# labels ((standard input) / <stdin>) intact, matching exit codes, matching counts on 200k
+# streamed lines. These cells re-assert it at run time rather than trusting the measurement.
+eqx "ls | rg -v 'docs' | head -3"      "ls | rg -v 'docs' -- - | head -3"      "rg -v filter runs identically"
+eqx "ls | grep -H 'docs'"              "ls | grep -H 'docs' -- -"              "-H keeps the (standard input) label"
+eqx "ls | rg -l 'docs'"                "ls | rg -l 'docs' -- -"                "-l keeps the <stdin> label"
+eqx "ls | grep 'zzznomatch'"           "ls | grep 'zzznomatch' -- -"           "no-match exit code preserved"
+eqx "seq 1 50000 | rg -c '7'"          "seq 1 50000 | rg -c '7' -- -"          "streamed input count preserved"
+eqx "ls | grep -- 'docs'"              "ls | grep -- 'docs' -"                 "pre-existing -- variant runs identically"
+
+echo "--- 19e. -r is head-aware: rg consumes an argument, grep does not ---"
+# rg's -r is --replace and CONSUMES the next word; grep's -r is --recursive and does not.
+# Parsing them alike made rg's replacement the PATTERN and absolutized the real pattern as a
+# path — silent corruption, reachable whenever that pattern also names an existing file.
+r "cd $D; rg -r 'REPL' 'pat' docs/backlog.md" \
+  "cd $D ; rg -r 'REPL' 'pat' $D/docs/backlog.md" \
+                                              "rg -r consumes its replacement; the pattern is untouched"
+r "cd $D; grep -r 'pat' docs/backlog.md" \
+  "cd $D ; grep -r 'pat' $D/docs/backlog.md" \
+                                              "grep -r consumes nothing; operand still absolutized"
+s "cd $D; rg -nr 'X' 'pat' docs/backlog.md"   "rg bundle hiding -r's argument position -> refuse"
 
 echo "---"
 echo "$pass passed, $fail failed"
