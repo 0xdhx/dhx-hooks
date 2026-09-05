@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # probe-agent-registry-session-start-cached.sh — behavior probe backing HP-062.
 #
-# WHAT THIS PINS: the `.claude/agents/*.md` agent registry is materialized ONCE
-# at session start. An agent file written mid-session is NOT dispatchable in that
-# session — `Agent(subagent_type="<name>")` refuses with "Agent type '<name>' not
-# found", regardless of the file being well-formed. Measured 2026-09-05 on CC
-# 2.1.261 at BOTH project and user scope (see docs/hook-patterns.md HP-062).
+# WHAT THIS PINS: the PASSIVE axis of the `.claude/agents/*.md` agent registry.
+# The registry is a snapshot that is never refreshed passively, so an agent file
+# written mid-session is NOT dispatchable in that session —
+# `Agent(subagent_type="<name>")` refuses with "Agent type '<name>' not found",
+# regardless of the file being well-formed. Measured 2026-09-05 on CC 2.1.261 at
+# BOTH project and user scope (see docs/hook-patterns.md HP-062).
+#
+# WHAT THIS DELIBERATELY DOES NOT COVER — and cannot: `/reload-plugins` DOES
+# refresh the registry (measured 2026-09-05, both scopes, as an in-session
+# before/after). That axis is NOT scriptable here: `/reload-plugins` is a TUI
+# slash command, and the `claude -p` children this probe drives cannot issue one.
+# So the reload half is operator-measured only, recorded in HP-062's evidence
+# bullets. A green run here therefore means "no passive reload", NEVER "a restart
+# is required" — do not let this probe's silence on the reload path harden back
+# into the fresh-session-only prescription HP-062 already had to retract once.
 #
 # WHY IT NEEDS A PROBE AT ALL: this is the THIRD load path, and its two siblings
 # disagree. `settings.json` hot-reloads at both scopes (HP-012); the plugin
@@ -19,11 +29,12 @@
 # SEMANTICS (Convention B: exit 0 = pass):
 #   exit 0 + pass     = mid-session write NOT dispatchable, AND both controls
 #                       resolved (so the negative is genuine caching).
-#   exit 1 + fail     = the mid-session write RESOLVED — the registry now
-#                       hot-reloads. Behavior flipped upstream. Revisit HP-062,
-#                       HP-012's Process line, the docs/decisions.md row, and
-#                       forgefinder's `.continue-here.md` blocking constraint,
-#                       whose "fresh CC session" half would then be DEAD.
+#   exit 1 + fail     = the mid-session write RESOLVED with no reload — the
+#                       registry now hot-reloads PASSIVELY. Behavior flipped
+#                       upstream. Revisit HP-062, HP-012's Process line, the
+#                       docs/decisions.md rows, and forgefinder's
+#                       `.continue-here.md` blocking constraint, whose
+#                       reload-before-dispatch requirement would then be DEAD.
 #   exit 0 + skipped  = inconclusive (no auth, subprocess failure, or the child
 #                       model deviated from the instructed tool sequence).
 #                       NOT a pass, NOT a fail.
@@ -192,11 +203,12 @@ fi
 
 if [ "${registry_hot_reloaded:-0}" -eq 1 ]; then
   echo
-  echo "BEHAVIOR FLIP: the agent registry now hot-reloads mid-session."
+  echo "BEHAVIOR FLIP: the agent registry now hot-reloads PASSIVELY (no reload needed)."
   echo "  Revisit: docs/hook-patterns.md HP-062 + HP-012 Process line,"
-  echo "           docs/decisions.md 2026-09-05 agent-registry row,"
+  echo "           docs/decisions.md 2026-09-05 agent-registry rows (both),"
+  echo "           docs/troubleshooting.md 'An Agent Type Is Not Found' path,"
   echo "           ~/repos/forgefinder/.planning/milestones/v1.4-phases/25-ff-manager-dashboard/.continue-here.md"
-  echo "           (its 'fresh CC session' constraint would be DEAD)."
+  echo "           + 25-02-SMOKE-RESULTS.md (their reload-before-dispatch requirement would be DEAD)."
 fi
 
 echo "probe-agent-registry-session-start-cached: pass=$pass fail=$fail skipped=$skipped"
