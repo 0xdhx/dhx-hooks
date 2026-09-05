@@ -212,6 +212,49 @@ else
   echo "SKIP A13 parser parity — skills repo planner not found at $PLANNER"
 fi
 
+# --- Assertion 14: TWO-CUT EQUIVALENCE — the hook's <= and promote-next's < ---
+# The header INVARIANT claims the hook's `<=` at v1.5-CLOSING and the planner's
+# `<` at v1.6-DECLARED select the IDENTICAL set of stale briefs. That is the
+# load-bearing reason the compare did not have to change when the reminder was
+# re-scoped, so it is demonstrated here across an actual cut rather than argued.
+# Skipped (not failed) when the skills repo planner is absent.
+PLANNER="$HOME/repos/skills/scripts/backlog-promote-next.cjs"
+if [ -f "$PLANNER" ] && command -v node >/dev/null 2>&1; then
+  TMP=$(mktemp -d)
+  mk_fixture "$TMP" "v1.5"                    # PRE-cut: v1.5 is the CLOSING milestone
+  cat > "$TMP/.planning/MILESTONES.md" <<'MS'
+# Milestones
+
+## v1.3 (closed)
+## v1.4 (closed)
+## v1.5 (closing)
+## v1.6 (next)
+MS
+  add_brief "$TMP" "s13.md" "v1.3"   # below closing  → stale on both sides
+  add_brief "$TMP" "s14.md" "v1.4"   # below closing  → stale on both sides
+  add_brief "$TMP" "s15.md" "v1.5"   # EQUAL to closing → the whole point of <=
+  add_brief "$TMP" "s16.md" "v1.6"   # the incoming milestone → stale on NEITHER side
+
+  # Side A — the hook, fired PRE-cut while PROJECT.md still names v1.5.
+  OUT=$(run "$TMP")
+  HOOK_STALE=$(printf '%s' "$OUT" | sed -nE 's/.*[^0-9]([0-9]+) stale-version.*/\1/p')
+
+  # Side B — the planner, run POST-cut. Nothing but the heading changes.
+  sed -i 's/^## Current Milestone: v1.5.*/## Current Milestone: v1.6 Next Up/' "$TMP/.planning/PROJECT.md"
+  PLAN_STALE=$(cd "$TMP" && node "$PLANNER" plan --from stale --json 2>/dev/null \
+    | tr ',' '\n' | grep -c '"tag"')
+  PLAN_TAGS=$(cd "$TMP" && node "$PLANNER" plan --from stale --json 2>/dev/null \
+    | sed -nE 's/.*"tag": "([^"]+)".*/\1/p' | sort | tr '\n' ' ')
+
+  check "A14a two-cut equivalence: hook <= at closing == planner < at declared" "$HOOK_STALE" "$PLAN_STALE"
+  # Membership, not just cardinality: the equal-to-closing brief MUST be in the
+  # set, and the incoming-milestone brief MUST NOT be.
+  check "A14b planner's post-cut stale set is exactly v1.3 v1.4 v1.5" "v1.3 v1.4 v1.5 " "$PLAN_TAGS"
+  rm -rf "$TMP"
+else
+  echo "SKIP A14 two-cut equivalence — skills repo planner not found at $PLANNER"
+fi
+
 # --- Assertion 6: Exit code is 0 across all scenarios ---
 TMP=$(mktemp -d)
 mk_fixture "$TMP" "v1.5"
