@@ -39,6 +39,19 @@
 # planner returned version:null and exit 2 on the same file. Both grammars now
 # accept vN, vN.M and vN.M.P, with absent components reading as 0.
 # Drift teeth: tests/probes/probe-new-milestone-promote-reminder.sh (A11/A12).
+#
+# PARITY SCOPE — what the contract covers, and what it deliberately does not
+# (2026-09-04). Parity is over the version GRAMMAR and the brief COUNT, both in
+# FLAT MODE. It is NOT a claim that the two surfaces reach the same verdict in
+# every mode, and since the workstream ruling it demonstrably does not: the
+# planner consults gsd-core for a workstream mode and REFUSES promotion there,
+# while this hook consults it only to fall SILENT. Those are different
+# behaviours from the same fact, chosen per surface, not a drift to repair.
+# State it rather than leave it inferred, because a green grammar assertion
+# would otherwise read as evidence of an agreement it never tested: A13 and
+# A16 compare parsers and counts, and NEITHER can see a mode divergence. The
+# guard below is pinned by its own assertion (A17) for exactly that reason —
+# the one thing the parity pair is structurally blind to gets a direct tooth.
 
 INPUT=$(cat)
 SKILL=$(echo "$INPUT" | jq -r '.tool_input.skill // empty' 2>/dev/null)
@@ -52,6 +65,62 @@ PROJECT_FILE="$CWD/.planning/PROJECT.md"
 
 [ -d "$BACKLOG_DIR" ] || exit 0
 [ -f "$PROJECT_FILE" ] || exit 0
+
+# FLAT-MODE ONLY (2026-09-04). Under an active workstream this hook stays
+# silent, because there is nothing truthful for it to say: gsd-new-milestone
+# deliberately never rewrites PROJECT.md's `## Current Milestone` heading when
+# a workstream is active, so the heading below is stale — and it is stale while
+# STILL PARSING, which is why "the version check already covers it" is wrong.
+# Only the unparseable branch was ever covered; a stale-but-parseable heading
+# hands this hook a version and it advertises a promotion that the planner now
+# refuses outright (reason `workstream_active_promotion_unsupported`).
+#
+# This asks gsd-core ONE factual question — is a workstream active — and never
+# decides policy from the answer. The policy ("promotion is flat-mode only,
+# because .planning/backlog/ is shared and nothing records which briefs belong
+# to which workstream") lives in the planner, which owns it. Teaching this hook
+# to resolve a workstream milestone was assessed and rejected: it would put
+# workstream semantics in bash while the planner stayed unaware, guaranteeing
+# the two surfaces disagree.
+#
+# FAIL-CLOSED, in the direction that suits a reminder: the planner fails closed
+# by REFUSING, this hook by staying SILENT. Both decline to assert what they
+# cannot support. So anything other than a positive `"mode": "flat"` exits 0.
+#
+# PARSER PARITY is UNAFFECTED by this guard, and that is checkable rather than
+# asserted: the version grammar below is unchanged byte-for-byte, so A13
+# (grammar) and A16 (count) still compare like for like — both were re-run
+# green against the workstream-aware planner on 2026-09-04, before this guard
+# was written. What diverges is the SOURCE SET, not the grammar: the planner
+# now consults gsd-core for a mode this hook only uses to fall silent. A13/A16
+# cannot see that divergence — a grammar assertion is structurally blind to it
+# — which is precisely why the new A17 pins the silence directly.
+# NO `.planning/workstreams/` DIRECTORY MEANS FLAT — a positive determination
+# from the directory contract, not a guess, so the resolver is skipped entirely.
+# gsd-core reports flat when that directory is absent, and a session pointer
+# naming a workstream whose directory no longer exists is treated as stale and
+# resolves to null. This is also what keeps the guard cheap: measured 2026-09-04,
+# an unconditional `node gsd-tools.cjs workstream get` cost ~350ms per fire
+# against the ~12ms in this hook's birth row — a 29x regression charged to every
+# flat repo, which is nearly all of them. The planner's `detectWorkstream` short-
+# circuits on the same condition, so both surfaces run identical logic.
+if [ -d "$CWD/.planning/workstreams" ]; then
+  _GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs"
+  if [ -f "$_GSD_TOOLS" ]; then
+    _WS_JSON=$(cd "$CWD" && node "$_GSD_TOOLS" workstream get 2>/dev/null)
+    # Matched with a native bash regex, NOT `printf … | grep -q`: that shape is
+    # HP-028 (an early-exiting reader closes the pipe, the writer takes SIGPIPE,
+    # and under pipefail the pipeline reports failure). The payload is already in
+    # a variable, so the pipe bought nothing and cost a subprocess.
+    # Absent/unreadable/unparseable all land here as a non-match and exit.
+    _WS_FLAT_RX='"mode"[[:space:]]*:[[:space:]]*"flat"'
+    [[ "$_WS_JSON" =~ $_WS_FLAT_RX ]] || exit 0
+  else
+    # Workstreams exist here but nothing can say which is active.
+    # Undetermined is not flat — stay silent rather than guess.
+    exit 0
+  fi
+fi
 
 # Milestone heading. Anchored end-to-end so the accept set matches the planner
 # exactly: a version token, then optionally whitespace + a name, then EOL.

@@ -313,6 +313,64 @@ else
   echo "SKIP A16 count parity — skills repo planner not found at $PLANNER"
 fi
 
+# --- Assertion 17: flat-mode-only — silent under a workstream ---
+# This is the one thing A13 and A16 are structurally blind to. They compare the
+# hook and the planner on version GRAMMAR and brief COUNT; neither can see a
+# MODE divergence, so a green parity pair would happily certify a hook that
+# advertises a promotion the planner refuses. A17 pins the mode behaviour
+# directly.
+#
+# The fixture is deliberately adversarial: the heading is a perfectly parseable
+# `v1.5` and there IS a `next` brief, so every pre-workstream precondition says
+# "emit". Only the workstream guard can produce silence here — which is what
+# makes the pre-fix negative control go RED rather than pass by accident. It
+# also pins the exact hole the old "the version check already covers it" claim
+# left open: a STALE-BUT-PARSEABLE heading, which is the normal workstream
+# state, not an edge case.
+#
+# 17a uses the no-resolver branch, so it runs identically on a machine with no
+# gsd-core; 17b drives the live resolver and self-skips when gsd-core is absent.
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v1.5"
+add_brief "$TMP" "a.md" "next"
+mkdir -p "$TMP/.planning/workstreams/alpha"
+NOGSD=$(mktemp -d)
+OUT=$(echo "{\"tool_input\":{\"skill\":\"gsd-new-milestone\"},\"cwd\":\"$TMP\"}" \
+  | CLAUDE_CONFIG_DIR="$NOGSD" bash "$HOOK" 2>/dev/null)
+check "A17a silent under a workstreams dir with no resolver (undetermined != flat)" "" "$OUT"
+
+# Control for 17a: with the workstreams dir removed and still no resolver, the
+# SAME fixture must emit. Without this arm 17a would also pass if the guard
+# silenced the hook unconditionally — the assertion would be inert.
+rm -rf "$TMP/.planning/workstreams"
+OUT=$(echo "{\"tool_input\":{\"skill\":\"gsd-new-milestone\"},\"cwd\":\"$TMP\"}" \
+  | CLAUDE_CONFIG_DIR="$NOGSD" bash "$HOOK" 2>/dev/null)
+if [ -n "$OUT" ]; then
+  echo "OK   A17b flat mode still emits (guard is not an unconditional silencer)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL A17b flat mode still emits (guard is not an unconditional silencer)"
+  echo "     expected: non-empty reminder"
+  echo "     actual:   <empty>"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$NOGSD"
+
+GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/gsd-tools.cjs"
+if [ -f "$GSD_TOOLS" ]; then
+  mkdir -p "$TMP/.planning/workstreams/alpha"
+  printf 'milestone: v9.0\n' > "$TMP/.planning/workstreams/alpha/STATE.md"
+  printf '# Roadmap\n'       > "$TMP/.planning/workstreams/alpha/ROADMAP.md"
+  WSKEY="probe-a17-$$-$RANDOM"
+  ( cd "$TMP" && GSD_SESSION_KEY="$WSKEY" node "$GSD_TOOLS" workstream set alpha >/dev/null 2>&1 )
+  OUT=$(echo "{\"tool_input\":{\"skill\":\"gsd-new-milestone\"},\"cwd\":\"$TMP\"}" \
+    | GSD_SESSION_KEY="$WSKEY" bash "$HOOK" 2>/dev/null)
+  check "A17c silent under a LIVE active workstream (stale-but-parseable heading)" "" "$OUT"
+else
+  echo "SKIP A17c live workstream — gsd-core not found at $GSD_TOOLS"
+fi
+rm -rf "$TMP"
+
 # --- Assertion 6: Exit code is 0 across all scenarios ---
 TMP=$(mktemp -d)
 mk_fixture "$TMP" "v1.5"
