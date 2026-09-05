@@ -363,21 +363,49 @@ jq -e '.hooks.SubagentStop[] | .hooks[] | select(.command | contains("dhx-agent-
   || check "[13b] leak-check registered on SubagentStop" fail
 PA_AGENT_BLOCKS=$(jq '[.hooks.PostToolUse[] | select(.matcher == "Agent")] | length' "$MANIFEST" 2>/dev/null)
 [[ "$PA_AGENT_BLOCKS" == "0" ]] && check "[13c] PostToolUse:Agent block REMOVED" pass || check "[13c] PostToolUse:Agent block REMOVED (got $PA_AGENT_BLOCKS)" fail
-# WR-04: assert leak-check is the LAST entry in the SubagentStop block, not
-# that the block has exactly 4 entries. Hardcoding count==4 is brittle — the
-# next legitimate hook added to SubagentStop (catch-all event for subagent
-# completion; obvious roadmap appetite for new SubagentStop hooks) breaks
-# this assertion even though leak-check is still correctly registered. The
-# semantically meaningful invariant — "leak-check IS in the block" — is
-# already covered by [13b]; the additional ordering invariant ("leak-check
-# is the LAST entry, i.e. fires AFTER the other SubagentStop hooks") is
-# robust to future SubagentStop additions and still catches accidental
-# de-registration / displacement.
-LAST_CMD=$(jq -r '.hooks.SubagentStop[0].hooks[-1].command' "$MANIFEST" 2>/dev/null)
-case "$LAST_CMD" in
-  *dhx-agent-leak-check.sh*) check "[13d] leak-check is LAST in SubagentStop block (ordering invariant)" pass ;;
-  *) check "[13d] leak-check is LAST in SubagentStop block (got tail=${LAST_CMD})" fail ;;
-esac
+# [13d] SubagentStop bucket ROSTER tripwire (2026-09-05, replaces the WR-04
+# position assertion).
+#
+# History. WR-04 replaced a count==4 assertion with "leak-check is the LAST
+# entry", reasoning that the position check was robust to future SubagentStop
+# additions where a count was brittle. The 2026-09-05 concurrency measurement
+# inverts that reasoning on both halves:
+#   - Position guarantees nothing. Hooks in one bucket run concurrently in
+#     separate processes; the fourth-registered hook finished 435 ms before the
+#     first. There is no "last". The old assertion was permanently green and
+#     completely inert. (HP-029, mechanism falsified.)
+#   - "Robust to future additions" was optimizing away the alarm. A future
+#     addition to this bucket is the ONE event that can actually break leak
+#     detection — a newcomer that writes into the tracked set corrupts the scan
+#     from any position. That is precisely what should trip a probe.
+#
+# What actually guards dhx-agent-leak-check.sh is that every sibling in the
+# bucket is an audited non-mutator. Audited 2026-09-05: execute-review and
+# audit-checkpoint are read-only; execute-checkpoint touches only
+# /tmp/dhx-checkpoint-<session>-phase-<n>; subagent-stop-sync-probe-marker
+# writes only under ${XDG_RUNTIME_DIR:-/tmp}/dhx-subagent-stop-sync-probe/ and
+# is a production no-op. None touches $HOME/.cache/dhx/agent-leak-* or any git
+# working tree.
+#
+# INVARIANT: every hook in SubagentStop[0].hooks[] must be a non-mutator with
+# respect to the leak-check's tracked set — the agent-leak-* cache namespace and
+# the dispatching repo's git working tree. This cannot be checked by code (it is
+# a property of arbitrary shell), so it is pinned by roster instead: any change
+# to the bucket fails here and forces a human to answer the audit question.
+# Registration presence is already covered by [13b]; this assertion is about
+# composition.
+EXPECTED_ROSTER="dhx-agent-leak-check.sh
+dhx-audit-checkpoint.sh
+dhx-execute-checkpoint.sh
+dhx-execute-review.sh
+dhx-subagent-stop-sync-probe-marker.sh"
+ACTUAL_ROSTER=$(jq -r '.hooks.SubagentStop[0].hooks[].command' "$MANIFEST" 2>/dev/null \
+  | grep -oE '[^/"]+\.sh' | sort)
+if [[ "$ACTUAL_ROSTER" == "$EXPECTED_ROSTER" ]]; then
+  check "[13d] SubagentStop bucket roster unchanged (all audited non-mutators)" pass
+else
+  check "[13d] SubagentStop roster CHANGED — audit the delta: does the new hook write to \$HOME/.cache/dhx/agent-leak-* or a git working tree? (expected: $(tr '\n' ' ' <<<"$EXPECTED_ROSTER")| got: $(tr '\n' ' ' <<<"$ACTUAL_ROSTER"))" fail
+fi
 
 # === [14] D-07 FIFO correlation: parent-state mutation between back-to-back snapshots ===
 # Premise (D-07): wave-execute parent-state is invariant within a back-to-back

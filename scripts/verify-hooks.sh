@@ -11,9 +11,10 @@
 #   - COUNT   settings.json dhx hook command references (jq-resolved)
 #
 # Does NOT verify runtime behavior. After wiring is green, dispatch an
-# Agent/Write and check ~/.cache/dhx/ to confirm the hook fires —
-# settings.json loads at session start only (HP-012), so newly-installed
-# hooks require a session restart before they execute.
+# Agent/Write and check ~/.cache/dhx/ to confirm the hook fires — dhx hooks
+# register via the plugin manifest, which does not passively hot-reload
+# (HP-020, re-confirmed 2026-09-05), so newly-installed hooks require
+# /reload-plugins or a session restart before they execute.
 #
 # Exit codes: 0 = all green, 1 = at least one missing source or orphan link.
 #
@@ -108,15 +109,15 @@ echo ""
 if [[ $MISSING -eq 0 && $ORPHAN -eq 0 ]]; then
   echo "All ${OK} dhx hook sources wired."
   echo ""
-  echo "If you just installed new hooks, restart the Claude Code session —"
-  echo "settings.json loads at session start only (HP-012). After restart,"
+  echo "If you just installed new hooks, run /reload-plugins or restart the"
+  echo "session — the plugin manifest does not hot-reload (HP-020). Then"
   echo "dispatch an Agent or Write to confirm the hook fires:"
   echo "  ls ~/.cache/dhx/"
   exit 0
 else
   echo "Issues: ${OK} ok, ${MISSING} missing, ${ORPHAN} orphan."
   echo ""
-  echo "After fixing, restart the Claude Code session — settings.json"
-  echo "loads at session start only (HP-012)."
+  echo "After fixing, run /reload-plugins or restart the session — the"
+  echo "plugin manifest does not hot-reload (HP-020)."
   exit 1
 fi
