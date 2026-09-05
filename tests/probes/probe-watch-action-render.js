@@ -241,6 +241,106 @@ for (const c of UPSTREAM_RENDER) {
   check('(7) combined: banner does not throw', r.status === 0, `status=${r.status}`);
 }
 
+// ── (8) PR-READY BLOCK (AC7 / Gap 5) — the two blocks PARTITION ──────────────────────
+// The criterion: an approval label must produce a signal meaning "this issue is now eligible for
+// OUR PR", DISTINCT from awaiting_us ("they need a reply from us"). Producer: cross-repo's checker
+// derives `pr_eligible` level-triggered from current labels. This surfacer is a read-only consumer.
+//
+// Two clauses, both load-bearing, asserted separately below:
+//   · pr_eligible                    — membership in the new block
+//   · last_seen_open_closing_pr      — EXCLUDES an issue whose fix is already in flight. Without it
+//                                      the block rendered 16 rows on live data, 13 already PR'd.
+//
+// The partition assertion is the one that matters. Action-required excludes EXACTLY this block's
+// membership test, so no item can render in both AND — the trap this guards — no item can fall
+// through BOTH. An approved item that also has an in-flight PR and a genuine maintainer question
+// must stay in Action required; a naive `.pr_eligible != true` exclusion would vanish it entirely.
+const PR_SECTION = 'Ready for your PR';
+// Section-scoped fixture: the PR-ready rows render `.url` (the action rows render `.id` in their
+// shortcut), so two eligible items sharing the helper's constant url render byte-identically and
+// nothing downstream can tell them apart. Overriding url HERE keeps that need local — an earlier
+// attempt to derive url from id in the shared helper above broke case (5), which asserts the
+// literal constant url. Shared fixture semantics are load-bearing for the 35 assertions above it.
+const prItem = (over) => item(Object.assign({ url: `https://github.com/o/r/issues/${over.id}` }, over));
+{
+  // Eligible, no in-flight PR → PR block, and OUT of Action required.
+  const r = runBanner([prItem({ id: 'prready-1', pr_eligible: true })]);
+  check('(8) eligible item renders in the PR-ready block',
+    r.stdout.includes(PR_SECTION) && r.stdout.includes('prready-1'), `out=${j(r.stdout)}`);
+  check('(8) ...and is NOT also in Action required (blocks are exclusive)',
+    !r.stdout.includes(SECTION), `out=${j(r.stdout)}`);
+  check('(8) PR-ready row offers the pr verb, never ack (ack sets awaiting_them — the burying bug)',
+    r.stdout.includes('/dhx:upstream pr') && !r.stdout.includes('ack prready-1'), `out=${j(r.stdout)}`);
+  check('(8) banner does not throw', r.status === 0, `status=${r.status}`);
+}
+{
+  // THE NO-VANISH CASE. Eligible AND a closing PR already open AND awaiting_us: excluded from the
+  // PR block by the closing-PR clause, so it MUST remain in Action required. If this row ever goes
+  // red, the Action-required exclusion has been widened to bare `.pr_eligible` and this item is
+  // rendering nowhere at all.
+  const r = runBanner([prItem({ id: 'novanish-1', pr_eligible: true, last_seen_open_closing_pr: true })]);
+  check('(8) eligible + in-flight PR is EXCLUDED from the PR-ready block',
+    !r.stdout.includes('Ready for your PR (1)'), `out=${j(r.stdout)}`);
+  check('(8) NO-VANISH: it stays in Action required rather than disappearing from both',
+    r.stdout.includes(SECTION) && r.stdout.includes('novanish-1'), `out=${j(r.stdout)}`);
+}
+{
+  // A snoozed eligible item hides — the snooze clause is carried here byte-identically with the
+  // action pair, so silencing works on these rows even though the row does not advertise the verb.
+  const r = runBanner([prItem({ id: 'prsnooze-1', pr_eligible: true, snooze_until: FUTURE() })]);
+  check('(8) snoozed eligible item hides from the PR-ready block',
+    !r.stdout.includes('prsnooze-1'), `out=${j(r.stdout)}`);
+}
+{
+  // Non-eligible items are untouched — the clause must be null-safe, not merely correct on `true`.
+  const cases = [
+    { name: 'pr_eligible absent', over: { id: 'noel-absent' } },
+    { name: 'pr_eligible false',  over: { id: 'noel-false', pr_eligible: false } },
+    { name: 'pr_eligible null',   over: { id: 'noel-null', pr_eligible: null } },
+  ];
+  for (const c of cases) {
+    const r = runBanner([prItem(c.over)]);
+    check(`(8) unchanged for ${c.name}: still Action required, not PR-ready`,
+      r.stdout.includes(SECTION) && r.stdout.includes(c.over.id) && !r.stdout.includes(PR_SECTION),
+      `out=${j(r.stdout)}`);
+  }
+}
+{
+  // Combined: count and rows selects must agree, exactly as section (7) asserts for the action pair.
+  // A clause added to only one select shows up here as a header count that contradicts the rows.
+  const items = [
+    prItem({ id: 'mix-eligible-a', pr_eligible: true }),
+    prItem({ id: 'mix-eligible-b', pr_eligible: true }),
+    prItem({ id: 'mix-inflight', pr_eligible: true, last_seen_open_closing_pr: true }),
+    prItem({ id: 'mix-plain' }),
+  ];
+  const r = runBanner(items);
+  check('(8) combined: PR-ready header count is 2 (count select carries both clauses)',
+    r.stdout.includes('Ready for your PR (2)'), `out=${j(r.stdout)}`);
+  check('(8) combined: exactly the 2 eligible ids appear under it (rows select agrees)',
+    r.stdout.includes('mix-eligible-a') && r.stdout.includes('mix-eligible-b'), `out=${j(r.stdout)}`);
+  check('(8) combined: Action required count is 2 (the in-flight + the plain item)',
+    r.stdout.includes('Action required (2)'), `out=${j(r.stdout)}`);
+  // Membership, not occurrence count: an id appears TWICE inside its own row (once in the url, once
+  // in the shortcut argument), so counting raw substrings measures row shape rather than placement.
+  // Split at the PR header and ask which side each id landed on — exactly one, never both, never none.
+  const [actionHalf, prHalf] = r.stdout.split(PR_SECTION);
+  check('(8) combined: every item renders in exactly one block — none lost, none doubled',
+    items.every((it) => (actionHalf.includes(it.id) ? 1 : 0) + ((prHalf || '').includes(it.id) ? 1 : 0) === 1),
+    `out=${j(r.stdout)}`);
+  check('(8) combined: banner does not throw', r.status === 0, `status=${r.status}`);
+}
+{
+  // Silent-on-no-deltas: a session whose ONLY output is the PR-ready block must still emit it. The
+  // early-exit guard lists every section by name, and a block omitted from it is swallowed entirely —
+  // the failure is silent, which is why it is pinned rather than inferred.
+  const r = runBanner([prItem({ id: 'onlyblock-1', pr_eligible: true, action_state: 'awaiting_them' })]);
+  check('(8) PR-ready block survives the silent-on-no-deltas guard as the sole output',
+    r.stdout.includes(PR_SECTION) && r.stdout.includes('onlyblock-1'), `out=${j(r.stdout)}`);
+  check('(8) ...and it renders independently of action_state (ack no longer buries it)',
+    !r.stdout.includes(SECTION), `out=${j(r.stdout)}`);
+}
+
 console.log('');
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail);

@@ -298,6 +298,7 @@ if [ -f "$WATCHLIST" ]; then
         and .action_state == "awaiting_us"
         and .last_seen_state != "closed"
         and .last_seen_state != "merged"
+        and ((.pr_eligible == true and .last_seen_open_closing_pr != true) | not)
         and (.snooze_until == null
              or (.snooze_until != "perma"
                  and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))]
@@ -324,6 +325,7 @@ if [ -f "$WATCHLIST" ]; then
           and .action_state == "awaiting_us"
           and .last_seen_state != "closed"
           and .last_seen_state != "merged"
+          and ((.pr_eligible == true and .last_seen_open_closing_pr != true) | not)
           and (.snooze_until == null
                or (.snooze_until != "perma"
                    and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
@@ -339,6 +341,87 @@ if [ -f "$WATCHLIST" ]; then
         + "\n      › /dhx:watch ack " + .id + " · snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
     ACTION_BLOCK="⚠ Action required (${ACTION_COUNT}):
 ${ACTION_ROWS}
+"
+  fi
+fi
+
+# PR-READY INBOX (AC7 / Gap 5, 2026-09-04). The criterion the action-required block could not
+# satisfy: an approval label must produce a signal meaning "this issue is now eligible for OUR PR",
+# DISTINCT from awaiting_us ("they need a reply from us"). Measured on the live banner the day this
+# landed: 3 of 5 action-required rows actually meant "go open your PR" and rendered identically to
+# the 2 that meant "answer the maintainer" — and the only verbs offered were ack/snooze, where `ack`
+# sets awaiting_them and therefore BURIED the approval you had been waiting for.
+#
+# Producer: cross-repo scripts/watch/dhx-watch-check.cjs derives `pr_eligible` LEVEL-triggered from
+# the labels the issue currently carries (approval allowlist only — never isActionLabel, whose
+# needs-*/question base means the OPPOSITE). This surfacer is a READ-ONLY consumer of that field, the
+# same posture it holds toward action_state: it never recomputes a verdict.
+#
+# `.last_seen_open_closing_pr != true` is the load-bearing second clause, not a refinement. Without
+# it this block rendered 16 rows on live data, 13 of them issues with a fix ALREADY in flight — a
+# wall listing work already done. Same poll-maintained field the Gap-6 awaiting_them demote keys on,
+# so the two agree by construction and no new data is fetched.
+#
+# THE TWO BLOCKS PARTITION — nothing can fall through both. Action-required above excludes exactly
+# this block's membership test (`(.pr_eligible == true and .last_seen_open_closing_pr != true) | not`,
+# carried byte-identically in ITS two selects). The narrow form is deliberate: excluding on
+# `.pr_eligible` ALONE would vanish an approved item that has an in-flight PR *and* a genuine
+# maintainer question — out of action-required by the exclusion, out of here by the closing-PR clause.
+# Verified by probe rather than left to inference.
+#
+# Symbol: `✔` is from the same documented state set as the `⚠` used by every other block here
+# (✔/✖/⚠/ℹ) and is single-width BMP. Emoji are BANNED on this surface — they are double-width and
+# misalign every column (terminal-constraints.md § Unicode). The check reads "the maintainer ticked
+# this off", not "you finished it"; the heading carries the actual instruction.
+PR_READY_BLOCK=""
+if [ -f "$WATCHLIST" ]; then
+  PR_READY_COUNT=$(jq '[.items[]
+    | select(.status == "active"
+        and .pr_eligible == true
+        and .last_seen_open_closing_pr != true
+        and .last_seen_state != "closed"
+        and .last_seen_state != "merged"
+        and (.snooze_until == null
+             or (.snooze_until != "perma"
+                 and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))]
+    | length' "$WATCHLIST" 2>/dev/null)
+  case "$PR_READY_COUNT" in
+    ''|*[!0-9]*) PR_READY_COUNT=0 ;;
+  esac
+  if [ "$PR_READY_COUNT" -gt 0 ]; then
+    # SAME predicate as the count select above -- keep the two textually identical (the probe
+    # asserts count and rows together so divergence is caught), mirroring the action-required pair.
+    # Row shape mirrors the action rows deliberately: one scan-vocabulary for the whole banner. The
+    # verb differs because the ask differs -- `/dhx:upstream pr` opens the PR these rows are cleared
+    # for. `ack` is NOT offered: it sets awaiting_them, which is meaningless here and is precisely the
+    # bug that buried these items. Snooze IS offered, and the reason is reachability rather than
+    # symmetry: the row body renders `.url`, never `.id`, so dropping the snooze shortcut leaves the
+    # id nowhere on the row and an affordance the selects genuinely honor becomes untypeable. That
+    # was tried and reverted during authoring -- the shorter line cost the operator the only copy of
+    # the argument. The line runs ~119 chars against a 76-char content width and will wrap; that is
+    # this surface\'s existing condition, not a regression introduced here (every item row above
+    # already renders 92-109), and the probe\'s NOT-BARE-IDS contract wants the shortcut present.
+    PR_READY_ROWS=$(jq -r '.items[]
+      | select(.status == "active"
+          and .pr_eligible == true
+          and .last_seen_open_closing_pr != true
+          and .last_seen_state != "closed"
+          and .last_seen_state != "merged"
+          and (.snooze_until == null
+               or (.snooze_until != "perma"
+                   and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
+      | "    " + .tag
+        + (((.last_seen_labels // []) | .[0:3] | join(", ")) as $lbl | if $lbl == "" then "" else " · " + $lbl end)
+        + " · " + .url
+        + ((((.last_checked_at | sub("\\.[0-9]+";"") | fromdateiso8601)? // null) as $polled
+            | if $polled == null then ""
+              else (((now - $polled) | if . < 0 then 0 else . end) as $s
+                | if $s < 3600 then " · polled \($s / 60 | floor)m ago"
+                  else " · polled \($s / 3600 | floor)h ago" end)
+              end))
+        + "\n      › /dhx:upstream pr " + .url + " · /dhx:watch snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
+    PR_READY_BLOCK="✔ Ready for your PR (${PR_READY_COUNT}):
+${PR_READY_ROWS}
 "
   fi
 fi
@@ -369,19 +452,24 @@ fi
 # section is swallowed before the printf below.
 if [ "$ANY_SURFACED" -eq 0 ] \
   && [ -z "$TIMER_STALE_LINE" ] && [ -z "$POLLS_DEGRADED_LINE" ] && [ -z "$FAILING_ITEMS_LINE" ] \
-  && [ -z "$ACTION_BLOCK" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
+  && [ -z "$ACTION_BLOCK" ] && [ -z "$PR_READY_BLOCK" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
   exit 0
 fi
 
 # Emit in D-11 order: timer_stale → polls_degraded → failing-items → action-required
-# → drift → corrupt → per-event rendered block. Action-required (the awaiting_us
+# → pr-ready → drift → corrupt → per-event rendered block. Action-required (the awaiting_us
 # inbox, watchlist-derived) sits after the health-cache alarms and before drift: it
 # is a direct ask on the user (higher priority than the informational closed-upstream
 # drift line), while the watcher-health alarms above contextualize whether the
 # awaiting_us verdict is even fresh.
-printf '%s%s%s%s%s%s%s' \
+#
+# PR-ready sits directly AFTER action-required and before drift: both are direct asks on the user, so
+# both outrank the informational drift line, but answering a maintainer who is waiting outranks
+# starting work nobody is blocked on. The two are mutually exclusive by construction (see the
+# partition note on the PR-ready block), so the ordering never splits one item across both.
+printf '%s%s%s%s%s%s%s%s' \
   "$TIMER_STALE_LINE" "$POLLS_DEGRADED_LINE" "$FAILING_ITEMS_LINE" \
-  "$ACTION_BLOCK" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
+  "$ACTION_BLOCK" "$PR_READY_BLOCK" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
 
 # Spec section Surfacer logic step 4: atomic-write new pointer.
 if [ "$MAX_SURFACED" != "$PTR" ]; then
