@@ -255,6 +255,64 @@ else
   echo "SKIP A14 two-cut equivalence — skills repo planner not found at $PLANNER"
 fi
 
+# --- Assertion 15: frontmatter is read as a BLOCK, not a line window ---
+# The failure shape: the scan used `head -30`, so a brief whose frontmatter runs
+# long (a multi-line `trigger_when:` is the common cause) had its
+# `target_milestone:` fall outside the window and went uncounted. Measured
+# 2026-09-04 in ~/repos/barca: 16 of 34 `next` briefs sat beyond line 30,
+# deepest at line 76 — the reminder printed 24 where promote-next reported 34.
+# The same fixture pins the inverse: a `target_milestone:` line in BODY prose is
+# outside the frontmatter block and must NOT count.
+TMP=$(mktemp -d)
+mk_fixture "$TMP" "v1.5"
+{
+  echo "---"
+  echo "created: 2026-09-04"
+  echo "trigger_when: >"
+  for i in $(seq 1 40); do echo "  padding line $i of a long block scalar"; done
+  echo "target_milestone: next"     # line 45 — well past any 30-line window
+  echo "---"
+  echo "# Deep frontmatter brief"
+} > "$TMP/.planning/backlog/deep.md"
+{
+  echo "---"
+  echo "target_milestone: v2.0"     # future → not counted
+  echo "---"
+  echo "# Body-text decoy"
+  echo ""
+  echo "target_milestone: next"     # BODY prose → must NOT count as next
+} > "$TMP/.planning/backlog/decoy.md"
+OUT=$(run "$TMP")
+EXPECTED="Closing v1.5 — 1 'next' backlog brief(s) await promotion.
+Run /dhx:backlog promote-next once the cut is committed."
+check "A15 deep frontmatter counted; body-text target_milestone ignored" "$EXPECTED" "$OUT"
+rm -rf "$TMP"
+
+# --- Assertion 16: LIVE count parity with the planner ---
+# A13 pins that the two agree on which VERSIONS parse. This pins that they agree
+# on HOW MANY briefs are promotable — the axis the head -30 window broke while
+# every version assertion stayed green. Skipped when the skills repo is absent.
+PLANNER="$HOME/repos/skills/scripts/backlog-promote-next.cjs"
+if [ -f "$PLANNER" ] && command -v node >/dev/null 2>&1; then
+  TMP=$(mktemp -d)
+  mk_fixture "$TMP" "v1.5"
+  {
+    echo "---"
+    echo "trigger_when: >"
+    for i in $(seq 1 40); do echo "  padding line $i"; done
+    echo "target_milestone: next"
+    echo "---"
+    echo "# Deep"
+  } > "$TMP/.planning/backlog/deep.md"
+  HOOK_NEXT=$(run "$TMP" | sed -nE "s/.*— ([0-9]+) 'next'.*/\1/p")
+  PLAN_NEXT=$(cd "$TMP" && node "$PLANNER" plan --from next --json 2>/dev/null \
+    | tr ',' '\n' | grep -c '"file"')
+  check "A16 hook 'next' count == planner next_items count" "$HOOK_NEXT" "$PLAN_NEXT"
+  rm -rf "$TMP"
+else
+  echo "SKIP A16 count parity — skills repo planner not found at $PLANNER"
+fi
+
 # --- Assertion 6: Exit code is 0 across all scenarios ---
 TMP=$(mktemp -d)
 mk_fixture "$TMP" "v1.5"

@@ -81,10 +81,29 @@ NEXT_COUNT=0
 NEXT_PLUS_COUNT=0
 STALE_COUNT=0
 
+# Frontmatter-isolated read of one top-level key, mirroring the planner's
+# parse-frontmatter-block.cjs contract: the file must OPEN with `---`, the block
+# ends at the next `---`, and only column-0 `key:` lines inside it count. CRLF
+# tolerated (WR-02 parity). This replaced a `head -30` window on 2026-09-04:
+# briefs with long `trigger_when:` blocks push `target_milestone:` past line 30
+# — measured in ~/repos/barca, 16 of 34 `next` briefs sat beyond it, deepest at
+# line 76, so the reminder printed 24 where promote-next reports 34. A fixed
+# window also let a BODY line reading `target_milestone: …` count as frontmatter;
+# isolating the block closes both at once.
+read_fm_key() {
+  awk -v key="$2" '
+    { sub(/\r$/, "") }
+    NR == 1 && $0 != "---" { exit }
+    NR == 1 { next }
+    $0 == "---" { exit }
+    index($0, key ":") == 1 { print substr($0, length(key) + 2); exit }
+  ' "$1"
+}
+
 for brief in "$BACKLOG_DIR"/*.md; do
   [ -f "$brief" ] || continue
-  tm=$(head -30 "$brief" | grep -E '^target_milestone:' | head -1 \
-    | sed -E 's/^target_milestone:[[:space:]]*//' | tr -d '"'"'")
+  tm=$(read_fm_key "$brief" target_milestone \
+    | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr -d '"'"'")
   case "$tm" in
     next)           NEXT_COUNT=$((NEXT_COUNT + 1)) ;;
     next+[1-3])     NEXT_PLUS_COUNT=$((NEXT_PLUS_COUNT + 1)) ;;
