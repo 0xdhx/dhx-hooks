@@ -17,9 +17,14 @@ set -euo pipefail
 #      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
 #   8. Probe suite, tiered (2026-08-20). Armed by the same narrow pathspec
 #      as before (dhx/*.js or tests/probes/*), then split three ways:
-#        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no. Every
-#           probe whose verdict a /dhx:sym gsd-update alone CANNOT flip
-#           with the repository unchanged. That is the entire guarantee.
+#        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no
+#           --filter HERMETIC_TIER=yes. Every probe whose verdict a
+#           /dhx:sym gsd-update alone CANNOT flip with the repository
+#           unchanged, MINUS those too costly to run per-commit
+#           (HERMETIC_TIER: no — a separate axis added 2026-09-05; a
+#           reclassified probe must name a runner in its own header, and
+#           probe-hermetic-tier-cost-axis.sh enforces that). That is the
+#           entire guarantee.
 #           It is NOT repo-purity: a probe in this tier may read live
 #           config, or assert on THIS repo's absolute path, and still be
 #           correctly tiered. Before building anything that reconstructs
@@ -425,7 +430,7 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     echo "Running hermetic probe tier (dhx/*.js or tests/probes/* staged)..."
     TIER_LOG=$(mktemp)
     set +e
-    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no 2>&1 | tee "$TIER_LOG"
+    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no --filter HERMETIC_TIER=yes 2>&1 | tee "$TIER_LOG"
     TIER_RC=${PIPESTATUS[0]}
     set -e
 

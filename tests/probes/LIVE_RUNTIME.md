@@ -3,16 +3,41 @@
 Authored 2026-08-20. Companion to `SAFE_FOR_LIVE.md`, answering a different
 question about the same probe set.
 
+## The three axes
+
 | tag | question it answers | untagged means |
 |---|---|---|
 | `SAFE_FOR_LIVE` | *May this probe touch live state?* | **refused** — never assume safety |
 | `LIVE_RUNTIME` | *Can an upstream install flip this probe's verdict with the repository unchanged?* | **`no`** — assume hermetic, keep gating on it |
+| `HERMETIC_TIER` | *Is this probe cheap enough to run on every commit?* | **`yes`** — assume cheap, keep gating on it |
 
-The two defaults point in opposite directions on purpose. Each fails toward the
+The defaults point in different directions on purpose. Each fails toward the
 safe side of its own question: an unclassified probe must not be *run* against
 live state, and an unclassified probe must not be *dropped* from the commit gate.
 A new live probe that forgets its tag therefore lands in the tier that runs more
-often, never the one that runs less.
+often, never the one that runs less. The same holds for cost — a probe that
+forgets `HERMETIC_TIER` keeps gating commits.
+
+### Why cost needed its own axis (2026-09-05)
+
+`probe-sync-mirror-publish-gate.sh` blocked two unrelated commits by timing out
+at the 30s per-probe cap: it runs the real publisher five times, each doing a
+full-history `git filter-repo`, so it measures 28s idle / 50s under load and is
+**O(commits)** — it worsens permanently as history grows.
+
+Neither existing tag could express that without lying. `SAFE_FOR_LIVE: no` would
+claim the probe is unsafe to run (it is not — it pushes to a mktemp bare repo and
+its network read is read-only). `LIVE_RUNTIME: yes` would claim an upstream
+install can flip its verdict (it cannot). Either would have been a false answer
+written to buy a scheduling outcome — and a tag that lies is precisely the defect
+`probe-hermetic-tier-contract-parity.sh` was built to prevent, after an
+over-claiming summary corrupted a downstream design in 2026-08.
+
+Cost is a genuinely third question, so it got a third tag. **Reclassifying is not
+deleting:** a `HERMETIC_TIER: no` probe must be given a home that actually runs
+it, named in its own header. The mirror probe's home is the weekly rehearsal in
+`.github/workflows/publish-mirror.yml`, which already checks out full history and
+installs `git-filter-repo` for the same reasons the probe is slow.
 
 ## Why the tier exists
 

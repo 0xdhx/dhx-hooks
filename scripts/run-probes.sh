@@ -15,19 +15,27 @@
 #   bash scripts/run-probes.sh                              # bare — defaults to --filter SAFE_FOR_LIVE=yes (D-14)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes   # explicit health.sh delegate (D-26)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=no    # sandbox-only (D-26+D-27)
-#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no
-#                                                           # hermetic tier — the pre-commit gate's default (2026-08-20)
+#   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no --filter HERMETIC_TIER=yes
+#                                                           # hermetic tier — the pre-commit gate's default (2026-08-20, cost key added 2026-09-05)
 #   bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=yes --stamp
 #                                                           # live tier + version stamp; run after a gsd-core install
 #
-# --filter is REPEATABLE and the keys AND together. Two keys are recognised:
-#   SAFE_FOR_LIVE=yes|no  — untagged probes are REFUSED (fail toward NOT running:
-#                           an unclassified probe might mutate live state).
-#   LIVE_RUNTIME=yes|no   — untagged probes are treated as `no` (fail toward
-#                           RUNNING at commit time: an unclassified probe is
-#                           assumed hermetic, so the gate keeps checking it).
-# The two defaults point in opposite directions ON PURPOSE — each fails toward
-# the safe side of its own question. See tests/probes/LIVE_RUNTIME.md.
+# --filter is REPEATABLE and the keys AND together. THREE keys are recognised,
+# each answering a DIFFERENT question about the same probe:
+#   SAFE_FOR_LIVE=yes|no  — may this probe touch live state?  Untagged is REFUSED
+#                           (fail toward NOT running: an unclassified probe might
+#                           mutate live state).
+#   LIVE_RUNTIME=yes|no   — can an upstream install flip its verdict?  Untagged is
+#                           treated as `no` (fail toward RUNNING at commit time: an
+#                           unclassified probe is assumed hermetic, so the gate
+#                           keeps checking it).
+#   HERMETIC_TIER=yes|no  — is it cheap enough to run on EVERY commit?  Untagged is
+#                           treated as `yes` (same fail-toward-the-gate direction:
+#                           an unclassified probe is assumed cheap).
+# The defaults point in different directions ON PURPOSE — each fails toward the
+# safe side of its own question. Do NOT reach for one key to get another key's
+# scheduling effect; a tag that answers the wrong question is a lie the next
+# reader inherits. See tests/probes/LIVE_RUNTIME.md § "The three axes".
 # Exit code 0 = all probes passed. Nonzero = at least one probe failed
 # or timed out (124). Exit 2 = invalid flag value or D-27 PWD+CONFIG_DIR
 # refusal under --filter SAFE_FOR_LIVE=no when cwd or CONFIG_DIR resolves
@@ -66,7 +74,7 @@ while [[ $# -gt 0 ]]; do
       shift
       _spec="${1:-}"
       case "$_spec" in
-        SAFE_FOR_LIVE=*|LIVE_RUNTIME=*)
+        SAFE_FOR_LIVE=*|LIVE_RUNTIME=*|HERMETIC_TIER=*)
           _k="${_spec%%=*}"
           _v="${_spec#*=}"
           if [[ "$_v" != "yes" && "$_v" != "no" ]]; then
@@ -77,7 +85,7 @@ while [[ $# -gt 0 ]]; do
           FILTER_VALS+=("$_v")
           ;;
         *)
-          echo "run-probes: --filter expects SAFE_FOR_LIVE=yes|no or LIVE_RUNTIME=yes|no, got '${_spec:-<empty>}'" >&2
+          echo "run-probes: --filter expects SAFE_FOR_LIVE=yes|no, LIVE_RUNTIME=yes|no or HERMETIC_TIER=yes|no, got '${_spec:-<empty>}'" >&2
           exit 2
           ;;
       esac
@@ -109,7 +117,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
-      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no, --filter LIVE_RUNTIME=yes|no, --stamp, --only <probe-basename>)" >&2
+      echo "run-probes: unknown argument '$1' (supported: --filter SAFE_FOR_LIVE=yes|no, --filter LIVE_RUNTIME=yes|no, --filter HERMETIC_TIER=yes|no, --stamp, --only <probe-basename>)" >&2
       exit 2
       ;;
   esac
@@ -202,9 +210,20 @@ matches_filter() {
       tagged=no
     fi
     if [[ "$tagged" == "no" ]]; then
-      if [[ "$key" == "LIVE_RUNTIME" ]]; then
-        # Untagged == LIVE_RUNTIME: no. Run it when `no` was asked for.
-        [[ "$val" == "no" ]] && continue
+      # Per-key untagged default. Each fails toward the safe side of its OWN
+      # question — see tests/probes/LIVE_RUNTIME.md § "The three axes":
+      #   SAFE_FOR_LIVE  no default — untagged is REFUSED (never assume safe to run)
+      #   LIVE_RUNTIME   untagged == no  (assume hermetic; keep gating on it)
+      #   HERMETIC_TIER  untagged == yes (assume cheap;    keep gating on it)
+      # The two that HAVE defaults both default INTO the commit gate, so a probe
+      # that forgets its tag lands in the tier that runs more often, never less.
+      _pk_default=""
+      case "$key" in
+        LIVE_RUNTIME)  _pk_default=no ;;
+        HERMETIC_TIER) _pk_default=yes ;;
+      esac
+      if [[ -n "$_pk_default" ]]; then
+        [[ "$val" == "$_pk_default" ]] && continue
       else
         echo "[SKIP] $(basename "$file") — refusing: missing ${key} tag"
         SKIPPED=$((SKIPPED+1))

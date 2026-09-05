@@ -37,6 +37,19 @@
 #
 # Run: bash tests/probes/probe-sync-mirror-publish-gate.sh
 #
+# HERMETIC_TIER: no
+#   COST, not liveness. This probe runs the REAL scripts/sync-public-mirror.sh five
+#   times, and each run does `git clone --no-local` + `git filter-repo` over the FULL
+#   history. Measured 2026-09-05: 28s idle, 50s under load, against run-probes.sh's 30s
+#   per-probe cap — and the runtime is O(commits), so it gets worse forever (2,137
+#   commits at time of writing). It had already blocked two unrelated commits.
+#   Deliberately NOT tagged LIVE_RUNTIME: yes to achieve this. That axis asks "can an
+#   upstream install flip this probe's verdict with the repository unchanged?" and the
+#   answer here is no — tagging it so would have been a false answer written to buy a
+#   scheduling outcome, which is the exact defect probe-hermetic-tier-contract-parity.sh
+#   exists to prevent. See docs/decisions.md 2026-09-05.
+#   Runs instead in the weekly rehearsal (.github/workflows/publish-mirror.yml), which
+#   already checks out full history and installs git-filter-repo for the same reason.
 # SAFE_FOR_LIVE: yes   (push target is a mktemp bare repo + a git credential lockout that
 #                       makes authenticating to github.com impossible for this process
 #                       and its children; no writes to the source repo; runs confined to
