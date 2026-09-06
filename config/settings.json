@@ -1,7 +1,8 @@
 {
   "cleanupPeriodDays": 9999,
   "env": {
-    "BASH_MAX_TIMEOUT_MS": "960000"
+    "BASH_MAX_TIMEOUT_MS": "960000",
+    "DISPLAY": ":0"
   },
   "includeGitInstructions": false,
   "permissions": {
@@ -86,11 +87,6 @@
       "Edit",
       "Glob",
       "Grep",
-      "Edit(.planning/**)",
-      "Edit(docs/**)",
-      "Edit(tests/**)",
-      "Edit(scripts/**)",
-      "Edit(pyproject.toml)",
       "Agent",
       "Skill(gsd-*)",
       "Skill(dhx:*)",
@@ -144,10 +140,11 @@
       "Skill(deep-research)",
       "Skill(claude-api)",
       "Bash(npx gsd-core *)",
-      "Read(.planning/*)",
-      "Read(STATE.md)",
-      "Edit(STATE.md)",
-      "Edit(.planning/*)"
+      "Write(/home/dhx/.ccs/instances/*/jobs/**)",
+      "Bash(timeout * gh *)",
+      "Bash(/home/dhx/.claude/dhx-tools/dhx-commit *)",
+      "Bash(~/.claude/dhx-tools/dhx-commit *)",
+      "Bash(tailscale status*)"
     ],
     "deny": [
       "Read(./.env*)",
@@ -284,7 +281,7 @@
           {
             "type": "command",
             "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-prompt-guard.js\"",
-            "timeout": 5
+            "timeout": 120
           }
         ]
       },
@@ -294,7 +291,7 @@
           {
             "type": "command",
             "command": "bash /home/dhx/.claude/hooks/gsd-validate-commit.sh",
-            "timeout": 5
+            "timeout": 120
           }
         ]
       },
@@ -304,7 +301,7 @@
           {
             "type": "command",
             "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-worktree-path-guard.js\"",
-            "timeout": 5
+            "timeout": 120
           }
         ]
       },
@@ -314,7 +311,7 @@
           {
             "type": "command",
             "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-agent-isolation-guard.js\"",
-            "timeout": 5
+            "timeout": 120
           }
         ]
       },
@@ -324,7 +321,17 @@
           {
             "type": "command",
             "command": "\"/home/dhx/.nvm/versions/node/v22.22.2/bin/node\" \"$HOME/.claude/hooks/gsd-write-guard.js\"",
-            "timeout": 5
+            "timeout": 120
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/gsd-node-runner.sh\" \"/home/dhx/.nvm/versions/node/v24.14.1/bin/node\" \"$HOME/.claude/hooks/gsd-secret-read-guard.js\"",
+            "timeout": 120
           }
         ]
       }
@@ -334,7 +341,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/dhx/.local/bin/uv run /home/dhx/repos/ttsfilter/src/ttsfilter/app/hook.py",
+            "command": "bash -lc '/home/dhx/.local/bin/uv run /home/dhx/repos/ttsfilter/src/ttsfilter/app/hook.py'",
             "timeout": 30
           }
         ]
@@ -398,10 +405,9 @@
     "superpowers@claude-plugins-official": false,
     "superpowers@dhx-local": true,
     "playwright@claude-plugins-official": false,
-    "typescript-lsp@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": false,
     "pyright-lsp@claude-plugins-official": true,
     "playground@claude-plugins-official": true,
-    "document-skills@anthropic-agent-skills": false,
     "dhx@dhx-local": true,
     "llm-wiki@llm-wiki": false,
     "chrome-devtools-mcp@chrome-devtools-plugins": true,
@@ -429,8 +435,21 @@
     }
   },
   "outputStyle": "Dry Blade",
-  "effortLevel": "high",
+  "feedbackDrafts": "notify",
+  "effortLevel": "medium",
+  "modelSettings": {
+    "claude-fable-5": {
+      "effortLevel": "medium"
+    },
+    "claude-opus-5": {
+      "effortLevel": "high"
+    },
+    "claude-fable-5-1": {
+      "effortLevel": "medium"
+    }
+  },
   "awaySummaryEnabled": true,
+  "askUserQuestionTimeout": "never",
   "tui": "fullscreen",
   "voice": {
     "enabled": true,
@@ -439,8 +458,10 @@
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
   "editorMode": "normal",
+  "preferredNotifChannel": "auto",
   "autoCompactEnabled": true,
   "remoteControlAtStartup": true,
+  "crossSessionInbound": "accept",
   "agentPushNotifEnabled": false,
   "voiceEnabled": true
 }
