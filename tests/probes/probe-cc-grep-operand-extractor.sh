@@ -28,6 +28,14 @@
 #            site — never by minified identifiers, which churn every build. An anchor that
 #            stops matching FAILS LOUDLY; a probe that extracts nothing and passes is how the
 #            retired hook's premise survived 169 green cells.
+#            2026-09-08: that claim was HALF TRUE and is now enforced. The anchor yielded the
+#            extractor's minified NAME and the next line looked that name up with `head -1`,
+#            globally — lookup by minified identifier, one line after the anchor did its job.
+#            A name is not unique in a 200MB bundle (2.1.266: three `function vrt(`), so the
+#            probe lifted the wrong one and a 5.7MB span, and died on "Cannot use import
+#            statement outside a module" — a build-drift-shaped error for a selection bug.
+#            Selection is now by NEAREST PRECEDING definition, bounded by a span ceiling, so
+#            a future collision fails as a collision and says so.
 #            Vectors that differ from the fixture are a DRIFT CENSUS (NOTE lines + one OK that
 #            the census ran), not failures: the extractor is upstream's to change. Only the
 #            retirement's load-bearing claims (a)–(c) are asserted on the live build.
@@ -37,12 +45,13 @@
 # that stood in for "does not change what the CLASSIFIER sees" for a day. Never again.
 #
 # Read-only: reads the fixture, the installed executables (grep -aob + tail/head seeks), the
-# stub, the manifest, the disjointness probe and SAFE_FOR_LIVE.md. Writes only under mktemp.
+# manifest, the disjointness probe and SAFE_FOR_LIVE.md, and stats the deleted stub path and its
+# former ~/.claude/hooks/ symlink to assert both are absent. Writes only under mktemp.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE="$REPO/tests/fixtures/cc/2.1.259-grep-operand-extractor.js"
-STUB="$REPO/dhx/dhx-cd-compound-read-allow.sh"
+STUB="$REPO/dhx/dhx-cd-compound-read-allow.sh"   # DELETED 2026-09-08 — § 3 asserts its absence
 PLUGIN_HOOKS="$REPO/dhx-plugin/plugins/dhx/hooks/hooks.json"
 DISJOINT_PROBE="$REPO/tests/probes/probe-updatedinput-producer-disjointness.sh"
 VERSIONS_DIR="${CC_VERSIONS_DIR:-$HOME/.local/share/claude/versions}"
@@ -114,17 +123,45 @@ else
   # Anchors — each must occur EXACTLY once, or the extraction is not trustworthy.
   a1=$(command grep -ac '"--exclude-dir","--include-dir"' "$EXE"); [ "$a1" = 1 ]; ck $? "anchor: grep-family option set occurs exactly once (got $a1)"
   a2=$(command grep -ac '"-T","--type-not"' "$EXE");               [ "$a2" = 1 ]; ck $? "anchor: rg option set occurs exactly once (got $a2)"
-  RGLINE=$(command grep -aoh 'rg:(e)=>[A-Za-z0-9_$]*(e,new Set(\["-e","--regexp","-f","--file","-t"[^]]*\]),\["."\])' "$EXE" | head -1)
-  [ -n "$RGLINE" ]; ck $? "anchor: rg call site \`rg:(e)=>NAME(e,new Set([...]),[\".\"])\` located"
+  RGHIT=$(command grep -aob 'rg:(e)=>[A-Za-z0-9_$]*(e,new Set(\["-e","--regexp","-f","--file","-t"[^]]*\]),\["."\])' "$EXE" | head -1)
+  RGOFF=${RGHIT%%:*}; RGLINE=${RGHIT#*:}
+  [ -n "$RGHIT" ]; ck $? "anchor: rg call site \`rg:(e)=>NAME(e,new Set([...]),[\".\"])\` located"
   CALLEE=$(printf '%s' "$RGLINE" | sed -E 's/^rg:\(e\)=>([A-Za-z0-9_$]+)\(.*/\1/')
   RGSET=$(printf '%s' "$RGLINE" | sed -E 's/^[^[]*(\[[^]]*\]).*/\1/')
-  ROFF=$(command grep -aob "function $CALLEE(" "$EXE" | head -1 | cut -d: -f1)
-  [ -n "$ROFF" ]; ck $? "extractor function \`$CALLEE\` located by the rg call site (offset ${ROFF:-none})"
+  # SELECT BY POSITION, NOT BY FIRST HIT. The structural anchor above yields the extractor's
+  # MINIFIED NAME, and a minified name is not unique across a ~200MB bundle: 2.1.266 carries
+  # three `function vrt(` definitions (179156752 / 184847297 / 202497797) and only the middle
+  # one is the operand extractor — it sits 4,637 bytes before the rg call site. A `head -1`
+  # here took the first, 5.7MB adrift, and lifted a `backendView`/remote-settings function
+  # plus 5.7MB of unrelated bundle; the span then failed to evaluate ("Cannot use import
+  # statement outside a module") because that much of a modern build contains ESM. That is
+  # the very lookup-by-minified-identifier this probe's header disclaims, reintroduced one
+  # line after the structural anchor did its job. The definition we want is the NEAREST
+  # PRECEDING one — a callee is defined before the call site in this bundle's layout.
+  ALLOFF=$(command grep -aob "function $CALLEE(" "$EXE" | cut -d: -f1)
+  NDEF=$(printf '%s\n' "$ALLOFF" | grep -c .)
+  ROFF=$(printf '%s\n' "$ALLOFF" | awk -v r="${RGOFF:-0}" '$1 < r' | tail -1)
+  [ -n "$ROFF" ]; ck $? "extractor function \`$CALLEE\` located by the rg call site (offset ${ROFF:-none}; $NDEF definition(s) of that name in the build)"
+  [ "$NDEF" -gt 1 ] && note "\`$CALLEE\` is defined $NDEF times — selection is by nearest-preceding, not first-hit"
   GOFF=$(command grep -aob '"--exclude-dir","--include-dir"' "$EXE" | head -1 | cut -d: -f1)
   if [ -n "$ROFF" ] && [ -n "$GOFF" ] && [ "$GOFF" -gt "$ROFF" ]; then
     # Span: from the extractor's head through the grep-family arrow function that contains
     # the grep anchor. The arrow's end is the balanced `}` after the anchor.
     SPAN_LEN=$((GOFF - ROFF + 1200))
+    # A CEILING, because a wrong pick is not always a failed pick. The correct span is ~2.4KB
+    # (2,380 bytes on 2.1.266). Anything approaching a megabyte means the anchors have drifted
+    # apart and the extraction is not trustworthy, whether or not the result happens to
+    # evaluate — refuse it LOUDLY rather than hand a plausible-looking wrong module to the
+    # census. 64KB is ~27x the measured span and still nowhere near a mis-selection.
+    SPAN_MAX=65536
+    [ "$SPAN_LEN" -le "$SPAN_MAX" ]
+    ck $? "span from extractor head to grep anchor is ${SPAN_LEN}B (ceiling ${SPAN_MAX}B — a larger span means the anchors drifted apart)"
+    if [ "$SPAN_LEN" -gt "$SPAN_MAX" ]; then
+      note "refusing to lift a ${SPAN_LEN}B span; live cells skipped (fixture cells above still stand)"
+      GOFF=""
+    fi
+  fi
+  if [ -n "$ROFF" ] && [ -n "$GOFF" ] && [ "$GOFF" -gt "$ROFF" ]; then
     tail -c +$((ROFF + 1)) "$EXE" | head -c "$SPAN_LEN" | tr -d '\000' > "$TMP/span.raw"
     node - "$TMP/span.raw" "$CALLEE" "$RGSET" "$TMP/live.js" <<'EOF'
 const fs = require("fs");
@@ -188,24 +225,21 @@ EOF
   fi
 fi
 
-echo "--- 3. the hook is RETIRED: inert stub, unregistered, out of the producer roster ---"
-payload() { jq -n --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c,timeout:600000,description:"probe"}}'; }
-for c in "cd $REPO; grep -n foo docs/backlog.md" "ls | rg -v 'zzz' | head -3" "cd /etc; grep -n root passwd"; do
-  out=$(payload "$c" | bash "$STUB" 2>&1); rc=$?
-  [ $rc -eq 0 ] && [ -z "$out" ]; ck $? "stub is silent and exit 0 on: $c"
-done
-out=$(printf 'not json' | bash "$STUB" 2>&1); [ $? -eq 0 ] && [ -z "$out" ]; ck $? "stub is silent and exit 0 on malformed stdin"
-grep -q '^# Patterns: HP-012' "$STUB"; ck $? "stub declares HP-012 (the reason it still exists)"
-grep -q 'RETIRED 2026-09-04' "$STUB"; ck $? "stub header names the retirement date"
-! grep -q 'sets `k`' "$STUB"; ck $? "stub header does not restate the false \`-- -\` mechanism"
+echo "--- 3. the hook is RETIRED: source deleted, unregistered, out of the producer roster ---"
+# 2026-09-08 — § 3.1 step 6 executed. The inert stub and its ~/.claude/hooks/ symlink are GONE,
+# removed once pre-7e39fe2 registrations had drained (measured: zero live sessions predating the
+# 2026-09-04 17:40 retirement commit). The seven cells that exercised the stub's body and header,
+# and the symlink cell's live branch, are DELETED rather than skipped: a skip-when-absent branch
+# would let a re-created stub pass silently, which is precisely the state the retirement prompt
+# refuses ("Do not 'leave it on disk' as a retired executable"). Absence is now ASSERTED, so this
+# probe actively defends the deletion instead of merely tolerating it.
+[ ! -e "$STUB" ]
+ck $? "production source dhx/dhx-cd-compound-read-allow.sh is deleted (not an inert stub)"
+[ ! -e "$HOME/.claude/hooks/dhx-cd-compound-read-allow.sh" ] \
+  && [ ! -L "$HOME/.claude/hooks/dhx-cd-compound-read-allow.sh" ]
+ck $? "installed ~/.claude/hooks/ symlink is removed (no dangling hook entry)"
 ! grep -q 'cd-compound-read-allow' "$PLUGIN_HOOKS"; ck $? "plugin hooks.json no longer registers the hook"
 grep -q 'RETIRED producer' "$DISJOINT_PROBE"; ck $? "disjointness corpus keeps the cd shapes as NEGATIVE rows (retired producer)"
-if [ -L "$HOME/.claude/hooks/dhx-cd-compound-read-allow.sh" ]; then
-  [ "$(readlink -f "$HOME/.claude/hooks/dhx-cd-compound-read-allow.sh")" = "$(readlink -f "$STUB")" ]
-  ck $? "installed symlink (still present until registrations drain) resolves to the inert stub"
-else
-  note "installed symlink already removed (post-drain state)"
-fi
 grep -q 'probe-cc-grep-operand-extractor.sh' "$REPO/tests/probes/SAFE_FOR_LIVE.md"; ck $? "SAFE_FOR_LIVE.md carries this probe's row"
 ! grep -q 'probe-dhx-cd-compound-read-allow.sh' "$REPO/tests/probes/SAFE_FOR_LIVE.md"; ck $? "SAFE_FOR_LIVE.md no longer lists the retired probe name"
 
