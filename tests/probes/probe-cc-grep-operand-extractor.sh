@@ -13,9 +13,11 @@
 #          no domain there);
 #      (c) post-pattern options (`-A12`, `--include=*.sh`) are extracted AS OPERANDS — the two
 #          upstream shapes recorded as hook-unfixable.
-#    The hook that answered this circuit is retired: this probe also pins that the stub is
-#    inert and unregistered, and that the disjointness corpus no longer counts it a producer.
-# 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow — RETIRED" row (2026-09-04) + HP-060.
+#    The hook that answered this circuit is retired: this probe also pins that its source and
+#    its installed ~/.claude/hooks/ symlink are DELETED (see § 3), and that the disjointness
+#    corpus no longer counts it a producer.
+# 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow — RETIRED" row (2026-09-04) + HP-060,
+#    and HP-063 (the nearest-preceding selection rule + span ceiling this probe now enforces).
 # 3. Run: bash tests/probes/probe-cc-grep-operand-extractor.sh
 #
 # Two oracles, deliberately separate (the 2026-09-04 prompt § 3.2):
