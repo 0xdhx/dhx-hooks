@@ -13,10 +13,10 @@
 # ~/.claude/dhx-tools/backlog-regen.cjs). Every scripted BRIEF committer (backlog-
 # close / capture / reopen / promote-next) already regenerates it and carries it in
 # its own scoped pathspec — the committer-adaptation half of the zero-touch story.
-# That roster is brief-writers ONLY and is not the full set of aggregate inputs: the
-# committers that mutate reports/skills/*/actionable/ membership (the defect-row
-# input) do NOT carry the aggregate and are covered by neither half — see
-# ~/repos/skills/.planning/backlog/2026-07-29-report-committers-do-not-carry-the-backlog-aggregate.md
+# The actionable-lifecycle committers that mutate reports/skills/*/actionable/ (the
+# defect-row input — membership AND in-place status) carry it too since 2026-09-12,
+# on the commit's own basis, and a staged actionable/ change triggers this gate — see
+# ~/repos/skills/docs/decisions/2026-09-12-backlog-freshness-gate-triggers-on-actionable-changes.md
 # The uncovered residue is AD-HOC brief commits (observed 2026-07-12: a manually-
 # shipped brief left the aggregate stale a full day, hiding it from navigation).
 # This leaf makes that drift UNCOMMITTABLE, with the exact fix in the block message.
@@ -88,23 +88,26 @@
 #
 # TRIGGER SCOPING (load-bearing): fires ONLY when the commit stages a path under
 # .planning/backlog/ (terminal subdirs INCLUDED — a `git mv` to shipped/ must drop
-# the row and bump the footer count) or .planning/BACKLOG.md itself (superset
-# trigger: a hand-edited aggregate staged alone is verified). No --diff-filter
+# the row and bump the footer count), a reports/skills/*/actionable/*.md (an add, a
+# delete — an archive move decomposes into D+A — or an edit; only an edit that changes
+# the file's Defects row — status, title/H1, created_at, skill — can block), or
+# .planning/BACKLOG.md itself (superset trigger: a hand-edited aggregate staged alone is
+# verified). Hook-less paths are NOT gated: cherry-pick, revert and rebase run no
+# pre-commit hook, so a row change they carry lands unverified. No --diff-filter
 # (a staged `git rm` of a brief leaves a dangling row, so deletions must trigger);
 # --no-renames (a move decomposes into D+A). DELIBERATE EXCLUSIONS — two path
 # classes, excluded for DIFFERENT reasons; do not read one rationale as covering
 # both. (1) The vocabulary files (ROADMAP/STATE/MILESTONES): STATE.md is touched by
 # every GSD phase op whose committers (gsd-tools) do not carry BACKLOG.md, so
-# triggering there would wedge GSD flows. (2) reports/skills/: its actionable/
-# subtree IS a live row input, and its committers do NOT carry the aggregate, so
-# every archive leaves a dead row and every mint a missing one. It is excluded on
-# COST, not on innocence — triggering would block ~6-7 single-file chore commits a
-# day for a drift class whose measured harm is a dangling link (fresh regens never
-# carry a dead row; promote-next ignores report rows) and which self-heals at the
-# next backlog-touching commit (median 27.5 min, 2026-07-29 census). The fix is
-# committer adaptation, NOT widening this trigger: carrying the aggregate self-arms
-# this gate via the .planning/BACKLOG.md superset trigger below, with no trigger
-# change at all. Auto-regen inside this leaf stays REJECTED (see DESIGN above).
+# triggering there would wedge GSD flows. (2) reports/skills/*/telemetry/ and
+# */archive/: they feed no row. reports/skills/*/actionable/ is NOT excluded — it
+# was, on cost (~6-7 non-carrying chore commits a day), until the 2026-09-12
+# committer migration made every scripted actionable committer carry the aggregate;
+# of the 6 actionable/archive commits measured after it, the only 3 without the
+# aggregate were an unmigrated fence. So the trigger is now the backstop that catches
+# the NEXT writer that skips it (a hand commit pays the printed one-command fix below).
+# A commit that changes no row still passes — only caused drift blocks. Auto-regen
+# inside this leaf stays REJECTED (see DESIGN above).
 #
 # Fail-mode (mirrors the sibling leaves, D-06 — polarity depends on WHEN it fails):
 #   - node absent, regen tool unresolvable, regen exits non-zero over the staged
@@ -133,13 +136,16 @@ cd "$REPO_ROOT" || exit 0
 # --- Trigger scoping ----------------------------------------------------------
 # Pure git+bash before any node startup — this runs on EVERY commit in the repo.
 mapfile -d '' -t staged < <(git diff -z --cached --name-only --no-renames -- \
-  .planning/backlog/ .planning/BACKLOG.md)
+  .planning/backlog/ .planning/BACKLOG.md reports/skills/)
 
 triggered=0
 for p in "${staged[@]}"; do
   case "$p" in
     # `*` in a case glob spans `/`, so terminal subdirs are covered.
     .planning/BACKLOG.md|.planning/backlog/*.md) triggered=1; break ;;
+    # An actionable/ add, delete or row-changing edit changes a Defects row; telemetry/
+    # and archive/ feed none (an archive MOVE still triggers via its actionable/ D half).
+    reports/skills/*/actionable/*.md) triggered=1; break ;;
   esac
 done
 [ "$triggered" = 0 ] && exit 0
