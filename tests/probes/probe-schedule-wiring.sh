@@ -45,7 +45,8 @@
 # Backs docs/decisions.md 2026-08-22 "/dhx:schedule delivery legs wired" row.
 # B9-B11 back the 2026-08-22 "One digest-tool policy at every /dhx:schedule computing site" row.
 # A10-A11, A13, B6, B7b, B12-B14 back the 2026-08-23 "reference writers emit per-occurrence
-# records (schema_version 2)" row. The `kind:"undigested"` arm is NOT behaviourally reachable
+# records (schema_version 2)" row. A4 (repinned) + B15 back the 2026-09-14 "schedule child runs
+# directly under the reference record, emitted later" row. The `kind:"undigested"` arm is NOT behaviourally reachable
 # from a probe: both keys share one digest chain, so with no digest tool the session key is
 # empty and the guarded block is skipped before the arm is reached (B9-B11 cover the chain).
 # Run: bash tests/probes/probe-schedule-wiring.sh
@@ -91,9 +92,12 @@ fi
 # A4 — dispatcher child line, hardcoded absolute path form (matches every sibling). Repinned
 # 2026-09-03 when the SESSION key joined the event digest on this line; pinning the whole line
 # is the point — it is why adding a forwarded value cannot pass silently.
-grep -qE '^printf .%s. "\$INPUT" \| DHX_SCHEDULE_EVENT_HASH="\$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="\$_SCH_HB_KEY" bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true$' "$DISPATCHER" 2>/dev/null \
-  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values)" ok \
-  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values)" fail
+# Repinned again 2026-09-14: the line is now a command substitution into `_SCH_CTX_OUT` — the
+# child RUNS directly under the reference record and its stdout is EMITTED later (see [B15]).
+grep -qE '^_SCH_CTX_OUT=\$\(printf .%s. "\$INPUT" \| DHX_SCHEDULE_EVENT_HASH="\$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="\$_SCH_HB_KEY" bash /home/dhx/\.claude/hooks/dhx-schedule-context\.sh \|\| true\)$' "$DISPATCHER" 2>/dev/null \
+  && grep -qE '^if \[ -n "\$_SCH_CTX_OUT" \]; then printf .%s\\n. "\$_SCH_CTX_OUT"; fi$' "$DISPATCHER" 2>/dev/null \
+  && check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values; captured, then emitted)" ok \
+  || check "[A4] session-start.sh dispatches dhx-schedule-context.sh (absolute path + BOTH forwarded values; captured, then emitted)" fail
 
 # A5-A6 — both shims are structurally unable to break their event.
 for pair in "PROMPT_SHIM:dhx-schedule-prompt.sh" "CTX_SHIM:dhx-schedule-context.sh"; do
@@ -412,8 +416,60 @@ console.log(String(bad));' "$STORE" "$SD2" 2>/dev/null)
   else
     check "[B13] context shim rejects a malformed forwarded session key" fail "forwarded=${FORGED_SK}"
   fi
+  # B15 — THE SCHEDULE CHILD SURVIVES A MID-DISPATCH KILL (2026-09-14). CC terminates a
+  # still-running SessionStart hook when the session exits; before 2026-09-14 the child ran
+  # ~10 siblings (5-30 s) after the reference record, so a session quitting inside that window
+  # left reference-without-schedule and the health verb scored the leg DEAD (8/8 all-time
+  # unpaired occurrences ended 5-32 s after the fire; 0/568 paired ever ended before their
+  # record). The child now runs directly under the reference record and is EMITTED later.
+  #
+  # Synchronised, not timed: EVERY sibling stub writes a marker and then blocks, so the kill
+  # lands the instant the first sibling — whichever it is — starts. That is deterministic and
+  # robust to sibling reorders; a sleep-then-kill would be a race. SIGTERM to the dispatcher pid
+  # alone is what a Node child.kill() sends; the fixture reproduction showed SIGKILL gives the
+  # same shape. NOT a line-order assertion: line order is not the property, completion-before-
+  # the-first-sibling is. Negative control (run once, 2026-09-14): the pre-reorder dispatcher
+  # leaves the schedule record absent under this exact cell.
+  FH15="$SB/home15"; mkdir -p "$FH15/.claude"
+  MARK15="$SB/mark15"; rm -f "$MARK15"
+  mkdir -p "$SB/fakebin15"
+  cat > "$SB/fakebin15/bash" <<FB15EOF
+#!/bin/sh
+case "\$*" in
+  *dhx-schedule-context.sh*) exec /bin/bash "\$@" ;;
+  *) cat >/dev/null 2>&1; : > "$MARK15"; exec sleep 30 ;;
+esac
+FB15EOF
+  chmod +x "$SB/fakebin15/bash"
+  # Stub renderer: files ONE record under the forwarded session key, the way the real one does.
+  cat > "$SB/render15.cjs" <<'JS15EOF'
+const a=process.argv.slice(2),fs=require('fs'),p=require('path');
+const j=a.indexOf('--session-key');const k=(j>=0&&a[j+1])||'nokey';
+const d=p.join(process.env.DHX_SCHEDULE_CACHE_DIR,'health','session-start',k);
+fs.mkdirSync(d,{recursive:true});fs.writeFileSync(p.join(d,'stub.json'),'{}\n');
+process.stdout.write('due\n');
+JS15EOF
+  P15='{"session_id":"probe-ctx-kill-0001","source":"resume"}'
+  K15=$(printf '%s' "probe-ctx-kill-0001" | sha256sum | cut -c1-16)
+  printf '%s' "$P15" | env PATH="$SB/fakebin15:$PATH" HOME="$FH15" \
+    DHX_SCHEDULE_RENDERER="$SB/render15.cjs" DHX_SCHEDULE_CACHE_DIR="$SB/cache15" \
+    setsid /bin/bash "$DISPATCHER" >/dev/null 2>&1 &
+  DPID15=$!
+  SEEN15=0
+  for _i in $(seq 1 100); do [ -e "$MARK15" ] && { SEEN15=1; break; }; sleep 0.1; done
+  kill -TERM "$DPID15" 2>/dev/null
+  wait "$DPID15" 2>/dev/null; RC15=$?
+  kill -9 -- "-$DPID15" 2>/dev/null   # the orphaned `sleep 30` sibling stub
+  REF15=$(ls "$FH15"/.cache/dhx/hooks/session-start/"$K15"/*.json 2>/dev/null | wc -l | tr -d ' ')
+  SCH15=$(ls "$SB/cache15/health/session-start/$K15"/*.json 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$SEEN15" = 1 ] && [ "$RC15" = 143 ] && [ "${REF15:-0}" -ge 1 ] && [ "${SCH15:-0}" -ge 1 ]; then
+    check "[B15] dispatcher SIGTERM'd the instant its first sibling starts -> reference AND schedule records both present (child ran before any sibling)" ok
+  else
+    check "[B15] dispatcher killed at first sibling -> both records present" fail \
+      "marker-seen=$SEEN15 rc=$RC15 reference=${REF15:-0} schedule=${SCH15:-0}"
+  fi
 else
-  echo "SKIP [B7-B8,B12-B13] context-leg forwarding smoke — sha256sum/jq/node or the installed shim absent"
+  echo "SKIP [B7-B8,B12-B13,B15] context-leg forwarding smoke — sha256sum/jq/node or the installed shim absent"
 fi
 
 # B9-B11 — DIGEST-TOOL PORTABILITY (cross-repo brief 2026-08-23 "schedule digest tool policy").

@@ -94,6 +94,41 @@ if [ -n "$_SCH_HB_KEY" ]; then
 fi
 # --- end /dhx:schedule beat ---------------------------------------------------------------
 
+# --- /dhx:schedule context child: RUNS HERE, EMITS BELOW (2026-09-14) -------------------
+# The child runs IMMEDIATELY after the reference record and BEFORE every sibling, but its
+# stdout is captured and printed later, at the position the D-11 tier ordering gives it.
+# Why run-early: the reference record above is deliberately the first thing this dispatcher
+# does, so a crash anywhere later still leaves "I fired" evidence. The health verb pairs that
+# record against the one the renderer writes; while this child has not run, the session looks
+# byte-for-byte like a dead leg. That window used to be every sibling between here and the
+# emit line — 5-30 s healthy, 200 s degraded, and ONE sibling (dhx-watch-digest.sh) was ~10 s
+# of it — and CC terminates a still-running SessionStart hook when the session exits, so a
+# session quitting inside the window left reference-without-schedule and scored DEAD on a leg
+# that never got its turn (8/8 all-time unpaired occurrences ended 5-32 s after the fire;
+# 0/568 paired ones ever ended before their record). The child itself is ~0.06 s, so the
+# window is now its own runtime. Never move the reference record DOWN to meet it: that turns
+# every mid-dispatch exit into a zero-record miss the health verb cannot see.
+# Why capture rather than print here: CC discards a cancelled hook's output wholesale, so
+# buffering costs nothing on the delivery axis, keeps the context block's line order exactly
+# as before, and hands the child a pipe to THIS process instead of CC's — a closed CC pipe
+# can no longer SIGPIPE the child mid-record. Only stdout is captured; stderr passes through.
+# BOTH correlation values are forwarded, for one reason: this leg's two sides are a parent and
+# its child in ONE PROCESS, not two independently registered hooks, so the child never has to
+# re-derive what the parent already computed and validated. `_SCH_EV_KEY` is the event digest
+# (2026-08-22). `_SCH_HB_KEY` is the SESSION key, added 2026-09-03 — and it is the more
+# load-bearing of the two: the health classifier groups the reference and schedule trees per
+# session by DIRECTORY key, and that directory is this variable. A child that re-parses its own
+# stdin copy and comes up empty writes under no key at all, which is exactly the shape measured
+# on 2026-09-03 — the renderer emitted the user's due block and wrote nothing, so a leg that had
+# DELIVERED scored DEAD. Forwarding an EMPTY value is correct and expected when `$SID` was
+# absent or `unknown`: the shim refuses anything that is not a 16-hex digest, and the renderer
+# then falls back to its own derivation, and failing that stays silent rather than speak
+# unaccountably. See cross-repo f7aa48df5 and its design doc § 3b.
+# Probe: tests/probes/probe-schedule-wiring.sh [B15] kills this dispatcher the instant the
+# first sibling starts and requires both records — the pre-2026-09-14 order fails it.
+_SCH_CTX_OUT=$(printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="$_SCH_HB_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true)
+# --- end /dhx:schedule context child ------------------------------------------------------
+
 # Dispatch to canonical scripts. Hand each its own stdin copy.
 # Run each even if one fails — they are independent.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
@@ -140,24 +175,14 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
 # dhx-watch-digest.sh. Empty stdout on the clean path (the common case). The action it
 # surfaces is a RE-VET, never a close command — see the INVARIANT block in the worker.
 printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
-# Due /dhx:schedule commitments as session context. Plain text only — a JSON child would
-# corrupt the dispatcher's concatenated stdout (see dhx/dhx-vitals-banner.sh). Empty on the
-# clean path, and empty until the renderer's session-start mode lands in a later cross-repo
-# plan, which is a designed graceful absence rather than a gap. Sits in the same D-11
-# "direct ask on the user" tier as the vet-closure offers above.
-# BOTH correlation values are forwarded, for one reason: this leg's two sides are a parent and
-# its child in ONE PROCESS, not two independently registered hooks, so the child never has to
-# re-derive what the parent already computed and validated. `_SCH_EV_KEY` is the event digest
-# (2026-08-22). `_SCH_HB_KEY` is the SESSION key, added 2026-09-03 — and it is the more
-# load-bearing of the two: the health classifier groups the reference and schedule trees per
-# session by DIRECTORY key, and that directory is this variable. A child that re-parses its own
-# stdin copy and comes up empty writes under no key at all, which is exactly the shape measured
-# on 2026-09-03 — the renderer emitted the user's due block and wrote nothing, so a leg that had
-# DELIVERED scored DEAD. Forwarding an EMPTY value is correct and expected when `$SID` was
-# absent or `unknown`: the shim refuses anything that is not a 16-hex digest, and the renderer
-# then falls back to its own derivation, and failing that stays silent rather than speak
-# unaccountably. See cross-repo f7aa48df5 and its design doc § 3b.
-printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="$_SCH_HB_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true
+# Due /dhx:schedule commitments as session context — EMITTED here, RUN above (see the
+# "/dhx:schedule context child" block directly under the reference record). Plain text only —
+# a JSON child would corrupt the dispatcher's concatenated stdout (see dhx/dhx-vitals-banner.sh).
+# Empty on the clean path, and empty until the renderer's session-start mode lands in a later
+# cross-repo plan, which is a designed graceful absence rather than a gap. Sits in the same D-11
+# "direct ask on the user" tier as the vet-closure offers above. `$( )` stripped the child's
+# trailing newlines; exactly one is restored.
+if [ -n "$_SCH_CTX_OUT" ]; then printf '%s\n' "$_SCH_CTX_OUT"; fi
 # Skill-description delta auditor (SPEC: cross-repo docs/prompts/2026-07-17-skill-
 # description-token-contract-SPEC.md §4.5/§4.6): consumes the skills-side collector
 # via the dhx-tools provisioning path. Empty stdout when clean (zero tokens); one
