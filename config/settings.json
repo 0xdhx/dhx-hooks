@@ -1,8 +1,10 @@
 {
+  "processWrapper": "/home/dhx/.local/bin/clodex-bridge",
   "cleanupPeriodDays": 9999,
   "env": {
     "BASH_MAX_TIMEOUT_MS": "960000",
-    "DISPLAY": ":0"
+    "DISPLAY": ":0",
+    "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP": "1"
   },
   "includeGitInstructions": false,
   "permissions": {
@@ -171,7 +173,7 @@
     ],
     "defaultMode": "bypassPermissions"
   },
-  "model": "opus[1m]",
+  "model": "claude-fable-5-1[1m]",
   "deniedMcpServers": [
     {
       "serverName": "claude.ai Desktop Commander Remote"
