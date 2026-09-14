@@ -11,7 +11,8 @@
 #
 # INVARIANT: check #8a's green token is a record of an OBSERVED GREEN on
 # identical in-tree state — HEAD + candidate tree + a forced worktree snapshot
-# (tracked, untracked, ignored; minus tests/probes/.results/) + git config/hooks.
+# (every tracked path, plus untracked/ignored files under the probe input
+# roots, minus tests/probes/.results/) + git config/hooks.
 #
 #   green run                      -> tier runs once, token written
 #   byte-identical rerun           -> tier NOT run, hit line printed, exit 0
@@ -21,6 +22,8 @@
 #                                     the key — measured 2026-09-14)
 #   probe hidden by info/exclude   -> tier runs again (`add -A -f` sees it)
 #   hooks dir changed              -> tier runs again (git-meta term)
+#   untracked file under reports/  -> still a hit (outside the input roots);
+#                                     a TRACKED edit anywhere re-runs
 #   red run                        -> no token; identical rerun re-runs
 #   DHX_RED_COMMIT=1 + green       -> tier runs, token written; identical
 #                                     rerun under the flag HITS (one rule, no
@@ -152,6 +155,18 @@ gate "$T1"; N=$(invocations "$T1")
 printf '#!/bin/bash\nexit 0\n' > "$T1/.git/hooks/pre-push"; chmod +x "$T1/.git/hooks/pre-push"
 gate "$T1"
 assert "3d: hooks dir change -> the tier ran again" "$([ "$(invocations "$T1")" = $((N+1)) ] && echo true || echo false)"
+
+# ---- 3e. untracked churn OUTSIDE the input roots does NOT move the key -------
+# A peer writing Codex evidence under reports/ between a refusal and its retry
+# defeated the first (whole-worktree) cut on 2026-09-14. Miss-only, but inert.
+gate "$T1"; N=$(invocations "$T1")
+mkdir -p "$T1/reports/peer-evidence" && echo "round-1 output" > "$T1/reports/peer-evidence/round-1.out"
+gate "$T1"
+assert "3e: untracked file under reports/ -> still a hit (not keyed)" "$([ "$(invocations "$T1")" = "$N" ] && [ "$(has "$HIT" "$GOUT")" = true ] && echo true || echo false)"
+# ...but a TRACKED file anywhere still moves it (add -u).
+echo "peer edit" >> "$T1/docs/decisions.md"
+gate "$T1"
+assert "3e: tracked edit under docs/ -> the tier ran again" "$([ "$(invocations "$T1")" = $((N+1)) ] && echo true || echo false)"
 
 # ---- 4. red run: no token, identical rerun re-runs ----------------------------
 T4=$(sandbox)

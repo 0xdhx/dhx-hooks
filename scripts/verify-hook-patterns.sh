@@ -34,8 +34,9 @@ set -euo pipefail
 #           and all four produced false reds against a GREEN live tree.
 #           Blocks on red, exactly as the whole suite used to.
 #           GREEN TOKEN (2026-09-14): a green run leaves a token keyed on
-#           HEAD + candidate tree + a forced snapshot of the whole worktree
-#           (minus two output dirs) + git config/hooks; an attempt
+#           HEAD + candidate tree + a snapshot (every tracked path, plus
+#           untracked/ignored files under the probe input roots, minus
+#           tests/probes/.results/) + git config/hooks; an attempt
 #           with the same key inside DHX_PROBE_TIER_TTL (900s; 0/off forces)
 #           prints a hit line and is not re-run. Never written by a red.
 #           Exists because 30-deletion-audit.sh refuses the first attempt of
@@ -450,19 +451,26 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     #     candidate  — `git write-tree` of the index git hands the hook
     #                  (30-deletion-audit.sh keys on exactly this pair);
     #     snapshot   — write-tree of a THROWAWAY index (never the hook's
-    #                  GIT_INDEX_FILE, never the real one): read-tree HEAD,
-    #                  then `git add -A -f` of the whole worktree — tracked,
-    #                  untracked AND ignored, because run-probes.sh globs
+    #                  GIT_INDEX_FILE, never the real one): read-tree HEAD, then
+    #                  `git add -u` of EVERY tracked path (edits and deletions
+    #                  anywhere), then `git add -A -f` of the probe INPUT ROOTS
+    #                  — tests/probes dhx dhx-plugin scripts config — untracked
+    #                  AND ignored, because run-probes.sh globs
     #                  tests/probes/probe-* from the WORKTREE and a probe hidden
     #                  by .git/info/exclude still runs (adversarial pass,
-    #                  reports/2026-09-14-hermetic-tier-token-presteer-codex/) —
-    #                  minus tests/probes/.results/, which the tier WRITES into,
-    #                  and docs/research/economics/artifacts/, a session-output
-    #                  corpus no probe reads that a concurrent n9 suite appends
-    #                  to mid-commit (observed 2026-09-14: it moved the key
-    #                  between a refusal and its retry — a MISS, never a false
-    #                  hit; an excluded dir can only ever cause the latter if a
-    #                  probe starts reading it, so keep this list to outputs);
+    #                  reports/2026-09-14-hermetic-tier-token-presteer-codex/),
+    #                  minus tests/probes/.results/, which the tier WRITES into.
+    #                  Untracked files OUTSIDE those roots (reports/, docs/,
+    #                  .planning/, tmp/) are deliberately not keyed: no probe
+    #                  reads them from the real tree (measured 2026-09-14:
+    #                  reports/ and .planning/ appear in probes only under a
+    #                  fixture path), and concurrent sessions write there
+    #                  constantly — a peer's Codex evidence under reports/ and
+    #                  an n9 suite log under docs/research/ each moved a
+    #                  whole-worktree key between a refusal and its retry on
+    #                  2026-09-14, which is a MISS every time, never a false hit,
+    #                  and leaves the token inert on a busy machine. A tracked
+    #                  file under those dirs is still keyed via add -u.
     #     git-meta   — `git config --list` plus the hook files in the hooks
     #                  dirs, which two hermetic probes read.
     #   Measured 1.3s per armed attempt, stable across consecutive runs.
@@ -486,8 +494,16 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
       _tt_cand=$(git write-tree 2>/dev/null || true)
       if [ -n "$_tt_dir" ] && [ -n "$_tt_head" ] && [ -n "$_tt_cand" ]; then
         _tt_idx=$(mktemp)
+        # Only roots that exist: a missing pathspec aborts `git add`, and that
+        # would silently turn every attempt into a run (a checkout or fixture
+        # without dhx-plugin/ or config/ must still get a key).
+        _tt_roots=()
+        for _tt_r in tests/probes dhx dhx-plugin scripts config; do
+          [ -d "$_tt_r" ] && _tt_roots+=("$_tt_r")
+        done
         if GIT_INDEX_FILE="$_tt_idx" git read-tree HEAD 2>/dev/null \
-           && GIT_INDEX_FILE="$_tt_idx" git add -A -f -- . ':(exclude)tests/probes/.results' ':(exclude)docs/research/economics/artifacts' 2>/dev/null; then
+           && GIT_INDEX_FILE="$_tt_idx" git add -u -- . 2>/dev/null \
+           && { [ "${#_tt_roots[@]}" -eq 0 ] || GIT_INDEX_FILE="$_tt_idx" git add -A -f -- "${_tt_roots[@]}" ':(exclude)tests/probes/.results' 2>/dev/null; }; then
           _tt_snap=$(GIT_INDEX_FILE="$_tt_idx" git write-tree 2>/dev/null || true)
         fi
         rm -f "$_tt_idx"
