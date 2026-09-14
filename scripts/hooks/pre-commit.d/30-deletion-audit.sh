@@ -358,25 +358,53 @@ fi
 #
 # BOUND, stated rather than discovered: paths are carried through TAB- and newline-delimited
 # text, so a path containing either is not represented.
-RAW_R="$(git diff --cached --no-color --no-ext-diff --no-textconv --raw --abbrev=40 HEAD 2>/dev/null)"
-NUM_R="$(git diff --cached --no-color --no-ext-diff --no-textconv --numstat HEAD 2>/dev/null)"
-DELETION_SET="$( { printf '%s\n' "$RAW_R" | sed 's/^/R\t/'
-                   printf '%s\n' "$NUM_R" | sed 's/^/N\t/'; } | awk -F'\t' '
-  BEGIN { ZERO="0000000000000000000000000000000000000000"; ri=0; ni=0 }
-  $1=="R" && NF>2 { ri++; split($2,m," "); st[ri]=m[5]; blob[ri]=m[4]; p1[ri]=$3; p2[ri]=$4; next }
-  $1=="N" && NF>3 { ni++; add[ni]=$2; del[ni]=$3; next }
-  END {
-    for (i=1; i<=ri && i<=ni; i++) {
-      s=st[i]; keep=0
-      if (add[i]=="-" || del[i]=="-") { if (s!="A") keep=1 }
-      else if (del[i]+0 > 0) { keep=1 }
-      if (!keep) continue
-      b=blob[i]; if (b=="") b=ZERO
-      if (substr(s,1,1)=="R") { printf "%s\t%s\n", p1[i], ZERO
-                                printf "%s\t%s\n", p2[i], b }
-      else                    { printf "%s\t%s\n", p1[i], b }
-    }
-  }' 2>/dev/null)"
+# REAL NAMES VIA -z (2026-09-14, the record half of the quoted-display-form defect). The
+# non -z --raw / --numstat forms QUOTE any path git deems unsafe for a terminal, so the
+# record carried "caf\303\251.bin" where the tree holds café.bin — and the retire-time
+# comparison of `b` against the committed blob AT THAT PATH would have missed every such
+# name. Both streams are now read -z, one pass each, joined by the real bytes: --raw -z
+# gives "<header>\0<path>\0" (R/C: "<header>\0<src>\0<dst>\0") with the candidate blob in
+# the header's 4th field; --numstat -z gives "<add>\t<del>\t<path>\0" (R/C: "<add>\t<del>\t"
+# then two bare path tokens). The keep rule is unchanged from the awk join it replaces.
+# The TAB/newline bound stands (the collection is TSV): a path carrying either is SKIPPED
+# rather than emitted broken, which is the same unrepresentability stated below.
+DELETION_SET="$(
+  ZERO=0000000000000000000000000000000000000000
+  declare -A _rst=() _rblob=()
+  _st=""; _blob=""; _p1=""
+  while IFS= read -r -d '' _tok; do
+    if [ -z "$_st" ]; then
+      set -- $_tok; _blob="${4:-}"; _st="${5:-?}"; _p1=""; continue   # header: no path bytes here
+    fi
+    case "$_st" in
+      R*|C*) if [ -z "$_p1" ]; then _p1="$_tok"; continue; fi
+             _rst["$_p1"]="$_st"; _rblob["$_p1"]="$ZERO"
+             _rst["$_tok"]="$_st"; _rblob["$_tok"]="$_blob"; _st="" ;;
+      *)     _rst["$_tok"]="$_st"; _rblob["$_tok"]="$_blob"; _st="" ;;
+    esac
+  done < <(git diff --cached --no-color --no-ext-diff --no-textconv --raw -z --abbrev=40 HEAD 2>/dev/null)
+  _rn=0; _bina=""; _bind=""
+  while IFS= read -r -d '' _tok; do
+    if [ "$_rn" -gt 0 ]; then
+      _rn=$(( _rn - 1 ))
+      if [ "$_rn" -eq 1 ]; then _src="$_tok"; continue; fi     # source first
+      _p="$_tok"; _a="$_bina"; _d="$_bind"; _isr=1
+    else
+      _a="${_tok%%$'\t'*}"; _rest="${_tok#*$'\t'}"
+      _d="${_rest%%$'\t'*}"; _p="${_rest#*$'\t'}"; _isr=0; _src=""
+      if [ -z "$_p" ]; then _rn=2; _bina="$_a"; _bind="$_d"; continue; fi
+    fi
+    _s="${_rst[$_p]:-?}"; _keep=0
+    if [ "$_a" = "-" ] || [ "$_d" = "-" ]; then [ "$_s" != "A" ] && _keep=1
+    else case "$_d" in ''|*[!0-9]*) : ;; *) [ "$_d" -gt 0 ] && _keep=1 ;; esac; fi
+    [ "$_keep" -eq 1 ] || continue
+    _b="${_rblob[$_p]:-$ZERO}"; [ -n "$_b" ] || _b="$ZERO"
+    if [ "$_isr" -eq 1 ]; then
+      case "$_src" in *$'\t'*|*$'\n'*) : ;; *) printf '%s\t%s\n' "$_src" "$ZERO" ;; esac
+    fi
+    case "$_p" in *$'\t'*|*$'\n'*) : ;; *) printf '%s\t%s\n' "$_p" "$_b" ;; esac
+  done < <(git diff --cached --no-color --no-ext-diff --no-textconv --numstat -z HEAD 2>/dev/null)
+)"
 
 # ── Two-phase token, content-addressed on (HEAD, candidate tree) ───────────────────
 TTL="${DHX_DELETION_AUDIT_TTL:-900}"

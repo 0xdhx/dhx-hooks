@@ -457,5 +457,42 @@ commit_run 'c14 add quoted binary' 'new "q".bin'
 check 0 "$COMMIT_RC" "case 14 control: an ADDED binary with a quoted name is a pure addition and passes"
 check_lacks "$ERR" "FIRST SIGHT" "case 14 control: ...silently"
 
+# --- Case 15: the firing record carries REAL names for quotable pathnames --------------------
+# Same defect class as case 14, record half: the non -z --raw/--numstat join recorded git's
+# display form ("caf\303\251.txt") where the tree holds café.txt, so the retire-time blob
+# comparison at that path would miss every such name. Asserted on the parsed JSON: `p` equals
+# the real name and `b` equals the candidate blob at that real path.
+RECDIR15="$FIXTURE/.record.case15"
+for _nm in 'café.txt' 'q"uote.txt' 'back\slash.txt'; do
+  printf 'keep\ngoes\n' > "$FIXTURE/$_nm"; git -C "$FIXTURE" add -- "$_nm"
+done
+commit_run 'c15 seed'; commit_run 'c15 seed'
+for _nm in 'café.txt' 'q"uote.txt' 'back\slash.txt'; do
+  printf 'keep\n' > "$FIXTURE/$_nm"; git -C "$FIXTURE" add -- "$_nm"
+done
+DHX_DELETION_AUDIT_RECORD_DIR="$RECDIR15" commit_run 'c15 cut'
+C15=$(cat "$RECDIR15"/*.jsonl 2>/dev/null | python3 -c '
+import json,sys,subprocess
+o=json.loads(next(iter(sys.stdin)))
+ps=sorted(e["p"] for e in o["del_paths"]); print(",".join(ps))
+' 2>/dev/null)
+if [ "$C15" = 'back\slash.txt,café.txt,q"uote.txt' ]; then
+  check 0 0 "case 15: del_paths carries the REAL names of quotable paths (no display-form quoting)"
+else
+  check 0 1 "case 15: del_paths expected real names, got '$C15'"
+fi
+C15B=$(cat "$RECDIR15"/*.jsonl 2>/dev/null | python3 -c '
+import json,sys
+o=json.loads(next(iter(sys.stdin)))
+print(next((e["b"] for e in o["del_paths"] if e["p"]=="café.txt"),""))' 2>/dev/null)
+WANT15=$(git -C "$FIXTURE" rev-parse ':café.txt' 2>/dev/null)
+if [ -n "$WANT15" ] && [ "$C15B" = "$WANT15" ]; then
+  check 0 0 "case 15: the blob recorded under the real name is the candidate blob at that path"
+else
+  check 0 1 "case 15: blob '$C15B' != candidate blob '$WANT15' for café.txt"
+fi
+DHX_DELETION_AUDIT_RECORD_DIR="$RECDIR15" commit_run 'c15 cut'
+DHX_DELETION_AUDIT_RECORD_DIR="$FIXTURE/.record"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
