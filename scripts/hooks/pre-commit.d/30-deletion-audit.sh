@@ -270,16 +270,46 @@ while IFS=$'\t' read -r added deleted path; do
 done <<< "$NUMSTAT"
 
 # A binary path only matters here if it can CARRY a deletion — a pure addition cannot.
+#
+# REAL PATHNAMES ONLY, via -z. The numstat read above is NOT -z, so git QUOTES any path it
+# deems unsafe for a terminal — a non-ASCII byte, a double quote, a backslash, a control
+# byte — and renders it as "caf\303\251.bin". That rendered string is not a pathspec: fed
+# back to git it matches nothing, the status reads EMPTY, and the branch below files the
+# binary as a pure addition. Measured 2026-09-14 (close-gate refutation of the hooks-repo
+# port, executed counterexample): a MODIFIED binary named café.bin committed at rc 0 with
+# no surface at all, while plain.bin in the same candidate was caught. So the status map and
+# the binary set are both read -z, one pass each, and joined by the real name. A rename in
+# -z output carries its two paths as the two tokens after the status / count token.
 BINARY_CHANGED=""
 if [ -n "$BINARY_PATHS" ]; then
-  while IFS= read -r bp; do
-    [ -n "$bp" ] || continue
-    st="$(git diff --cached --no-ext-diff --no-textconv --name-status HEAD -- "$bp" 2>/dev/null | cut -f1)"
+  declare -A _bst=()
+  _st=""; _p1=""
+  while IFS= read -r -d '' _tok; do
+    if [ -z "$_st" ]; then _st="$_tok"; _p1=""; continue; fi
+    case "$_st" in
+      R*|C*)
+        if [ -z "$_p1" ]; then _p1="$_tok"; continue; fi
+        _bst["$_p1"]="$_st"; _bst["$_tok"]="$_st"; _st=""; _p1="" ;;
+      *) _bst["$_tok"]="$_st"; _st="" ;;
+    esac
+  done < <(git diff --cached --no-ext-diff --no-textconv --name-status -z HEAD 2>/dev/null)
+  _rn=0
+  while IFS=$'\t' read -r -d '' _a _d _p; do
+    if [ "$_rn" -gt 0 ]; then
+      # rename continuation: this token is a bare path (src, then dst)
+      _rn=$(( _rn - 1 ))
+      [ "$_rn" -eq 0 ] || continue          # skip the source; the destination is the live path
+      _p="$_a"; _a="$_bina"; _d="$_bind"
+    elif [ -z "${_p:-}" ]; then
+      _rn=2; _bina="$_a"; _bind="$_d"; continue
+    fi
+    [ "$_a" = "-" ] || [ "$_d" = "-" ] || continue
+    st="${_bst[$_p]:-}"
     case "$st" in
       A|'') : ;;
-      *) BINARY_CHANGED="${BINARY_CHANGED}${bp} (${st})"$'\n' ;;
+      *) BINARY_CHANGED="${BINARY_CHANGED}${_p} (${st})"$'\n' ;;
     esac
-  done <<< "$BINARY_PATHS"
+  done < <(git diff --cached --no-ext-diff --no-textconv --numstat -z HEAD 2>/dev/null)
 fi
 
 # Deletion-gated: a candidate that removes nothing has nothing for this leaf to surface.

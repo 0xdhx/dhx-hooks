@@ -418,5 +418,31 @@ check_has "$ERR" "NO first-sight sentinel emitted" "case 13h: the suppression sa
 DHX_DELETION_AUDIT_RECORD_DIR="$RECDIR13H" DHX_DELETION_AUDIT_CAP=3 commit_run 'c13h trunc' trunc13.txt
 check 0 "$COMMIT_RC" "case 13h: the INTERACTIVE unchanged rerun still proceeds (suppression withholds the sentinel, not the token)"
 
+# --- Case 14: a binary whose NAME git QUOTES on output (close-gate refutation, 2026-09-14) ---
+# The non -z numstat renders café.bin as "caf\303\251.bin"; the pre-fix leaf fed that rendered
+# string back to git as a pathspec, read an EMPTY status, and filed the binary as a pure
+# addition — a MODIFIED binary committed at rc 0 in silence (executed counterexample from the
+# hooks-port close review, reproduced before the fix: rc=0, no surface). The oracle now reads
+# name-status and numstat with -z and joins on the real name. Control arm: an ADDED quoted
+# binary is a pure addition and must still pass silently, so the fix is not "refuse every
+# quoted path".
+QB="$FIXTURE/café.bin"
+printf 'a\0b' > "$QB"
+git -C "$FIXTURE" add -- 'café.bin'
+commit_run 'c14 seed'; commit_run 'c14 seed'
+printf 'a\0c' > "$QB"
+git -C "$FIXTURE" add -- 'café.bin'
+commit_run 'c14 modify quoted binary' 'café.bin'
+check 1 "$COMMIT_RC" "case 14: a MODIFIED binary with a quoted name is refused on first sight"
+check_has "$ERR" "binary paths: CANNOT be named line-wise" "case 14: the binary-path block is emitted"
+check_has "$ERR" "café.bin (M)" "case 14: the binary is reported SEPARATELY and BY ITS REAL NAME"
+commit_run 'c14 modify quoted binary' 'café.bin'
+check 0 "$COMMIT_RC" "case 14: its unchanged rerun proceeds"
+printf 'n\0"q' > "$FIXTURE/"'new "q".bin'
+git -C "$FIXTURE" add -- 'new "q".bin'
+commit_run 'c14 add quoted binary' 'new "q".bin'
+check 0 "$COMMIT_RC" "case 14 control: an ADDED binary with a quoted name is a pure addition and passes"
+check_lacks "$ERR" "FIRST SIGHT" "case 14 control: ...silently"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
