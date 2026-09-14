@@ -418,26 +418,39 @@ check_has "$ERR" "NO first-sight sentinel emitted" "case 13h: the suppression sa
 DHX_DELETION_AUDIT_RECORD_DIR="$RECDIR13H" DHX_DELETION_AUDIT_CAP=3 commit_run 'c13h trunc' trunc13.txt
 check 0 "$COMMIT_RC" "case 13h: the INTERACTIVE unchanged rerun still proceeds (suppression withholds the sentinel, not the token)"
 
-# --- Case 14: a binary whose NAME git QUOTES on output (close-gate refutation, 2026-09-14) ---
-# The non -z numstat renders café.bin as "caf\303\251.bin"; the pre-fix leaf fed that rendered
-# string back to git as a pathspec, read an EMPTY status, and filed the binary as a pure
-# addition — a MODIFIED binary committed at rc 0 in silence (executed counterexample from the
-# hooks-port close review, reproduced before the fix: rc=0, no surface). The oracle now reads
-# name-status and numstat with -z and joins on the real name. Control arm: an ADDED quoted
-# binary is a pure addition and must still pass silently, so the fix is not "refuse every
-# quoted path".
-QB="$FIXTURE/café.bin"
-printf 'a\0b' > "$QB"
-git -C "$FIXTURE" add -- 'café.bin'
-commit_run 'c14 seed'; commit_run 'c14 seed'
-printf 'a\0c' > "$QB"
-git -C "$FIXTURE" add -- 'café.bin'
-commit_run 'c14 modify quoted binary' 'café.bin'
-check 1 "$COMMIT_RC" "case 14: a MODIFIED binary with a quoted name is refused on first sight"
-check_has "$ERR" "binary paths: CANNOT be named line-wise" "case 14: the binary-path block is emitted"
-check_has "$ERR" "café.bin (M)" "case 14: the binary is reported SEPARATELY and BY ITS REAL NAME"
-commit_run 'c14 modify quoted binary' 'café.bin'
-check 0 "$COMMIT_RC" "case 14: its unchanged rerun proceeds"
+# --- Case 14: binary pathnames in EVERY byte class git quotes or the shell mangles ----------
+# Round 1 of the port's close review refuted AC-3 with a modified `café.bin` (git QUOTES non-ASCII
+# in non -z output; the rendered name is not a pathspec). Round 2 refuted the -z repair with a pure
+# RENAME to $'sub\té.bin' (a tab-split of the -z token truncated the path). Two members of one
+# open class, so this arm enumerates the class instead of adding the latest fixture: git's
+# quote_c_style set — non-ASCII, `"`, `\`, control bytes (TAB, LF), DEL — plus a leading space
+# (unquoted but IFS-hazardous), each in BOTH shapes a binary can carry a deletion: modified, and
+# purely renamed (R100). Pass rule: refused on first sight AND the binary named on the surface
+# (control-byte names in bash $'…' form, others raw). Control: an ADDED quoted-name binary is a
+# pure addition and still passes silently, so the repair is not "refuse every odd name".
+C14_NAMES=( 'café.bin' 'q"uote.bin' 'back\slash.bin' $'tab\tname.bin' $'new\nline.bin' ' lead-space.bin' $'del\x7fbyte.bin' )
+mkdir -p "$FIXTURE/sub14"
+for _nm in "${C14_NAMES[@]}"; do
+  _lbl="$(printf '%q' "$_nm")"
+  case "$_nm" in *[[:cntrl:]]*) _want="$(printf '%q' "$_nm")" ;; *) _want="$_nm" ;; esac
+  printf 'a\0b' > "$FIXTURE/$_nm"
+  git -C "$FIXTURE" add -- "$_nm"
+  commit_run "c14 seed $_lbl"; commit_run "c14 seed $_lbl"
+  printf 'a\0c' > "$FIXTURE/$_nm"
+  git -C "$FIXTURE" add -- "$_nm"
+  commit_run "c14 modify $_lbl" "$_nm"
+  check 1 "$COMMIT_RC" "case 14 modify $_lbl: refused on first sight"
+  check_has "$ERR" "$_want (M)" "case 14 modify $_lbl: named on the binary-path surface"
+  commit_run "c14 modify $_lbl" "$_nm"
+  check 0 "$COMMIT_RC" "case 14 modify $_lbl: unchanged rerun proceeds"
+  git -C "$FIXTURE" mv -- "$_nm" "sub14/$_nm"
+  case "$_nm" in *[[:cntrl:]]*) _wantd="$(printf '%q' "sub14/$_nm")" ;; *) _wantd="sub14/$_nm" ;; esac
+  commit_run "c14 rename $_lbl"
+  check 1 "$COMMIT_RC" "case 14 rename $_lbl: a pure rename of a binary is refused on first sight"
+  check_has "$ERR" "$_wantd (R100)" "case 14 rename $_lbl: the DESTINATION is named with its rename status"
+  commit_run "c14 rename $_lbl"
+  check 0 "$COMMIT_RC" "case 14 rename $_lbl: unchanged rerun proceeds"
+done
 printf 'n\0"q' > "$FIXTURE/"'new "q".bin'
 git -C "$FIXTURE" add -- 'new "q".bin'
 commit_run 'c14 add quoted binary' 'new "q".bin'

@@ -293,21 +293,39 @@ if [ -n "$BINARY_PATHS" ]; then
       *) _bst["$_tok"]="$_st"; _st="" ;;
     esac
   done < <(git diff --cached --no-ext-diff --no-textconv --name-status -z HEAD 2>/dev/null)
-  _rn=0
-  while IFS=$'\t' read -r -d '' _a _d _p; do
+  # EVERY token is read RAW (IFS empty, -r, NUL delimiter). Under -z the only byte a pathname
+  # cannot contain is NUL, so a TAB, a newline, a quote, a backslash, a DEL or a leading space
+  # are all legal path bytes here — and `IFS=$'\t' read` would split a path on its tab, which
+  # is exactly how the round-2 close-gate counterexample ($'sub\té.bin', a pure rename) got
+  # past this oracle. Only the COUNT token is structured: `<add>\t<del>\t<path>` for an
+  # ordinary entry, `<add>\t<del>\t` (empty path) followed by two bare path tokens for a
+  # rename or copy. The counts never contain a tab, so the path is everything after the
+  # SECOND tab, taken by prefix-strip rather than by field splitting.
+  _rn=0; _bina=""; _bind=""
+  while IFS= read -r -d '' _tok; do
     if [ "$_rn" -gt 0 ]; then
-      # rename continuation: this token is a bare path (src, then dst)
+      # rename/copy continuation: this whole token IS a path (source first, then destination)
       _rn=$(( _rn - 1 ))
       [ "$_rn" -eq 0 ] || continue          # skip the source; the destination is the live path
-      _p="$_a"; _a="$_bina"; _d="$_bind"
-    elif [ -z "${_p:-}" ]; then
-      _rn=2; _bina="$_a"; _bind="$_d"; continue
+      _p="$_tok"; _a="$_bina"; _d="$_bind"
+    else
+      _a="${_tok%%$'\t'*}"; _rest="${_tok#*$'\t'}"
+      _d="${_rest%%$'\t'*}"; _p="${_rest#*$'\t'}"
+      if [ -z "$_p" ]; then _rn=2; _bina="$_a"; _bind="$_d"; continue; fi
     fi
     [ "$_a" = "-" ] || [ "$_d" = "-" ] || continue
     st="${_bst[$_p]:-}"
     case "$st" in
       A|'') : ;;
-      *) BINARY_CHANGED="${BINARY_CHANGED}${_p} (${st})"$'\n' ;;
+      *)
+        # Name it UNAMBIGUOUSLY. The surface is newline-delimited, so a path carrying a
+        # control byte (TAB, LF, DEL, …) is rendered in bash's $'…' form; every other name
+        # is printed raw, as the operator would type it.
+        case "$_p" in
+          *[[:cntrl:]]*) _disp="$(printf '%q' "$_p")" ;;
+          *)             _disp="$_p" ;;
+        esac
+        BINARY_CHANGED="${BINARY_CHANGED}${_disp} (${st})"$'\n' ;;
     esac
   done < <(git diff --cached --no-ext-diff --no-textconv --numstat -z HEAD 2>/dev/null)
 fi
