@@ -23,12 +23,15 @@
 #   3. The Probe/Ruling pointers at the end of this header.
 # INTENTIONAL NON-DIVERGENCES, stated so nobody "fixes" them:
 #   - ORDERING COST. The hooks dispatcher runs 05-verify-hook-patterns.sh FIRST, and
-#     that leaf runs the hermetic probe tier whenever dhx/*.js or tests/probes/* is
-#     staged (check #8). This leaf sits at 30-, AFTER it, so a first-sight refusal on a
-#     probe-touching commit pays the tier once on the refusal and again on the rerun.
-#     The filename is kept for cross-repo parity: git-safe.sh, the backlog committers'
-#     retry helper, and every ruling name `30-deletion-audit.sh`. Re-number only with a
-#     measured tier time in hand and a ruling in docs/decisions.md.
+#     that leaf runs the hermetic probe tier (~2.4 min) whenever dhx/*.js or
+#     tests/probes/* is staged (check #8). This leaf sits at 30-, AFTER it, so a
+#     first-sight refusal on a probe-touching commit arrives after the tier. Since
+#     2026-09-14 the byte-identical rerun does NOT pay it again: check #8a leaves a
+#     green token keyed on the candidate PLUS a forced worktree snapshot and git-meta
+#     (the tier reads the worktree, so this leaf's candidate-only key would be the
+#     wrong key there) and the retry prints a hit line instead of running. The
+#     filename is kept for cross-repo parity: git-safe.sh, the backlog committers'
+#     retry helper, and every ruling name `30-deletion-audit.sh`.
 #   - THE FIRING RECORD IS A SHARED INSTRUMENT. Both leaves append under
 #     $CLAUDE_CONFIG_DIR/dhx-state/deletion-audit/, one file per repo BASENAME
 #     (`hooks.jsonl` here). The RETIRE CONDITION below deletes the whole directory, so

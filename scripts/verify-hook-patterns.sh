@@ -33,6 +33,13 @@ set -euo pipefail
 #           guarantee" — four such oracles were measured on 2026-08-23
 #           and all four produced false reds against a GREEN live tree.
 #           Blocks on red, exactly as the whole suite used to.
+#           GREEN TOKEN (2026-09-14): a green run leaves a token keyed on
+#           HEAD + candidate tree + a forced snapshot of the whole worktree
+#           (minus two output dirs) + git config/hooks; an attempt
+#           with the same key inside DHX_PROBE_TIER_TTL (900s; 0/off forces)
+#           prints a hit line and is not re-run. Never written by a red.
+#           Exists because 30-deletion-audit.sh refuses the first attempt of
+#           every deletion-carrying commit AFTER this leaf ran the tier.
 #        8b STAGED LIVE SUBJECTS — each LIVE_RUNTIME:yes probe runs iff the
 #           commit stages the probe itself or one of its declared
 #           LIVE_SUBJECT files. Blocks on red. This is what keeps a live
@@ -65,8 +72,9 @@ set -euo pipefail
 #
 # Exit codes: 0 = pass, 1 = block.
 #
-# NOTE on DHX_RED_COMMIT=1: it affects ONLY check #8, and even there it no
-# longer skips anything — see 8d. Checks #1-#7 and #9 gate regardless; #9 in
+# NOTE on DHX_RED_COMMIT=1: it affects ONLY check #8, and even there it never
+# skips a run the green token would not skip for everyone — see 8a (token) and
+# 8d (attribution). Checks #1-#7 and #9 gate regardless; #9 in
 # particular, because a corpus cell staged under a TDD-RED opt-out is still
 # published evidence.
 
@@ -353,7 +361,8 @@ fi
 #    edits don't pay the suite cost (#6/#7 cover hook-side regressions).
 #
 #    DHX_RED_COMMIT=1 (8d, reworked 2026-08-23): the opt-out buys PERMISSION
-#    TO BE RED, not a skip. The tier runs either way. On red it is honoured
+#    TO BE RED, not a skip. The tier runs as it would unflagged (8a's green
+#    token skips it for everyone or for no one). On red it is honoured
 #    only when every probe in the `red:` roster is a probe file THIS commit
 #    stages — the mechanical form of "a TDD-RED commit is red because of its
 #    own new assertion". It also demands DHX_RED_COMMIT_REASON up front and
@@ -375,8 +384,9 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
 
     # ---- 8d. DHX_RED_COMMIT preconditions — CHEAP, before the tier runs ----
     # The opt-out no longer buys SPEED, only PERMISSION TO BE RED. The tier runs
-    # either way; DHX_RED_COMMIT=1 changes only what happens when it comes back
-    # red. That is a friction increase over the old instant skip and it is the
+    # exactly as it would without the flag (a green token skips it for everyone
+    # or for no one — 8a); DHX_RED_COMMIT=1 changes only what happens when it
+    # comes back red. That is a friction increase over the old instant skip and it is the
     # point: the bypass was never meant to be a speed feature, and an unmeasured
     # skip is exactly how 24afeee shipped production hooks under a red it did
     # not cause, hiding a dead drift-detector for four days.
@@ -427,12 +437,103 @@ if [ -n "$PROBE_TRIGGER" ] && [ -x "scripts/run-probes.sh" ]; then
     # by-design divergence here. probe-gate-6-cross-repo-parity.sh now passes
     # plainly; a mismatch again means real drift and blocks (its original
     # REQ-04 contract).
-    echo "Running hermetic probe tier (dhx/*.js or tests/probes/* staged)..."
-    TIER_LOG=$(mktemp)
-    set +e
-    bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no --filter HERMETIC_TIER=yes 2>&1 | tee "$TIER_LOG"
-    TIER_RC=${PIPESTATUS[0]}
-    set -e
+    # GREEN TOKEN (2026-09-14). The tier is ~2.4 min on this machine (measured
+    # 2026-09-14: real 142.6s, 128 passed) and 30-deletion-audit.sh, which runs
+    # AFTER this leaf, refuses the FIRST attempt of every deletion-carrying
+    # commit — so a probe-touching deletion commit paid the tier twice, and on
+    # one 2026-09-14 retry the second run went transiently red on an unchanged
+    # tree. A green run therefore leaves a token, keyed on everything in-tree
+    # the tier can read, and an attempt whose key already has a token inside
+    # DHX_PROBE_TIER_TTL (default 900s; 0 or off forces the run) is reported as
+    # a hit and NOT re-run.
+    #   KEY = sha1(HEAD, candidate write-tree, worktree snapshot, git-meta)
+    #     candidate  — `git write-tree` of the index git hands the hook
+    #                  (30-deletion-audit.sh keys on exactly this pair);
+    #     snapshot   — write-tree of a THROWAWAY index (never the hook's
+    #                  GIT_INDEX_FILE, never the real one): read-tree HEAD,
+    #                  then `git add -A -f` of the whole worktree — tracked,
+    #                  untracked AND ignored, because run-probes.sh globs
+    #                  tests/probes/probe-* from the WORKTREE and a probe hidden
+    #                  by .git/info/exclude still runs (adversarial pass,
+    #                  reports/2026-09-14-hermetic-tier-token-presteer-codex/) —
+    #                  minus tests/probes/.results/, which the tier WRITES into,
+    #                  and docs/research/economics/artifacts/, a session-output
+    #                  corpus no probe reads that a concurrent n9 suite appends
+    #                  to mid-commit (observed 2026-09-14: it moved the key
+    #                  between a refusal and its retry — a MISS, never a false
+    #                  hit; an excluded dir can only ever cause the latter if a
+    #                  probe starts reading it, so keep this list to outputs);
+    #     git-meta   — `git config --list` plus the hook files in the hooks
+    #                  dirs, which two hermetic probes read.
+    #   Measured 1.3s per armed attempt, stable across consecutive runs.
+    #   Written ONLY by a green run (TIER_RC 0) — never by a red — and honoured
+    #   on any attempt with the same key, DHX_RED_COMMIT=1 included: the token
+    #   certifies an OBSERVED green on identical in-tree state, so honouring it
+    #   hides no red, which is the invariant 8d protects (ruled 2026-09-14 over
+    #   the literal "runs either way"; see docs/decisions.md).
+    #   NOT covered, and bounded only by the TTL: $HOME, the installed CC, a
+    #   chmod under core.fileMode=false, and a change landing between the
+    #   snapshot and the hit decision. Any failure below → no key → the tier
+    #   runs (fail toward running, never toward skipping).
+    TIER_TTL="${DHX_PROBE_TIER_TTL:-900}"
+    case "$TIER_TTL" in off|OFF) TIER_TTL=0 ;; ''|*[!0-9]*) TIER_TTL=900 ;; esac
+    TIER_TOKEN=""
+    TIER_HIT=0
+    _tt_snap=""
+    if [ "$TIER_TTL" -gt 0 ]; then
+      _tt_dir=$(git rev-parse --git-path dhx-probe-tier 2>/dev/null || true)
+      _tt_head=$(git rev-parse --verify HEAD 2>/dev/null || true)
+      _tt_cand=$(git write-tree 2>/dev/null || true)
+      if [ -n "$_tt_dir" ] && [ -n "$_tt_head" ] && [ -n "$_tt_cand" ]; then
+        _tt_idx=$(mktemp)
+        if GIT_INDEX_FILE="$_tt_idx" git read-tree HEAD 2>/dev/null \
+           && GIT_INDEX_FILE="$_tt_idx" git add -A -f -- . ':(exclude)tests/probes/.results' ':(exclude)docs/research/economics/artifacts' 2>/dev/null; then
+          _tt_snap=$(GIT_INDEX_FILE="$_tt_idx" git write-tree 2>/dev/null || true)
+        fi
+        rm -f "$_tt_idx"
+      fi
+      if [ -n "$_tt_snap" ]; then
+        _tt_meta=$(
+          {
+            git config --list 2>/dev/null
+            for _hd in "$(git rev-parse --git-path hooks 2>/dev/null)" "$(git rev-parse --git-common-dir 2>/dev/null)/hooks"; do
+              [ -d "$_hd" ] || continue
+              find "$_hd" -maxdepth 1 -type f -print0 2>/dev/null | sort -z | xargs -0 sha1sum 2>/dev/null
+            done
+          } | sha1sum | cut -d' ' -f1
+        )
+        _tt_key=$(printf '%s %s %s %s' "$_tt_head" "$_tt_cand" "$_tt_snap" "$_tt_meta" | sha1sum | cut -d' ' -f1)
+        if [ -n "$_tt_key" ]; then
+          mkdir -p "$_tt_dir" 2>/dev/null || true
+          find "$_tt_dir" -maxdepth 1 -type f -mmin "+$(( (TIER_TTL + 59) / 60 ))" -delete 2>/dev/null || true
+          TIER_TOKEN="$_tt_dir/$_tt_key"
+          [ -f "$TIER_TOKEN" ] && TIER_HIT=1
+        fi
+      fi
+    fi
+
+    if [ "$TIER_HIT" -eq 1 ]; then
+      _tt_prev=$(head -c 120 "$TIER_TOKEN" 2>/dev/null | tr -d '\n' || true)
+      _tt_when=$(date -r "$TIER_TOKEN" '+%H:%M:%S' 2>/dev/null || echo '?')
+      echo "hermetic probe tier: GREEN for this exact candidate + worktree (${_tt_snap:0:8}) at ${_tt_when}${_tt_prev:+ — $_tt_prev}; identical rerun, not re-run. Set DHX_PROBE_TIER_TTL=0 to force."
+      TIER_LOG=$(mktemp)
+      TIER_RC=0
+    else
+      echo "Running hermetic probe tier (dhx/*.js or tests/probes/* staged)..."
+      TIER_LOG=$(mktemp)
+      set +e
+      bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filter LIVE_RUNTIME=no --filter HERMETIC_TIER=yes 2>&1 | tee "$TIER_LOG"
+      TIER_RC=${PIPESTATUS[0]}
+      set -e
+      # Write-after-emit: the token lands only once the run's output is out and
+      # the verdict is GREEN. A red writes nothing, so a red never gets reused.
+      if [ "$TIER_RC" -eq 0 ] && [ -n "$TIER_TOKEN" ]; then
+        _tt_sum=$(sed -n '/^Probes: /{s/^Probes: //p;q}' "$TIER_LOG" 2>/dev/null || true)
+        if printf '%s\n' "$_tt_sum" > "$TIER_TOKEN.tmp.$$" 2>/dev/null; then
+          mv -f "$TIER_TOKEN.tmp.$$" "$TIER_TOKEN" 2>/dev/null || rm -f "$TIER_TOKEN.tmp.$$"
+        fi
+      fi
+    fi
 
     if [ "$TIER_RC" -ne 0 ]; then
       if [ "$RED_COMMIT" -eq 1 ]; then
