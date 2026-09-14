@@ -12,7 +12,9 @@
 #    a flipped flag is a DRIFT, a re-ordered reducer is a DRIFT, a generic ask that acquires a
 #    circuitBreaker is a DRIFT, an anchor that stops matching is an EMPTY EXTRACTION (exit 2,
 #    never a pass), an ABSENT generic ask is a note (exit 0), a clean verdict is cached and a
-#    drift is not, and a build older than the baseline's is skipped.
+#    drift is not, a build older than the baseline's is skipped, a registry entry that carries
+#    flags beyond the two fixed columns still extracts (2.1.269 shape), and a bundle embedded
+#    twice in one executable yields one reducer fingerprint (2.1.270 shape).
 # 2. Backs: docs/decisions.md "dhx-cd-compound-read-allow — RETIRED" row (2026-09-04).
 # 3. Run: bash tests/probes/probe-cc-circuit-breakers-wiring.sh
 set -uo pipefail
@@ -121,6 +123,30 @@ rm -f "$TMP/v/8.9.9"
 
 rm -rf "$TMP/v"; mkdir -p "$TMP/v"
 rc=$(run --no-cache); [ "$rc" = 2 ]; ck $? "T10 empty versions dir: exit 2 (nothing inspected is not a pass) (rc=$rc)"
+
+# 2.1.269 widened every registry entry to four flags (`hostPersonOnly`, `localProjectionOnly`);
+# the two-flag entry regex then matched nothing and the monitor reported EMPTY EXTRACTION on
+# every newer build. The entry match now runs to the entry's own `}` and emits any extra flags
+# after the two fixed columns, so a widened entry still extracts and a flipped extra flag is a
+# visible drift.
+REG4="${REG6//classifierRouted:!0\}/classifierRouted:!0,hostPersonOnly:!1,localProjectionOnly:!1\}}"
+REG4="${REG4//classifierRouted:!1\}/classifierRouted:!1,hostPersonOnly:!1,localProjectionOnly:!1\}}"
+mk "$TMP/v/9.1.0" "$REG4,claudeSettingsFile:{bypassImmune:!1,classifierRouted:!1,hostPersonOnly:!0,localProjectionOnly:!1}" "$GEN_OTHER"
+out=$(bash "$MON" --print "$TMP/v/9.1.0" 2>/dev/null); rc=$?
+[ $rc -eq 0 ] && [ "$(printf '%s\n' "$out" | grep -c '^registry ')" = 7 ] \
+  && printf '%s\n' "$out" | grep -q '^registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0$' \
+  && printf '%s\n' "$out" | grep -q '^registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0$'
+ck $? "T11 four-flag entries (2.1.269 shape): 7 of 7 keys extract, extra flags emitted after the fixed columns (rc=$rc)"
+
+# 2.1.270 carries the JS bundle twice in one executable (byte-identical, +178,229,248 bytes), so
+# every reducer anchor hits twice. Identical fingerprints must collapse to one, or the doubled
+# reducer block reads as a drift against a single-copy baseline.
+cat "$TMP/v/9.1.0" "$TMP/v/9.1.0" > "$TMP/v/9.1.1"; rm -f "$TMP/v/9.1.0"
+out2=$(bash "$MON" --print "$TMP/v/9.1.1" 2>/dev/null); rc=$?
+[ $rc -eq 0 ] && [ "$(printf '%s\n' "$out2" | grep -c '^reducer ')" = "$(printf '%s\n' "$out" | grep -c '^reducer ')" ] \
+  && [ "$(printf '%s\n' "$out2" | grep -v '^#')" = "$(printf '%s\n' "$out" | grep -v '^#')" ]
+ck $? "T12 bundle embedded twice (2.1.270 shape): one reducer fingerprint, snapshot identical to the single copy (rc=$rc)"
+rm -f "$TMP/v/9.1.1"
 
 echo "--- C. the LIVE baseline still matches the newest installed build (informational if none) ---"
 if ls "${CC_VERSIONS_DIR:-$HOME/.local/share/claude/versions}"/* >/dev/null 2>&1; then

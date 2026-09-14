@@ -10,11 +10,13 @@
 # workaround that arc produced (retired 2026-09-04 — docs/decisions.md row of that date).
 #
 # WHAT IT CHECKS, per installed executable under ~/.local/share/claude/versions/:
-#   1. REGISTRY — every `<key>:{bypassImmune:!X,classifierRouted:!Y}` entry of the registry
-#      object, parsed to the object's STRUCTURAL TERMINATOR (brace walk), never a byte window:
-#      new entries are precisely the event being monitored, and a window truncates the tail.
-#      The full key -> flags map is compared, so a renamed key, a flipped flag, or a new key
-#      all surface — a name-grep for one tag would miss the first and the third.
+#   1. REGISTRY — every `<key>:{bypassImmune:!X,classifierRouted:!Y[,<flag>:!Z ...]}` entry of
+#      the registry object, parsed to the object's STRUCTURAL TERMINATOR (brace walk), never a
+#      byte window: new entries are precisely the event being monitored, and a window truncates
+#      the tail. Flags after the two fixed columns (2.1.269 added `hostPersonOnly` and
+#      `localProjectionOnly` to every entry) are emitted as trailing `<flag>=<bit>` columns, so
+#      the full key -> flags map is compared and a renamed key, a flipped flag, a new flag or a
+#      new key all surface — a name-grep for one tag would miss most of those.
 #   2. REDUCER — the ordered sequence of string literals and property names inside the
 #      permission reducer from `checkPermissions(` to the bypass-mode
 #      `return{behavior:"allow",updatedInput:` — the early-ask categories and their order.
@@ -24,6 +26,10 @@
 #   3. GENERIC BRANCH — the `bashMissKind:"cd-compound-read"` ask must stay `type:"other"`
 #      with no `circuitBreaker`. ABSENT is reported, not failed: an upstream deletion of the
 #      generic ask strengthens the retirement premise rather than weakening it.
+#
+# ONE EXECUTABLE MAY HOLD THE BUNDLE MORE THAN ONCE. 2.1.270 (409MB) embeds the JS bundle twice,
+# byte-identical, so every literal anchor hits twice; the registry reads the first hit and the
+# reducer collapses identical fingerprints, so a doubled bundle is not a drift.
 #
 # FAIL CLOSED. An empty extraction is exit 2, never a pass: the shape of this repo's `find`
 # false-clean trap (docs/troubleshooting.md) is exactly an anchor that stops matching while the
@@ -109,12 +115,24 @@ extract_registry() {
       if (!end) exit 1
       obj = substr(body, 1, end)
       # One line per entry, in source order.
-      while (match(obj, /[A-Za-z_$][A-Za-z0-9_$]*:\{bypassImmune:![01],classifierRouted:![01]\}/)) {
+      # An entry is `<key>:{bypassImmune:!X,classifierRouted:!Y[,<flag>:!Z ...]}` — 2.1.269
+      # widened every entry with `hostPersonOnly` and `localProjectionOnly`, so the match runs
+      # from the two anchor flags to the closing `}` of that entry, and any further `<name>:!<bit>` flags
+      # are emitted after the two fixed columns (absent on builds that lack them). A new flag,
+      # a flipped flag, a renamed key and a new key therefore all surface as a line diff.
+      while (match(obj, /[A-Za-z_$][A-Za-z0-9_$]*:\{bypassImmune:![01],classifierRouted:![01](,[A-Za-z_$][A-Za-z0-9_$]*:![01])*\}/)) {
         e = substr(obj, RSTART, RLENGTH); obj = substr(obj, RSTART + RLENGTH)
         key = e; sub(/:.*/, "", key)
         bi = (e ~ /bypassImmune:!0/) ? 1 : 0
         cr = (e ~ /classifierRouted:!0/) ? 1 : 0
-        printf "registry %s bypassImmune=%d classifierRouted=%d\n", key, bi, cr
+        line = sprintf("registry %s bypassImmune=%d classifierRouted=%d", key, bi, cr)
+        rest = e; sub(/^[^{]*\{bypassImmune:![01],classifierRouted:![01]/, "", rest); sub(/\}$/, "", rest)
+        while (match(rest, /[A-Za-z_$][A-Za-z0-9_$]*:![01]/)) {
+          f = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+          fname = f; sub(/:.*/, "", fname)
+          line = line sprintf(" %s=%d", fname, (f ~ /!0$/) ? 1 : 0)
+        }
+        print line
       }
     }'
 }
@@ -125,7 +143,7 @@ extract_registry() {
 # allow return after it, and keep only quoted literals and multi-char property accesses —
 # never bare identifiers, which the minifier renames per build.
 extract_reducer() {
-  local exe=$1 off chunk found=0
+  local exe=$1 off chunk found=0 seen=""
   # Every occurrence: the literal also appears in an inner helper that returns null before
   # any mode logic; only the outer reducer has the allow-return within reach of it.
   for off in $(command grep -aob -- 'reason:"requiresUserInteraction"' "$exe" 2>/dev/null | cut -d: -f1); do
@@ -148,6 +166,11 @@ extract_reducer() {
         if (n < 8) exit 1
       }') || continue
     [ -n "$out" ] || continue
+    # 2.1.270 ships the bundle more than once in one executable (three copies of the reducer
+    # at distinct offsets), so identical fingerprints are collapsed to their first sighting.
+    # Only a DIFFERENT fingerprint from a later copy is emitted — and then it is a drift.
+    case "$seen" in *"|$out|"*) continue ;; esac
+    seen="$seen|$out|"
     printf '%s\n' "$out"; found=1
   done
   [ "$found" -eq 1 ]

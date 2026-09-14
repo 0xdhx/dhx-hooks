@@ -41,8 +41,14 @@
 #
 # Assertions:
 #   [1] the CC bundle for the running version is locatable and readable
-#   [2] EXACTLY ONE candidate id-run contains the anchor id (an ambiguous
-#       anchor must red, never silently pick the first match)
+#   [2] EXACTLY ONE DISTINCT candidate id-run contains the anchor pair (an
+#       ambiguous anchor must red, never silently pick the first match).
+#       DISTINCT, not raw: from 2.1.270 the bundle payload is embedded TWICE
+#       in the ~409MB binary (byte-identical copies, every literal at a fixed
+#       +178,229,248-byte shift; the 40KB windows around both `gf` sets hash
+#       equal). Two byte-identical runs are one set seen twice, not an
+#       ambiguity — so identical runs collapse before counting, while two
+#       DIFFERENT runs carrying the pair still red. Raw count is printed.
 #   [3] the extracted set equals PINNED_SET  — the boundary has not moved
 #   [4] no 5-family id has entered the set   — the sharp escalation: the guard
 #       would now apply to the models this machine actually runs
@@ -57,14 +63,17 @@
 #
 # SAFE_FOR_LIVE: yes   (read-only: greps the installed CC binary; touches no
 #                       live config, no repo state, spawns no subprocess)
-# RUNTIME: ~4s      (one regex scan of the ~214MB bundle; a fixed-string scan of
-#                    the same file is ~0.1s, the -P run is the cost of tolerating
-#                    reordering. Still ~40x cheaper than the tripwire's 3 API turns.)
+# RUNTIME: ~4-8s    (one regex scan of the bundle — ~214MB through 2.1.269,
+#                    ~409MB from 2.1.270 with its doubled payload; a fixed-string
+#                    scan of the same file is ~0.1s, the -P run is the cost of
+#                    tolerating reordering. Still far cheaper than the tripwire's
+#                    3 API turns.)
 set -uo pipefail
 
 # Sorted, space-separated. Re-pin ONLY after re-measuring with the tripwire.
 PINNED_SET="claude-3-5-haiku claude-3-5-sonnet claude-3-7-sonnet claude-haiku-4-5 claude-opus-4-0 claude-opus-4-1 claude-opus-4-5 claude-opus-4-6 claude-sonnet-4-0 claude-sonnet-4-5"
 PINNED_AGAINST="2.1.251"
+# Last re-verified unchanged (set identical, only the bundle layout moved): 2.1.270, 2026-09-13.
 # The ordered LEADING PAIR of the set. A single id is NOT discriminating: five
 # separate id-runs in the 2.1.251 bundle contain 'claude-3-5-haiku' (model
 # registries and alias tables list it too). This pair occurs exactly once. A
@@ -106,14 +115,19 @@ _assert "[1] CC bundle located and readable" "yes" "yes"
 # runs containing the anchor. GNU grep -P explicitly: the bash `grep` here is a
 # wrapper over ugrep with a different engine.
 RUNS=$(/bin/grep -aoP '"claude-[a-z0-9.\-]+"(?:,"claude-[a-z0-9.\-]+")+' "$BIN" 2>/dev/null || true)
-MATCHING=$(printf '%s\n' "$RUNS" | /bin/grep -F "$ANCHOR_PAIR" || true)
+MATCHING_RAW=$(printf '%s\n' "$RUNS" | /bin/grep -F "$ANCHOR_PAIR" || true)
+RAW_COUNT=$(printf '%s' "$MATCHING_RAW" | /bin/grep -c . || true)
+# Collapse byte-identical runs (doubled bundle payload, see header [2]) — only
+# DISTINCT runs can be ambiguous.
+MATCHING=$(printf '%s\n' "$MATCHING_RAW" | /bin/grep . | sort -u || true)
 MATCH_COUNT=$(printf '%s' "$MATCHING" | /bin/grep -c . || true)
 
-_assert "[2] exactly one id-run carries the anchor pair" "1" "$MATCH_COUNT"
+_assert "[2] exactly one distinct id-run carries the anchor pair (raw occurrences: $RAW_COUNT)" "1" "$MATCH_COUNT"
 if [[ "$MATCH_COUNT" != "1" ]]; then
   echo "       anchor is ambiguous or absent — refusing to guess which run is the guard's set."
   echo "       Anchor pair: $ANCHOR_PAIR"
-  echo "       Dump the candidate runs with scripts/../ the grep -aoP idiom in this file's header, then pick the run that is the guard set and re-anchor."
+  echo "       Dump the candidate runs with the grep -aoP idiom used for RUNS in this file (add -b for byte offsets),"
+  echo "       read the code around each for the 'new Set([...])' + '.has(' guard shape, then pick the run that is the guard set and re-anchor."
   echo "---"
   echo "$PASSED passed, $FAILED failed"
   exit 1

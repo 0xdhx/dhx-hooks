@@ -8,7 +8,10 @@
 #    fixture and the newest INSTALLED build:
 #      (a) on 2.1.259 a ` -- -` marker appended AFTER the pattern does NOT suppress rg's `["."]`
 #          default — it adds two operands (`--`, `-`) and keeps the `.` (ARM 2 was
-#          classifier-inert on the build it was written for; 2.1.261 already differs — census);
+#          classifier-inert on the build it was written for; 2.1.261 already differs — census;
+#          2.1.270 rewrote the extractor to `return s.length>0?s:r` and the grep arrow to an
+#          exact-token `-r`/`-R`/`--recursive` test, so a bundled `-rn` no longer implies `.`
+#          either — census, not a break: (a)–(c) below still hold there);
 #      (b) a non-recursive grep with no operand extracts `[]` — nothing to suppress (ARM 2 had
 #          no domain there);
 #      (c) post-pattern options (`-A12`, `--include=*.sh`) are extracted AS OPERANDS — the two
@@ -38,6 +41,16 @@
 #            statement outside a module" — a build-drift-shaped error for a selection bug.
 #            Selection is now by NEAREST PRECEDING definition, bounded by a span ceiling, so
 #            a future collision fails as a collision and says so.
+#            2026-09-13: the "each anchor occurs EXACTLY once" cells were the same mistake one
+#            level up — a COUNT asserted where a selection rule belongs (HP-063). 2.1.270 is
+#            409MB, ~2x 2.1.269: a complete 2.1.269-shaped module blob ending in its own Bun
+#            trailer at 223.9MB, then the outer blob, so the JS bundle is embedded TWICE at a
+#            fixed +178,229,248 shift and the extractor's chunk a THIRD time in the outer
+#            blob's tail. Three byte-identical copies of one function are not an ambiguous
+#            anchor; three DIFFERENT functions under one anchor are. The cells now pair the
+#            anchors per copy, lift every copy by the nearest-preceding rule, assert the lifted
+#            spans are byte-identical, and evaluate the LAST copy (the outermost blob's — the
+#            one Bun's trailer-at-end loader reads). Copy count is reported as a census.
 #            Vectors that differ from the fixture are a DRIFT CENSUS (NOTE lines + one OK that
 #            the census ran), not failures: the extractor is upstream's to change. Only the
 #            retirement's load-bearing claims (a)–(c) are asserted on the live build.
@@ -122,14 +135,25 @@ if [ -z "$LIVE" ] || [ ! -f "$VERSIONS_DIR/$LIVE" ]; then
 else
   EXE="$VERSIONS_DIR/$LIVE"
   echo "     oracle build: $LIVE ($(stat -c%s "$EXE" 2>/dev/null || echo ?) bytes)"
-  # Anchors — each must occur EXACTLY once, or the extraction is not trustworthy.
-  a1=$(command grep -ac '"--exclude-dir","--include-dir"' "$EXE"); [ "$a1" = 1 ]; ck $? "anchor: grep-family option set occurs exactly once (got $a1)"
-  a2=$(command grep -ac '"-T","--type-not"' "$EXE");               [ "$a2" = 1 ]; ck $? "anchor: rg option set occurs exactly once (got $a2)"
-  RGHIT=$(command grep -aob 'rg:(e)=>[A-Za-z0-9_$]*(e,new Set(\["-e","--regexp","-f","--file","-t"[^]]*\]),\["."\])' "$EXE" | head -1)
-  RGOFF=${RGHIT%%:*}; RGLINE=${RGHIT#*:}
-  [ -n "$RGHIT" ]; ck $? "anchor: rg call site \`rg:(e)=>NAME(e,new Set([...]),[\".\"])\` located"
-  CALLEE=$(printf '%s' "$RGLINE" | sed -E 's/^rg:\(e\)=>([A-Za-z0-9_$]+)\(.*/\1/')
-  RGSET=$(printf '%s' "$RGLINE" | sed -E 's/^[^[]*(\[[^]]*\]).*/\1/')
+  # Anchors. Every structural anchor must be found, and every occurrence must be the SAME
+  # extractor. "Occurs exactly once" held 2.1.259–2.1.269 and was a count where a rule belongs
+  # (HP-063): 2.1.270 embeds the bundle more than once (header, 2026-09-13), so the count is a
+  # census and the assertions are (i) the anchors pair up per copy, (ii) every copy lifts a
+  # byte-identical span, (iii) the copy evaluated is the LAST — the outermost blob's, the one
+  # Bun's trailer-at-end loader reads. (ii) is what makes (iii) safe; a copy that differed
+  # would be an ambiguous anchor and FAILS here rather than feeding the census a coin toss.
+  # Occurrences, not matching LINES (`grep -c`): copies that share a line would count as one.
+  a1=$(command grep -ao '"--exclude-dir","--include-dir"' "$EXE" | wc -l)
+  a2=$(command grep -ao '"-T","--type-not"' "$EXE" | wc -l)
+  RGHITS=$(command grep -aob 'rg:(e)=>[A-Za-z0-9_$]*(e,new Set(\["-e","--regexp","-f","--file","-t"[^]]*\]),\["."\])' "$EXE")
+  NRG=$(printf '%s\n' "$RGHITS" | grep -c .)
+  [ "$NRG" -ge 1 ]; ck $? "anchor: rg call site \`rg:(e)=>NAME(e,new Set([...]),[\".\"])\` located ($NRG occurrence(s))"
+  [ "$a1" -ge 1 ] && [ "$a1" -eq "$NRG" ]; ck $? "anchor: grep-family option set occurs once per rg call site (got $a1 for $NRG)"
+  [ "$a2" -ge 1 ] && [ "$a2" -eq "$NRG" ]; ck $? "anchor: rg option set occurs once per rg call site (got $a2 for $NRG)"
+  CALLEES=$(printf '%s\n' "$RGHITS" | sed -nE 's/^[0-9]+:rg:\(e\)=>([A-Za-z0-9_$]+)\(.*/\1/p' | sort -u)
+  [ "$(printf '%s\n' "$CALLEES" | grep -c .)" -eq 1 ]; ck $? "anchor: every rg call site names the same callee ($(printf '%s' "$CALLEES" | tr '\n' ' '))"
+  CALLEE=$(printf '%s\n' "$CALLEES" | tail -1)
+  RGSET=$(printf '%s\n' "$RGHITS" | tail -1 | sed -E 's/^[^[]*(\[[^]]*\]).*/\1/')
   # SELECT BY POSITION, NOT BY FIRST HIT. The structural anchor above yields the extractor's
   # MINIFIED NAME, and a minified name is not unique across a ~200MB bundle: 2.1.266 carries
   # three `function vrt(` definitions (179156752 / 184847297 / 202497797) and only the middle
@@ -139,33 +163,51 @@ else
   # statement outside a module") because that much of a modern build contains ESM. That is
   # the very lookup-by-minified-identifier this probe's header disclaims, reintroduced one
   # line after the structural anchor did its job. The definition we want is the NEAREST
-  # PRECEDING one — a callee is defined before the call site in this bundle's layout.
+  # PRECEDING one — a callee is defined before the call site in this bundle's layout — and,
+  # with the bundle embedded more than once, it is resolved PER CALL SITE: each call site's
+  # own nearest-preceding definition, and that definition's nearest-FOLLOWING grep anchor.
   ALLOFF=$(command grep -aob "function $CALLEE(" "$EXE" | cut -d: -f1)
   NDEF=$(printf '%s\n' "$ALLOFF" | grep -c .)
-  ROFF=$(printf '%s\n' "$ALLOFF" | awk -v r="${RGOFF:-0}" '$1 < r' | tail -1)
-  [ -n "$ROFF" ]; ck $? "extractor function \`$CALLEE\` located by the rg call site (offset ${ROFF:-none}; $NDEF definition(s) of that name in the build)"
-  [ "$NDEF" -gt 1 ] && note "\`$CALLEE\` is defined $NDEF times — selection is by nearest-preceding, not first-hit"
-  GOFF=$(command grep -aob '"--exclude-dir","--include-dir"' "$EXE" | head -1 | cut -d: -f1)
-  if [ -n "$ROFF" ] && [ -n "$GOFF" ] && [ "$GOFF" -gt "$ROFF" ]; then
-    # Span: from the extractor's head through the grep-family arrow function that contains
-    # the grep anchor. The arrow's end is the balanced `}` after the anchor.
-    SPAN_LEN=$((GOFF - ROFF + 1200))
-    # A CEILING, because a wrong pick is not always a failed pick. The correct span is ~2.4KB
-    # (2,380 bytes on 2.1.266). Anything approaching a megabyte means the anchors have drifted
-    # apart and the extraction is not trustworthy, whether or not the result happens to
-    # evaluate — refuse it LOUDLY rather than hand a plausible-looking wrong module to the
-    # census. 64KB is ~27x the measured span and still nowhere near a mis-selection.
-    SPAN_MAX=65536
-    [ "$SPAN_LEN" -le "$SPAN_MAX" ]
-    ck $? "span from extractor head to grep anchor is ${SPAN_LEN}B (ceiling ${SPAN_MAX}B — a larger span means the anchors drifted apart)"
-    if [ "$SPAN_LEN" -gt "$SPAN_MAX" ]; then
-      note "refusing to lift a ${SPAN_LEN}B span; live cells skipped (fixture cells above still stand)"
-      GOFF=""
+  GOFFS=$(command grep -aob '"--exclude-dir","--include-dir"' "$EXE" | cut -d: -f1)
+  # A CEILING, because a wrong pick is not always a failed pick. The correct span is ~2.4KB
+  # (2,380 bytes on 2.1.266 and 2.1.270). Anything approaching a megabyte means the anchors
+  # have drifted apart and the extraction is not trustworthy, whether or not the result
+  # happens to evaluate — refuse it LOUDLY rather than hand a plausible-looking wrong module
+  # to the census. 64KB is ~27x the measured span and still nowhere near a mis-selection.
+  SPAN_MAX=65536
+  COPIES=""   # one line per lifted copy: <ROFF> <GOFF> <SPAN_LEN> <sha256/16> <k>
+  k=0
+  while IFS= read -r RGOFF; do
+    [ -n "$RGOFF" ] || continue
+    k=$((k+1))
+    ROFF=$(printf '%s\n' "$ALLOFF" | awk -v r="$RGOFF" '$1 < r' | tail -1)
+    GOFF=$(printf '%s\n' "$GOFFS" | awk -v r="${ROFF:-0}" '$1 > r' | head -1)
+    if [ -z "$ROFF" ] || [ -z "$GOFF" ]; then
+      bad "copy $k (call site $RGOFF): extractor head / grep anchor ordering unexpected (ROFF=${ROFF:-none} GOFF=${GOFF:-none})"
+      continue
     fi
-  fi
-  if [ -n "$ROFF" ] && [ -n "$GOFF" ] && [ "$GOFF" -gt "$ROFF" ]; then
-    tail -c +$((ROFF + 1)) "$EXE" | head -c "$SPAN_LEN" | tr -d '\000' > "$TMP/span.raw"
-    node - "$TMP/span.raw" "$CALLEE" "$RGSET" "$TMP/live.js" <<'EOF'
+    SPAN_LEN=$((GOFF - ROFF + 1200))
+    if [ "$SPAN_LEN" -gt "$SPAN_MAX" ]; then
+      bad "copy $k (call site $RGOFF): span ${SPAN_LEN}B exceeds ceiling ${SPAN_MAX}B — the anchors drifted apart; refusing to lift it"
+      continue
+    fi
+    tail -c +$((ROFF + 1)) "$EXE" | head -c "$SPAN_LEN" | tr -d '\000' > "$TMP/span.$k.raw"
+    COPIES="$COPIES$ROFF $GOFF $SPAN_LEN $(sha256sum "$TMP/span.$k.raw" | cut -c1-16) $k"$'\n'
+  done <<< "$(printf '%s\n' "$RGHITS" | cut -d: -f1)"
+  NCOPY=$(printf '%s' "$COPIES" | grep -c .)
+  [ "$NRG" -ge 1 ] && [ "$NCOPY" -eq "$NRG" ]
+  ck $? "extractor function \`$CALLEE\` located by nearest-preceding definition at every rg call site ($NCOPY/$NRG copies lifted; $NDEF definition(s) of that name in the build)"
+  [ "$NDEF" -gt 1 ] && note "\`$CALLEE\` is defined $NDEF times — selection is by nearest-preceding, not first-hit"
+  NSHA=$(printf '%s' "$COPIES" | awk '{print $4}' | sort -u | grep -c .)
+  [ "$NCOPY" -ge 1 ] && [ "$NSHA" -eq 1 ]
+  ck $? "every lifted copy is byte-identical ($NCOPY copies, $NSHA distinct span(s) — >1 means the anchor selects DIFFERENT extractors)"
+  [ "$NCOPY" -gt 1 ] && [ "$NSHA" -eq 1 ] && note "bundle embedded $NCOPY times — identical extractor copies at offsets $(printf '%s' "$COPIES" | awk '{printf "%s ", $1}')(census; evaluating the last, the outermost blob's)"
+  SEL=$(printf '%s' "$COPIES" | tail -1)
+  ROFF=${SEL%% *}; GOFF=$(printf '%s' "$SEL" | awk '{print $2}'); SPAN_LEN=$(printf '%s' "$SEL" | awk '{print $3}'); SELK=${SEL##* }
+  if [ "$NCOPY" -ge 1 ] && [ "$NSHA" -eq 1 ]; then
+    ok "span from extractor head to grep anchor is ${SPAN_LEN}B (ceiling ${SPAN_MAX}B — a larger span means the anchors drifted apart)"
+    cp "$TMP/span.$SELK.raw" "$TMP/span.raw"
+    NAMES=$(node - "$TMP/span.raw" "$CALLEE" "$RGSET" "$TMP/live.js" <<'EOF'
 const fs = require("fs");
 const [,, rawPath, callee, rgSet, outPath] = process.argv;
 let raw = fs.readFileSync(rawPath, "utf8");
@@ -196,9 +238,9 @@ catch (e) { console.error("span does not evaluate: " + e.message); process.exit(
 fs.writeFileSync(outPath, `module.exports = (${new Function(src).toString()})();\n`);
 process.stdout.write(`${mod.names.callee}\t${mod.names.ast}\n`);
 EOF
-    rc=$?
+    ); rc=$?
     if [ $rc -eq 0 ] && [ -s "$TMP/live.js" ]; then
-      ok "live extractor evaluates (callee=$CALLEE)"
+      ok "live extractor evaluates (callee=$CALLEE, grep-family arrow=${NAMES#*	})"
       LIVE_OUT=$(node "$TMP/run.js" "$TMP/live.js" "$TMP/vectors.json" 2>&1)
       drift=0; n=0
       while IFS=$'\t' read -r idx label got; do
@@ -223,7 +265,7 @@ EOF
       bad "live extractor could not be evaluated from $LIVE (rc=$rc) — anchors need re-deriving; NOT a clean result"
     fi
   else
-    bad "live: extractor head / grep anchor ordering unexpected (ROFF=${ROFF:-none} GOFF=${GOFF:-none})"
+    bad "live: no trustworthy extractor copy to evaluate ($NCOPY lifted, $NSHA distinct) — anchors need re-deriving; NOT a clean result"
   fi
 fi
 

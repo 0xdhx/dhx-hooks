@@ -1,10 +1,12 @@
-# baseline-build: 2.1.261
-registry dangerousRemoval bypassImmune=1 classifierRouted=1
-registry backgroundOperator bypassImmune=0 classifierRouted=1
-registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1
-registry isolatePeerMachines bypassImmune=1 classifierRouted=0
-registry restrictedMode bypassImmune=1 classifierRouted=0
-registry outsideReadsBlocked bypassImmune=1 classifierRouted=0
+# baseline-build: 2.1.270
+registry dangerousRemoval bypassImmune=1 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
+registry backgroundOperator bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
+registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
+registry isolatePeerMachines bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
+registry restrictedMode bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
+registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
+registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0
+registry denyRulesUnjudged bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
 reducer .mcpInfo
 reducer .isReadOnly
 reducer .behavior
@@ -39,7 +41,6 @@ reducer "other"
 reducer "ask"
 reducer .name
 reducer "bypassPermissions"
-reducer "plan"
 reducer .isBypassPermissionsModeAvailable
 reducer .forRemoteExecution
 reducer .behavior
