@@ -57,6 +57,17 @@ unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE \
       GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
       GIT_PREFIX GIT_INTERNAL_GETTEXT_SH_SCHEME GIT_REFLOG_ACTION
 
+# Fixture commits are not authored work commits, so the binding deletion audit
+# (scripts/hooks/pre-commit.d/30-deletion-audit.sh, ported 2026-09-14) has nothing to
+# bind in them. No probe fixture in this repo copies that leaf today — fixtures copy the
+# dispatcher plus NAMED leaves (probe-backlog-frontmatter-gate.sh) or write their own
+# .git/hooks/pre-commit (probe-red-debt-pairing.sh) — but a future fixture that installs
+# the WHOLE chain (scripts/install-hooks.sh on a clone) would otherwise red on the leaf's
+# first-sight refusal, suite-wide, with no defect under it. Exporting here is the ONLY
+# sanctioned use of this variable (AC-4 of the port brief). The one probe that must watch
+# the leaf fire, tests/probes/probe-deletion-audit-leaf.sh, unsets it on entry.
+export DHX_DELETION_AUDIT=off
+
 # ----- D-26: --filter SAFE_FOR_LIVE=yes|no flag (Phase 4 Plan 02) -----
 # Bare invocation defaults to SAFE_FOR_LIVE=yes — supersession-watchdog probes
 # (and any other SAFE_FOR_LIVE=no) are skipped via header-tag match through the
