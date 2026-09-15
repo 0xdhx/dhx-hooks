@@ -423,9 +423,15 @@ console.log(String(bad));' "$STORE" "$SD2" 2>/dev/null)
   # unpaired occurrences ended 5-32 s after the fire; 0/568 paired ever ended before their
   # record). The child now runs directly under the reference record and is EMITTED later.
   #
-  # Synchronised, not timed: EVERY sibling stub writes a marker and then blocks, so the kill
-  # lands the instant the first sibling — whichever it is — starts. That is deterministic and
-  # robust to sibling reorders; a sleep-then-kill would be a race. SIGTERM to the dispatcher pid
+  # Synchronised, not timed: every `bash`-launched sibling is replaced by a PATH-local stub
+  # that drains stdin, writes a marker and then blocks, so the kill lands once the first such
+  # sibling has started (marker polled at 100 ms — "first sibling started", not a literal
+  # process-start instant). The shim intercepts `bash` only: a sibling launched directly via
+  # `node` (dhx-roadmap-status-vocab.js) writes no marker, so if a reorder ever put a non-bash
+  # sibling FIRST the marker would never appear and this cell would FAIL on marker-seen=0 —
+  # loud, never a vacuous pass (close-review round-2 finding, 2026-09-14). At HEAD the first
+  # sibling is the `bash`-launched dhx-health-check.sh. A sleep-then-kill would be a race.
+  # SIGTERM to the dispatcher pid
   # alone is what a Node child.kill() sends; the fixture reproduction showed SIGKILL gives the
   # same shape. NOT a line-order assertion: line order is not the property, completion-before-
   # the-first-sibling is. Negative control (run once, 2026-09-14): the pre-reorder dispatcher
