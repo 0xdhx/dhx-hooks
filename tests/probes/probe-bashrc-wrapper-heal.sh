@@ -1,18 +1,16 @@
 #!/bin/bash
-# Probe: ~/.bashrc claude() wrapper plugin-keys heal stays in sync with the
-# detection logic in dhx-health-check.sh + tests/probes/probe-plugin-keys.sh.
+# Probe: the dhx plugin-keys pre-launch heal has ONE home — dhx/dhx-plugin-keys-heal.sh, run by
+# dhx/dhx-prelaunch.sh from the launch wrappers — and every site that checks those keys uses one
+# jq predicate.
 #
-# The wrapper is the durable fix for the load-gating clobber documented in
-# the 2026-04-17 decisions.md row + HP-017. It pre-launch-heals the two
-# enabledPlugins/extraKnownMarketplaces keys whenever they go null in
-# shared settings, so the next CC session boots with the dhx plugin
-# registered.
-#
-# Drift between the wrapper's gate jq expression and the canonical health
-# check's jq expression is silent — wrapper would heal at a different
-# threshold than the warning fires (or vice versa), and a future change
-# to one wouldn't propagate. This probe asserts content equality across
-# all three definitions so they can never diverge silently.
+# The keys (enabledPlugins["dhx@dhx-local"], extraKnownMarketplaces["dhx-local"]) are
+# load-gating (HP-017): when a stale-snapshot settings rewrite drops them, the dhx plugin
+# silently fails to register, so the repair must run before Claude Code starts. From 2026-04-17
+# it lived in the ~/.bashrc claude() wrapper, which returns early in non-interactive shells and
+# which daemon-hosted sessions never pass; on 2026-09-15 it moved to the pre-launch seam
+# (docs/decisions.md 2026-09-15 plugin-keys row). This probe keeps a second copy from growing
+# back in .bashrc, keeps the wrapper's post-exit settings-symlink repair (which stayed), and
+# asserts predicate parity so the heal and the warning fire at the same threshold.
 #
 # Backs decisions.md 2026-04-17 row "plugin-keys load-gating verified +
 # bashrc auto-heal". Run: bash tests/probes/probe-bashrc-wrapper-heal.sh
@@ -46,64 +44,42 @@ assert_eq() {
   fi
 }
 
+# In-repo sites resolve relative to this probe, so a worktree checks its own copies.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASHRC="$HOME/.bashrc"
-HEALTH_CHECK="/home/dhx/repos/hooks/dhx/dhx-health-check.sh"
-PLUGIN_KEYS_PROBE="/home/dhx/repos/hooks/tests/probes/probe-plugin-keys.sh"
+KEYS_HEAL="$REPO/dhx/dhx-plugin-keys-heal.sh"
+PRELAUNCH="$REPO/dhx/dhx-prelaunch.sh"
+HEALTH_CHECK="$REPO/dhx/dhx-health-check.sh"
+PLUGIN_KEYS_PROBE="$REPO/tests/probes/probe-plugin-keys.sh"
+INSTALL_PLUGIN="$REPO/scripts/install-plugin.sh"
 
-# --- 1. Wrapper file exists and contains the heal block ---
+# --- 1. The .bashrc wrapper keeps its post-exit half and routes through the capped launcher ---
 assert "bashrc exists" "[[ -f '$BASHRC' ]]"
 assert "claude() function defined" "grep -qE '^claude\(\) \{' '$BASHRC'"
-assert "heal block present (marketplace add)" "grep -q 'plugin marketplace add /home/dhx/repos/hooks/dhx-plugin' '$BASHRC'"
-assert "heal block present (enable dhx@dhx-local)" "grep -q 'plugin enable dhx@dhx-local' '$BASHRC'"
 assert "post-exit symlink repair preserved" "grep -qE 'ln -sf .\\\$canonical. .\\\$target.' '$BASHRC'"
+assert "post-exit hold guard preserved" "grep -q 'settings-chain.hold' '$BASHRC'"
+# `command claude` resolves through PATH to ~/.local/capbin/claude (claude-capped.sh), which runs
+# dhx-prelaunch.sh — that is how an interactive launch still gets the heal.
+assert "wrapper execs 'command claude \"\$@\"'" "grep -q 'command claude \"\$@\"' '$BASHRC'"
 
-# --- 2. jq gate expression matches across all three sites ---
-# Extract just the predicate body — after `.enabledPlugins`, before `>/dev/null`
-# or end-of-line. All three should be identical strings.
+# --- 2. No second copy of the heal in .bashrc ---
+assert "bashrc runs no 'claude plugin marketplace add'" "! grep -q 'plugin marketplace add' '$BASHRC'"
+assert "bashrc runs no 'claude plugin enable'" "! grep -q 'plugin enable dhx@dhx-local' '$BASHRC'"
+assert "bashrc carries no plugin-keys predicate" "! grep -q 'enabledPlugins\[\"dhx@dhx-local\"\]' '$BASHRC'"
+
+# --- 3. The heal lives in the pre-launch seam and spawns no Claude Code process ---
+assert "dhx-plugin-keys-heal.sh exists" "[[ -f '$KEYS_HEAL' ]]"
+assert "dhx-prelaunch.sh runs dhx-plugin-keys-heal.sh" "grep -qE '^run_child dhx-plugin-keys-heal\.sh' '$PRELAUNCH'"
+assert "keys heal invokes no 'claude' subcommand (comments aside)" \
+  "! grep -vE '^[[:space:]]*#' '$KEYS_HEAL' | grep -qE '(^|[[:space:];|&(])claude[[:space:]]+plugin'"
+
+# --- 4. jq predicate parity across every site that checks the keys ---
 canonical_pred='.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""'
-
-bashrc_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$BASHRC" | head -1)
-assert_eq "bashrc heal jq predicate matches canonical" "$bashrc_pred" "$canonical_pred"
-
-health_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$HEALTH_CHECK" | head -1)
-assert_eq "dhx-health-check.sh jq predicate matches canonical" "$health_pred" "$canonical_pred"
-
-probe_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$PLUGIN_KEYS_PROBE" | head -1)
-assert_eq "probe-plugin-keys.sh jq predicate matches canonical" "$probe_pred" "$canonical_pred"
-
-# 4th site (D-15 extension): scripts/install-plugin.sh
-# Resolved relative to this probe so the assertion is correct in both the
-# main checkout AND in worktrees under .claude/worktrees/ (where the live
-# `/home/dhx/repos/hooks/scripts/install-plugin.sh` may not yet exist
-# pre-merge). The other 3 sites use absolute live paths because BASHRC
-# lives in $HOME (not in-repo) and the existing convention predates
-# parallel-execution worktree usage.
-INSTALL_PLUGIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/install-plugin.sh"
-install_pred=$(grep -oE "\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\"" "$INSTALL_PLUGIN" | head -1)
-assert_eq "install-plugin.sh jq predicate matches canonical" "$install_pred" "$canonical_pred"
-
-# --- 3. Wrapper uses `command claude` for heal subcommands so it doesn't recurse ---
-# Without `command`, the heal calls would re-enter the wrapper function and loop.
-assert "heal uses 'command claude' (no recursion)" \
-  "grep -E 'command claude plugin (marketplace add|enable)' '$BASHRC' | wc -l | grep -q '^2$'"
-
-# --- 4. Heal output suppressed to keep happy path silent ---
-assert "marketplace add output suppressed" \
-  "grep -q 'plugin marketplace add /home/dhx/repos/hooks/dhx-plugin >/dev/null 2>&1' '$BASHRC'"
-assert "enable output suppressed" \
-  "grep -q 'plugin enable dhx@dhx-local >/dev/null 2>&1' '$BASHRC'"
-
-# --- 5. Heal runs BEFORE the wrapped claude invocation, not after ---
-# Line number of marketplace-add must be lower than line number of `command claude "$@"`.
-add_line=$(grep -n 'plugin marketplace add /home/dhx/repos/hooks/dhx-plugin' "$BASHRC" | head -1 | cut -d: -f1)
-exec_line=$(grep -n 'command claude "\$@"' "$BASHRC" | head -1 | cut -d: -f1)
-if [[ -n "$add_line" && -n "$exec_line" && "$add_line" -lt "$exec_line" ]]; then
-  echo "OK   heal precedes wrapped exec (add@$add_line < exec@$exec_line)"
-  pass=$((pass+1))
-else
-  echo "FAIL heal precedes wrapped exec (add=$add_line exec=$exec_line)"
-  fail=$((fail+1))
-fi
+PRED_ERE="\.enabledPlugins\[\"dhx@dhx-local\"\] == true and \(\.extraKnownMarketplaces\[\"dhx-local\"\]\.source\.path // empty\) != \"\""
+for site in "$KEYS_HEAL" "$HEALTH_CHECK" "$PLUGIN_KEYS_PROBE" "$INSTALL_PLUGIN"; do
+  got=$(grep -oE "$PRED_ERE" "$site" 2>/dev/null | head -1)
+  assert_eq "$(basename "$site") jq predicate matches canonical" "$got" "$canonical_pred"
+done
 
 echo
 echo "$pass passed, $fail failed"

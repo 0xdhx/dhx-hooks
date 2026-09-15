@@ -63,7 +63,8 @@
 #     the registry is HEALTHY again. Contention never prints.
 #
 # Exit: 0 healthy / repaired / contention / dhx-local not declared; 1 refusal or failed write.
-# Out of scope: MISSING:dhx-local in settings → bashrc wrapper heal (HP-017); PATH / DISABLED
+# Out of scope: dhx-local not declared in settings → dhx-plugin-keys-heal.sh (HP-017), which
+# dhx-prelaunch.sh runs first; PATH / DISABLED
 # → settings-level.
 # History: docs/decisions.md 2026-05-03 (IP path retired), 2026-05-13 (km heal), 2026-09-14
 # (healthy-first, identity guard), 2026-09-15 (lastUpdated, whole-file detector, lock,
@@ -92,7 +93,7 @@ SURFACE="${DHX_REGISTRY_HEAL_SURFACE:-}"
 digest16() { printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-16; }
 
 # D-11 settings-missing branch: settings absent or dhx-local not declared → nothing to heal
-# (HP-025 scope boundary; bashrc-wrapper territory).
+# (HP-025 scope boundary; dhx-plugin-keys-heal.sh territory).
 [[ -r "$SETTINGS" ]] || exit 0
 DHX_SOURCE_JSON=$(jq -c --arg n "$MARKETPLACE_NAME" '.extraKnownMarketplaces[$n].source // empty' "$SETTINGS" 2>/dev/null)
 [[ -n "$DHX_SOURCE_JSON" && "$DHX_SOURCE_JSON" != "null" ]] || exit 0

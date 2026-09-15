@@ -20,6 +20,11 @@
 #   W6  fail-open: a hanging child is cut off by the per-child bound and the launch proceeds;
 #       with no pre-launch script installed the launch proceeds unchanged.
 #   W7  dhx-prelaunch.sh writes nothing to stdout and exits 0 even when a child prints and fails.
+#   W8  dhx-prelaunch.sh runs dhx-plugin-keys-heal.sh before dhx-plugin-registry-heal.sh — the
+#       registry heal only repairs a marketplace settings declares (docs/decisions.md 2026-09-15
+#       plugin-keys row).
+#   W9  through the REAL bridge, the HP-017 clobber shape (both plugin keys gone from settings, no
+#       km entry): the fake binary starts with the keys restored AND km carrying dhx-local.
 # Run: bash tests/probes/probe-prelaunch-wiring.sh
 set -u
 
@@ -40,7 +45,7 @@ first_line() {  # file ERE → line number of first match, or empty
   grep -nE "$2" "$1" 2>/dev/null | head -n1 | cut -d: -f1
 }
 
-echo "=== pre-launch seam — 7 checks (W1-W7) ==="
+echo "=== pre-launch seam — W1-W9 ==="
 
 # ---- W1 capped: bounded call before LAUNCH ----
 if [[ -r "$CAPPED" ]]; then
@@ -93,6 +98,12 @@ km="$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
     echo "repaired=yes"
   else
     echo "repaired=no"
+  fi
+  if jq -e '.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""' \
+       "$CLAUDE_CONFIG_DIR/settings.json" >/dev/null 2>&1; then
+    echo "keys=yes"
+  else
+    echo "keys=no"
   fi
   printf 'argc=%s\n' "$#"
   printf 'arg=%s\n' "$@"
@@ -150,6 +161,22 @@ out=$(env -i PATH=/usr/bin:/bin HOME="$TMPROOT" DHX_PRELAUNCH_HOOKS_DIR="$TMPROO
 rc=$?
 [[ -z "$out" && "$rc" == "0" ]]
 check "W7 dhx-prelaunch.sh: stdout empty and exit 0 when a child prints and fails" $?
+
+# ---- W8 child order ----
+keys_line=$(first_line "$PRELAUNCH" '^run_child dhx-plugin-keys-heal\.sh')
+reg_line=$(first_line "$PRELAUNCH" '^run_child dhx-plugin-registry-heal\.sh')
+[[ -n "$keys_line" && -n "$reg_line" ]] && (( keys_line < reg_line ))
+check "W8 dhx-prelaunch.sh: keys heal (line ${keys_line:-?}) runs before registry heal (line ${reg_line:-?})" $?
+
+# ---- W9 real bridge, HP-017 clobber shape ----
+r=$(mkfix clobber)
+printf '{"permissions":{"allow":[]}}' > "$r/cfg/settings.json"
+env -i PATH=/usr/bin:/bin HOME="$r/home" CLAUDE_CONFIG_DIR="$r/cfg" ANTHROPIC_BASE_URL=http://probe.invalid \
+  FAKE_RECORD="$r/record" sh "$BRIDGE" "$r/bin/claude" </dev/null >/dev/null 2>&1
+grep -qx 'keys=yes' "$r/record" 2>/dev/null && grep -qx 'repaired=yes' "$r/record" \
+  && jq -e --arg p "$(readlink -f "$REPO/dhx-plugin")" '."dhx-local".installLocation == $p' \
+       "$r/cfg/plugins/known_marketplaces.json" >/dev/null 2>&1
+check "W9 bridge, both keys and the km entry gone: keys restored and km repaired before launch" $?
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"

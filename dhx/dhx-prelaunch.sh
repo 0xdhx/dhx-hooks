@@ -17,8 +17,12 @@
 # nothing to stdout, always exits 0, and bounds each child with `timeout -k`. Children write to
 # stderr only under their own first-sight rules.
 #
-# Children:
-#   dhx-plugin-registry-heal.sh  (DHX_REGISTRY_HEAL_SURFACE=prelaunch)
+# Children, in order — the order is load-bearing:
+#   dhx-plugin-keys-heal.sh      restores enabledPlugins["dhx@dhx-local"] and
+#                                extraKnownMarketplaces["dhx-local"] in settings (HP-017).
+#   dhx-plugin-registry-heal.sh  (DHX_REGISTRY_HEAL_SURFACE=prelaunch) repairs
+#                                known_marketplaces.json, but only for a marketplace settings
+#                                declares — so it runs after the keys are back.
 #
 # Knobs: DHX_PRELAUNCH_DISABLE=1 skips everything. Test seams (tests/probes/
 # probe-prelaunch-wiring.sh): DHX_PRELAUNCH_HOOKS_DIR — where children resolve (default: this
@@ -44,5 +48,6 @@ run_child() {
   return 0
 }
 
+run_child dhx-plugin-keys-heal.sh
 run_child dhx-plugin-registry-heal.sh DHX_REGISTRY_HEAL_SURFACE=prelaunch
 exit 0

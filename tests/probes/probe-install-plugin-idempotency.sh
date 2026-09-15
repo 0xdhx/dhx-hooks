@@ -4,7 +4,7 @@
 # cascade + D-23 exit semantics.
 #
 # install-plugin.sh is the canonical fresh-install / post-recovery entry for
-# the dhx plugin (composes with bashrc heal block per D-01). The probe asserts
+# the dhx plugin (composes with the pre-launch keys heal per D-01). The probe asserts
 # the contract that planning-phase 4 locked:
 #
 #   D-22 two-file detection cascade — BOTH per-instance settings.json (canonical

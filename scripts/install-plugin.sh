@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # scripts/install-plugin.sh — idempotent fresh-install/post-recovery entry for the dhx plugin.
 #
-# Composes with the ~/.bashrc inline heal block (D-01; docs/decisions.md 2026-04-17 row).
-# The bashrc heal stays as the hot path (~5ms savings per shell `claude` invocation);
-# this script is the canonical fresh-install entry. Both share one jq predicate at 4 sites:
-#   1. ~/.bashrc:261
-#   2. dhx/dhx-health-check.sh:106
-#   3. tests/probes/probe-plugin-keys.sh:17
+# Composes with the pre-launch keys heal (D-01; docs/decisions.md 2026-04-17 and 2026-09-15
+# plugin-keys rows): dhx/dhx-plugin-keys-heal.sh restores the settings keys before every wrapped
+# launch; this script is the canonical fresh-install entry. One jq predicate at 4 sites:
+#   1. dhx/dhx-plugin-keys-heal.sh
+#   2. dhx/dhx-health-check.sh
+#   3. tests/probes/probe-plugin-keys.sh
 #   4. THIS FILE
 # probe-bashrc-wrapper-heal.sh asserts byte-identical parity (D-15).
 #
@@ -70,7 +70,7 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# --- Canonical jq predicate (C-1) — byte-identical to bashrc:261, dhx-health-check.sh:106, probe-plugin-keys.sh:17 ---
+# --- Canonical jq predicate (C-1) — byte-identical to dhx-plugin-keys-heal.sh, dhx-health-check.sh, probe-plugin-keys.sh ---
 JQ_PRED='.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""'
 
 # --- Mode dispatch (D-07) ---
