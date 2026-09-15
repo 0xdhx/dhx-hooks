@@ -82,7 +82,7 @@ case "$PTR" in
 esac
 
 # Spec section Surfacer logic steps 2-4: scan, render, atomic-write pointer.
-# jq -c per-line; we capture the max entry_id surfaced for the atomic-rewrite step.
+# One jq pass over the digest; we capture the max entry_id surfaced for the atomic-rewrite step.
 MAX_SURFACED="$PTR"
 ANY_SURFACED=0
 CORRUPT_LINES=0
@@ -96,24 +96,74 @@ RENDER_OUT=""
 # so this is a scoped skip of the scan loop -- NOT an early `exit 0` (which would
 # swallow drift/health on a no-digest session).
 if [ -f "$DIGEST" ]; then
+# ONE jq spawn for the whole digest (2026-09-14). The previous loop spawned `jq -c` + `jq -r`
+# per line BEFORE the pointer compare -- >=3,600 processes to surface zero rows on a 1,800-line
+# digest, 9-12 s of every SessionStart. `-Rs` slurps the file as one raw string; splitting on
+# "\n" and dropping the LAST element keeps exactly the `while read` record framing on purpose:
+# an unterminated final line (a row mid-append when SessionStart fires, or after a crash) is
+# INVISIBLE this pass and read whole next time -- never surfaced from a half-written record,
+# never counted corrupt. `try fromjson` tolerates a corrupt line instead of aborting the pass.
+# Emits, in file order, one line per row the loop below needs:
+#   C                        jq parse failure                        -> CORRUPT_LINES++
+#   B                        valid JSON, id present but not ^[0-9]+\z -> CORRUPT_LINES++
+#   <id><TAB><compact row>   digit-string id ABOVE the pointer         -> surfaced branch
+# and drops (never emits) blank lines, non-object JSON, null/absent ids, and ids <= pointer --
+# exactly the lines the old loop `continue`d over without side effects. Sentinels cannot
+# collide with a data line: a data line always carries a TAB, a sentinel never does, and a
+# compact JSON row never contains a raw TAB or newline (JSON escapes both). `\z` (absolute
+# end), NOT `$`: Oniguruma's `$` matches before a trailing newline, so `"123\n"` would pass
+# `$` and split the tab protocol across two physical lines.
+#
+# entry_id is a JSON STRING of digits in the live digest (the producer allocates BigInt ids,
+# D-40, and serialises .toString(); 19 digits today), so the id is handled as TEXT throughout:
+# `tostring` reproduces what `jq -r` printed for the old `*[!0-9]*` test, and the pointer
+# compare is an exact digit-string compare (strip leading zeros, longer wins, else
+# lexicographic) -- never a numeric compare. Invariant it relies on: $PTR is a non-empty digit
+# string (coerced above) that bash can compare (<= 19 digits); the jq compare only keeps
+# already-seen rows off the pipe (measured 2026-09-14: 0.04 s vs 0.20 s with 1,403 seen rows),
+# and the bash `-le` below still runs on every row that arrives. `tojson` here is
+# byte-identical to the `jq -c '.'` the old loop handed the render branch.
+if SCAN=$(jq -Rs -r --arg p "$PTR" '
+  def norm: sub("^0+(?=[0-9])"; "");
+  ($p | norm) as $pn
+  | split("\n")[:-1][]
+  | if . == "" then empty else
+    (try (fromjson | [1, .]) catch [0]) as $e
+    | if $e[0] == 0 then "C" else
+        ($e[1] | (try .entry_id catch null) // empty | tostring) as $id
+        | if $id == "" then empty
+          elif ($id | test("^[0-9]+\\z") | not) then "B"
+          else ($id | norm) as $n
+            | if ($n | length) < ($pn | length)
+                 or (($n | length) == ($pn | length) and $n <= $pn) then empty
+              else $id + "\t" + ($e[1] | tojson) end
+          end
+      end
+    end' "$DIGEST" 2>/dev/null); then
+  :
+else
+  # jq itself failed (missing/broken binary, unreadable digest): the old per-line loop counted
+  # EVERY line corrupt in that state and warned loudly. Keep that -- never go silent here.
+  CORRUPT_LINES=$(command grep -c . "$DIGEST" 2>/dev/null)
+  case "$CORRUPT_LINES" in ''|*[!0-9]*) CORRUPT_LINES=0 ;; esac
+  SCAN=""
+fi
 while IFS= read -r LINE; do
-  # Skip blank
-  [ -z "$LINE" ] && continue
-  # Parse the JSON line; on parse failure, count it but skip
-  PARSED=$(printf '%s' "$LINE" | jq -c '.' 2>/dev/null) || { CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue; }
-  EID=$(printf '%s' "$PARSED" | jq -r '.entry_id // empty' 2>/dev/null)
+  case "$LINE" in
+    '')  continue ;;   # the empty-$SCAN herestring yields one blank iteration
+    C|B) CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue ;;
+  esac
   # Narrowed corrupt predicate (surfacing-fidelity brief 2026-06-13): a valid-JSON line whose
   # entry_id is null/absent is an INTENTIONAL audit non-delta -- the driver (dhx-watch-driver.cjs)
   # writes ack/snooze events with entry_id:null, outside the checker's D-40 nextEntryId allocator.
-  # Skip it SILENTLY: it is not corrupt, and a null id never advances the pointer, so the OLD
-  # predicate re-warned [!] digest_corrupt every SessionStart forever. Reserve digest_corrupt for
-  # genuine jq-parse failures (above) AND present-but-garbage ids (non-numeric), which stay loud
-  # (AC-B2: narrow the predicate, do not blind it).
-  case "$EID" in
-    '')          continue ;;
-    *[!0-9]*)    CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue ;;
-  esac
-  # Skip if entry_id <= pointer (already surfaced; bash arithmetic is fine for large ints)
+  # It is skipped SILENTLY inside the jq pass above (`// empty`): it is not corrupt, and a null id
+  # never advances the pointer, so the OLD predicate re-warned [!] digest_corrupt every SessionStart
+  # forever. digest_corrupt is reserved for genuine parse failures (C) AND present-but-garbage ids
+  # (B, non-numeric), which stay loud (AC-B2: narrow the predicate, do not blind it).
+  EID=${LINE%%$'\t'*}
+  PARSED=${LINE#*$'\t'}
+  # Skip if entry_id <= pointer (already surfaced; bash arithmetic is fine for large ints).
+  # The jq pass already dropped these; this stays as the documented predicate + belt.
   if [ "$EID" -le "$PTR" ]; then
     continue
   fi
@@ -164,7 +214,7 @@ while IFS= read -r LINE; do
   RENDER_OUT="$RENDER_OUT${PREFIX}${TAG} · ${REF} · ${EVENT_TYPE}
     \"${SUMMARY}\" ${REL}
 "
-done < "$DIGEST"
+done <<< "$SCAN"
 fi  # end digest-exists scan guard
 
 # Watch-health cache sections (cross-repo D-08 CONTRACT-01 producer:
