@@ -6,7 +6,8 @@
     "DISPLAY": ":0",
     "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP": "1",
     "DEBUG_SDK": "1",
-    "CLAUDE_CODE_DEBUG_LOGS_DIR": "/home/dhx/.ccs/shared/debug"
+    "CLAUDE_CODE_DEBUG_LOGS_DIR": "/home/dhx/.ccs/shared/debug",
+    "DISABLE_AUTOUPDATER": "1"
   },
   "includeGitInstructions": false,
   "permissions": {
