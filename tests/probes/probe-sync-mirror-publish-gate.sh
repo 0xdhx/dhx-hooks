@@ -200,7 +200,13 @@ git init --bare -q "$BARE"
 
 # `rev-parse HEAD` on an EMPTY bare repo prints the literal "HEAD" on stdout before
 # failing — `--verify` is what makes the empty case cleanly non-zero.
-_remote_head() { git --git-dir="$BARE" rev-parse --verify HEAD 2>/dev/null || echo "EMPTY"; }
+# Read refs/heads/main — the ref the publisher writes (`push public HEAD:main`) — NEVER the
+# bare repo's HEAD. A fresh bare HEAD points at init.defaultBranch: `main` on this machine,
+# `master` on a stock CI runner, where HEAD then never resolves. That failed [17]/[37] on
+# every weekly rehearsal from 2026-09-05 (when this probe moved into CI) and, worse, turned
+# every "remote untouched" check ([16], [23], [39]) vacuous there. Reproduce locally with
+# GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=master.
+_remote_head() { git --git-dir="$BARE" rev-parse --verify refs/heads/main 2>/dev/null || echo "EMPTY"; }
 
 _assert "[15] fixture remote starts empty" "EMPTY" "$(_remote_head)"
 
@@ -250,10 +256,10 @@ _assert "[21] every script invocation in this probe binds PUBLIC_REMOTE" "0" "$U
 # before exiting, and no assertion checked either. Verify BOTH: no build dir is left
 # behind, and the fixture remote is untouched by a print-mode LIVE-mode invocation.
 BUILD_BEFORE=$(ls -d /tmp/dhx-hooks-public-* 2>/dev/null | wc -l)
-FIX_BEFORE=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)
+FIX_BEFORE=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify refs/heads/main 2>/dev/null || echo EMPTY)
 ( cd "$REPO" && PUBLIC_REMOTE="$SAFE_REMOTE" bash "$SCRIPT" --push --print-mode >/dev/null 2>&1 )
 BUILD_AFTER=$(ls -d /tmp/dhx-hooks-public-* 2>/dev/null | wc -l)
-FIX_AFTER=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)
+FIX_AFTER=$(git --git-dir="$SAFE_REMOTE" rev-parse --verify refs/heads/main 2>/dev/null || echo EMPTY)
 _assert "[22] --print-mode leaves no build dir" "$BUILD_BEFORE" "$BUILD_AFTER"
 _assert "[23] --print-mode does not touch the remote" "$FIX_BEFORE" "$FIX_AFTER"
 
@@ -333,7 +339,7 @@ _assert "[36] ...and says MAIN IS ALREADY PUBLISHED" "yes" \
   "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$TRAP_OUT" && echo yes || echo no)"
 # The warning must be TRUE, not merely printed: the fixture really did receive the commit.
 _assert "[37] ...and the remote genuinely holds the commit it names" "yes" \
-  "$(git --git-dir="$BARE_TRAP" rev-parse --verify HEAD >/dev/null 2>&1 && echo yes || echo no)"
+  "$(git --git-dir="$BARE_TRAP" rev-parse --verify refs/heads/main >/dev/null 2>&1 && echo yes || echo no)"
 
 # Negative control 1 — failed but NOT armed: an identical failure injected BEFORE the push
 # must stay silent, or the warning is just noise on every red run.
@@ -342,7 +348,7 @@ PRE_OUT=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_PRE" timeout 900 bash "$MUTANT_PRE
 _assert "[38] a PRE-push failure does NOT claim anything was published" "yes" \
   "$(grep -q 'MAIN IS ALREADY PUBLISHED' <<< "$PRE_OUT" && echo no || echo yes)"
 _assert "[39] ...and the remote is untouched" "EMPTY" \
-  "$(git --git-dir="$BARE_PRE" rev-parse --verify HEAD 2>/dev/null || echo EMPTY)"
+  "$(git --git-dir="$BARE_PRE" rev-parse --verify refs/heads/main 2>/dev/null || echo EMPTY)"
 
 # Negative control 2 — armed but NOT failed: free, reusing [17]'s captured output.
 _assert "[40] a SUCCESSFUL publish prints no already-published warning" "yes" \
