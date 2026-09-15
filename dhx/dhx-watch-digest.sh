@@ -144,7 +144,14 @@ if SCAN=$(jq -Rs -r --arg p "$PTR" '
 else
   # jq itself failed (missing/broken binary, unreadable digest): the old per-line loop counted
   # EVERY line corrupt in that state and warned loudly. Keep that -- never go silent here.
-  CORRUPT_LINES=$(command grep -c . "$DIGEST" 2>/dev/null)
+  # Count only LF-terminated non-blank lines: `while read` never saw an unterminated tail, so
+  # the old loop never counted one either (close-review round 1, Q1). `sed '$d'` drops that
+  # tail only when the file does not end in a newline.
+  if [ -z "$(tail -c1 "$DIGEST" 2>/dev/null)" ]; then
+    CORRUPT_LINES=$(command grep -c . "$DIGEST" 2>/dev/null)
+  else
+    CORRUPT_LINES=$(sed '$d' "$DIGEST" 2>/dev/null | command grep -c .)
+  fi
   case "$CORRUPT_LINES" in ''|*[!0-9]*) CORRUPT_LINES=0 ;; esac
   SCAN=""
 fi
