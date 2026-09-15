@@ -56,8 +56,24 @@ FAIL=0
 # Phase 10 extension (D-08): adds 5th positional arg `km_content` for
 # known_marketplaces.json fixture seeding (NONE / EMPTY / literal string).
 # Also pre-seeds `$home/.ccs/instances/probe/plugins/marketplaces/dhx-local`
-# so heal-side scenarios have a valid allow-list-resident installLocation
-# target candidate (per D-03 allow-list `$HOME/.ccs/instances/*/plugins/marketplaces/`).
+# with a `.claude-plugin/marketplace.json` naming `dhx-local` so heal-side
+# scenarios have a valid installLocation target candidate. Since 2026-09-14 the
+# hook's (b) value-side guard is marketplace-manifest IDENTITY (dir exists +
+# manifest parses + `.name == "dhx-local"`), not the retired D-03 roots prefix
+# allow-list — the location under a marketplaces/ root is fixture legacy, not a
+# requirement (scenarios 14-15 prove the live shape, outside any such root).
+# seed_marketplace_manifest(dir, name) — writes the `.claude-plugin/marketplace.json`
+# CC's `claude plugin marketplace add` reads to name a directory-source marketplace
+# (2026-05-12 precheck § C: CC refused a dir without a valid manifest). The hook's
+# (b) identity guard (2026-09-14) requires `.name` to equal "dhx-local".
+seed_marketplace_manifest() {
+  local dir=$1
+  local name=$2
+  mkdir -p "$dir/.claude-plugin"
+  printf '{"name":"%s","owner":{"name":"probe","email":"probe@example.invalid"},"plugins":[]}' "$name" \
+    > "$dir/.claude-plugin/marketplace.json"
+}
+
 make_case() {
   local name=$1
   local ip_content=$2
@@ -71,9 +87,10 @@ make_case() {
   local cache_dir="$plugins/cache/dhx-local/dhx/$cache_version"
 
   mkdir -p "$plugins"
-  # Phase 10: seed a CCS-instance-shaped allow-list-resident installLocation candidate
-  # so re-derived NEW_IL values can resolve under $HOME/.ccs/instances/*/plugins/marketplaces/.
+  # Phase 10: seed a CCS-instance-shaped installLocation candidate; 2026-09-14:
+  # seed_marketplace_manifest gives it the named manifest the identity guard reads.
   mkdir -p "$home/.ccs/instances/probe/plugins/marketplaces/dhx-local"
+  seed_marketplace_manifest "$home/.ccs/instances/probe/plugins/marketplaces/dhx-local" dhx-local
   if (( has_cache )); then
     mkdir -p "$cache_dir/.claude-plugin" "$cache_dir/hooks"
     cat > "$cache_dir/.claude-plugin/plugin.json" <<JSON
@@ -183,8 +200,11 @@ assert_still_missing() {
 # (a) assert_km_dhx_local_healed
 #     Verifies the km file parses; ."dhx-local".source.source == "directory";
 #     ."dhx-local".source.path non-empty; ."dhx-local".installLocation non-empty
-#     AND resolves under $HOME/.claude/plugins/marketplaces OR
-#     $HOME/.ccs/instances/*/plugins/marketplaces (via realpath -m).
+#     AND equals source.path (Pattern B — CC writes them identical for a
+#     directory-source marketplace) AND that directory's
+#     .claude-plugin/marketplace.json names "dhx-local" (2026-09-14 identity
+#     guard; replaced the D-03 roots-prefix assertion that mirrored the hook's
+#     retired allow-list).
 #     G-04 strengthening: for each key in expected_other_keys, byte-equality
 #     check vs pre-snapshot file in $pre_snap_dir/<key>.json. Failure messages
 #     distinguish "key missing" vs "bytes diverged" so the executor can debug.
@@ -200,11 +220,12 @@ assert_still_missing() {
 assert_km_dhx_local_healed() {
   local name=$1
   local km_path=$2
-  local home=$3
+  local home=$3  # retained for call-site stability; unused since the 2026-09-14 identity check
   local expected_other_keys=$4
   local pre_snap_dir=$5
   local local_pass=1
   local fail_reason=""
+  : "$home"
 
   if [[ ! -f "$km_path" ]]; then
     printf '  ✗ %s: km file does not exist post-heal: %s\n' "$name" "$km_path"
@@ -232,29 +253,15 @@ assert_km_dhx_local_healed() {
     fail_reason="dhx-local.installLocation is empty"
     local_pass=0
   else
-    # installLocation must canonicalize under an allow-list root.
-    local il_resolved root_claude root_ccs_glob
-    il_resolved=$(realpath -m "$dhx_il" 2>/dev/null)
-    root_claude=$(realpath -m "$home/.claude/plugins/marketplaces" 2>/dev/null)
-    local matched=0
-    if [[ -n "$il_resolved" && -n "$root_claude" ]]; then
-      case "$il_resolved" in
-        "$root_claude"/*) matched=1 ;;
-      esac
-    fi
-    if (( ! matched )); then
-      local g
-      for g in "$home"/.ccs/instances/*/plugins/marketplaces; do
-        [[ -e "$g" ]] || continue
-        local rg
-        rg=$(realpath -m "$g" 2>/dev/null)
-        case "$il_resolved" in
-          "$rg"/*) matched=1; break ;;
-        esac
-      done
-    fi
-    if (( ! matched )); then
-      fail_reason="installLocation '$dhx_il' (resolved '$il_resolved') falls outside allow-list"
+    # Pattern B: installLocation == source.path, and the directory carries a
+    # manifest naming dhx-local (the hook's (b) identity guard, 2026-09-14).
+    local manifest_name
+    manifest_name=$(jq -r '.name // empty' "$dhx_il/.claude-plugin/marketplace.json" 2>/dev/null)
+    if [[ "$dhx_il" != "$dhx_path" ]]; then
+      fail_reason="installLocation '$dhx_il' != source.path '$dhx_path' (Pattern B violated)"
+      local_pass=0
+    elif [[ "$manifest_name" != "dhx-local" ]]; then
+      fail_reason="installLocation '$dhx_il' manifest names '$manifest_name' (expected dhx-local)"
       local_pass=0
     fi
   fi
@@ -392,7 +399,7 @@ assert_km_installlocation_only_rewritten() {
   fi
 }
 
-echo "=== dhx-plugin-registry-heal.sh — 13 scenarios (8 IP no-op regression + 5 km active heal including scenario 13 bad-installlocation-rejected under Pattern B) ==="
+echo "=== dhx-plugin-registry-heal.sh — 17 scenarios (8 IP no-op regression + 9 km active heal: 9-13 Phase 10, 14-17 live-shaped + identity guard 2026-09-14) ==="
 
 # ---- 1. healthy: valid v2 file with dhx entry → no-op (was no-op pre-Phase-6 too) ----
 HEALTHY_JSON='{"version":2,"plugins":{"dhx@dhx-local":[{"scope":"user","installPath":"/fake/path","version":"0.1.0","installedAt":"2026-04-24T00:00:00.000Z","lastUpdated":"2026-04-24T00:00:00.000Z"}]}}'
@@ -550,13 +557,20 @@ assert_km_installlocation_only_rewritten \
 #
 # Phase 10 active heal: (1) heal refused (rc=1), (2) structured REJECT stderr,
 # (3) live victim km bytes-identical pre→post sha256 invariant (no write).
+#
+# 2026-09-14 healthy-first: the hook exits 0 on a HEALTHY km before any guard
+# runs, so the victim's dhx-local installLocation is STALE (nonexistent) — the
+# attack only matters when the heal wants to write, and that is the fixture
+# now. The hostile source dir carries a named manifest so (a) is the sole
+# refusal reason (the (b) identity guard would otherwise also fire, later).
 echo "EXPECT: REJECT-symlink-crossing"
 HOSTILE_HOME="$TMPROOT/hostile-cfg-test/home"
 HOSTILE_CFG="$TMPROOT/hostile-cfg-test/cfg"
 mkdir -p "$HOSTILE_HOME/.claude/plugins" "$HOSTILE_CFG"
 # Pre-populate live victim km inside the operator's "real" tree analog.
-KM_LIVE='{"anthropic-agent-skills":{"source":{"source":"github"},"installLocation":"/fake/aas"},"claude-plugins-official":{"source":{"source":"github"},"installLocation":"/fake/cpo"},"dhx-local":{"source":{"source":"directory","path":"/some/legit/path"},"installLocation":"'"$HOSTILE_HOME"'/.claude/plugins/marketplaces/dhx-local"}}'
+KM_LIVE='{"anthropic-agent-skills":{"source":{"source":"github"},"installLocation":"/fake/aas"},"claude-plugins-official":{"source":{"source":"github"},"installLocation":"/fake/cpo"},"dhx-local":{"source":{"source":"directory","path":"/some/legit/path"},"installLocation":"/nonexistent/victim/stale"}}'
 mkdir -p "$HOSTILE_HOME/.claude/plugins/marketplaces/dhx-local"
+seed_marketplace_manifest "$HOSTILE_HOME/.claude/plugins/marketplaces/dhx-local" dhx-local
 printf '%s' "$KM_LIVE" > "$HOSTILE_HOME/.claude/plugins/known_marketplaces.json"
 BEFORE_HASH=$(sha256sum "$HOSTILE_HOME/.claude/plugins/known_marketplaces.json" | awk '{print $1}')
 # D-02 (a) attack: $HOSTILE_CFG/plugins symlinks into $HOSTILE_HOME/.claude/plugins.
@@ -694,13 +708,15 @@ fi
 # Pattern B branch (per .planning/phases/10-heal-hook-km-path-hardening-heal-07/10-D-05-RESULT.md):
 # CC 2.1.140's directory-source resolver writes installLocation == source.path
 # LITERALLY. Heal re-derives NEW_IL as source.path verbatim. Settings poison
-# fixture: source.path points to /tmp/poisoned-source which resolves OUTSIDE
-# the D-03 allow-list ($HOME/.claude/plugins/marketplaces + $HOME/.ccs/instances/
-# */plugins/marketplaces). Heal MUST refuse with structured REJECT stderr.
+# fixture: source.path points to /tmp/poisoned-source, which does not exist —
+# since 2026-09-14 the (b) identity guard refuses it as "not a directory" (it
+# used to fall outside the retired D-03 roots allow-list). Heal MUST refuse
+# with structured REJECT stderr. km is MISSING dhx-local so the healthy-first
+# hook reaches the mutation path.
 # Closes Blocker-B Option 3 (revision 2026-05-09): under Pattern A this scenario
 # is omitted (NEW_IL bounded by construction inside allow-list); under Pattern B
 # the (b) value-side check fires meaningfully on this fixture.
-echo "EXPECT: REJECT-allow-list"
+echo "EXPECT: REJECT-identity-nonexistent"
 SETTINGS_BAD='{"enabledPlugins":{"dhx@dhx-local":true},"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"/tmp/poisoned-source"}}}}'
 # Pre-existing km with other-marketplace entries — heal must REFUSE before writing.
 KM_BAD_PRE='{"anthropic-agent-skills":{"source":{"source":"github","repo":"anthropics/agent-skills"},"installLocation":"/fake/aas","lastUpdated":"2026-01-01T00:00:00.000Z"}}'
@@ -711,9 +727,115 @@ printf '%s' "$SETTINGS_BAD" > "$cfg/settings.json"
 expected_pre=$(cat "$cfg/plugins/known_marketplaces.json")
 stderr_captured=$(run_hook_capture_stderr "$cfg")
 assert_km_unchanged_with_stderr_match \
-  "bad-il: settings poison resolves outside allow-list — REJECT (Pattern B)" \
+  "bad-il: settings poison names a nonexistent directory — REJECT (Pattern B, identity guard)" \
   "$cfg/plugins/known_marketplaces.json" "$expected_pre" "$stderr_captured" \
   '^dhx-plugin-registry-heal: REJECT:'
+
+# ============================================================================
+# 2026-09-14 — live-shaped fixtures + identity guard (docs/decisions.md 2026-09-14)
+# ============================================================================
+# Every Phase 10 fixture above put source.path under a fake marketplaces/ root —
+# a shape the live host never had (the live source is the repo checkout,
+# /home/dhx/repos/hooks/dhx-plugin, since 44a8155e 2026-04-16), so the probe was
+# green 21/21 while the hook REJECTed on every real SessionStart for four months.
+# Scenarios 14-15 fire the hook at the live shape; 16-17 pin the identity guard's
+# actual boundary (what it refuses, so nobody mistakes it for a security belt).
+# ============================================================================
+
+# ---- 14. live-shape-healthy-silent (healthy-first; the brief's acceptance criterion) ----
+# Fixture: source.path is a real directory OUTSIDE any marketplaces/ root, with a
+# manifest naming dhx-local; km is HEALTHY with installLocation == source.path
+# (Pattern B). Hook MUST exit 0, emit NOTHING on stderr, and leave km byte-identical.
+echo "EXPECT: HEALTHY-live-shape-silent"
+cfg=$(make_case "live-healthy" "NONE" 1 0.1.0 "NONE")
+home_for_case=$(dirname "$cfg")
+LIVE_SRC="$home_for_case/repos/hooks/dhx-plugin"
+seed_marketplace_manifest "$LIVE_SRC" dhx-local
+cat > "$cfg/settings.json" <<JSON
+{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"$LIVE_SRC"}}}}
+JSON
+KM_LIVE_SHAPE='{"claude-plugins-official":{"source":{"source":"github","repo":"anthropics/claude-plugins"},"installLocation":"/fake/cpo","lastUpdated":"2026-01-01T00:00:00.000Z"},"dhx-local":{"source":{"source":"directory","path":"'"$LIVE_SRC"'"},"installLocation":"'"$LIVE_SRC"'","lastUpdated":"2026-09-13T08:10:05.466Z"}}'
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '%s' "$KM_LIVE_SHAPE" > "$km_path"
+before_hash=$(sha256sum "$km_path" | awk '{print $1}')
+live_stderr=$(HOME="$home_for_case" CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" < /dev/null 2>&1 >/dev/null)
+live_rc=$?
+after_hash=$(sha256sum "$km_path" | awk '{print $1}')
+if [[ "$live_rc" == "0" && -z "$live_stderr" && "$before_hash" == "$after_hash" ]]; then
+  printf '  ✓ live-healthy: rc 0, empty stderr, km sha256-identical (source outside marketplaces/)\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ live-healthy: rc=%s stderr=%q km-changed=%s\n' "$live_rc" "$live_stderr" "$([[ "$before_hash" != "$after_hash" ]] && echo yes || echo no)"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---- 15. live-shape-stale-healed (the guard passes the live shape on the WRITE path) ----
+# Same live shape, but km's dhx-local installLocation is stale (nonexistent).
+# Hook MUST rewrite ONLY installLocation to source.path; other keys byte-preserved.
+echo "EXPECT: HEAL-live-shape-stale"
+cfg=$(make_case "live-stale" "NONE" 1 0.1.0 "NONE")
+home_for_case=$(dirname "$cfg")
+LIVE_SRC="$home_for_case/repos/hooks/dhx-plugin"
+seed_marketplace_manifest "$LIVE_SRC" dhx-local
+cat > "$cfg/settings.json" <<JSON
+{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"$LIVE_SRC"}}}}
+JSON
+STALE_LIVE_IL='/nonexistent/live/stale'
+KM_LIVE_STALE='{"claude-plugins-official":{"source":{"source":"github","repo":"anthropics/claude-plugins"},"installLocation":"/fake/cpo","lastUpdated":"2026-01-01T00:00:00.000Z"},"dhx-local":{"source":{"source":"directory","path":"'"$LIVE_SRC"'"},"installLocation":"'"$STALE_LIVE_IL"'","lastUpdated":"2026-01-01T00:00:00.000Z"}}'
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '%s' "$KM_LIVE_STALE" > "$km_path"
+pre_snap_dir="$TMPROOT/live-stale.snap"
+mkdir -p "$pre_snap_dir"
+jq -c '.["claude-plugins-official"]' "$km_path" > "$pre_snap_dir/claude-plugins-official.json"
+run_hook "$cfg" >/dev/null
+assert_km_installlocation_only_rewritten \
+  "live-stale: installLocation rewritten to source.path outside marketplaces/; other keys byte-preserved" \
+  "$km_path" "$STALE_LIVE_IL" "claude-plugins-official" "$pre_snap_dir"
+healed_il=$(jq -r '."dhx-local".installLocation // empty' "$km_path" 2>/dev/null)
+if [[ "$healed_il" == "$LIVE_SRC" ]]; then
+  printf '  ✓ live-stale: healed installLocation == source.path (Pattern B)\n'
+  PASS=$((PASS + 1))
+else
+  printf '  ✗ live-stale: healed installLocation %q != source.path %q\n' "$healed_il" "$LIVE_SRC"
+  FAIL=$((FAIL + 1))
+fi
+
+# ---- 16. wrong-identity-rejected (the guard's real boundary: an EXISTING dir, wrong marketplace) ----
+# Fixture: source.path is a real directory with a manifest naming "other-market";
+# km MISSING dhx-local so the mutation path is reached. Hook MUST refuse with the
+# identity REJECT and leave km byte-identical. This is the case a presence-only
+# check would have accepted.
+echo "EXPECT: REJECT-identity-wrong-name"
+cfg=$(make_case "wrong-identity" "NONE" 1 0.1.0 "$KM_BAD_PRE")
+home_for_case=$(dirname "$cfg")
+OTHER_SRC="$home_for_case/repos/other-market"
+seed_marketplace_manifest "$OTHER_SRC" other-market
+cat > "$cfg/settings.json" <<JSON
+{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"$OTHER_SRC"}}}}
+JSON
+expected_pre=$(cat "$cfg/plugins/known_marketplaces.json")
+stderr_captured=$(run_hook_capture_stderr "$cfg")
+assert_km_unchanged_with_stderr_match \
+  "wrong-identity: existing dir whose manifest names another marketplace — REJECT" \
+  "$cfg/plugins/known_marketplaces.json" "$expected_pre" "$stderr_captured" \
+  "^dhx-plugin-registry-heal: REJECT: marketplace manifest names 'other-market', expected 'dhx-local'"
+
+# ---- 17. malformed-manifest-rejected (existing dir, unparseable manifest) ----
+echo "EXPECT: REJECT-identity-malformed"
+cfg=$(make_case "malformed-manifest" "NONE" 1 0.1.0 "$KM_BAD_PRE")
+home_for_case=$(dirname "$cfg")
+BAD_SRC="$home_for_case/repos/bad-manifest"
+mkdir -p "$BAD_SRC/.claude-plugin"
+printf 'not json {{{' > "$BAD_SRC/.claude-plugin/marketplace.json"
+cat > "$cfg/settings.json" <<JSON
+{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"$BAD_SRC"}}}}
+JSON
+expected_pre=$(cat "$cfg/plugins/known_marketplaces.json")
+stderr_captured=$(run_hook_capture_stderr "$cfg")
+assert_km_unchanged_with_stderr_match \
+  "malformed-manifest: existing dir with unparseable manifest — REJECT" \
+  "$cfg/plugins/known_marketplaces.json" "$expected_pre" "$stderr_captured" \
+  '^dhx-plugin-registry-heal: REJECT: marketplace manifest unparseable or unnamed'
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"

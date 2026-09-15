@@ -18,10 +18,37 @@
 #
 # Scope (post-Phase-10 km active heal):
 #   - installed_plugins.json — DO NOT heal (Hn() rehydrates upstream; 06-01 PASS)
-#   - known_marketplaces.json — ACTIVE HEAL: 4-state detector + (a)+(b) realpath
-#     allow-list + atomic mktemp+jq+mv + post-write jq -e validation (D-02/D-10).
+#   - known_marketplaces.json — ACTIVE HEAL: 4-state detector + write-path guards
+#     ((a) km-target realpath check + (b) marketplace-manifest identity check) +
+#     atomic mktemp+jq+mv + post-write jq -e validation (D-02/D-10).
 #     BADJSON branch writes minimal km + emits WARN per D-14 (other marketplaces
 #     lost; CC rebuilds on next plugin operation).
+#
+# Ordering (2026-09-14, healthy-first): the detector runs FIRST and a HEALTHY km
+# exits 0 before any settings-derived value is validated. The write-path guards
+# run only on the mutation path, immediately before the atomic write. Rationale:
+# stderr at exit 0 from a SessionStart hook is not injected into context (measured
+# 2026-09-14: this fix's own session started on the old body, the REJECT went to
+# stderr, and the context carried only stdout; HP-038 is the PostToolUse twin of
+# the same fact) and the dispatcher masks rc, so a guard REJECT on a healthy host
+# is consumed by nobody — it is a failure mode, not a self-test. The previous
+# order (guard-first) exited 1 on every SessionStart from 2026-05-13 to
+# 2026-09-14 on this host because the D-03 prefix allow-list
+# (`$HOME/.claude/plugins/marketplaces`, `$HOME/.ccs/instances/*/plugins/marketplaces`)
+# can never match a directory-source marketplace — CC writes
+# `installLocation == source.path` literally (Pattern B, 10-D-05-RESULT.md), and
+# the live source.path is the repo checkout, not a marketplaces/ root. The 2026-05-12
+# D-05 branch-lock ("allow-list expands under Pattern B") was recorded and never
+# implemented. Guard coverage now lives in the probe (STALE heal, wrong-identity,
+# malformed-manifest scenarios), not in a per-fire REJECT.
+#
+# (b) identity guard (2026-09-14, replaces the D-03 prefix allow-list): the value
+# about to be written must be an existing directory whose
+# `.claude-plugin/marketplace.json` parses and names this marketplace — the field
+# `claude plugin marketplace add` itself registers the marketplace under. Refuses a
+# nonexistent or mistyped path and a malformed manifest. Input hygiene, not a
+# security boundary: settings.json and km share an owner, so a same-owner poison
+# that also plants a matching manifest passes.
 #
 # Out of scope (handled elsewhere):
 #   - MISSING:dhx-local in settings → bashrc wrapper heal (HP-017)
@@ -30,6 +57,7 @@
 #
 # Silent on happy path. No stdin parsing (filesystem state, not session context).
 # Phase 6 (2026-05-03) retired IP path; Phase 10 added km active heal — see docs/decisions.md 2026-05-03 (D-25/D-27/D-29) and HP-025 v1.3 § Remediation hook.
+# 2026-09-14 healthy-first reorder + identity guard — see docs/decisions.md 2026-09-14 row.
 set -uo pipefail
 
 # ============================================================================
@@ -38,6 +66,7 @@ set -uo pipefail
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS="$CFG/settings.json"
 KM_PATH="$CFG/plugins/known_marketplaces.json"
+MARKETPLACE_NAME="dhx-local"
 
 # D-11 settings-missing branch: if settings absent or dhx-local not declared,
 # heal exits 0 silently. HP-025 scope boundary — bashrc-wrapper territory.
@@ -48,17 +77,45 @@ if [[ ! -r "$SETTINGS" ]]; then
   exit 0
 fi
 
-DHX_SOURCE_JSON=$(jq -c '.extraKnownMarketplaces["dhx-local"].source // empty' "$SETTINGS" 2>/dev/null)
+DHX_SOURCE_JSON=$(jq -c --arg n "$MARKETPLACE_NAME" '.extraKnownMarketplaces[$n].source // empty' "$SETTINGS" 2>/dev/null)
 if [[ -z "$DHX_SOURCE_JSON" || "$DHX_SOURCE_JSON" == "null" ]]; then
   exit 0
 fi
 
-# Compute NEW_IL per Pattern from 10-D-05-RESULT.md (CC 2.1.140: Pattern B —
-# installLocation == source.path literally; D-03 allow-list still bounds the
-# value-side check below to marketplace-root prefixes).
+# Detector (D-04): 4 failure states (UNREADABLE, BADJSON, MISSING, STALE_INSTALLLOCATION) + HEALTHY (no-op)
+STATE=""
+KM_PARSED=""
+if [[ ! -r "$KM_PATH" ]]; then
+  STATE="UNREADABLE"
+else
+  if ! KM_PARSED=$(jq -c . "$KM_PATH" 2>/dev/null); then
+    STATE="BADJSON"
+  elif ! jq -e --arg n "$MARKETPLACE_NAME" '.[$n]' <<< "$KM_PARSED" >/dev/null 2>&1; then
+    STATE="MISSING"
+  else
+    CURRENT_IL=$(jq -r --arg n "$MARKETPLACE_NAME" '.[$n].installLocation // empty' <<< "$KM_PARSED" 2>/dev/null)
+    if [[ -n "$CURRENT_IL" && ! -d "$CURRENT_IL" ]]; then
+      STATE="STALE_INSTALLLOCATION"
+    else
+      STATE="HEALTHY"
+    fi
+  fi
+fi
+
+# Healthy-first (2026-09-14): nothing to write, nothing to validate.
+if [[ "$STATE" == "HEALTHY" ]]; then
+  exit 0
+fi
+
+# ============================================================================
+# Mutation path — every guard below runs only when a write is about to happen.
+# ============================================================================
+
+# Compute NEW_IL per Pattern B from 10-D-05-RESULT.md (CC 2.1.140+: installLocation
+# == source.path literally for directory-source marketplaces).
 NEW_IL=$(jq -r '.path // empty' <<< "$DHX_SOURCE_JSON" 2>/dev/null)
 if [[ -z "$NEW_IL" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: settings.extraKnownMarketplaces.dhx-local.source.path empty or null" >&2
+  echo "dhx-plugin-registry-heal: REJECT: settings.extraKnownMarketplaces.$MARKETPLACE_NAME.source.path empty or null" >&2
   exit 1
 fi
 
@@ -80,56 +137,33 @@ case "$KM_REAL" in
     ;;
 esac
 
-# (b) D-02 value-side check + D-03 allow-list with G-03 nullglob locality.
+# (b) D-02 value-side check — marketplace-manifest identity (2026-09-14; replaces
+# the D-03 prefix allow-list, see header). The directory must exist and its
+# manifest must name this marketplace.
 NEW_IL_REAL=$(realpath -m "$NEW_IL" 2>/dev/null || echo "$NEW_IL")
-shopt -q nullglob; prev_nullglob=$?
-shopt -s nullglob
-matched=0
-for root in "$HOME"/.claude/plugins/marketplaces "$HOME"/.ccs/instances/*/plugins/marketplaces; do
-  [[ -e "$root" ]] || continue
-  root_real=$(realpath -m "$root" 2>/dev/null || echo "$root")
-  case "$NEW_IL_REAL" in
-    "$root_real"/*)
-      matched=1
-      break
-      ;;
-  esac
-done
-[[ $prev_nullglob -eq 0 ]] || shopt -u nullglob
-
-if (( ! matched )); then
-  echo "dhx-plugin-registry-heal: REJECT: installLocation outside allow-list ($NEW_IL_REAL)" >&2
+MANIFEST="$NEW_IL_REAL/.claude-plugin/marketplace.json"
+if [[ ! -d "$NEW_IL_REAL" ]]; then
+  echo "dhx-plugin-registry-heal: REJECT: installLocation is not a directory ($NEW_IL_REAL)" >&2
   exit 1
 fi
-
-# Detector (D-04): 4 failure states (UNREADABLE, BADJSON, MISSING, STALE_INSTALLLOCATION) + HEALTHY (no-op)
-STATE=""
-KM_PARSED=""
-if [[ ! -r "$KM_PATH" ]]; then
-  STATE="UNREADABLE"
-else
-  if ! KM_PARSED=$(jq -c . "$KM_PATH" 2>/dev/null); then
-    STATE="BADJSON"
-  elif ! jq -e '."dhx-local"' <<< "$KM_PARSED" >/dev/null 2>&1; then
-    STATE="MISSING"
-  else
-    CURRENT_IL=$(jq -r '."dhx-local".installLocation // empty' <<< "$KM_PARSED" 2>/dev/null)
-    if [[ -n "$CURRENT_IL" && ! -d "$CURRENT_IL" ]]; then
-      STATE="STALE_INSTALLLOCATION"
-    else
-      STATE="HEALTHY"
-    fi
-  fi
+if [[ ! -r "$MANIFEST" ]]; then
+  echo "dhx-plugin-registry-heal: REJECT: no marketplace manifest at $MANIFEST" >&2
+  exit 1
 fi
-
-if [[ "$STATE" == "HEALTHY" ]]; then
-  exit 0
+MANIFEST_NAME=$(jq -r '.name // empty' "$MANIFEST" 2>/dev/null)
+if [[ -z "$MANIFEST_NAME" ]]; then
+  echo "dhx-plugin-registry-heal: REJECT: marketplace manifest unparseable or unnamed ($MANIFEST)" >&2
+  exit 1
+fi
+if [[ "$MANIFEST_NAME" != "$MARKETPLACE_NAME" ]]; then
+  echo "dhx-plugin-registry-heal: REJECT: marketplace manifest names '$MANIFEST_NAME', expected '$MARKETPLACE_NAME' ($NEW_IL_REAL)" >&2
+  exit 1
 fi
 
 DHX_ENTRY=$(jq -nc --argjson src "$DHX_SOURCE_JSON" --arg il "$NEW_IL" \
   '{ source: $src, installLocation: $il }' 2>/dev/null)
 if [[ -z "$DHX_ENTRY" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: failed to build dhx-local entry" >&2
+  echo "dhx-plugin-registry-heal: REJECT: failed to build $MARKETPLACE_NAME entry" >&2
   exit 1
 fi
 
@@ -147,7 +181,7 @@ case "$STATE" in
     else
       BASE="$KM_PARSED"
     fi
-    if ! jq -c --argjson e "$DHX_ENTRY" '. + {"dhx-local": $e}' <<< "$BASE" > "$TMP" 2>/dev/null; then
+    if ! jq -c --arg n "$MARKETPLACE_NAME" --argjson e "$DHX_ENTRY" '. + {($n): $e}' <<< "$BASE" > "$TMP" 2>/dev/null; then
       rm -f "$TMP"
       echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
       exit 1
@@ -156,7 +190,7 @@ case "$STATE" in
   BADJSON)
     # D-14: minimal km with only dhx-local. Other-marketplace entries lost (km
     # was corrupt — cannot preserve). Emit literal WARN signalling loss.
-    if ! jq -nc --argjson e "$DHX_ENTRY" '{"dhx-local": $e}' > "$TMP" 2>/dev/null; then
+    if ! jq -nc --arg n "$MARKETPLACE_NAME" --argjson e "$DHX_ENTRY" '{($n): $e}' > "$TMP" 2>/dev/null; then
       rm -f "$TMP"
       echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
       exit 1
@@ -166,7 +200,7 @@ case "$STATE" in
   STALE_INSTALLLOCATION)
     # D-04: rewrite ONLY .dhx-local.installLocation; preserve source.source,
     # source.path, all other keys.
-    if ! jq -c --arg il "$NEW_IL" '."dhx-local".installLocation = $il' <<< "$KM_PARSED" > "$TMP" 2>/dev/null; then
+    if ! jq -c --arg n "$MARKETPLACE_NAME" --arg il "$NEW_IL" '.[$n].installLocation = $il' <<< "$KM_PARSED" > "$TMP" 2>/dev/null; then
       rm -f "$TMP"
       echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
       exit 1
@@ -181,11 +215,11 @@ esac
 
 # WR-04 TOCTOU mitigation: re-canonicalize the parent dir IMMEDIATELY before
 # mv and re-assert the (a) prefix match. Narrows (does not fully close) the
-# window between the line-76 (a) check and the mv below; full O_NOFOLLOW-style
+# window between the (a) check above and the mv below; full O_NOFOLLOW-style
 # protection requires a helper binary (deferred — see HP-025 § Threat Model /
 # Residual Risks). On a real TOCTOU race (attacker swaps $CFG/plugins/ between
-# line 76 and here), this catches the swap and refuses the write. On the happy
-# path it's a no-op (parent dir state unchanged during script runtime).
+# the (a) check and here), this catches the swap and refuses the write. On the
+# happy path it's a no-op (parent dir state unchanged during script runtime).
 KM_PARENT_REAL=$(realpath -m "$(dirname "$KM_PATH")" 2>/dev/null || echo "")
 EXPECTED_PARENT_REAL=$(realpath -m "$CFG/plugins" 2>/dev/null || echo "")
 if [[ -z "$KM_PARENT_REAL" || "$KM_PARENT_REAL" != "$EXPECTED_PARENT_REAL" ]]; then
