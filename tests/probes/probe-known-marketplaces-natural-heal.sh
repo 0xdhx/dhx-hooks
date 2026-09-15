@@ -1,446 +1,296 @@
 #!/bin/bash
 # probe-known-marketplaces-natural-heal.sh
 #
-# SAFE_FOR_LIVE: no   (sandbox-only via CLAUDE_CONFIG_DIR isolation; runs claude subprocess)
-# RUNTIME: ~30s
+# SAFE_FOR_LIVE: no   (spawns the real Claude Code binary against throwaway CLAUDE_CONFIG_DIRs; nothing live is read or written)
+# RUNTIME: ~15-25s    (about 1 s per launch: 11 launches by default, 6 with --acceptance-out)
 #
-# Supersession-watchdog probe (Phase 6 D-11; HEAL-07 mini-probe). Asserts the
-# natural-heal premise on `known_marketplaces.json` (currently in heal hook scope
-# via header lock per HEAL-02). Symmetric to D-07a but for km file instead of IP;
-# uses the canonical truncated shape per D-17 (Hn() rehydration is shape-agnostic).
-#   exit 0 = premise holds (km branch warranted; HEAL-07 hardening shipped)
-#   exit 1 = supersession found (km branch retired; HEAL-07 closes as superseded)
-#   exit 2 = ambiguous (auth gap, sandbox isolation failure, confounded outcome,
-#            failure-class detected per cell stderr inspection,
-#            pre-state abnormal — live $LIVE_KM missing).
-#            NOTE: a live `claude --version` absent from any hardcoded list NO
-#            LONGER forces ambiguous — the cc-version allow-list is
-#            RETIRED (see header "ALLOW-LIST RETIRED" note); conclusion/confidence
-#            derive from the substantive observation (.observations.cell_outcome).
+# Two questions about $CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json ("km"), both answered by
+# LAUNCHING Claude Code — the only oracle that counts: a km that parses but fails CC's schema loads
+# zero plugins (docs/decisions.md 2026-09-15).
 #
-# Operates on LIVE plugin cache content (which may lag repo source until
-# next plugin install/reload); supersession-watchdog reads live state by
-# design — RESEARCH MEDIUM-4 cache-vs-source asymmetry is correct behavior.
+#   1. natural heal — does CC repair each km failure state by itself? One launch per state against a
+#      sandbox whose settings declare dhx-local. "healed" = the km CC leaves behind is a schema-valid
+#      object with a dhx-local entry whose installLocation exists. (CC 2.1.272: UNREADABLE and MISSING
+#      heal — written on that launch, loaded on the next; BADJSON, STALE and NO_TIMESTAMP do not.)
+#   2. heal acceptance — after dhx/dhx-plugin-registry-heal.sh repairs each state, does the next launch
+#      register plugin hooks, with no "Marketplace configuration file is corrupted" line?
 #
-# Backs:
-#   - .planning/REQUIREMENTS.md HEAL-07 (D-15 gate consumer)
-#   - docs/hook-patterns.md HP-025 (natural-heal asymmetry — Phase 6 doctrine correction)
-#   - .planning/phases/06-*/06-CONTEXT.md D-11 + D-17 + D-22 (cc_version assertion)
+# Modes:
+#   bash tests/probes/probe-known-marketplaces-natural-heal.sh
+#       Both questions. Writes the corpus cell tests/probes/.results/v1.3-multi-cc-ver/<cc>/
+#       probe-known-marketplaces-natural-heal.json (scripts/verify-multi-cc-results.sh validates it).
+#       Exit — conclusion keyed on the BADJSON natural cell, as since Phase 6:
+#         0  cell_outcome km_no_heal  → conclusion v1_2_work_warranted (CC leaves BADJSON broken)
+#         1  cell_outcome km_hn_heals → conclusion supersession_found_drop_heal
+#         2  ambiguous (no runnable binary, the healthy control did not load plugins, a launch failed)
+#         3  heal output not accepted (any acceptance cell) — overrides 0 and 1
+#   bash tests/probes/probe-known-marketplaces-natural-heal.sh --acceptance-out FILE [--binary BIN]
+#       Question 2 only (plus the control). Writes {status: pass|fail|error, cc_version, ts, detail,
+#       cells} to FILE and no corpus cell. Exit 0 pass, 3 fail, 2 error. dhx/dhx-km-acceptance.sh
+#       runs this detached once per installed CC version.
 #
-# Run: ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-known-marketplaces-natural-heal.sh
+# Binary: --binary, else CLAUDE_CODE_EXECPATH, else readlink -f ~/.local/bin/claude — resolved before
+# any cell runs. (`claude` on PATH is claude-capped.sh, which re-resolves the binary through $HOME; the
+# pre-2026-09-15 probe swapped HOME and every run exited 127.)
+# Auth: none. The plugin loader and the declared-marketplace reconciler run before the login failure, so
+# every launch ends "Not logged in" by design; env -i drops any inherited API key, so no cell spends tokens.
+# Isolation: env -i, a fresh HOME + CLAUDE_CONFIG_DIR per cell, settings carry disableAllHooks:true (no
+# plugin hook — the heal included — runs inside a cell). Plugin source: this checkout's dhx-plugin dir.
 #
-# AUTH (2026-05-24 watchdog-probe auth hardening — generalized from the read-guard
-# native-enforcement tripwire): a sandboxed `claude -p` (fresh CLAUDE_CONFIG_DIR) is
-# logged out unless ANTHROPIC_API_KEY is inherited from env. Seeding a live
-# ~/.claude/.credentials.json into the sandbox is UNSAFE — the sandboxed claude rotates
-# the OAuth refresh token and writes the new one to the throwaway dir, so the provider
-# invalidates the SOURCE credential (measured: a copied cred authed once then 401'd
-# minutes later). So this probe gates on ANTHROPIC_API_KEY ONLY; no key → fast clean
-# `skipped` (exit 2, never a false `v1_2_work_warranted`). The strengthened auth-failure
-# regex in classify_failure() ensures a logged-out / invalid-key / credit-exhausted
-# subprocess degrades to ambiguous, never rolls up to a positive conclusion (false-PASS
-# guard). See docs/decisions.md 2026-05-24 watchdog-probe-auth-hardening row.
-#
-# D-25 set-flag discipline (WR-04 corrected): file top is `set -uo pipefail`
-# only — `errexit` is NEVER enabled. The original draft sprinkled `set +e`
-# around every subprocess; those calls were no-ops (you can't disable a flag
-# that was never on) and have been removed. The actual safety mechanism is
-# `rc=$?` immediately after each subprocess call: that captures the exit
-# code regardless of `errexit`, so an early jq/stat exit-1 cannot abort
-# before the ambiguous outcome JSON is written.
-#
-# ALLOW-LIST RETIRED (2026-05-26 — HP-024 matrix promotion EXECUTED; decisions
-# row 220 retirement gate CLOSED). The former D-22 cc-version allow-list
-# (`("2.1.121" "2.1.140" "2.1.145")`) was temporary scaffolding ("friction deliberate,
-# retires at N≥3" — decisions row 220). The N≥3 gate is MET (2.1.121 / 2.1.140 / 2.1.148)
-# and the promotion is now EXECUTED: the per-(cc_version) result cells under
-# `tests/probes/.results/v1.3-multi-cc-ver/<ver>/` (+ the v1.2-phase-6 baseline) are THE
-# source of truth for conclusion/confidence — NOT membership in a hardcoded version array.
-# conclusion/confidence now derive from `.observations.cell_outcome` (the substantive
-# subprocess observation). A never-before-seen CC version records a clean NEW cell, never
-# a false-ambiguous (this eliminated the audit-misleading signal that cost the 2026-05-25
-# plugin-registry-heal re-eval — see decisions rows 220 + 237 + HP-024 § Corpus advancement).
-# `cc_version_match` is REPURPOSED to a non-gating informational signal: "is this CC version
-# already represented in the on-disk corpus" (true = a cell dir already exists; false = this
-# run is a NEW cell). It NEVER rewrites conclusion or downgrades confidence.
+# Backs: docs/hook-patterns.md HP-025 § Remediation hook; docs/decisions.md 2026-09-15 rows.
 set -uo pipefail
 
-# ----------------------------------------------------------------------------
-# State (D-22 per-cell rc + failure-class enums; D-23 per-cell auth_method;
-# D-24 early pre-state gate; default to ambiguous so any short-circuit path
-# still produces a deterministic exit code).
-# ----------------------------------------------------------------------------
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/../.." && pwd))
+HEAL="$REPO/dhx/dhx-plugin-registry-heal.sh"
+SRC="$REPO/dhx-plugin"
+PROBE_ID="probe-known-marketplaces-natural-heal"
+STATES=(UNREADABLE MISSING BADJSON STALE NO_TIMESTAMP)
+
+ACCEPT_OUT=""
+BIN=""
+while (( $# )); do
+  case "$1" in
+    --acceptance-out|--binary)
+      (( $# >= 2 )) || { echo "$PROBE_ID: $1 needs a value" >&2; exit 2; }
+      [[ "$1" == "--binary" ]] && BIN=$2 || ACCEPT_OUT=$2
+      shift 2 ;;
+    *) echo "$PROBE_ID: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$BIN" ]]; then
+  if [[ -n "${CLAUDE_CODE_EXECPATH:-}" && -x "${CLAUDE_CODE_EXECPATH}" ]]; then
+    BIN=$CLAUDE_CODE_EXECPATH
+  else
+    BIN=$(readlink -f "${HOME:-}/.local/bin/claude" 2>/dev/null || true)
+  fi
+fi
+CC_VERSION=""
+if [[ -n "$BIN" && -x "$BIN" ]]; then
+  CC_VERSION=$(basename "$BIN")
+  [[ "$CC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || CC_VERSION=$("$BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+fi
+
+TMPROOT=$(mktemp -d)
+trap 'rm -rf "$TMPROOT"' EXIT
 PASS=0
 FAIL=0
-exit_code=2                              # default ambiguous; set deterministically post-cell-attribution
-conclusion="ambiguous"
-cell_outcome="bizarre"
-cell1_rc=-1
-cell1_auth_method=""
+ok()  { printf 'OK   %s\n' "$1"; PASS=$((PASS + 1)); }
+bad() { printf 'FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-# cc_version_match: informational corpus-membership signal (allow-list RETIRED
-# 2026-05-26 — non-gating). confidence defaults LOW; set HIGH at cell-attribution
-# when the substantive cell produces a decisive (non-skip, non-failure) outcome.
-cc_version_match=false
-confidence="LOW"
+write_acceptance() {  # status detail cells_json
+  [[ -n "$ACCEPT_OUT" ]] || return 0
+  mkdir -p "$(dirname "$ACCEPT_OUT")" 2>/dev/null
+  jq -n --arg status "$1" --arg detail "$2" --arg cc "${CC_VERSION:-unknown}" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson cells "$3" \
+    '{status: $status, cc_version: $cc, ts: $ts, detail: $detail, cells: $cells}' \
+    > "$ACCEPT_OUT.tmp" && mv -f "$ACCEPT_OUT.tmp" "$ACCEPT_OUT"
+}
 
-# Observation defaults (used by JSON write block; refined as cells run)
-pre_size=0
+if [[ -z "$BIN" || ! -x "$BIN" || -z "$CC_VERSION" ]]; then
+  bad "binary: no runnable Claude Code binary resolved (got '${BIN:-}')"
+  write_acceptance error "no runnable Claude Code binary" '{}'
+  echo "---"
+  echo "PASS: $PASS  FAIL: $FAIL  exit_code=2"
+  exit 2
+fi
+echo "INFO binary: CC $CC_VERSION"
+
+# new_cell NAME → root with home/, cfg/plugins/, cwd/ and settings declaring dhx-local
+new_cell() {
+  local r="$TMPROOT/$1"
+  mkdir -p "$r/home" "$r/cfg/plugins" "$r/cwd"
+  jq -nc --arg p "$SRC" \
+    '{enabledPlugins: {"dhx@dhx-local": true}, extraKnownMarketplaces: {"dhx-local": {source: {source: "directory", path: $p}}}, disableAllHooks: true}' \
+    > "$r/cfg/settings.json"
+  printf '%s' "$r"
+}
+
+# write_fixture STATE KM_PATH
+write_fixture() {
+  local km=$2
+  case "$1" in
+    HEALTHY)
+      jq -nc --arg p "$SRC" '{"dhx-local": {source: {source: "directory", path: $p}, installLocation: $p, lastUpdated: "2026-01-01T00:00:00.000Z"}}' > "$km" ;;
+    UNREADABLE) rm -f "$km" ;;
+    MISSING) printf '{}' > "$km" ;;
+    BADJSON) printf '%s' '{"version": 2, "marke' > "$km" ;;
+    STALE)
+      jq -nc --arg p "$SRC" '{"dhx-local": {source: {source: "directory", path: $p}, installLocation: "/nonexistent/probe-km-stale", lastUpdated: "2026-01-01T00:00:00.000Z"}}' > "$km" ;;
+    NO_TIMESTAMP)
+      jq -nc --arg p "$SRC" '{"dhx-local": {source: {source: "directory", path: $p}, installLocation: $p}}' > "$km" ;;
+  esac
+}
+
+# launch ROOT → L_RC, L_HOOKS, L_PLUGINS (-1 when no registration line), L_REJECTED (true|false)
+launch() {
+  local r=$1
+  local log="$r/debug.log"
+  ( cd "$r/cwd" && env -i PATH=/usr/bin:/bin HOME="$r/home" CLAUDE_CONFIG_DIR="$r/cfg" TERM=dumb \
+      timeout 90 "$BIN" -p noop --debug-file "$log" </dev/null >/dev/null 2>&1 )
+  L_RC=$?
+  local reg
+  reg=$(grep -a -m1 -oE 'Registered [0-9]+ hooks from [0-9]+ plugins' "$log" 2>/dev/null)
+  if [[ -n "$reg" ]]; then
+    L_HOOKS=$(awk '{print $2}' <<< "$reg")
+    L_PLUGINS=$(awk '{print $5}' <<< "$reg")
+  else
+    L_HOOKS=-1
+    L_PLUGINS=-1
+  fi
+  if grep -aq 'Marketplace configuration file is corrupted' "$log" 2>/dev/null; then
+    L_REJECTED=true
+  else
+    L_REJECTED=false
+  fi
+}
+
+launch_failed() { (( L_RC == 124 || L_RC == 126 || L_RC == 127 )) || [[ "$L_PLUGINS" == "-1" ]]; }
+
+km_valid_healed() {  # km path
+  jq -e 'type == "object" and ([.[] | type == "object" and ((.lastUpdated | type) == "string")] | all) and ((."dhx-local" | type) == "object")' \
+    "$1" >/dev/null 2>&1 || return 1
+  local il
+  il=$(jq -r '."dhx-local".installLocation // empty' "$1" 2>/dev/null)
+  [[ -n "$il" && -d "$il" ]]
+}
+
+# ---- control: a healthy registry must load plugins, or no cell below means anything ----
+r=$(new_cell control)
+write_fixture HEALTHY "$r/cfg/plugins/known_marketplaces.json"
+launch "$r"
+CONTROL_PLUGINS=$L_PLUGINS
+if launch_failed || (( L_PLUGINS < 1 )) || [[ "$L_REJECTED" == true ]]; then
+  bad "control: healthy registry did not load plugins (launch_rc=$L_RC plugins=$L_PLUGINS rejected=$L_REJECTED)"
+  CONTROL_OK=false
+else
+  ok "control: healthy registry → $L_HOOKS hooks from $L_PLUGINS plugins"
+  CONTROL_OK=true
+fi
+
+# ---- question 2: heal acceptance ----
+ACC_JSON='{}'
+ACC_FAILED=()
+for s in "${STATES[@]}"; do
+  r=$(new_cell "accept-$s")
+  km="$r/cfg/plugins/known_marketplaces.json"
+  write_fixture "$s" "$km"
+  env -i PATH=/usr/bin:/bin HOME="$r/home" CLAUDE_CONFIG_DIR="$r/cfg" bash "$HEAL" </dev/null >/dev/null 2>"$r/heal.err"
+  hrc=$?
+  launch "$r"
+  if (( hrc != 0 )); then verdict=heal_failed
+  elif launch_failed; then verdict=launch_failed
+  elif [[ "$L_REJECTED" == true ]] || (( L_PLUGINS < 1 )); then verdict=rejected
+  else verdict=accepted
+  fi
+  ACC_JSON=$(jq -c --arg s "$s" --arg v "$verdict" --argjson p "$L_PLUGINS" '. + {($s): {verdict: $v, plugins: $p}}' <<< "$ACC_JSON")
+  if [[ "$verdict" == "accepted" ]]; then
+    ok "acceptance $s: heal, then the next launch registers $L_HOOKS hooks from $L_PLUGINS plugins"
+  else
+    bad "acceptance $s: $verdict (heal_rc=$hrc launch_rc=$L_RC plugins=$L_PLUGINS rejected=$L_REJECTED)"
+    ACC_FAILED+=("$s:$verdict")
+  fi
+done
+
+if [[ -n "$ACCEPT_OUT" ]]; then
+  cells=$(jq -c --argjson c "$CONTROL_PLUGINS" '. + {control_plugins: $c}' <<< "$ACC_JSON")
+  if [[ "$CONTROL_OK" != true ]]; then
+    write_acceptance error "healthy control launch did not load plugins" "$cells"; code=2
+  elif (( ${#ACC_FAILED[@]} )); then
+    write_acceptance fail "not accepted: ${ACC_FAILED[*]}" "$cells"; code=3
+  else
+    write_acceptance pass "" "$cells"; code=0
+  fi
+  echo "---"
+  echo "PASS: $PASS  FAIL: $FAIL  acceptance=$(jq -r '.status' "$ACCEPT_OUT" 2>/dev/null)  exit_code=$code"
+  exit $code
+fi
+
+# ---- question 1: natural heal ----
+NAT_JSON='{}'
+BAD_VERDICT=launch_failed
+BAD_RC=-1
+pre_size=21
 post_size=0
 json_validity_post=false
 dhx_marketplace_present_post=false
-known_marketplace_present_post=false   # any of the live registered marketplaces returns
-inode_isolated=false
-cell1_stderr=""
+for s in "${STATES[@]}"; do
+  r=$(new_cell "natural-$s")
+  km="$r/cfg/plugins/known_marketplaces.json"
+  write_fixture "$s" "$km"
+  launch "$r"
+  if launch_failed; then verdict=launch_failed
+  elif km_valid_healed "$km"; then verdict=healed
+  else verdict=not_healed
+  fi
+  NAT_JSON=$(jq -c --arg s "$s" --arg v "$verdict" '. + {($s): $v}' <<< "$NAT_JSON")
+  echo "INFO natural $s: $verdict (launch_rc=$L_RC)"
+  if [[ "$s" == "BADJSON" ]]; then
+    BAD_VERDICT=$verdict
+    BAD_RC=$L_RC
+    post_size=$(stat -c %s "$km" 2>/dev/null || echo 0)
+    jq -e . "$km" >/dev/null 2>&1 && json_validity_post=true
+    jq -e '."dhx-local"' "$km" >/dev/null 2>&1 && dhx_marketplace_present_post=true
+  fi
+done
 
-# ----------------------------------------------------------------------------
-# Sandbox setup
-# ----------------------------------------------------------------------------
-TMPROOT=$(mktemp -d)
-trap 'rm -rf "$TMPROOT"' EXIT
-SANDBOX="$TMPROOT/cfg"
-mkdir -p "$SANDBOX/plugins"
-
-LIVE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"   # CCS-aware per CLAUDE.md
-LIVE_KM="$LIVE_CFG/plugins/known_marketplaces.json"
-
-# ----------------------------------------------------------------------------
-# Auth gate (2026-05-24 watchdog-probe auth hardening): ANTHROPIC_API_KEY ONLY.
-# OAuth credentials_file seeding REMOVED — copying a live ~/.claude/.credentials.json
-# into the sandbox is UNSAFE (the sandboxed claude -p rotates the refresh token and
-# invalidates the SOURCE credential; see header AUTH note + decisions.md). No key →
-# fast clean `skipped` (exit 2 / ambiguous family — never a false work_warranted),
-# BEFORE any cp -rL or subprocess spawn. Replaces the prior "credentials_file OR
-# ANTHROPIC_API_KEY" Cell-1 contract.
-# ----------------------------------------------------------------------------
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "SKIP probe-known-marketplaces-natural-heal: no ANTHROPIC_API_KEY (a sandboxed claude -p cannot auth via OAuth credentials_file safely — re-run with an API key)"
-  cell_outcome="skipped_no_api_key"
-  conclusion="skipped"
-  exit_code=2
-  cell1_auth_method="none"
-  SKIP_CELLS=true
+if [[ "$CONTROL_OK" != true || "$BAD_VERDICT" == "launch_failed" ]]; then
+  cell_outcome=setup_failure; conclusion=ambiguous; exit_code=2; confidence=LOW
+elif [[ "$BAD_VERDICT" == "healed" ]]; then
+  cell_outcome=km_hn_heals; conclusion=supersession_found_drop_heal; exit_code=1; confidence=HIGH
 else
-  cell1_auth_method="ANTHROPIC_API_KEY"
-  SKIP_CELLS=false
+  cell_outcome=km_no_heal; conclusion=v1_2_work_warranted; exit_code=0; confidence=HIGH
 fi
-
-# ----------------------------------------------------------------------------
-# D-24 early pre-state gate: assert LIVE_KM exists BEFORE cp -rL.
-# Pre-state abnormal is meaningfully different from supersession-or-no-supersession;
-# treat as ambiguous and write the outcome JSON anyway (audit trail).
-# ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]] && [[ ! -f "$LIVE_KM" ]]; then
-  echo "FAIL pre-state-abnormal: live $LIVE_KM missing — cannot evaluate Hn() heal behavior"
-  cell_outcome="ambiguous_pre_state_abnormal"
-  conclusion="ambiguous_pre_state_abnormal"
-  exit_code=2
-  FAIL=$((FAIL+1))
-  cell1_auth_method="unknown"
-  SKIP_CELLS=true
+acceptance_status=pass
+if (( ${#ACC_FAILED[@]} )); then
+  acceptance_status=fail
+  (( exit_code == 2 )) || exit_code=3
 fi
+echo "INFO conclusion: cell_outcome=$cell_outcome conclusion=$conclusion acceptance=$acceptance_status"
 
-# ----------------------------------------------------------------------------
-# Capture live km marketplaces — used to detect "Hn() rehydrated SOMETHING from
-# the previously-known set." dhx-local is NOT currently in live km (only github
-# marketplaces are tracked). The dual-path assertion: heal verified if Hn()
-# either re-adds dhx-local OR restores any known live-marketplace entry.
-# ----------------------------------------------------------------------------
-LIVE_KM_KEYS=""
-if [[ -f "$LIVE_KM" ]]; then
-  LIVE_KM_KEYS=$(jq -r 'keys[]?' "$LIVE_KM" 2>/dev/null | head -3)
-fi
-
-# ----------------------------------------------------------------------------
-# cp -rL deref of plugin state (RESEARCH MEDIUM-4: live cache may be stale;
-# that's correct supersession-watchdog behavior — reads live cache as-of-run-time)
-# D-25 (WR-04): cp_rc=$? captures rc directly; errexit never enabled.
-# ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  cp -rL "$LIVE_CFG/plugins/." "$SANDBOX/plugins/"
-  cp_rc=$?
-  if [[ "$cp_rc" -ne 0 ]]; then
-    echo "FATAL: cp -rL failed (rc=$cp_rc) — cannot construct sandbox"
-    cell_outcome="setup_failure"
-    conclusion="ambiguous"
-    exit_code=2
-    FAIL=$((FAIL+1))
-    SKIP_CELLS=true
-  fi
-fi
-
-# ----------------------------------------------------------------------------
-# Auth (D-23 per-cell auth_method): ANTHROPIC_API_KEY only — decided up front by the
-# auth gate above (no key → skipped before this point). Cell 1 (default -p) authenticates
-# via the inherited env key. The unsafe OAuth credentials_file seeding was removed
-# 2026-05-24 (see header AUTH note); only the non-credential settings.json is copied
-# into the sandbox. (Cell 2 / --bare was already DROPPED per Pattern A note 3 — D-11
-# is Cell 1 only.)
-# ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]] && [[ -f "$LIVE_CFG/settings.json" ]]; then
-  cp "$(readlink -f "$LIVE_CFG/settings.json")" "$SANDBOX/settings.json"
-fi
-
-# ----------------------------------------------------------------------------
-# Suppress dhx SessionStart in sandbox plugin manifest — JQ PATH CORRECTION
-# (RESEARCH MEDIUM-1 / PATTERNS landmine #1).
-#
-# CONTEXT.md D-03 line 68 had the wrong jq path (top-level .SessionStart) —
-# that's a no-op against the actual {"hooks": {"SessionStart": [...]}} structure.
-# The correct expression is `del(.hooks.SessionStart)`. Post-jq assertion
-# confirms .hooks.SessionStart is absent.
-# ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  HOOKS_JSON="$SANDBOX/plugins/cache/dhx-local/dhx/0.1.0/hooks/hooks.json"
-  if [[ -f "$HOOKS_JSON" ]]; then
-    jq 'del(.hooks.SessionStart)' "$HOOKS_JSON" > "$TMPROOT/hooks.tmp" \
-      && mv "$TMPROOT/hooks.tmp" "$HOOKS_JSON"
-    jq_rc=$?
-
-    if [[ "$jq_rc" -ne 0 ]]; then
-      echo "FATAL: jq mutation failed (rc=$jq_rc)"
-      cell_outcome="setup_failure"
-      conclusion="ambiguous"
-      exit_code=2
-      FAIL=$((FAIL+1))
-      SKIP_CELLS=true
-    else
-      # Acceptance assertion — verify the mutation actually removed SessionStart
-      # (RESEARCH MEDIUM-1 acceptance criterion):
-      jq -e '.hooks | has("SessionStart")' "$HOOKS_JSON" >/dev/null 2>&1
-      still_present_rc=$?
-      if [[ "$still_present_rc" -eq 0 ]]; then
-        echo "FATAL: post-jq SessionStart still present at .hooks.SessionStart — jq path mutation failed"
-        cell_outcome="setup_failure"
-        conclusion="ambiguous"
-        exit_code=2
-        FAIL=$((FAIL+1))
-        SKIP_CELLS=true
-      else
-        remaining=$(jq -r '.hooks | keys | length' "$HOOKS_JSON" 2>/dev/null || echo "?")
-        echo "OK   hooks-jq-suppression: $remaining event keys remain (SessionStart removed)"
-        PASS=$((PASS+1))
-      fi
-    fi
-  else
-    echo "NOTE: $HOOKS_JSON absent in sandbox — dhx plugin not in cache, suppression no-op"
-  fi
-fi
-
-# ----------------------------------------------------------------------------
-# Inode-isolation assertion — D-03 spike-derived guard (novel-in-repo).
-# From the 2026-04-27 corruption incident: hardlink/symlink chain can route
-# truncate to LIVE file. Fail loud rather than corrupt production state.
-# ----------------------------------------------------------------------------
-SANDBOX_KM="$SANDBOX/plugins/known_marketplaces.json"
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  if [[ ! -f "$SANDBOX_KM" ]]; then
-    echo "FATAL: sandbox known_marketplaces.json missing post cp -rL"
-    cell_outcome="setup_failure"
-    conclusion="ambiguous"
-    exit_code=2
-    FAIL=$((FAIL+1))
-    SKIP_CELLS=true
-  else
-    sandbox_inode=$(stat -c %i "$SANDBOX_KM" 2>/dev/null)
-    live_inode=$(stat -c %i "$LIVE_KM" 2>/dev/null || echo "MISSING")
-    if [[ "$sandbox_inode" == "$live_inode" ]]; then
-      echo "FATAL: inode collision (sandbox=$sandbox_inode live=$live_inode) — sandbox not isolated; ABORT before truncate"
-      cell_outcome="setup_failure"
-      conclusion="ambiguous"
-      exit_code=2
-      FAIL=$((FAIL+1))
-      SKIP_CELLS=true
-    else
-      inode_isolated=true
-      echo "OK   inode-isolation: sandbox=$sandbox_inode != live=$live_inode"
-      PASS=$((PASS+1))
-
-      # Capture pre-state size for outcome JSON
-      pre_size=$(stat -c %s "$SANDBOX_KM" 2>/dev/null || echo 0)
-    fi
-  fi
-fi
-
-# ----------------------------------------------------------------------------
-# Cell 1: positive cell — default `claude -p` (D-11 — full plugin sync runs).
-# BADJSON fixture per D-17 (single canonical truncated shape; Hn() rehydration
-# is shape-agnostic from resolver's POV) — symmetric to D-07a but for km file.
-# ----------------------------------------------------------------------------
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  # D-17: single canonical truncated shape (Hn() rehydration is shape-agnostic from resolver's POV).
-  printf '%s' '{"version": 2, "marke' > "$SANDBOX_KM"   # truncated/malformed JSON
-  pre_size_cell1=$(stat -c %s "$SANDBOX_KM" 2>/dev/null || echo 0)
-  pre_size="$pre_size_cell1"   # WR-01: pre_size in JSON reflects actual pre-Hn() state
-                               # (post-fixture write), NOT the cp'd-live snapshot.
-  echo "Cell 1 (default -p): wrote km BADJSON fixture ($pre_size_cell1 bytes); invoking claude -p (auth: $cell1_auth_method)"
-  cell1_stderr=$(HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$SANDBOX" timeout 30 claude -p "noop" </dev/null 2>&1 >/dev/null)
-  cell1_rc=$?
-  post_size=$(stat -c %s "$SANDBOX_KM" 2>/dev/null || echo 0)
-
-  # Validate post-state JSON shape if non-zero
-  if [[ "$post_size" -gt 0 ]] && jq -e . "$SANDBOX_KM" >/dev/null 2>&1; then
-    json_validity_post=true
-    # Dual-path dhx-local check: defends against `marketplaces` wrapper key OR top-level entry.
-    # Live km schema is keyed top-level by marketplace name (no `marketplaces` wrapper); the
-    # `marketplaces` fallback covers a hypothetical schema-evolution variant.
-    if jq -e '.marketplaces["dhx-local"] // .["dhx-local"]' "$SANDBOX_KM" >/dev/null 2>&1; then
-      dhx_marketplace_present_post=true
-    fi
-    # Heal also indicated if any of the previously-known live marketplaces returns —
-    # dhx-local is NOT currently in live km (only github-source marketplaces are tracked),
-    # so this dual-signal is the primary heal indicator.
-    while IFS= read -r km_key; do
-      [[ -z "$km_key" ]] && continue
-      if jq -e --arg k "$km_key" '.marketplaces[$k] // .[$k]' "$SANDBOX_KM" >/dev/null 2>&1; then
-        known_marketplace_present_post=true
-        break
-      fi
-    done <<< "$LIVE_KM_KEYS"
-  fi
-  echo "Cell 1 result: post_size=$post_size json_valid=$json_validity_post dhx_marketplace=$dhx_marketplace_present_post known_marketplace=$known_marketplace_present_post rc=$cell1_rc"
-fi
-
-# ----------------------------------------------------------------------------
-# Cell-outcome attribution + Convention A exit code (Discretion #4 enums).
-#
-# D-22 failure-class detection (priority over heal-detection): inspect cell
-# stderr/rc; any failure-class signal → ambiguous outcome.
-# ----------------------------------------------------------------------------
-classify_failure() {
-  local rc="$1" stderr="$2"
-  if [[ "$rc" -eq 124 ]] || echo "$stderr" | grep -qiE 'timeout|deadline'; then
-    echo "timeout_124"; return
-  fi
-  # Auth-failure regex broadened 2026-05-24 to mirror the read-guard tripwire's
-  # AUTH_FAIL_RE — the narrow original ('401|403|unauthorized|invalid api key|
-  # authentication') missed "Not logged in", "Failed to authenticate", credit
-  # exhaustion, OAuth expiry, and "invalid x-api-key", any of which (on an exit-0
-  # subprocess) could slip past to a false v1_2_work_warranted. False-PASS guard.
-  if echo "$stderr" | grep -qiE '401|403|unauthorized|not logged in|please run /login|invalid (x-)?api[- ]?key|authentication|failed to authenticate|credit balance is too low|oauth token has expired'; then
-    echo "auth_failure"; return
-  fi
-  if echo "$stderr" | grep -qiE 'network|connection|ENETUNREACH|ECONNREFUSED|EAI_'; then
-    echo "network_failure"; return
-  fi
-  if [[ "$rc" -ne 0 ]]; then
-    echo "setup_failure"; return
-  fi
-  echo "clean"
-}
-
-if [[ "$SKIP_CELLS" == "false" ]]; then
-  cell1_class=$(classify_failure "$cell1_rc" "$cell1_stderr")
-
-  # Heal verified if Hn() rehydrates the file with valid JSON AND restores either
-  # dhx-local OR any previously-known live marketplace entry (dhx-local is NOT
-  # currently registered as a github-source marketplace, so dual-signal is required).
-  if [[ "$cell1_class" != "clean" ]]; then
-    # Failure-class outcome (auth_failure / timeout_124 / network_failure /
-    # setup_failure): genuinely indeterminate → confidence LOW (NOT version-miss).
-    cell_outcome="$cell1_class"; conclusion="ambiguous"; exit_code=2; confidence="LOW"
-    echo "FAIL cell-attribution: Cell 1 $cell1_class (rc=$cell1_rc) — investigation required"
-    FAIL=$((FAIL+1))
-  elif [[ "$json_validity_post" == "true" ]] && [[ "$dhx_marketplace_present_post" == "true" || "$known_marketplace_present_post" == "true" ]]; then
-    # Decisive substantive outcome → confidence HIGH (cell_outcome is the source of truth).
-    cell_outcome="km_hn_heals"; conclusion="supersession_found_drop_heal"; exit_code=1; confidence="HIGH"
-    echo "OK   cell-attribution: km_hn_heals — Hn() rehydrated km file; retire km branch"
-    PASS=$((PASS+1))
-  else
-    # Decisive substantive outcome → confidence HIGH (cell_outcome is the source of truth).
-    cell_outcome="km_no_heal"; conclusion="v1_2_work_warranted"; exit_code=0; confidence="HIGH"
-    echo "OK   cell-attribution: km_no_heal — HP-025 holds for km BADJSON; HEAL-07 hardening warranted"
-    PASS=$((PASS+1))
-  fi
-fi
-
-# ----------------------------------------------------------------------------
-# cc_version_match — INFORMATIONAL corpus-membership signal (allow-list RETIRED
-# 2026-05-26; non-gating). true iff this CC version already has an on-disk result
-# cell (v1.3-multi-cc-ver/<ver>/ OR the v1.2-phase-6 baseline); false = NEW cell.
-# CRITICAL: this NEVER rewrites conclusion or downgrades confidence — those are
-# owned solely by the cell-outcome attribution above. A never-before-seen CC version
-# records a clean NEW cell, not a false-ambiguous (the audit-misleading signal that
-# decisions row 237 documents is hereby eliminated). Resolved the same way OUT_DIR
-# resolves REPO_ROOT below; a missing corpus dir yields false, never an error.
-# ----------------------------------------------------------------------------
-cc_version_full=$(claude --version 2>/dev/null | head -1)
-cc_version_now=$(printf '%s' "$cc_version_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-CORPUS_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
-CORPUS_RESULTS="$CORPUS_REPO_ROOT/tests/probes/.results"
+# ---- corpus cell ----
+CORPUS="$REPO/tests/probes/.results"
 cc_version_match=false
-if [[ -n "$cc_version_now" ]] \
-   && { [[ -d "$CORPUS_RESULTS/v1.3-multi-cc-ver/$cc_version_now" ]] || [[ -d "$CORPUS_RESULTS/v1.2-phase-6" && "$cc_version_now" == "2.1.121" ]]; }; then
+if [[ -d "$CORPUS/v1.3-multi-cc-ver/$CC_VERSION" ]] || [[ -d "$CORPUS/v1.2-phase-6" && "$CC_VERSION" == "2.1.121" ]]; then
   cc_version_match=true
 fi
-echo "INFO cc_version_match (informational, non-gating): live='$cc_version_full' corpus-member=$cc_version_match (allow-list RETIRED — conclusion/confidence derive from cell_outcome=$cell_outcome)"
-
-# ----------------------------------------------------------------------------
-# Outcome JSON write (D-08 schema + sanitization; RESEARCH HIGH-1 live cc_version;
-# D-22 cell{N}_rc; D-23 per-cell auth_method; D-30 hostname-hash).
-# ----------------------------------------------------------------------------
-CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-[[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
-# CC-keyed corpus path (quick-260526-10r) — never writes to the frozen v1.2 baseline; validator scans this dir
-OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.3-multi-cc-ver/$CC_VERSION"
+OUT_DIR="$CORPUS/v1.3-multi-cc-ver/$CC_VERSION"
 mkdir -p "$OUT_DIR"
-OUT_FILE="$OUT_DIR/probe-known-marketplaces-natural-heal.json"
-
-# D-30: published_from_hostname is SHA-256 of `hostname -s`
-# (synthetic identifier for cross-machine drift detection; NEVER literal hostname).
+OUT_FILE="$OUT_DIR/$PROBE_ID.json"
 HOSTNAME_HASH=$(printf '%s' "$(hostname -s)" | sha256sum | awk '{print $1}')
 
 OBSERVATIONS=$(jq -n \
-  --argjson pre "$pre_size" \
-  --argjson post "$post_size" \
-  --argjson jvp "$json_validity_post" \
-  --argjson dxe "$dhx_marketplace_present_post" \
-  --argjson kmp "$known_marketplace_present_post" \
-  --arg c1auth "$cell1_auth_method" \
-  --argjson c1rc "$cell1_rc" \
-  --argjson iso "$inode_isolated" \
-  --arg outcome "$cell_outcome" \
-  --arg published_from_hostname "$HOSTNAME_HASH" \
-  '{pre_size:$pre, post_size:$post, json_validity_post:$jvp, dhx_marketplace_present_post:$dxe, known_marketplace_present_post:$kmp, cell1_auth_method:$c1auth, cell1_rc:$c1rc, inode_isolated:$iso, cell_outcome:$outcome, published_from_hostname:$published_from_hostname}')
+  --argjson pre "$pre_size" --argjson post "$post_size" \
+  --argjson jvp "$json_validity_post" --argjson dxe "$dhx_marketplace_present_post" \
+  --argjson c1rc "$BAD_RC" --arg outcome "$cell_outcome" \
+  --argjson natural "$NAT_JSON" --argjson acceptance "$ACC_JSON" \
+  --argjson control "$CONTROL_PLUGINS" --arg acc_status "$acceptance_status" \
+  --arg host "$HOSTNAME_HASH" \
+  '{pre_size: $pre, post_size: $post, json_validity_post: $jvp, dhx_marketplace_present_post: $dxe,
+    known_marketplace_present_post: $dxe, cell1_auth_method: "none", cell1_rc: $c1rc, inode_isolated: true,
+    cell_outcome: $outcome, natural: $natural, acceptance: $acceptance, acceptance_status: $acc_status,
+    control_plugins: $control, published_from_hostname: $host}')
 
-# JSON-time sanitizer: refuse to write if observations contain /home/, /Users/,
-# or system hostname. Defense-in-depth pairs with D-09 sync-public-mirror.sh scrub.
-# WR-05: empty $HOST would make the regex `(/home/|/Users/|)` match everything
-# (false-positive PII rejection); a hostname with regex specials (`host.local`)
-# would also expand to a non-literal match. Sentinel-substitute empty/localhost,
-# then escape regex specials before splicing into the alternation.
+# JSON-time sanitizer: refuse to write if observations carry a home path or the literal hostname.
 HOST=$(hostname -s 2>/dev/null)
-if [[ -z "$HOST" ]] || [[ "$HOST" == "localhost" ]]; then
-  HOST="__no_host_check__"   # sentinel that won't match any real string
-fi
+[[ -z "$HOST" || "$HOST" == "localhost" ]] && HOST="__no_host_check__"
 HOST_ESCAPED=$(printf '%s' "$HOST" | sed 's/[][\\.*^$/+?(){}|]/\\&/g')
-if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST_ESCAPED)"; then
+if grep -qE "(/home/|/Users/|$HOST_ESCAPED)" <<< "$OBSERVATIONS"; then
   echo "FATAL: observations contain PII; refusing write"
   exit 2
 fi
 
-jq -n \
-  --arg id "probe-known-marketplaces-natural-heal" \
-  --argjson code "$exit_code" \
-  --arg cc "$CC_VERSION" \
-  --argjson ccm "$cc_version_match" \
-  --arg conf "$confidence" \
-  --arg ts "$TS" \
-  --arg run "$RUN_ID" \
-  --argjson obs "$OBSERVATIONS" \
-  --arg conc "$conclusion" \
-  '{probe_id:$id, exit_code:$code, exit_code_convention:"exit_0_means_v1_2_work_warranted", cc_version:$cc, cc_version_match:$ccm, confidence:$conf, ts:$ts, run_id:$run, observations:$obs, conclusion:$conc}' \
+jq -n --arg id "$PROBE_ID" --argjson code "$exit_code" --arg cc "$CC_VERSION" \
+  --argjson ccm "$cc_version_match" --arg conf "$confidence" \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg run "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)" \
+  --argjson obs "$OBSERVATIONS" --arg conc "$conclusion" \
+  '{probe_id: $id, exit_code: $code, exit_code_convention: "exit_0_means_v1_2_work_warranted", cc_version: $cc,
+    cc_version_match: $ccm, confidence: $conf, ts: $ts, run_id: $run, observations: $obs, conclusion: $conc}' \
   > "$OUT_FILE"
+ok "outcome-json-written: $OUT_FILE"
 
-echo "OK   outcome-json-written: $OUT_FILE"
-PASS=$((PASS+1))
-
-# ----------------------------------------------------------------------------
-# Summary + exit
-# ----------------------------------------------------------------------------
 echo "---"
-echo "PASS: $PASS  FAIL: $FAIL  cell_outcome=$cell_outcome  conclusion=$conclusion  cc_version_match=$cc_version_match  confidence=$confidence  cell1_rc=$cell1_rc  exit_code=$exit_code"
+echo "PASS: $PASS  FAIL: $FAIL  cell_outcome=$cell_outcome  conclusion=$conclusion  acceptance=$acceptance_status  confidence=$confidence  exit_code=$exit_code"
 exit $exit_code

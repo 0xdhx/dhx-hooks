@@ -1,250 +1,351 @@
 #!/usr/bin/env bash
 # Patterns: HP-017, HP-025
-# dhx-plugin-registry-heal.sh — SessionStart heal hook (Phase 6 surgical-slim retired)
+# dhx-plugin-registry-heal.sh — repairs $CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json
+# ("km") so Claude Code's plugin loader accepts it and the dhx-local marketplace resolves.
 #
-# Phase 6 (2026-05-03) verify-then-retire pre-retire probes (`tests/probes/.results/
-# v1.2-phase-6/`) established that CC's Hn() resolver rehydrates `installed_plugins.json`
-# natively in default `claude -p` mode across all three failure branches the previous
-# heal logic targeted (UNREADABLE per PROBE-02; BADJSON + UNINSTALLED:dhx@dhx-local per
-# 06-01 mini-probes; all three returned `supersession_found_drop_heal` with HIGH
-# confidence at CC 2.1.121).
+# Callers (2026-09-15, docs/decisions.md 2026-09-15 pre-launch row):
+#   - dhx/dhx-prelaunch.sh, run by the launch wrappers BEFORE Claude Code starts
+#     (cross-repo health/scripts/claude-capped.sh, and dotfiles bin/clodex-bridge — the
+#     shared settings `processWrapper` for daemon sessions). This is the only caller that
+#     can repair a registry for the session being launched: in every failure state the dhx
+#     plugin does not load, so its own SessionStart cannot fire (measured, CC 2.1.272).
+#     Sets DHX_REGISTRY_HEAL_SURFACE=prelaunch.
+#   - dhx-plugin/plugins/dhx/hooks/session-start.sh (`_dhx_child registry-heal`), kept for
+#     the mid-session case: a registry corrupted after a healthy start is repaired on
+#     /clear, before the next launch (measured firing on SessionStart:clear).
 #
-# Surgical-slim retire (D-25): the IP-heal body is short-circuited via early-exit;
-# script + ~/.claude/hooks/ symlink + plugin-manifest dispatch line are retained
-# intentionally (D-27) as a known mount-point for the HEAL-07 follow-on (km path
-# hardening — known_marketplaces.json does NOT self-heal; per 06-01 km probe
-# `v1_2_work_warranted` REFUTE outcome). Retaining the plumbing avoids the
-# re-introduction cost when km hardening lands.
+# What CC 2.1.272 requires (km schema read from the binary; confirmed by launching it):
+# every entry is an object carrying a string `installLocation` and a string `lastUpdated`.
+# ONE entry missing `lastUpdated` makes CC reject the whole file ("Marketplace configuration
+# file is corrupted: <name>.lastUpdated: Invalid input"), load no plugin from any
+# marketplace, and never repair it (its writer re-reads the file under its lock and throws).
+# CC does rebuild a missing file or a missing entry from settings.extraKnownMarketplaces —
+# but only for the NEXT launch — and it never repairs an unparseable file or a stale
+# installLocation.
 #
-# Scope (post-Phase-10 km active heal):
-#   - installed_plugins.json — DO NOT heal (Hn() rehydrates upstream; 06-01 PASS)
-#   - known_marketplaces.json — ACTIVE HEAL: 4-state detector + write-path guards
-#     ((a) km-target realpath check + (b) marketplace-manifest identity check) +
-#     atomic mktemp+jq+mv + post-write jq -e validation (D-02/D-10).
-#     BADJSON branch writes minimal km + emits WARN per D-14 (other marketplaces
-#     lost; CC rebuilds on next plugin operation).
+# Detector — the whole file. States, any combination (canonical order):
+#   UNREADABLE    km absent or unreadable
+#   BADJSON       km unparseable, not a JSON object, or holding a non-object entry
+#   MISSING       no dhx-local entry
+#   STALE         dhx-local installLocation empty, not a string, or not an existing directory
+#   NO_TIMESTAMP  some entry lacks a string lastUpdated
+# No state = HEALTHY: exit 0 before anything else runs (and re-arm the first-sight markers).
 #
-# Ordering (2026-09-14, healthy-first): the detector runs FIRST and a HEALTHY km
-# exits 0 before any settings-derived value is validated. The write-path guards
-# run only on the mutation path, immediately before the atomic write. Rationale:
-# stderr at exit 0 from a SessionStart hook is not injected into context (measured
-# 2026-09-14: this fix's own session started on the old body, the REJECT went to
-# stderr, and the context carried only stdout; HP-038 is the PostToolUse twin of
-# the same fact) and the dispatcher masks rc, so a guard REJECT on a healthy host
-# is consumed by nobody — it is a failure mode, not a self-test. The previous
-# order (guard-first) exited 1 on every SessionStart from 2026-05-13 to
-# 2026-09-14 on this host because the D-03 prefix allow-list
-# (`$HOME/.claude/plugins/marketplaces`, `$HOME/.ccs/instances/*/plugins/marketplaces`)
-# can never match a directory-source marketplace — CC writes
-# `installLocation == source.path` literally (Pattern B, 10-D-05-RESULT.md), and
-# the live source.path is the repo checkout, not a marketplaces/ root. The 2026-05-12
-# D-05 branch-lock ("allow-list expands under Pattern B") was recorded and never
-# implemented. Guard coverage now lives in the probe (STALE heal, wrong-identity,
-# malformed-manifest scenarios), not in a per-fire REJECT.
+# Repair. UNREADABLE and BADJSON start from {} — a BADJSON file cannot be parsed, so every
+# other entry is lost, and a WARN says so. MISSING adds dhx-local {source, installLocation,
+# lastUpdated}. STALE sets dhx-local installLocation = settings source.path (Pattern B: for a
+# directory source CC writes installLocation == source.path). NO_TIMESTAMP stamps lastUpdated
+# on each entry lacking one and changes no other field. Timestamps are UTC ISO-8601 with
+# milliseconds, the shape CC writes.
 #
-# (b) identity guard (2026-09-14, replaces the D-03 prefix allow-list): the value
-# about to be written must be an existing directory whose
-# `.claude-plugin/marketplace.json` parses and names this marketplace — the field
-# `claude plugin marketplace add` itself registers the marketplace under. Refuses a
-# nonexistent or mistyped path and a malformed manifest. Input hygiene, not a
-# security boundary: settings.json and km share an owner, so a same-owner poison
-# that also plants a matching manifest passes.
+# Write path, in order: value guards (G-02 absolute path, (b) marketplace-manifest identity
+# — only when dhx-local's value is written) and (a) km target realpath → CC-compatible lock →
+# detect again under the lock → atomic mktemp + jq + mv → post-write check (parses, every
+# entry is an object with a string lastUpdated).
 #
-# Out of scope (handled elsewhere):
-#   - MISSING:dhx-local in settings → bashrc wrapper heal (HP-017)
-#   - PATH / DISABLED → structural / settings-level
-#   - Cache hooks.json staleness → Phase 10.1 dot-phase (see backlog brief)
+# Lock. Mirrors CC's own km lock (read from the 2.1.272 binary: lockfilePath
+# `known_marketplaces.json.lock`, a directory, no `stale` option, so the bundled lock
+# library's default applies — stale after 10 s, then taken over). mkdir the lock dir; if it
+# exists and is older than 10 s, rename it away and retry; give up after ~1 s and log
+# CONTENTION (rc 0: another writer is active; the next launch or /clear retries). Callers
+# bound the whole run well under the 10 s stale window, so no mtime refresh is needed.
+# Release removes the dir only while it is still the one this run created (inode match).
 #
-# Silent on happy path. No stdin parsing (filesystem state, not session context).
-# Phase 6 (2026-05-03) retired IP path; Phase 10 added km active heal — see docs/decisions.md 2026-05-03 (D-25/D-27/D-29) and HP-025 v1.3 § Remediation hook.
-# 2026-09-14 healthy-first reorder + identity guard — see docs/decisions.md 2026-09-14 row.
+# Output. Silent when HEALTHY. Every repair, refusal, contention or write failure appends one
+# line to $DHX_HOOKS_CACHE_DIR/registry-heal.log (default ~/.cache/dhx/hooks; rotated to .1
+# past 256 KiB). stderr depends on the caller:
+#   - default (SessionStart / direct): the long-standing contract — REJECT and POST-WRITE lines
+#     and the BADJSON WARN always go to stderr; other repairs are silent. `_dhx_child`
+#     surfaces a non-zero rc once per distinct message.
+#   - DHX_REGISTRY_HEAL_SURFACE=prelaunch: the terminal is the user's, before Claude Code
+#     draws. A repair or refusal prints ONE line the first time that outcome is seen for this
+#     config dir (an atomic mkdir marker); repeats stay silent until the outcome changes or
+#     the registry is HEALTHY again. Contention never prints.
+#
+# Exit: 0 healthy / repaired / contention / dhx-local not declared; 1 refusal or failed write.
+# Out of scope: MISSING:dhx-local in settings → bashrc wrapper heal (HP-017); PATH / DISABLED
+# → settings-level.
+# History: docs/decisions.md 2026-05-03 (IP path retired), 2026-05-13 (km heal), 2026-09-14
+# (healthy-first, identity guard), 2026-09-15 (lastUpdated, whole-file detector, lock,
+# pre-launch caller, output surfaces).
 set -uo pipefail
+export PATH="/usr/local/bin:/usr/bin:/bin${PATH:+:$PATH}"
 
-# ============================================================================
-# Phase 10 km active heal body
-# ============================================================================
-CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CFG="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
 SETTINGS="$CFG/settings.json"
 KM_PATH="$CFG/plugins/known_marketplaces.json"
+LOCK_DIR="$KM_PATH.lock"
+LOCK_STALE_S=10
 MARKETPLACE_NAME="dhx-local"
-
-# D-11 settings-missing branch: if settings absent or dhx-local not declared,
-# heal exits 0 silently. HP-025 scope boundary — bashrc-wrapper territory.
-# G-07: this is the settings-missing branch (NOT direct hostile rejection; the
-# real hostile rejection lives in scenario 11 of the probe via the (a) realpath
-# check below).
-if [[ ! -r "$SETTINGS" ]]; then
-  exit 0
-fi
-
-DHX_SOURCE_JSON=$(jq -c --arg n "$MARKETPLACE_NAME" '.extraKnownMarketplaces[$n].source // empty' "$SETTINGS" 2>/dev/null)
-if [[ -z "$DHX_SOURCE_JSON" || "$DHX_SOURCE_JSON" == "null" ]]; then
-  exit 0
-fi
-
-# Detector (D-04): 4 failure states (UNREADABLE, BADJSON, MISSING, STALE_INSTALLLOCATION) + HEALTHY (no-op)
-STATE=""
-KM_PARSED=""
-if [[ ! -r "$KM_PATH" ]]; then
-  STATE="UNREADABLE"
+if [[ -n "${DHX_HOOKS_CACHE_DIR:-}" ]]; then
+  CACHE_DIR="$DHX_HOOKS_CACHE_DIR"
+elif [[ -n "${HOME:-}" ]]; then
+  CACHE_DIR="$HOME/.cache/dhx/hooks"
 else
-  if ! KM_PARSED=$(jq -c . "$KM_PATH" 2>/dev/null); then
-    STATE="BADJSON"
-  elif ! jq -e --arg n "$MARKETPLACE_NAME" '.[$n]' <<< "$KM_PARSED" >/dev/null 2>&1; then
-    STATE="MISSING"
-  else
-    CURRENT_IL=$(jq -r --arg n "$MARKETPLACE_NAME" '.[$n].installLocation // empty' <<< "$KM_PARSED" 2>/dev/null)
-    if [[ -n "$CURRENT_IL" && ! -d "$CURRENT_IL" ]]; then
-      STATE="STALE_INSTALLLOCATION"
-    else
-      STATE="HEALTHY"
+  CACHE_DIR=""
+fi
+LOG_FILE="${CACHE_DIR:+$CACHE_DIR/registry-heal.log}"
+LOG_MAX_BYTES=262144
+MARK_ROOT="${CACHE_DIR:+$CACHE_DIR/registry-heal-first-sight}"
+SURFACE="${DHX_REGISTRY_HEAL_SURFACE:-}"
+
+digest16() { printf '%s' "$1" | sha256sum 2>/dev/null | cut -c1-16; }
+
+# D-11 settings-missing branch: settings absent or dhx-local not declared → nothing to heal
+# (HP-025 scope boundary; bashrc-wrapper territory).
+[[ -r "$SETTINGS" ]] || exit 0
+DHX_SOURCE_JSON=$(jq -c --arg n "$MARKETPLACE_NAME" '.extraKnownMarketplaces[$n].source // empty' "$SETTINGS" 2>/dev/null)
+[[ -n "$DHX_SOURCE_JSON" && "$DHX_SOURCE_JSON" != "null" ]] || exit 0
+
+STATES=""
+KM_PARSED=""
+
+# has_state NAME — true when NAME is in $STATES.
+has_state() { [[ " $STATES " == *" $1 "* ]]; }
+
+# detect — sets STATES (canonical order, empty when HEALTHY) and KM_PARSED.
+detect() {
+  STATES=""
+  KM_PARSED=""
+  if [[ ! -r "$KM_PATH" ]]; then
+    STATES="UNREADABLE"
+    return 0
+  fi
+  if ! KM_PARSED=$(jq -c . "$KM_PATH" 2>/dev/null) || [[ -z "$KM_PARSED" ]]; then
+    STATES="BADJSON"
+    KM_PARSED=""
+    return 0
+  fi
+  local verdict
+  if ! verdict=$(jq -r --arg n "$MARKETPLACE_NAME" '
+      if type != "object" or ([.[] | type != "object"] | any) then "BADJSON"
+      else
+        [ (if has($n) then empty else "MISSING" end),
+          (if has($n) and ((.[$n].installLocation | type) != "string" or .[$n].installLocation == "")
+             then "STALE" else empty end),
+          (if [.[] | (.lastUpdated | type) != "string"] | any then "NO_TIMESTAMP" else empty end)
+        ] | join(" ")
+      end' <<< "$KM_PARSED" 2>/dev/null); then
+    STATES="BADJSON"
+    KM_PARSED=""
+    return 0
+  fi
+  if [[ "$verdict" == "BADJSON" ]]; then
+    STATES="BADJSON"
+    KM_PARSED=""
+    return 0
+  fi
+  STATES="$verdict"
+  if ! has_state MISSING && ! has_state STALE; then
+    local il
+    il=$(jq -r --arg n "$MARKETPLACE_NAME" '.[$n].installLocation' <<< "$KM_PARSED" 2>/dev/null)
+    if [[ ! -d "$il" ]]; then
+      # Keep canonical order: STALE precedes NO_TIMESTAMP.
+      if has_state NO_TIMESTAMP; then STATES="STALE NO_TIMESTAMP"; else STATES="STALE"; fi
     fi
   fi
-fi
+  return 0
+}
 
-# Healthy-first (2026-09-14): nothing to write, nothing to validate.
-if [[ "$STATE" == "HEALTHY" ]]; then
-  exit 0
-fi
+log_event() {  # outcome detail
+  [[ -n "$LOG_FILE" ]] || return 0
+  mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+  local size
+  size=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
+  if (( size > LOG_MAX_BYTES )); then
+    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CFG" "$1" "$2" >> "$LOG_FILE" 2>/dev/null
+  return 0
+}
 
-# ============================================================================
-# Mutation path — every guard below runs only when a write is about to happen.
-# ============================================================================
+# say OUTCOME MESSAGE — stderr per the caller's surface contract (see header).
+say() {
+  local outcome=$1 msg=$2
+  if [[ "$SURFACE" != "prelaunch" ]]; then
+    printf '%s\n' "$msg" >&2
+    return 0
+  fi
+  local cfg_key sig
+  cfg_key=$(digest16 "$CFG")
+  sig=$(digest16 "$outcome")
+  if [[ -z "$MARK_ROOT" || -z "$cfg_key" || -z "$sig" ]]; then
+    printf '⚠ %s\n' "$msg" >&2
+    return 0
+  fi
+  # mkdir is the whole test-and-set: exactly one of N racing launches prints.
+  if mkdir -p "$MARK_ROOT" 2>/dev/null && mkdir "$MARK_ROOT/$cfg_key.$sig" 2>/dev/null; then
+    printf '⚠ %s (log: %s)\n' "$msg" "$LOG_FILE" >&2
+  fi
+  return 0
+}
 
-# Compute NEW_IL per Pattern B from 10-D-05-RESULT.md (CC 2.1.140+: installLocation
-# == source.path literally for directory-source marketplaces).
-NEW_IL=$(jq -r '.path // empty' <<< "$DHX_SOURCE_JSON" 2>/dev/null)
-if [[ -z "$NEW_IL" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: settings.extraKnownMarketplaces.$MARKETPLACE_NAME.source.path empty or null" >&2
-  exit 1
-fi
+clear_marks() {
+  [[ -n "$MARK_ROOT" && -d "$MARK_ROOT" ]] || return 0
+  local cfg_key
+  cfg_key=$(digest16 "$CFG")
+  [[ -n "$cfg_key" ]] || return 0
+  rm -rf "$MARK_ROOT/$cfg_key".* 2>/dev/null
+  return 0
+}
 
-# G-02 absolute-path guard: NEW_IL MUST be absolute before realpath -m.
-# Closes Gemini MEDIUM (relative-path resolved against arbitrary CWD).
-[[ "$NEW_IL" = /* ]] || { echo "dhx-plugin-registry-heal: REJECT: NEW_IL not absolute: $NEW_IL" >&2; exit 1; }
-
-# (a) D-02 file-target check: KM_PATH must resolve under $CFG/plugins/
-# known_marketplaces.json literal (no symlink-chain crossing into unrelated trees).
-KM_REAL=$(realpath -m "$KM_PATH" 2>/dev/null || echo "$KM_PATH")
-CFG_REAL=$(realpath -m "$CFG" 2>/dev/null || echo "$CFG")
-EXPECTED_KM_REAL="$CFG_REAL/plugins/known_marketplaces.json"
-case "$KM_REAL" in
-  "$EXPECTED_KM_REAL")
-    : ;;
-  *)
-    echo "dhx-plugin-registry-heal: REJECT: target km path resolves outside CONFIG_DIR ($KM_REAL)" >&2
-    exit 1
-    ;;
-esac
-
-# (b) D-02 value-side check — marketplace-manifest identity (2026-09-14; replaces
-# the D-03 prefix allow-list, see header). The directory must exist and its
-# manifest must name this marketplace.
-NEW_IL_REAL=$(realpath -m "$NEW_IL" 2>/dev/null || echo "$NEW_IL")
-MANIFEST="$NEW_IL_REAL/.claude-plugin/marketplace.json"
-if [[ ! -d "$NEW_IL_REAL" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: installLocation is not a directory ($NEW_IL_REAL)" >&2
-  exit 1
-fi
-if [[ ! -r "$MANIFEST" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: no marketplace manifest at $MANIFEST" >&2
-  exit 1
-fi
-MANIFEST_NAME=$(jq -r '.name // empty' "$MANIFEST" 2>/dev/null)
-if [[ -z "$MANIFEST_NAME" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: marketplace manifest unparseable or unnamed ($MANIFEST)" >&2
-  exit 1
-fi
-if [[ "$MANIFEST_NAME" != "$MARKETPLACE_NAME" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: marketplace manifest names '$MANIFEST_NAME', expected '$MARKETPLACE_NAME' ($NEW_IL_REAL)" >&2
-  exit 1
-fi
-
-DHX_ENTRY=$(jq -nc --argjson src "$DHX_SOURCE_JSON" --arg il "$NEW_IL" \
-  '{ source: $src, installLocation: $il }' 2>/dev/null)
-if [[ -z "$DHX_ENTRY" ]]; then
-  echo "dhx-plugin-registry-heal: REJECT: failed to build $MARKETPLACE_NAME entry" >&2
-  exit 1
-fi
-
-# Atomic write via mktemp+jq+mv (D-10 + D-11).
-mkdir -p "$(dirname "$KM_PATH")"
-TMP=$(mktemp "$KM_PATH.tmp.XXXXXX") || {
-  echo "dhx-plugin-registry-heal: REJECT: mktemp failed for $KM_PATH" >&2
+reject() {
+  log_event REJECT "$1"
+  say "reject:$1" "dhx-plugin-registry-heal: REJECT: $1"
   exit 1
 }
 
-case "$STATE" in
-  UNREADABLE|MISSING)
-    if [[ "$STATE" == "UNREADABLE" ]]; then
-      BASE='{}'
-    else
-      BASE="$KM_PARSED"
-    fi
-    if ! jq -c --arg n "$MARKETPLACE_NAME" --argjson e "$DHX_ENTRY" '. + {($n): $e}' <<< "$BASE" > "$TMP" 2>/dev/null; then
-      rm -f "$TMP"
-      echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
-      exit 1
-    fi
-    ;;
-  BADJSON)
-    # D-14: minimal km with only dhx-local. Other-marketplace entries lost (km
-    # was corrupt — cannot preserve). Emit literal WARN signalling loss.
-    if ! jq -nc --arg n "$MARKETPLACE_NAME" --argjson e "$DHX_ENTRY" '{($n): $e}' > "$TMP" 2>/dev/null; then
-      rm -f "$TMP"
-      echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
-      exit 1
-    fi
-    echo "dhx-plugin-registry-heal: WARN: BADJSON recovery — wrote minimal km (dhx-local only); other marketplaces (if any) lost; CC may rebuild official entries on next plugin operation." >&2
-    ;;
-  STALE_INSTALLLOCATION)
-    # D-04: rewrite ONLY .dhx-local.installLocation; preserve source.source,
-    # source.path, all other keys.
-    if ! jq -c --arg n "$MARKETPLACE_NAME" --arg il "$NEW_IL" '.[$n].installLocation = $il' <<< "$KM_PARSED" > "$TMP" 2>/dev/null; then
-      rm -f "$TMP"
-      echo "dhx-plugin-registry-heal: jq write failed for $KM_PATH (state=$STATE)" >&2
-      exit 1
-    fi
-    ;;
-  *)
-    rm -f "$TMP"
-    echo "dhx-plugin-registry-heal: REJECT: unknown detector state '$STATE'" >&2
-    exit 1
-    ;;
-esac
+LOCK_INODE=""
+release_lock() {
+  [[ -n "$LOCK_INODE" ]] || return 0
+  if [[ "$(stat -c %i "$LOCK_DIR" 2>/dev/null)" == "$LOCK_INODE" ]]; then
+    rmdir "$LOCK_DIR" 2>/dev/null
+  fi
+  LOCK_INODE=""
+  return 0
+}
 
-# WR-04 TOCTOU mitigation: re-canonicalize the parent dir IMMEDIATELY before
-# mv and re-assert the (a) prefix match. Narrows (does not fully close) the
-# window between the (a) check above and the mv below; full O_NOFOLLOW-style
-# protection requires a helper binary (deferred — see HP-025 § Threat Model /
-# Residual Risks). On a real TOCTOU race (attacker swaps $CFG/plugins/ between
-# the (a) check and here), this catches the swap and refuses the write. On the
-# happy path it's a no-op (parent dir state unchanged during script runtime).
+acquire_lock() {
+  local i now mtime away
+  for i in 1 2 3 4 5; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      LOCK_INODE=$(stat -c %i "$LOCK_DIR" 2>/dev/null)
+      return 0
+    fi
+    now=$(date +%s)
+    if ! mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null); then
+      continue  # released between mkdir and stat — retry at once
+    fi
+    if (( now - mtime > LOCK_STALE_S )); then
+      away="$LOCK_DIR.dhx-stale.$$.$i"
+      if mv "$LOCK_DIR" "$away" 2>/dev/null; then
+        # A holder may have re-acquired between the stat and the rename; if what moved is
+        # fresh, put it back and treat the lock as held.
+        if (( $(date +%s) - $(stat -c %Y "$away" 2>/dev/null || echo 0) > LOCK_STALE_S )); then
+          rm -rf "$away" 2>/dev/null
+          continue
+        fi
+        mv "$away" "$LOCK_DIR" 2>/dev/null || rm -rf "$away" 2>/dev/null
+      fi
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+NEW_IL=""
+# prepare_dhx_value — derive and guard the dhx-local installLocation (Pattern B) when a state
+# requires writing it. Refuses (exit 1) on any guard failure.
+prepare_dhx_value() {
+  has_state UNREADABLE || has_state BADJSON || has_state MISSING || has_state STALE || return 0
+  [[ -n "$NEW_IL" ]] && return 0
+  NEW_IL=$(jq -r '.path // empty' <<< "$DHX_SOURCE_JSON" 2>/dev/null)
+  [[ -n "$NEW_IL" ]] || reject "settings.extraKnownMarketplaces.$MARKETPLACE_NAME.source.path empty or null"
+  # G-02: absolute before realpath -m (a relative path would resolve against an arbitrary cwd).
+  [[ "$NEW_IL" = /* ]] || reject "NEW_IL not absolute: $NEW_IL"
+  # (b) identity: an existing directory whose manifest names this marketplace. Input hygiene,
+  # not a security boundary — settings.json and km share an owner.
+  local new_il_real manifest manifest_name
+  new_il_real=$(realpath -m "$NEW_IL" 2>/dev/null || echo "$NEW_IL")
+  manifest="$new_il_real/.claude-plugin/marketplace.json"
+  [[ -d "$new_il_real" ]] || reject "installLocation is not a directory ($new_il_real)"
+  [[ -r "$manifest" ]] || reject "no marketplace manifest at $manifest"
+  manifest_name=$(jq -r '.name // empty' "$manifest" 2>/dev/null)
+  [[ -n "$manifest_name" ]] || reject "marketplace manifest unparseable or unnamed ($manifest)"
+  [[ "$manifest_name" == "$MARKETPLACE_NAME" ]] \
+    || reject "marketplace manifest names '$manifest_name', expected '$MARKETPLACE_NAME' ($new_il_real)"
+  return 0
+}
+
+# ---- detect (lock-free; the healthy path ends here) ----------------------------------------
+detect
+if [[ -z "$STATES" ]]; then
+  clear_marks
+  exit 0
+fi
+
+# ---- mutation path ------------------------------------------------------------------------
+# (a) D-02 file-target check: km must resolve to $CFG/plugins/known_marketplaces.json literally
+# (no symlink chain crossing into another tree).
+KM_REAL=$(realpath -m "$KM_PATH" 2>/dev/null || echo "$KM_PATH")
+CFG_REAL=$(realpath -m "$CFG" 2>/dev/null || echo "$CFG")
+[[ "$KM_REAL" == "$CFG_REAL/plugins/known_marketplaces.json" ]] \
+  || reject "target km path resolves outside CONFIG_DIR ($KM_REAL)"
+prepare_dhx_value
+
+mkdir -p "$(dirname "$KM_PATH")" 2>/dev/null
+trap release_lock EXIT
+if ! acquire_lock; then
+  log_event CONTENTION "states=$STATES lock=$LOCK_DIR"
+  exit 0
+fi
+
+# Another writer may have changed the file while we waited: decide again under the lock.
+detect
+if [[ -z "$STATES" ]]; then
+  release_lock
+  clear_marks
+  exit 0
+fi
+prepare_dhx_value
+
+NOW=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+ADD=false
+FIXIL=false
+BASE="$KM_PARSED"
+if has_state UNREADABLE || has_state BADJSON; then
+  BASE='{}'
+  ADD=true
+elif has_state MISSING; then
+  ADD=true
+elif has_state STALE; then
+  FIXIL=true
+fi
+
+TMP=$(mktemp "$KM_PATH.tmp.XXXXXX") || reject "mktemp failed for $KM_PATH"
+if ! jq -c --arg n "$MARKETPLACE_NAME" --arg il "$NEW_IL" --arg now "$NOW" \
+      --argjson src "$DHX_SOURCE_JSON" --argjson add "$ADD" --argjson fixil "$FIXIL" '
+      (if $add then . + {($n): {source: $src, installLocation: $il, lastUpdated: $now}} else . end)
+      | (if $fixil then .[$n].installLocation = $il else . end)
+      | with_entries(if (.value.lastUpdated | type) == "string" then . else .value.lastUpdated = $now end)
+    ' <<< "$BASE" > "$TMP" 2>/dev/null; then
+  rm -f "$TMP"
+  log_event WRITE_FAILED "jq transform failed; states=$STATES"
+  say "write-failed:$STATES" "dhx-plugin-registry-heal: jq write failed for $KM_PATH (states=$STATES)"
+  exit 1
+fi
+chmod --reference="$KM_PATH" "$TMP" 2>/dev/null || chmod 0644 "$TMP" 2>/dev/null
+
+# WR-04 TOCTOU narrowing: re-canonicalize the parent immediately before mv and re-assert (a).
 KM_PARENT_REAL=$(realpath -m "$(dirname "$KM_PATH")" 2>/dev/null || echo "")
 EXPECTED_PARENT_REAL=$(realpath -m "$CFG/plugins" 2>/dev/null || echo "")
 if [[ -z "$KM_PARENT_REAL" || "$KM_PARENT_REAL" != "$EXPECTED_PARENT_REAL" ]]; then
   rm -f "$TMP"
-  echo "dhx-plugin-registry-heal: REJECT: parent dir prefix changed pre-mv (TOCTOU; $KM_PARENT_REAL != $EXPECTED_PARENT_REAL)" >&2
-  exit 1
+  reject "parent dir prefix changed pre-mv (TOCTOU; $KM_PARENT_REAL != $EXPECTED_PARENT_REAL)"
 fi
 
-# Atomic mv. Capture rc OUTSIDE `if ! cmd; then` — inside that block $? is 0
-# (the negated test succeeded), not the failed cmd's rc. Per WR-01 verification:
-# `if ! mv …; then mv_rc=$?; …` always captured 0 regardless of mv's failure
-# mode, defeating the diagnostic. Capture mv_rc directly off `mv`'s exit.
+# Capture mv's rc directly — inside `if ! mv …; then` $? is the negation's, not mv's (WR-01).
 mv "$TMP" "$KM_PATH"
 mv_rc=$?
 if (( mv_rc != 0 )); then
   rm -f "$TMP"
-  echo "dhx-plugin-registry-heal: REJECT: mv failed for $KM_PATH (rc=$mv_rc)" >&2
-  exit 1
+  reject "mv failed for $KM_PATH (rc=$mv_rc)"
 fi
 
-# Post-write validation (D-10) + G-06 cleanup.
-if ! jq -e . "$KM_PATH" >/dev/null 2>&1; then
+# Post-write check (D-10, extended 2026-09-15): the file CC reads must pass CC's own schema
+# shape, not merely parse. On failure remove it — an absent km is the state CC rebuilds.
+if ! jq -e 'type == "object" and ([.[] | type == "object" and ((.lastUpdated | type) == "string")] | all)' \
+     "$KM_PATH" >/dev/null 2>&1; then
   rm -f "$KM_PATH"
-  echo "dhx-plugin-registry-heal: POST-WRITE-CORRUPT: $KM_PATH" >&2
+  log_event POST_WRITE_INVALID "states=$STATES"
+  say "post-write-invalid:$STATES" "dhx-plugin-registry-heal: POST-WRITE-CORRUPT: $KM_PATH"
   exit 1
 fi
 
+log_event REPAIRED "states=$STATES"
+if has_state BADJSON; then
+  say "repaired:$STATES" "dhx-plugin-registry-heal: WARN: BADJSON recovery — wrote minimal km (dhx-local only); other marketplaces lost; Claude Code rebuilds those declared in settings on a later launch."
+elif [[ "$SURFACE" == "prelaunch" ]]; then
+  say "repaired:$STATES" "dhx-plugin-registry-heal: repaired known_marketplaces.json ($STATES) in $CFG"
+fi
 exit 0

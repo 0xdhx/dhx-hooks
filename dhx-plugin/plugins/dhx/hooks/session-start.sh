@@ -200,7 +200,16 @@ printf '%s' "$INPUT" | _dhx_child roadmap-status-vocab node /home/dhx/.claude/ho
 # so the heal establishes a valid baseline before downstream checks touch state.
 # No stdin needed; heal is filesystem-only (reads settings, writes known_marketplaces.json;
 # the installed_plugins.json path was retired Phase 6). Healthy-first since 2026-09-14.
+# Since 2026-09-15 the launch wrappers run the same heal BEFORE Claude Code starts
+# (dhx/dhx-prelaunch.sh) — the only caller that helps a launch whose registry keeps this plugin
+# from loading. This copy covers a registry corrupted mid-session: repaired on /clear.
 _dhx_child registry-heal bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null
+# km acceptance (2026-09-15): once per installed Claude Code version, a DETACHED sandboxed run
+# proves CC still accepts what registry-heal writes (CC 2.1.272 silently rejected the heal's
+# output while every jq-level check stayed green). Exits 1 only when a stored result failed,
+# which _dhx_child surfaces once. docs/decisions.md 2026-09-15 pre-launch row;
+# tests/probes/probe-km-acceptance-trigger.sh.
+_dhx_child km-acceptance bash /home/dhx/.claude/hooks/dhx-km-acceptance.sh < /dev/null
 # (dhx-plugin-cache-staleness-detector.sh RETIRED from dispatch 2026-06-11. The
 # cache it watched is metadata-only — HP-020 confirms CC executes the live source
 # manifest AND ${CLAUDE_PLUGIN_ROOT} resolves to the live source dir, so a stale

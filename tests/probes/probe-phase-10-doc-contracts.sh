@@ -10,7 +10,7 @@
 # Phase 10 GREEN+RED decisions.md rows (docs/decisions.md) carry the cross-AI
 # hardening contract — 4 detector states (incl. STALE:dhx-local-installLocation),
 # D-14 BADJSON WARN literal, Phase 10.1 cache-staleness backlog pointer, G-01
-# probe-count single source of truth (8 → 13 → 17 since 2026-09-14 — the
+# probe-count single source of truth (8 → 13 → 17 → 28 since 2026-09-15 — the
 # Phase 10 count 13 must still appear in the chain; never 8 → 12, never
 # ${SCENARIO_COUNT} template residue), and the Plan 2 GREEN / Plan 1 RED
 # bisectable audit pair with full D-12..D-14 + G-01..G-07 enumeration. This
@@ -98,15 +98,17 @@ fi
 
 # G-01 probe-count single source of truth: must be `8 → 13`, never `8 → 12`,
 # never ${SCENARIO_COUNT} template residue. All three checks fire together.
+# 2026-09-15: the chain grew to `8 → 13 → 17 → 28 scenarios` (CC acceptance shape,
+# lock, pre-launch surface: scenarios 18-28).
 # 2026-09-14: the chain grew to `8 → 13 → 17 scenarios` (live-shaped + identity
 # guard scenarios 14-17); the Phase 10 count stays in the chain, so this
 # asserts the prefix and the current head together.
-scenario_count=$(grep -cF '8 → 13 → 17 scenarios' "$HP_FILE")
+scenario_count=$(grep -cF '8 → 13 → 17 → 28 scenarios' "$HP_FILE")
 if [[ "$scenario_count" -ge 1 ]]; then
   echo "OK   HEAL-07-06 g01-probe-count-13: count=$scenario_count"
   PASS=$((PASS+1))
 else
-  echo "FAIL HEAL-07-06 g01-probe-count-13: '8 → 13 → 17 scenarios' missing from $HP_FILE"
+  echo "FAIL HEAL-07-06 g01-probe-count-13: '8 → 13 → 17 → 28 scenarios' missing from $HP_FILE"
   FAIL=$((FAIL+1))
 fi
 

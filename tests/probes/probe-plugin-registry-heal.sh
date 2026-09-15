@@ -399,7 +399,7 @@ assert_km_installlocation_only_rewritten() {
   fi
 }
 
-echo "=== dhx-plugin-registry-heal.sh — 17 scenarios (8 IP no-op regression + 9 km active heal: 9-13 Phase 10, 14-17 live-shaped + identity guard 2026-09-14) ==="
+echo "=== dhx-plugin-registry-heal.sh — 28 scenarios (8 IP no-op regression + 20 km: 9-13 Phase 10, 14-17 live-shaped + identity guard 2026-09-14, 18-28 CC acceptance shape + lock + pre-launch surface 2026-09-15) ==="
 
 # ---- 1. healthy: valid v2 file with dhx entry → no-op (was no-op pre-Phase-6 too) ----
 HEALTHY_JSON='{"version":2,"plugins":{"dhx@dhx-local":[{"scope":"user","installPath":"/fake/path","version":"0.1.0","installedAt":"2026-04-24T00:00:00.000Z","lastUpdated":"2026-04-24T00:00:00.000Z"}]}}'
@@ -836,6 +836,213 @@ assert_km_unchanged_with_stderr_match \
   "malformed-manifest: existing dir with unparseable manifest — REJECT" \
   "$cfg/plugins/known_marketplaces.json" "$expected_pre" "$stderr_captured" \
   '^dhx-plugin-registry-heal: REJECT: marketplace manifest unparseable or unnamed'
+
+# ============================================================================
+# 2026-09-15 — CC acceptance shape, whole-file detector, lock, pre-launch surface
+# (docs/decisions.md 2026-09-15 pre-launch row)
+# ============================================================================
+# CC 2.1.272 rejects the WHOLE km when any entry lacks a string lastUpdated — zero plugins
+# load — and the Phase 10 heal wrote exactly that shape for UNREADABLE / MISSING / BADJSON
+# while every jq-level assertion above stayed green. These scenarios pin the accepted shape
+# hermetically; the real-binary check of the same outputs is
+# probe-known-marketplaces-natural-heal.sh (operator-run, and once per installed CC version
+# via dhx/dhx-km-acceptance.sh).
+# ============================================================================
+
+# assert_all_entries_timestamped(name, km_path)
+assert_all_entries_timestamped() {
+  local name=$1
+  local km_path=$2
+  if jq -e 'type == "object" and ([.[] | type == "object" and ((.lastUpdated | type) == "string")] | all)' \
+       "$km_path" >/dev/null 2>&1; then
+    printf '  ✓ %s (every entry carries a string lastUpdated)\n' "$name"
+    PASS=$((PASS + 1))
+  else
+    printf '  ✗ %s: entries without a string lastUpdated: %s\n' "$name" \
+      "$(jq -c '[to_entries[] | select((.value.lastUpdated | type) != "string") | .key]' "$km_path" 2>/dev/null)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# check(name, condition-exit-status) — one assertion from a test already evaluated.
+check() {
+  local name=$1
+  local status=$2
+  if [[ "$status" == "0" ]]; then
+    printf '  ✓ %s\n' "$name"
+    PASS=$((PASS + 1))
+  else
+    printf '  ✗ %s\n' "$name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# live_case(name) — live-shaped fixture: source.path is a real dir outside any
+# marketplaces/ root with a manifest naming dhx-local; settings declare it; no km yet.
+live_case() {
+  local cfg home src
+  cfg=$(make_case "$1" "NONE" 1 0.1.0 "NONE")
+  home=$(dirname "$cfg")
+  src="$home/repos/hooks/dhx-plugin"
+  seed_marketplace_manifest "$src" dhx-local
+  printf '{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"%s"}}}}' "$src" \
+    > "$cfg/settings.json"
+  printf '%s' "$cfg"
+}
+
+run_hook_prelaunch_stderr() {
+  local cfg=$1
+  local home
+  home=$(dirname "$cfg")
+  HOME="$home" CLAUDE_CONFIG_DIR="$cfg" DHX_REGISTRY_HEAL_SURFACE=prelaunch bash "$HOOK" < /dev/null 2>&1 >/dev/null
+}
+
+OFFICIAL_ENTRY='"claude-plugins-official":{"source":{"source":"github","repo":"anthropics/claude-plugins"},"installLocation":"/fake/cpo","lastUpdated":"2026-01-01T00:00:00.000Z"}'
+
+# ---- 18. unreadable-healed-timestamped: absent km → dhx-local seeded WITH lastUpdated; lock released ----
+echo "EXPECT: HEAL-unreadable-timestamped"
+cfg=$(live_case "ts-unreadable")
+km_path="$cfg/plugins/known_marketplaces.json"
+run_hook "$cfg" >/dev/null
+assert_km_dhx_local_healed "ts-unreadable: absent km → dhx-local seeded (Pattern B)" \
+  "$km_path" "$(dirname "$cfg")" "" "$TMPROOT"
+assert_all_entries_timestamped "ts-unreadable" "$km_path"
+[[ ! -e "$km_path.lock" ]]; check "ts-unreadable: lock directory released after the write" $?
+
+# ---- 19. missing-healed-timestamped: dhx-local absent beside a CC-written entry ----
+echo "EXPECT: HEAL-missing-timestamped"
+cfg=$(live_case "ts-missing")
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{%s}' "$OFFICIAL_ENTRY" > "$km_path"
+pre_snap_dir="$TMPROOT/ts-missing.snap"
+mkdir -p "$pre_snap_dir"
+jq -c '.["claude-plugins-official"]' "$km_path" > "$pre_snap_dir/claude-plugins-official.json"
+run_hook "$cfg" >/dev/null
+assert_km_dhx_local_healed "ts-missing: dhx-local added; official entry byte-preserved" \
+  "$km_path" "$(dirname "$cfg")" "claude-plugins-official" "$pre_snap_dir"
+assert_all_entries_timestamped "ts-missing" "$km_path"
+
+# ---- 20. badjson-healed-timestamped: minimal km still carries lastUpdated ----
+echo "EXPECT: HEAL-badjson-timestamped"
+cfg=$(live_case "ts-badjson")
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '%s' '{"version": 2, "marke' > "$km_path"
+ts_badjson_stderr=$(HOME="$(dirname "$cfg")" CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" < /dev/null 2>&1 >/dev/null)
+grep -qF "WARN: BADJSON recovery" <<< "$ts_badjson_stderr"; check "ts-badjson: WARN on stderr (default surface)" $?
+assert_all_entries_timestamped "ts-badjson" "$km_path"
+
+# ---- 21. no-timestamp-dhx-local: the 2026-09-14 live damage shape (dir exists, no lastUpdated) ----
+# The pre-2026-09-15 detector called this HEALTHY and never repaired it (measured on the damaged
+# ~/.claude file: rc 0, bytes unchanged).
+echo "EXPECT: HEAL-no-timestamp-dhx-local"
+cfg=$(live_case "no-ts-dhx")
+src="$(dirname "$cfg")/repos/hooks/dhx-plugin"
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{%s,"dhx-local":{"source":{"source":"directory","path":"%s"},"installLocation":"%s"}}' \
+  "$OFFICIAL_ENTRY" "$src" "$src" > "$km_path"
+pre_snap_dir="$TMPROOT/no-ts-dhx.snap"
+mkdir -p "$pre_snap_dir"
+jq -c '.["claude-plugins-official"]' "$km_path" > "$pre_snap_dir/claude-plugins-official.json"
+rc=$(run_hook "$cfg")
+[[ "$rc" == "0" ]]; check "no-ts-dhx: exit 0" $?
+assert_km_dhx_local_healed "no-ts-dhx: installLocation kept; official entry byte-preserved" \
+  "$km_path" "$(dirname "$cfg")" "claude-plugins-official" "$pre_snap_dir"
+assert_all_entries_timestamped "no-ts-dhx" "$km_path"
+
+# ---- 22. no-timestamp-other-marketplace: rejection is file-wide, so another entry is repaired too ----
+echo "EXPECT: HEAL-no-timestamp-other"
+cfg=$(live_case "no-ts-other")
+src="$(dirname "$cfg")/repos/hooks/dhx-plugin"
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{"dhx-local":{"source":{"source":"directory","path":"%s"},"installLocation":"%s","lastUpdated":"2026-01-01T00:00:00.000Z"},"other":{"source":{"source":"github","repo":"a/b"},"installLocation":"/fake/other","autoUpdate":true}}' \
+  "$src" "$src" > "$km_path"
+pre_other=$(jq -c '.other' "$km_path")
+pre_dhx=$(jq -c '."dhx-local"' "$km_path")
+run_hook "$cfg" >/dev/null
+assert_all_entries_timestamped "no-ts-other" "$km_path"
+[[ "$(jq -c '.other | del(.lastUpdated)' "$km_path" 2>/dev/null)" == "$pre_other" ]]
+check "no-ts-other: other entry gains only lastUpdated (every other field identical)" $?
+[[ "$(jq -c '."dhx-local"' "$km_path" 2>/dev/null)" == "$pre_dhx" ]]
+check "no-ts-other: dhx-local entry byte-preserved" $?
+
+# ---- 23. empty-installlocation-rederived ----
+echo "EXPECT: HEAL-empty-installlocation"
+cfg=$(live_case "empty-il")
+src="$(dirname "$cfg")/repos/hooks/dhx-plugin"
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{%s,"dhx-local":{"source":{"source":"directory","path":"%s"},"installLocation":"","lastUpdated":"2026-01-01T00:00:00.000Z"}}' \
+  "$OFFICIAL_ENTRY" "$src" > "$km_path"
+pre_snap_dir="$TMPROOT/empty-il.snap"
+mkdir -p "$pre_snap_dir"
+jq -c '.["claude-plugins-official"]' "$km_path" > "$pre_snap_dir/claude-plugins-official.json"
+run_hook "$cfg" >/dev/null
+assert_km_installlocation_only_rewritten "empty-il: empty installLocation rewritten; other keys byte-preserved" \
+  "$km_path" "" "claude-plugins-official" "$pre_snap_dir"
+[[ "$(jq -r '."dhx-local".installLocation' "$km_path" 2>/dev/null)" == "$src" ]]
+check "empty-il: installLocation == source.path" $?
+
+# ---- 24. lock-held-fresh-contention: CC's lock dir is fresh → no write, lock untouched, CONTENTION logged ----
+echo "EXPECT: CONTENTION-fresh-lock"
+cfg=$(live_case "lock-fresh")
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{}' > "$km_path"
+mkdir "$km_path.lock"
+before_hash=$(sha256sum "$km_path" | awk '{print $1}')
+rc=$(run_hook "$cfg")
+[[ "$rc" == "0" ]]; check "lock-fresh: exit 0 (contention is not a failure)" $?
+[[ "$(sha256sum "$km_path" | awk '{print $1}')" == "$before_hash" ]]; check "lock-fresh: km byte-identical" $?
+[[ -d "$km_path.lock" ]]; check "lock-fresh: the other writer's lock directory is left in place" $?
+[[ "$(tail -n1 "$(dirname "$cfg")/.cache/dhx/hooks/registry-heal.log" 2>/dev/null | cut -f3)" == "CONTENTION" ]]
+check "lock-fresh: CONTENTION logged" $?
+
+# ---- 25. lock-stale-taken-over: lock dir older than CC's 10 s stale window → taken over, repaired, released ----
+echo "EXPECT: HEAL-stale-lock-takeover"
+cfg=$(live_case "lock-stale")
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{}' > "$km_path"
+mkdir "$km_path.lock"
+touch -d '-60 seconds' "$km_path.lock"
+run_hook "$cfg" >/dev/null
+jq -e '."dhx-local"' "$km_path" >/dev/null 2>&1; check "lock-stale: dhx-local repaired after takeover" $?
+[[ ! -e "$km_path.lock" ]]; check "lock-stale: lock directory released" $?
+
+# ---- 26. prelaunch-first-sight: one line per distinct outcome; repeats silent; HEALTHY re-arms ----
+echo "EXPECT: SURFACE-prelaunch-first-sight"
+cfg=$(live_case "surface")
+km_path="$cfg/plugins/known_marketplaces.json"
+surface_counts=""
+for step in break break healthy break; do
+  [[ "$step" == "break" ]] && printf '{}' > "$km_path"
+  e=$(run_hook_prelaunch_stderr "$cfg")
+  surface_counts="$surface_counts$(printf '%s' "$e" | grep -c .)"
+done
+[[ "$surface_counts" == "1001" ]]
+check "surface: stderr lines per step break,break,healthy,break = 1,0,0,1 (got $surface_counts)" $?
+[[ "$(grep -c $'\tREPAIRED\t' "$(dirname "$cfg")/.cache/dhx/hooks/registry-heal.log" 2>/dev/null)" == "3" ]]
+check "surface: every repair logged, printed or not (3 REPAIRED lines)" $?
+
+# ---- 27. prelaunch-reject-once: a refusal prints once per config dir, exits 1 every time ----
+echo "EXPECT: SURFACE-prelaunch-reject-once"
+cfg=$(make_case "reject-once" "NONE" 1 0.1.0 '{}')
+printf '{"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"/nonexistent/reject-once"}}}}' \
+  > "$cfg/settings.json"
+e1=$(run_hook_prelaunch_stderr "$cfg"); rc1=$?
+e2=$(run_hook_prelaunch_stderr "$cfg"); rc2=$?
+[[ "$rc1" == "1" && "$rc2" == "1" ]]; check "reject-once: exit 1 on both runs" $?
+[[ "$(printf '%s' "$e1" | grep -c 'REJECT: installLocation is not a directory')" == "1" && -z "$e2" ]]
+check "reject-once: REJECT printed on the first run only" $?
+
+# ---- 28. non-object-entry-badjson: a non-object entry fails CC's schema like a parse error ----
+echo "EXPECT: HEAL-non-object-entry"
+cfg=$(live_case "non-object")
+src="$(dirname "$cfg")/repos/hooks/dhx-plugin"
+km_path="$cfg/plugins/known_marketplaces.json"
+printf '{"dhx-local":{"source":{"source":"directory","path":"%s"},"installLocation":"%s","lastUpdated":"2026-01-01T00:00:00.000Z"},"junk":5}' \
+  "$src" "$src" > "$km_path"
+junk_stderr=$(HOME="$(dirname "$cfg")" CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" < /dev/null 2>&1 >/dev/null)
+grep -qF "WARN: BADJSON recovery" <<< "$junk_stderr"; check "non-object: treated as BADJSON (WARN)" $?
+jq -e 'has("junk") | not' "$km_path" >/dev/null 2>&1; check "non-object: junk entry gone" $?
+assert_all_entries_timestamped "non-object" "$km_path"
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"
