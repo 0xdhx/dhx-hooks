@@ -456,6 +456,18 @@ sed -i 's|See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-sile
 # absolute skills-repo path is removed.
 sed -i 's|resolves to ~/repos/skills/dhx;|resolves to the skills-monorepo dhx;|' dhx/statusline-wrapper.js
 
+# Class G (2026-09-15): generic reports/ reference rewrite. The one-off seds above chase
+# each private report path by its exact surrounding prose, so every new or re-worded comment
+# re-opened the gap: 17 paths had accumulated by 2026-09-15 behind a warn-only check. This rule
+# rewrites whatever remains, on COMMENT lines only (`#`, `//`, ` *` openers — every match in
+# dhx/ and tests/probes/ was a comment when this was written), to `private report <slug>`,
+# dropping any `~/repos/<repo>/` or `cross-repo/` prefix. A path on a code line is left for the
+# FAIL check in 3b, which reuses REPORTS_PATTERN so the rewrite and the gate cannot drift.
+REPORTS_PATTERN='\breports/(done/)?[0-9-]+-[a-z0-9-]+\.md\b'
+{ grep -rlEI "$REPORTS_PATTERN" dhx/ tests/probes/ 2>/dev/null || true; } | while IFS= read -r f; do
+  sed -i -E '/^[[:space:]]*(#|\/\/|\*)/ s#(~/repos/[^/[:space:]]+/|cross-repo/)?reports/(done/)?([0-9-]+-[a-z0-9-]+)\.md\b#private report \3#g' "$f"
+done
+
 # --- 3b. Scrub verification ------------------------------------------------
 echo "[sync] verifying scrubs..."
 
@@ -487,12 +499,14 @@ if [ "$NAME_LEAK" != "0" ]; then
   exit 1
 fi
 
-REPORTS_OUT=$(grep -rEnI "\breports/(done/)?[0-9-]+-[a-z0-9-]+\.md\b" dhx/ tests/probes/ 2>/dev/null)
+# FAIL since 2026-09-15 (was warn-only): Class G rewrites every comment-line path, so a
+# survivor is a private report path on a CODE line — fix it at the source, do not publish it.
+REPORTS_OUT=$(grep -rEnI "$REPORTS_PATTERN" dhx/ tests/probes/ 2>/dev/null)
 DANGLING_REPORTS=$([ -z "$REPORTS_OUT" ] && echo 0 || echo "$REPORTS_OUT" | wc -l)
 if [ "$DANGLING_REPORTS" != "0" ]; then
-  echo "[sync] WARN: $DANGLING_REPORTS dangling reports/ refs remain in dhx/ or tests/probes/ — review:"
+  echo "[sync] FAIL: $DANGLING_REPORTS dangling reports/ refs remain in dhx/ or tests/probes/ (not on a comment line):"
   echo "$REPORTS_OUT"
-  echo "[sync] (warn-only — operator review the audit edits if unexpected)"
+  exit 1
 fi
 
 # DOCS_PATTERN is defined once in the Class E generalized sweep above and reused here
