@@ -11,10 +11,15 @@
 # months unseen. Contract under test:
 #   1. child stdout passes through untouched; child stderr is replayed to stderr
 #   2. FIRST sight of (label, rc, first stderr line) → one ⚠ line + one › hint line
-#      on stdout, and a signature file under $_DHX_CF_DIR/<label>
-#   3. the SAME failure again → nothing on stdout (signature unchanged)
-#   4. a DIFFERENT message for the same label → surfaces again
-#   5. rc 0 → signature file removed; a later identical failure surfaces again
+#      on stdout, and a marker DIRECTORY $_DHX_CF_DIR/<label>.<16-hex sig>
+#   3. the SAME failure again → nothing on stdout (marker already claimed)
+#   4. a DIFFERENT message for the same label → surfaces again (second marker);
+#      the FIRST message coming back → silent (its marker still stands)
+#   5. rc 0 → every marker for the label removed; a later identical failure
+#      surfaces again
+#   5b. RACE: N dispatchers hitting the same first sight concurrently → exactly
+#      ONE ⚠ line in total (mkdir is the atomic test-and-set; the close-gate
+#      reviewer measured the earlier read-compare-write shape printing twice)
 #   6. rc != 0 with EMPTY stderr → surfaces with no message suffix
 #   7. stdin reaches the child (pipeline form `printf … | _dhx_child …`)
 #   8. WIRING: the heal is dispatched through _dhx_child; no dhx hook child is still
@@ -81,25 +86,44 @@ check "first sight prints exactly two lines" "$( [ "$NLINES" = 2 ] && echo ok )"
 check "line 1 is the ⚠ failure line with label, rc and first stderr line" \
   "$( [ "$LINE1" = "⚠ session-start child heal failed (rc=1): boom: first line" ] && echo ok )" "got: $LINE1"
 check "line 2 is the › hint line" "$( [[ "$LINE2" == "  › repeats of this exact failure stay silent"* ]] && echo ok )" "got: $LINE2"
-check "signature file written under _DHX_CF_DIR/<label>" "$( [ -s "$_DHX_CF_DIR/heal" ] && echo ok )"
-SIG1=$(cat "$_DHX_CF_DIR/heal")
-check "signature is a 16-hex digest" "$( [[ "$SIG1" =~ ^[0-9a-f]{16}$ ]] && echo ok )" "got: $SIG1"
+MARKERS=$(ls -d "$_DHX_CF_DIR"/heal.* 2>/dev/null | wc -l)
+check "exactly one marker directory under _DHX_CF_DIR/<label>.<sig>" "$( [ "$MARKERS" = 1 ] && echo ok )" "got $MARKERS"
+SIG1=$(basename "$(ls -d "$_DHX_CF_DIR"/heal.* 2>/dev/null | head -1)"); SIG1=${SIG1#heal.}
+check "marker suffix is a 16-hex digest" "$( [[ "$SIG1" =~ ^[0-9a-f]{16}$ ]] && echo ok )" "got: $SIG1"
 
 # 3. same failure → silent
 run heal child_fail
 check "identical failure again prints nothing" "$( [ ! -s "$OUT" ] && echo ok )" "got: $(cat "$OUT")"
-check "signature unchanged" "$( [ "$(cat "$_DHX_CF_DIR/heal")" = "$SIG1" ] && echo ok )"
+check "marker set unchanged" "$( [ "$(ls -d "$_DHX_CF_DIR"/heal.* | wc -l)" = 1 ] && echo ok )"
 
 # 4. different message → surfaces again
 run heal child_fail2
 check "changed message surfaces again" "$( grep -q '^⚠ session-start child heal failed (rc=1): boom: a different message$' "$OUT" && echo ok )" "got: $(cat "$OUT")"
-check "signature updated" "$( [ "$(cat "$_DHX_CF_DIR/heal")" != "$SIG1" ] && echo ok )"
+check "second marker claimed alongside the first" "$( [ "$(ls -d "$_DHX_CF_DIR"/heal.* | wc -l)" = 2 ] && [ -d "$_DHX_CF_DIR/heal.$SIG1" ] && echo ok )"
+run heal child_fail
+check "the first message coming back is silent (its marker still stands)" "$( [ ! -s "$OUT" ] && echo ok )" "got: $(cat "$OUT")"
 
 # 5. success clears; then the old failure surfaces again
 run heal child_ok
-check "rc 0 removes the signature file" "$( [ ! -e "$_DHX_CF_DIR/heal" ] && echo ok )"
+check "rc 0 removes every marker for the label" "$( [ "$(ls -d "$_DHX_CF_DIR"/heal.* 2>/dev/null | wc -l)" = 0 ] && echo ok )"
+check "rc 0 leaves other labels' markers alone" "$( [ "$(ls -d "$_DHX_CF_DIR"/t1.* 2>/dev/null | wc -l)" = 1 ] && echo ok )"
 run heal child_fail
 check "after a success the same failure surfaces again (first sight resets)" "$( grep -q '^⚠ session-start child heal failed (rc=1)' "$OUT" && echo ok )"
+
+# 5b. race: N concurrent first sights → exactly one ⚠ line
+rm -rf "$_DHX_CF_DIR"
+RACE_N=12; RACE_OUT="$TMPROOT/race"; mkdir -p "$RACE_OUT"
+child_race() { echo "boom: raced" >&2; return 1; }
+export -f _dhx_child _dhx_digest16 child_race; export _DHX_CF_DIR
+GO="$TMPROOT/go"
+for i in $(seq 1 $RACE_N); do
+  ( until [ -e "$GO" ]; do :; done; _dhx_child racer child_race >"$RACE_OUT/$i" 2>/dev/null ) &
+done
+sleep 0.2; : > "$GO"; wait
+RACE_LINES=$(cat "$RACE_OUT"/* | grep -c '^⚠ session-start child racer failed')
+check "race: $RACE_N concurrent first sights print exactly one ⚠ line" "$( [ "$RACE_LINES" = 1 ] && echo ok )" "got $RACE_LINES"
+check "race: exactly one marker claimed" "$( [ "$(ls -d "$_DHX_CF_DIR"/racer.* 2>/dev/null | wc -l)" = 1 ] && echo ok )"
+rm -f "$GO"
 
 # 6. non-zero with empty stderr
 run quiet child_quiet
@@ -126,7 +150,7 @@ done
 rm -rf "$_DHX_CF_DIR"
 GOT=$(PATH="$NOTOOLS" _dhx_child nodigest child_fail 2>/dev/null)
 check "without sha256sum/shasum: child ran, nothing printed" "$( [ -z "$GOT" ] && echo ok )" "got: $GOT"
-check "without sha256sum/shasum: nothing written" "$( [ ! -e "$_DHX_CF_DIR/nodigest" ] && echo ok )"
+check "without sha256sum/shasum: nothing written" "$( [ "$(ls -d "$_DHX_CF_DIR"/nodigest.* 2>/dev/null | wc -l)" = 0 ] && echo ok )"
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"

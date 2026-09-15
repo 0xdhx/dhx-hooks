@@ -139,38 +139,37 @@ _SCH_CTX_OUT=$(printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX
 # hook that fails deterministically must reach a person exactly once, not never and not
 # every session. _dhx_child runs a child with its stderr captured, replays that stderr
 # unchanged (children's own advisories keep whatever surface they had), and on rc != 0
-# digests (label, rc, first stderr line) into a signature kept per label under the same
-# cache root the schedule beat uses. A NEW signature prints the two lines below on stdout
-# (→ model context, once) and records itself; the same signature stays silent; rc 0 clears
-# the record so a fixed-then-broken-again child surfaces again. Fail-open on every path:
-# no digest tool / unwritable cache → the child still ran and the surface just skips.
+# digests (label, rc, first stderr line) into a signature and claims it as a marker
+# DIRECTORY `<label>.<sig>` under the same cache root the schedule beat uses — `mkdir` is
+# the atomic test-and-set, so of N dispatchers racing on the same first sight exactly one
+# prints (the close-gate reviewer measured the earlier read-compare-write shape printing
+# twice under a synchronized race, 2026-09-14). A NEW signature prints the two lines below on
+# stdout (→ model context, once); a signature already claimed stays silent — including one
+# that was seen, replaced by another message, and came back; rc 0 removes every marker for
+# the label so a fixed-then-broken-again child surfaces again. Fail-open on every path: no
+# digest tool / unwritable cache → the child still ran and the surface just skips.
 # NOT wrapped: the schedule-context child (its stdout is captured by design, above) and
 # dhx-watch-health.cjs (explicitly silenced, by design). Probe: tests/probes/
 # probe-session-start-child-failure-surface.sh.
 _DHX_CF_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start-child-failures"
 _dhx_child() {
   local label=$1; shift
-  local errf rc first sig sigf prev
+  local errf rc first sig
   errf=$(mktemp "${TMPDIR:-/tmp}/dhx-child-err.XXXXXX" 2>/dev/null) || { "$@" || true; return 0; }
   "$@" 2>"$errf"
   rc=$?
   [ -s "$errf" ] && cat "$errf" >&2
-  sigf="$_DHX_CF_DIR/$label"
   if [ "$rc" -ne 0 ]; then
     first=$(head -n1 "$errf" 2>/dev/null | cut -c1-160)
     sig=$(_dhx_digest16 "$label rc=$rc $first") || sig=""
-    prev=$(cat "$sigf" 2>/dev/null || true)
-    if [ -n "$sig" ] && [ "$sig" != "$prev" ]; then
-      if mkdir -p "$_DHX_CF_DIR" 2>/dev/null \
-         && printf '%s' "$sig" > "$sigf.tmp.$$" 2>/dev/null \
-         && mv -f "$sigf.tmp.$$" "$sigf" 2>/dev/null; then
-        printf '⚠ session-start child %s failed (rc=%s)%s\n' "$label" "$rc" "${first:+: $first}"
-        printf '  › repeats of this exact failure stay silent until it changes or the child succeeds\n'
-      fi
-      rm -f "$sigf.tmp.$$" 2>/dev/null
+    # mkdir of the marker is the whole test-and-set: it succeeds for exactly one caller.
+    if [ -n "$sig" ] && mkdir -p "$_DHX_CF_DIR" 2>/dev/null \
+       && mkdir "$_DHX_CF_DIR/$label.$sig" 2>/dev/null; then
+      printf '⚠ session-start child %s failed (rc=%s)%s\n' "$label" "$rc" "${first:+: $first}"
+      printf '  › repeats of this exact failure stay silent until it changes or the child succeeds\n'
     fi
-  else
-    [ -e "$sigf" ] && rm -f "$sigf" 2>/dev/null
+  elif [ -n "$label" ]; then
+    rm -rf "$_DHX_CF_DIR/$label".* 2>/dev/null
   fi
   rm -f "$errf" 2>/dev/null
   return 0
