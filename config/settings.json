@@ -155,6 +155,7 @@
       "Read(./.env*)",
       "Read(~/.aws/**)",
       "Read(~/.ssh/**)",
+      "Read(//mnt/c/Users/JoshG/.ssh/id_*)",
       "Bash(*|*taskkill*)",
       "Bash(get-shit-done-cc:*)",
       "Bash(*npm i*get-shit-done*)",
