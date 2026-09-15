@@ -117,14 +117,15 @@ const STDIN = JSON.stringify({
 function renderLine1() {
   const out = execFileSync(process.execPath, [RENDERER], {
     input: STDIN,
-    env: { ...process.env, HOME: TMP, DISABLE_AUTOUPDATER: '1' },
+    // '' (not '1'): since RAT-06d the autoupd warning fires when the auto-updater is ON.
+    env: { ...process.env, HOME: TMP, DISABLE_AUTOUPDATER: '' },
     encoding: 'utf8',
   });
   return out.split('\n')[0];
 }
 
-const BRIGHT_UPDATE = '\x1b[33m⬆ cc\x1b[0m';
-const BRIGHT_AUTOUPD = '\x1b[33m⚠ cc-autoupd\x1b[0m';
+const BRIGHT_UPDATE = '\x1b[33m⬆ cc 9.9.9 - /ccup\x1b[0m';
+const BRIGHT_AUTOUPD = '\x1b[33m⚠ cc-autoupd on\x1b[0m';
 const DIM_TOKEN_RE = /\x1b\[2m⚠ cc \S+\x1b\[0m/;
 
 snz.clearSnooze();

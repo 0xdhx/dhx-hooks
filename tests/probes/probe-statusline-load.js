@@ -265,6 +265,18 @@ for (const c of malformedCases) {
   const l1 = strip(r.stdout);
   ok('RAT-06 latest>installed → `⬆ cc` present', r.status === 0 && /⬆ cc(\b|[^-])/.test(l1), true);
   ok('RAT-06 latest>installed → no dev-install marker', /cc dev install/.test(l1), false);
+  // RAT-06d (2026-09-15): the auto-updater is off fleet-wide, so the token names the
+  // target version and the verb that installs it.
+  ok('RAT-06d latest>installed → token reads `⬆ cc <latest> - /ccup`',
+    l1.includes('⬆ cc 2.1.150 - /ccup'), true);
+}
+
+// Scenario 3b — a hostile `latest` string cannot inject escapes or run long.
+{
+  const home = fixtureHome({ updateCheck: { latest: '9.9.9\x1b[31mEVIL-and-a-very-long-suffix', checked_at: '2026-05-21T00:00:00Z' } });
+  const r = renderOnce({ ...baseFixture, version: '2.1.146' }, { env: { HOME: home } });
+  ok('RAT-06d latest string sanitized — no injected SGR, bounded length',
+    r.status === 0 && !r.stdout.includes('\x1b[31m') && /⬆ cc [0-9A-Za-z.+-]{1,20} - \/ccup/.test(strip(r.stdout)), true);
 }
 
 // Scenario 4 — data.version ahead of latest → dev-install marker, NOT `⬆ cc`.
@@ -285,7 +297,10 @@ for (const c of malformedCases) {
     r.status === 0 && !/⬆ cc(\b|[^-])/.test(l1) && !/cc dev install/.test(l1), true);
 }
 
-// Scenario 6 — DISABLE_AUTOUPDATER=1 → suppression marker present; unset → absent.
+// Scenario 6 — RAT-06d INVERSION (2026-09-15): the fleet runs with the background
+// auto-updater OFF (DISABLE_AUTOUPDATER=1 in shared settings env), so the warning
+// now fires when it is ON — the state that re-opens the cross-account launcher flap.
+// DISABLE_AUTOUPDATER=1 → marker absent; unset → `cc-autoupd on` present.
 {
   // Isolate HOME: the cc cluster (incl. cc-autoupd) is suppressed when an
   // operator's live ~/.cache/dhx/cc-warning-snooze.json is active, which the
@@ -294,15 +309,13 @@ for (const c of malformedCases) {
   // the scenario stays hermetic regardless of the running operator's snooze state.
   const home = fixtureHome();
   const r1 = renderOnce(baseFixture, { env: { HOME: home, DISABLE_AUTOUPDATER: '1' } });
-  ok('RAT-06 DISABLE_AUTOUPDATER=1 → `cc-autoupd` marker present',
-    r1.status === 0 && strip(r1.stdout).includes('cc-autoupd'), true);
-  // Explicitly clear DISABLE_AUTOUPDATER in the child — renderOnce spreads
-  // ...process.env, so a parent shell that has it set (e.g. an operator on a
-  // deliberate CC rollback) would otherwise leak it in and false-fail this
-  // "unset" assertion. '' is not '1', so the segment stays absent.
+  ok('RAT-06d DISABLE_AUTOUPDATER=1 → `cc-autoupd` marker absent',
+    r1.status === 0 && !strip(r1.stdout).includes('cc-autoupd'), true);
+  // Set '' explicitly rather than deleting — renderOnce spreads ...process.env, so a
+  // parent that has it set would otherwise leak '1' in and false-fail this branch.
   const r2 = renderOnce(baseFixture, { env: { HOME: home, DISABLE_AUTOUPDATER: '' } });
-  ok('RAT-06 DISABLE_AUTOUPDATER unset → `cc-autoupd` marker absent',
-    !strip(r2.stdout).includes('cc-autoupd'), true);
+  ok('RAT-06d DISABLE_AUTOUPDATER unset → `cc-autoupd on` marker present',
+    strip(r2.stdout).includes('⚠ cc-autoupd on'), true);
 }
 
 // Scenario 7 — D-14 render-time re-filter.

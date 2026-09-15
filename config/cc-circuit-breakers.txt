@@ -1,4 +1,4 @@
-# baseline-build: 2.1.270
+# baseline-build: 2.1.273
 registry dangerousRemoval bypassImmune=1 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
 registry backgroundOperator bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
 registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
@@ -6,7 +6,6 @@ registry isolatePeerMachines bypassImmune=1 classifierRouted=0 hostPersonOnly=0 
 registry restrictedMode bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
 registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
 registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0
-registry denyRulesUnjudged bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
 reducer .mcpInfo
 reducer .isReadOnly
 reducer .behavior

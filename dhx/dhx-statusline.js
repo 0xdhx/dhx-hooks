@@ -836,7 +836,13 @@ function runStatusline() {
             confirmedAhead = ai === ka && bi === kb && ci === kc;
           }
           if (latestNewer) {
-            ccUpdate = '\x1b[33m⬆ cc\x1b[0m \x1b[2m│\x1b[0m ';
+            // RAT-06d (2026-09-15): the background auto-updater is off fleet-wide, so an
+            // available update is actionable only by hand — the token names the target and
+            // the verb. `/ccup` (skills personal/ccup → dotfiles bin/ccup) resolves `latest`
+            // to that exact version and installs it. The version is sanitized: the cache is
+            // a local file, but a stray escape here would repaint the whole line.
+            const target = String(cache.latest).replace(/[^0-9A-Za-z.+-]/g, '').slice(0, 20);
+            ccUpdate = `\x1b[33m⬆ cc ${target} - /ccup\x1b[0m \x1b[2m│\x1b[0m `;
           } else if (installedNewer && confirmedAhead) {
             ccUpdate = '\x1b[33m⚠ cc dev install\x1b[0m \x1b[2m│\x1b[0m ';
           }
@@ -844,13 +850,19 @@ function runStatusline() {
       } catch (e) {}
     }
 
-    // --- RAT-06: cc-autoupd auto-update-suppression segment (D-09) -----------
+    // --- RAT-06d: cc-autoupd auto-updater-ON segment (D-09, inverted) --------
     // A single process.env read — zero subprocess, no cache, no hook. Glyph is
     // `⚠` (U+26A0, BMP single-width) — NOT the U+1F6AB no-entry sign, which is
     // a double-width SMP emoji (RESEARCH Pitfall 3: width bug + status-symbol-
     // set inconsistency — the repo's warning vocabulary is `⚠`/`⬆`).
-    let ccAutoupd = process.env.DISABLE_AUTOUPDATER === '1'
-      ? '\x1b[33m⚠ cc-autoupd\x1b[0m \x1b[2m│\x1b[0m '
+    // INVERTED 2026-09-15: it used to warn when DISABLE_AUTOUPDATER=1 (an accidental
+    // suppression). The fleet now runs with it set on purpose — CCS accounts in
+    // different release cohorts made every session's updater fight over the one
+    // shared ~/.local/bin/claude (cross-repo harness-internals §40) — so the risky
+    // state is the updater being ON. Per-session truth: a session launched before
+    // the setting landed still has it unset in its env, and does still auto-update.
+    let ccAutoupd = process.env.DISABLE_AUTOUPDATER !== '1'
+      ? '\x1b[33m⚠ cc-autoupd on\x1b[0m \x1b[2m│\x1b[0m '
       : '';
 
     // --- cc-warning snooze: collapse the cc version-drift cluster ------------
