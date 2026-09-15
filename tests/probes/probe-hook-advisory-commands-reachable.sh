@@ -110,7 +110,10 @@ bash_patterns() {
 #   PATH       a RECOMMEND that invokes a script by path; the path must resolve.
 #   ECHOBACK   the blocked command echoed back as diagnostic, not advice.
 #   POINTER    a documentation path, not a command.
-#   DATA       a rendered data row.
+#   DATA       a rendered data row — including a hook's explanatory hint line
+#              printed beneath its own ⚠ line (session-start.sh's dedup note,
+#              2026-09-14: not a command, not a pointer; it explains why the
+#              ⚠ line above it will not repeat).
 #   SLASH      a Claude slash command, not a shell command.
 #   JSON       a JSON payload line.
 #
@@ -138,6 +141,7 @@ dhx-gsd-canonical-mirror-gate.sh|RECOMMEND|cp $FILE $CANONICAL
 dhx-gsd-drift-surface.sh|DATA|first seen
 dhx-gsd-drift-surface.sh|SLASH|run /dhx:statusline triad
 dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/
+session-start.sh|DATA|repeats of this exact failure stay silent
 dhx-ui-vision-guard.sh|JSON|"hookSpecificOutput"
 dhx-ui-vision-guard.sh|JSON|}
 INV

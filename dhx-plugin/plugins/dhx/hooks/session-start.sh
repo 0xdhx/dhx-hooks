@@ -129,17 +129,65 @@ fi
 _SCH_CTX_OUT=$(printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX_SCHEDULE_SESSION_KEY="$_SCH_HB_KEY" bash /home/dhx/.claude/hooks/dhx-schedule-context.sh || true)
 # --- end /dhx:schedule context child ------------------------------------------------------
 
+# --- child-failure first-sight surface (2026-09-14) -------------------------------------
+# Every child below is `|| true`d so one failure cannot stop its siblings — and that, plus
+# the fact that a SessionStart hook's stderr at exit 0 reaches neither the context nor a
+# person who is looking (measured 2026-09-14: the session that shipped this started on the
+# old heal body, its REJECT went to stderr, and the context carried only stdout; HP-038 is
+# the PostToolUse twin), is how dhx-plugin-registry-heal.sh exited 1 with a REJECT on EVERY
+# SessionStart from 2026-05-13 to 2026-09-14 and nobody saw it. A
+# hook that fails deterministically must reach a person exactly once, not never and not
+# every session. _dhx_child runs a child with its stderr captured, replays that stderr
+# unchanged (children's own advisories keep whatever surface they had), and on rc != 0
+# digests (label, rc, first stderr line) into a signature kept per label under the same
+# cache root the schedule beat uses. A NEW signature prints the two lines below on stdout
+# (→ model context, once) and records itself; the same signature stays silent; rc 0 clears
+# the record so a fixed-then-broken-again child surfaces again. Fail-open on every path:
+# no digest tool / unwritable cache → the child still ran and the surface just skips.
+# NOT wrapped: the schedule-context child (its stdout is captured by design, above) and
+# dhx-watch-health.cjs (explicitly silenced, by design). Probe: tests/probes/
+# probe-session-start-child-failure-surface.sh.
+_DHX_CF_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start-child-failures"
+_dhx_child() {
+  local label=$1; shift
+  local errf rc first sig sigf prev
+  errf=$(mktemp "${TMPDIR:-/tmp}/dhx-child-err.XXXXXX" 2>/dev/null) || { "$@" || true; return 0; }
+  "$@" 2>"$errf"
+  rc=$?
+  [ -s "$errf" ] && cat "$errf" >&2
+  sigf="$_DHX_CF_DIR/$label"
+  if [ "$rc" -ne 0 ]; then
+    first=$(head -n1 "$errf" 2>/dev/null | cut -c1-160)
+    sig=$(_dhx_digest16 "$label rc=$rc $first") || sig=""
+    prev=$(cat "$sigf" 2>/dev/null || true)
+    if [ -n "$sig" ] && [ "$sig" != "$prev" ]; then
+      if mkdir -p "$_DHX_CF_DIR" 2>/dev/null \
+         && printf '%s' "$sig" > "$sigf.tmp.$$" 2>/dev/null \
+         && mv -f "$sigf.tmp.$$" "$sigf" 2>/dev/null; then
+        printf '⚠ session-start child %s failed (rc=%s)%s\n' "$label" "$rc" "${first:+: $first}"
+        printf '  › repeats of this exact failure stay silent until it changes or the child succeeds\n'
+      fi
+      rm -f "$sigf.tmp.$$" 2>/dev/null
+    fi
+  else
+    [ -e "$sigf" ] && rm -f "$sigf" 2>/dev/null
+  fi
+  rm -f "$errf" 2>/dev/null
+  return 0
+}
+# --- end child-failure first-sight surface -----------------------------------------------
+
 # Dispatch to canonical scripts. Hand each its own stdin copy.
-# Run each even if one fails — they are independent.
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-health-check.sh || true
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh || true
+# Run each even if one fails — they are independent (_dhx_child always returns 0).
+printf '%s' "$INPUT" | _dhx_child health-check bash /home/dhx/.claude/hooks/dhx-health-check.sh
+printf '%s' "$INPUT" | _dhx_child dirty-tree bash /home/dhx/.claude/hooks/dhx-dirty-tree.sh
 # Function-level grep address-space cap (successor to the retired PreToolUse:Bash
 # rewriter dhx-grep-vsz-cap.sh — DHX-8b, HP-057): appends a `grep` wrapper to
 # $CLAUDE_ENV_FILE, which this dispatcher inherits from CC and its children see.
 # < /dev/null: the hook ignores stdin (no JSON parsing). Silent on happy path.
-bash /home/dhx/.claude/hooks/dhx-grep-fn-cap.sh < /dev/null || true
+_dhx_child grep-fn-cap bash /home/dhx/.claude/hooks/dhx-grep-fn-cap.sh < /dev/null
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || true
+printf '%s' "$INPUT" | _dhx_child gsd-drift-surface bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh
 # ROADMAP Progress-table Status vocabulary check (2026-08-30). Per-repo, one read
 # of one file; silent unless this repo's ROADMAP carries a Status cell outside the
 # set both readers recognize. Sits beside the drift surface above because both are
@@ -148,18 +196,19 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh || 
 # reads). Fleet sweep is a CLI, deliberately not this hook:
 #   node ~/repos/hooks/scripts/lib/roadmap-status-vocab.js --fleet
 # Suppression DHX_SKIP_ROADMAP_VOCAB=1. Fail-open on every path.
-printf '%s' "$INPUT" | node /home/dhx/.claude/hooks/dhx-roadmap-status-vocab.js || true
+printf '%s' "$INPUT" | _dhx_child roadmap-status-vocab node /home/dhx/.claude/hooks/dhx-roadmap-status-vocab.js
 # Heal plugin registry drift (HP-025 companion) — runs BEFORE stale-worktree-sweep
 # so the heal establishes a valid baseline before downstream checks touch state.
-# No stdin needed; heal is filesystem-only (reads cache, writes installed_plugins.json).
-bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null || true
+# No stdin needed; heal is filesystem-only (reads settings, writes known_marketplaces.json;
+# the installed_plugins.json path was retired Phase 6). Healthy-first since 2026-09-14.
+_dhx_child registry-heal bash /home/dhx/.claude/hooks/dhx-plugin-registry-heal.sh < /dev/null
 # (dhx-plugin-cache-staleness-detector.sh RETIRED from dispatch 2026-06-11. The
 # cache it watched is metadata-only — HP-020 confirms CC executes the live source
 # manifest AND ${CLAUDE_PLUGIN_ROOT} resolves to the live source dir, so a stale
 # cache can never mean "undeployed". The per-session WARN was noise about a
 # non-issue (and recurred on every hooks.json mtime bump). Script + probe kept as
 # the platform-behavior guard. See docs/decisions.md 2026-06-11 retirement row.)
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh || true
+printf '%s' "$INPUT" | _dhx_child stale-worktree-sweep bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh
 # Watch-health computer (cross-repo D-08/D-10/D-22a): recompute the precomputed
 # health verdict cache BEFORE the digest banner reads it, so the banner consumes a
 # fresh cache in the same session. The explicit `[ -e … ]` existence test guarantees
@@ -167,14 +216,14 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-stale-worktree-sweep.sh 
 # (a bare `node <absent-symlink>` would exit non-zero); >/dev/null 2>&1 || true keeps
 # it silent + non-blocking regardless. Filesystem/network-only; no stdin needed.
 [ -e ~/.claude/dhx-tools/dhx-watch-health.cjs ] && node ~/.claude/dhx-tools/dhx-watch-health.cjs >/dev/null 2>&1 || true
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-watch-digest.sh || true
+printf '%s' "$INPUT" | _dhx_child watch-digest bash /home/dhx/.claude/hooks/dhx-watch-digest.sh
 # Pending `/dhx:vet` closure offers: surfaces rows the vet close-offer UAQ wrote and
 # never got an answer for (a residual row IS an unanswered question — both answers
 # remove it). Sits here, between the watch digest and the skill-desc audit, because it
 # is the same "direct ask on the user" tier per the D-11 ordering rationale in
 # dhx-watch-digest.sh. Empty stdout on the clean path (the common case). The action it
 # surfaces is a RE-VET, never a close command — see the INVARIANT block in the worker.
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-vet-closures.sh || true
+printf '%s' "$INPUT" | _dhx_child vet-closures bash /home/dhx/.claude/hooks/dhx-vet-closures.sh
 # Due /dhx:schedule commitments as session context — EMITTED here, RUN above (see the
 # "/dhx:schedule context child" block directly under the reference record). Plain text only —
 # a JSON child would corrupt the dispatcher's concatenated stdout (see dhx/dhx-vitals-banner.sh).
@@ -189,7 +238,7 @@ if [ -n "$_SCH_CTX_OUT" ]; then printf '%s\n' "$_SCH_CTX_OUT"; fi
 # compact block per new/changed budget violation; fail-open with a consecutive-
 # failures counter — never blocks session start. The [ -e ] shape isn't needed here:
 # the chain script itself no-ops when its worker symlink is unprovisioned.
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-skill-desc-audit.sh || true
+printf '%s' "$INPUT" | _dhx_child skill-desc-audit bash /home/dhx/.claude/hooks/dhx-skill-desc-audit.sh
 # NOTE: cross-repo vitals do NOT belong here. The dispatcher's children emit PLAIN
 # stdout (→ model context only); the badge OSC is unrenderable from a hook. The
 # vitals BANNER is a SEPARATE SessionStart hook emitting a JSON {systemMessage}
@@ -198,7 +247,7 @@ printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-skill-desc-audit.sh || t
 # cross-repo docs/research/2026-06-04-hook-cannot-emit-osc-badge.md.
 # RAT-06 (STATUSLINE-RAT-06): CC-version-drift check. Network-only (npm view via
 # detached worker); no stdin needed. Mirrors registry-heal / staleness-detector dispatch.
-node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
+_dhx_child cc-check-update node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null
 # Fleet CC version-LOCK guard (defense-in-depth for the 2026-05-31 unrequested
 # `claude update` 2.1.153->2.1.159 incident). Sibling to cc-check-update.js above:
 # that hook WARNS on drift from npm-latest; this one ENFORCES the pin by repointing
@@ -212,7 +261,7 @@ node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
 # drift; SILENT + zero-stdout on the on-pin happy path (no context cost). Placed
 # after the critical health/heal/worktree hooks — belt-and-suspenders, not
 # critical-path. See docs/decisions.md 2026-06-02 cc-version-guard wiring row.
-[ -e ~/.claude/dhx-tools/cc-version-guard.sh ] && bash ~/.claude/dhx-tools/cc-version-guard.sh < /dev/null || true
+[ -e ~/.claude/dhx-tools/cc-version-guard.sh ] && _dhx_child cc-version-guard bash ~/.claude/dhx-tools/cc-version-guard.sh < /dev/null || true
 # CC permission circuit-breaker DRIFT MONITOR (2026-09-04). Sibling to the version guard
 # above: that one asserts WHICH build runs; this one asserts that the build's bypass-immune
 # registry and permission reducer still match config/cc-circuit-breakers.txt. It exists
@@ -223,8 +272,8 @@ node /home/dhx/.claude/hooks/cc-check-update.js < /dev/null || true
 # so repeat starts cost one stat per build. Silent on match; stderr advisory on drift or on
 # an EMPTY extraction (exit 2 — an anchor stopped matching is not a clean result). Fail-open
 # via the trailing || true. See docs/decisions.md 2026-09-04 row.
-[ -e /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh ] && bash /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh < /dev/null || true
+[ -e /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh ] && _dhx_child cc-circuit-breakers bash /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh < /dev/null || true
 # Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
-printf '%s' "$INPUT" | bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh || true
+printf '%s' "$INPUT" | _dhx_child off-main-detector bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh
 
 exit 0
