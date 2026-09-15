@@ -234,6 +234,11 @@ assert_eq T1.b "pointer untouched" 100 "$(cat "$T1/pointer.txt")"
 printf '{"entry_id":"103","tag":"c","url":"u/103","event_type":"x","event_summary":"no LF"}' >> "$T1/digest.jsonl"
 OUT=$(printf '{}' | PATH="$T1/bin:$PATH" DHX_WATCH_DIR="$T1" DHX_WATCH_HEALTH_CACHE="$T1/none" bash "$SURFACER"); RC=$?
 assert_eq T1.c "jq exits 3 + unterminated last line: still 2, the tail is not a line" "[!] digest_corrupt · skipped 2 unparseable line(s)" "$OUT"
+# Round-2 Q1: a tail ending in a NUL byte. `$(tail -c1)` drops a trailing NUL, which made the
+# LF check read the file as terminated and count the tail. The byte is now read via od.
+printf '\0' >> "$T1/digest.jsonl"
+OUT=$(printf '{}' | PATH="$T1/bin:$PATH" DHX_WATCH_DIR="$T1" DHX_WATCH_HEALTH_CACHE="$T1/none" bash "$SURFACER" 2>/dev/null); RC=$?
+assert_eq T1.d "jq exits 3 + NUL-ending tail: still 2 (last byte read via od, not \$())" "[!] digest_corrupt · skipped 2 unparseable line(s)" "$OUT"
 
 # ── R1: the scan must not disturb the non-digest blocks (watchlist-derived), D-11 order ──
 R1=$(mktemp_state)

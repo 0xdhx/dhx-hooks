@@ -146,8 +146,10 @@ else
   # EVERY line corrupt in that state and warned loudly. Keep that -- never go silent here.
   # Count only LF-terminated non-blank lines: `while read` never saw an unterminated tail, so
   # the old loop never counted one either (close-review round 1, Q1). `sed '$d'` drops that
-  # tail only when the file does not end in a newline.
-  if [ -z "$(tail -c1 "$DIGEST" 2>/dev/null)" ]; then
+  # tail only when the file does not end in a newline. The last byte is read through `od`,
+  # not `[ -z "$(tail -c1)" ]`: bash drops a trailing NUL from a command substitution, so a
+  # NUL-ending tail would read as LF-terminated and be counted (round 2, Q1).
+  if [ "$(tail -c1 "$DIGEST" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0a" ]; then
     CORRUPT_LINES=$(command grep -c . "$DIGEST" 2>/dev/null)
   else
     CORRUPT_LINES=$(sed '$d' "$DIGEST" 2>/dev/null | command grep -c .)
