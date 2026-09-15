@@ -1,0 +1,8 @@
+{
+  "_comment": "Read by dhx/dhx-key-read-guard.js. ssh_configs: files whose IdentityFile targets are protected by basename (in addition to the built-in id_<algo>[_sk][<suffix>] names). extra_key_basenames: private-key file names that appear in no ssh config. Paths may start with ~/. Override the whole file with DHX_KEY_GUARD_CONFIG=<path> (probes do).",
+  "ssh_configs": [
+    "~/.ssh/config",
+    "/mnt/c/Users/JoshG/.ssh/config"
+  ],
+  "extra_key_basenames": []
+}

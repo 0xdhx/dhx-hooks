@@ -117,6 +117,16 @@
         ]
       },
       {
+        "matcher": "Read|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/dhx-key-read-guard.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
