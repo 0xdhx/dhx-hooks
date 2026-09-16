@@ -56,7 +56,7 @@
 #   isolation pattern as probe-health-lane-scoping.sh.)
 # LIVE_RUNTIME: no   (every path resolves under the fake $HOME; the hook's dhx-sym.sh fork
 #   verifiers are absent there and take their default branch)
-# HERMETIC_TIER: yes (12 hook runs + 1 wrapper spawn; ~3s)
+# HERMETIC_TIER: yes (14 hook runs + 1 wrapper spawn + 4 doc-snippet runs; ~4s)
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -235,6 +235,69 @@ if grep -q 'broken symlink' <<<"$out"; then
 else
   ok "[11b] the token does not claim a cause it cannot know ('broken symlink' absent)"
 fi
+
+# ===================================================================================
+# [12] THE DOC SNIPPET IS A HAND-KEPT COPY OF THIS LOOP, AND IT DRIFTS. This arm extracts
+#   the fence out of docs/troubleshooting.md and RUNS it, rather than trusting that a human
+#   kept two copies in step. Four documented wrong labels so far: the 2026-09-15 dhx-tools
+#   decisions row records it "was wrong three ways" (a retired `package.json` item, a bare
+#   `[[ -L ]]` that called a missing path REAL, and a canonical real dir called drift), and
+#   the close-gate reviewer then found a fourth the same day — the canonical branch printed
+#   `real` for `gsd-local-patches`, which is itself a symlink into ~/repos/dotfiles.
+#
+#   ITS OWN INVARIANT, stated because it is broader than this probe's nominal subject: this
+#   is the ONLY thing in the corpus that reds when the troubleshooting diagnose snippet and
+#   the hook disagree. No other probe reads that fence. If this arm is deleted, the snippet
+#   goes back to being prose nobody executes.
+#
+#   The extraction is the silent-zero risk: a reshaped fence yields an empty script that
+#   "agrees" with everything. [12a] is the positive control on the reader itself.
+#
+#   COUNTED LINES ARE KEYED ON THE UNIFORM `<-- counted` MARKER, and the snippet was made to
+#   emit it uniformly for that reason. The first draft of [12b] matched the same string
+#   against a snippet that wrote `<-- drift, counted` on one arm, silently undercounted by
+#   one, and reported it as a snippet/hook DISAGREEMENT — a matcher bug wearing the costume
+#   of the defect this arm exists to find. If a future arm gains a new label, it carries the
+#   same marker or this count goes quietly wrong again.
+# ===================================================================================
+SNIP="$SCRATCH/snippet.sh"
+sed -n '/^# The item list MUST match the loop/,/^done$/p' "$REPO/docs/troubleshooting.md" > "$SNIP"
+missing_items=0
+for i in "${ITEMS[@]}"; do grep -qF -- "$i" "$SNIP" || missing_items=$((missing_items + 1)); done
+if [[ -s "$SNIP" ]] && (( missing_items == 0 )) && bash -n "$SNIP" 2>/dev/null; then
+  ok "[12a] the diagnose fence extracts, parses, and names all five items"
+else
+  bad "[12a] the fence reader came back empty or broken — every arm below is vacuous" \
+      "bytes: $(wc -c < "$SNIP")  items missing: $missing_items"
+fi
+
+# All five states at once, so the comparison is over the whole vocabulary rather than one.
+H5="$(make_home)"; L5="$(make_lane "$H5" five)"
+mkdir -p "$H5/decoy/dhx-tools"
+rm "$L5/dhx-tools";            ln -s "$H5/decoy/dhx-tools" "$L5/dhx-tools"   # WRONG
+rm "$L5/gsd-core";             mkdir -p "$L5/gsd-core"                        # REAL
+rm "$L5/hooks";                ln -s "$H5/.claude/gone" "$L5/hooks"           # DANGLING
+rm "$L5/gsd-file-manifest.json"                                               # MISSING
+snip_counted="$(HOME="$H5" CLAUDE_CONFIG_DIR="$L5" bash "$SNIP" | grep -c -- '<-- counted')"
+chk "[12b] the snippet's counted lines match the hook's count on a four-fault lane" \
+    "$snip_counted" "$(reading "$H5" "$L5" five)"
+chk "[12c] ...and on a healthy lane both say zero" \
+    "$(HOME="$H5" CLAUDE_CONFIG_DIR="$(make_lane "$H5" six)" bash "$SNIP" | grep -c -- '<-- counted')" \
+    "0"
+
+# The fourth wrong label, as an assertion: canonical's own indirect item must not read `real`.
+H7="$(make_home)"
+rm -rf "$H7/.claude/gsd-local-patches"
+mkdir -p "$H7/repos/dotfiles/claude/gsd-local-patches"
+ln -s "$H7/repos/dotfiles/claude/gsd-local-patches" "$H7/.claude/gsd-local-patches"
+canon_out="$(HOME="$H7" CLAUDE_CONFIG_DIR="$H7/.claude" bash "$SNIP")"
+if grep -qE '^link +gsd-local-patches' <<<"$canon_out"; then
+  ok "[12d] a canonical item that is ITSELF a symlink is labelled 'link', not 'real'"
+else
+  bad "[12d] the canonical branch mislabels an indirect item" "got: $(grep gsd-local-patches <<<"$canon_out")"
+fi
+chk "[12e] ...and canonical still counts nothing, so the verdict never moved" \
+    "$(grep -c -- '<-- counted' <<<"$canon_out")" "0"
 
 echo
 echo "$pass passed, $fail failed"
