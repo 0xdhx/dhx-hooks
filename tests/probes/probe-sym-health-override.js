@@ -12,6 +12,20 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-sym-'));
 const healthFile = path.join(tmpDir, 'health.json');
 const symFile = path.join(tmpDir, 'sym-health.json');
 
+// MIRROR WARNING, stated because it bit on 2026-09-15. readHealthCache() below is a
+// REIMPLEMENTATION, not the shipped function — this probe pins the front/tail tier
+// PARTITION, which is easier to assert against a local copy. The cost is that a real
+// behaviour change does not red it: when the lane-stamp gate landed in the shipped
+// reader, this file stayed 11/11 green while asserting a contract the code no longer
+// had. So the one predicate that is genuinely cross-repo is imported from the real
+// module rather than copied, and the tier logic stays local. End-to-end coverage of
+// the shipped reader lives in probe-health-suffix.js and probe-sym-health-lane-stamp.sh.
+const { symHealthIsForThisLane } = require('../../dhx/statusline-wrapper.js');
+
+// The fixture's own directory stands in for $CLAUDE_CONFIG_DIR; a stamped fixture
+// names its realpath, exactly as the skills-repo publisher writes it.
+const CFG = fs.realpathSync(tmpDir);
+
 function readHealthCache() {
   return new Promise((resolve) => {
     const empty = { front: '', tail: '' };
@@ -22,7 +36,8 @@ function readHealthCache() {
         try {
           const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
           const ageMs = Date.now() - Date.parse(sym.checked_at || '');
-          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys) {
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys
+              && symHealthIsForThisLane(sym.config_dir, tmpDir)) {
             h.plugin_keys = sym.plugin_keys;
           }
         } catch { /* defer */ }
@@ -60,7 +75,7 @@ const scenarios = [
   {
     name: 'healthy → both empty',
     health: healthy,
-    sym: { plugin_keys: 'ok', checked_at: iso(60000) },
+    sym: { plugin_keys: 'ok', config_dir: CFG, checked_at: iso(60000) },
     expectFront: '',
     expectTail: '',
   },
@@ -111,21 +126,47 @@ const scenarios = [
   {
     name: 'fresh sym override: plugin-keys MISSING (health.json says ok) → front fires',
     health: healthy,
-    sym: { plugin_keys: 'MISSING', checked_at: iso(60000) },
+    sym: { plugin_keys: 'MISSING', config_dir: CFG, checked_at: iso(60000) },
     expectFrontContains: ['plugin-keys:MISSING'],
     expectTail: '',
   },
   {
     name: 'fresh sym override: plugin-keys ok (health.json says MISSING) → front clears',
     health: { ...healthy, plugin_keys: 'MISSING' },
-    sym: { plugin_keys: 'ok', checked_at: iso(60000) },
+    sym: { plugin_keys: 'ok', config_dir: CFG, checked_at: iso(60000) },
     expectFront: '',
     expectTail: '',
   },
   {
     name: 'stale sym (2h), health.json MISSING → publisher ignored, front fires from health.json',
     health: { ...healthy, plugin_keys: 'MISSING' },
-    sym: { plugin_keys: 'ok', checked_at: iso(2 * 3600 * 1000) },
+    sym: { plugin_keys: 'ok', config_dir: CFG, checked_at: iso(2 * 3600 * 1000) },
+    expectFrontContains: ['plugin-keys:MISSING'],
+    expectTail: '',
+  },
+  {
+    // THE DEFECT, AS AN ASSERTION. A fresh, well-formed, entirely correct verdict
+    // that belongs to ANOTHER lane must not clear this lane's warning. Before the
+    // stamp this rendered `ok` and the lane's real fault vanished.
+    name: 'fresh sym stamped for ANOTHER lane → refused, health.json MISSING still fires',
+    health: { ...healthy, plugin_keys: 'MISSING' },
+    sym: { plugin_keys: 'ok', config_dir: '/nonexistent/other-lane', checked_at: iso(60000) },
+    expectFrontContains: ['plugin-keys:MISSING'],
+    expectTail: '',
+  },
+  {
+    // the mirror direction — a foreign MISSING must not raise a false alarm either
+    name: 'fresh sym stamped for ANOTHER lane → refused, health.json ok stays silent',
+    health: healthy,
+    sym: { plugin_keys: 'MISSING', config_dir: '/nonexistent/other-lane', checked_at: iso(60000) },
+    expectFront: '',
+    expectTail: '',
+  },
+  {
+    // written before the stamp existed: unknown provenance, refused not trusted
+    name: 'fresh sym with NO config_dir (legacy file) → refused',
+    health: { ...healthy, plugin_keys: 'MISSING' },
+    sym: { plugin_keys: 'ok', checked_at: iso(60000) },
     expectFrontContains: ['plugin-keys:MISSING'],
     expectTail: '',
   },

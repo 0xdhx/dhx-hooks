@@ -85,6 +85,15 @@ run_script_case() {
   local cfg="$home/.claude"
   mkdir -p "$cache" "$cfg"
 
+  # LANE STAMP substitution (2026-09-15). The hook now accepts a published verdict
+  # only when sym-health.json's `config_dir` equals the realpath of ITS OWN
+  # $CLAUDE_CONFIG_DIR, so a fixture must be able to name the dir the case just
+  # created. Callers write the token __CFG__ and it is replaced here with the
+  # realpath; a case that deliberately omits the token is testing the REFUSAL path.
+  local cfg_real
+  cfg_real="$(readlink -f "$cfg")"
+  sym_json="${sym_json//__CFG__/$cfg_real}"
+
   # Real settings file + symlink chain — matches canonical layout enough that
   # `readlink -f "$cfg/settings.json"` resolves to it.
   printf '%s' "$settings_json" > "$cfg/settings-real.json"
@@ -115,19 +124,19 @@ BAD_SETTINGS='{"enabledPlugins":{}}'
 # B1: fresh sym=ok + good settings → ok (consistent; publishers agree)
 now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 run_script_case "fresh-sym-ok-good-settings" \
-  "{\"plugin_keys\":\"ok\",\"checked_at\":\"$now_utc\"}" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$now_utc\"}" \
   "$GOOD_SETTINGS" "ok"
 
 # B2: fresh sym=MISSING overrides good settings (publisher says broken; trust it
 # — /dhx:sym knows something about repair state settings alone can't express)
 run_script_case "fresh-sym-MISSING-wins-over-good-settings" \
-  "{\"plugin_keys\":\"MISSING\",\"checked_at\":\"$now_utc\"}" \
+  "{\"plugin_keys\":\"MISSING\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$now_utc\"}" \
   "$GOOD_SETTINGS" "MISSING"
 
 # B3: fresh sym=ok overrides bad settings (publisher just repaired — fast path
 # means the statusline clears within 60s without SessionStart)
 run_script_case "fresh-sym-ok-wins-over-bad-settings" \
-  "{\"plugin_keys\":\"ok\",\"checked_at\":\"$now_utc\"}" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$now_utc\"}" \
   "$BAD_SETTINGS" "ok"
 
 # B4: malformed sym cache → fall through to direct jq check against settings
@@ -138,24 +147,57 @@ run_script_case "malformed-sym-falls-through" \
 # B5: sym with empty plugin_keys field → fall through (cache without the
 # field we need — treat as no signal)
 run_script_case "sym-empty-plugin_keys-falls-through" \
-  "{\"plugin_keys\":\"\",\"checked_at\":\"$now_utc\"}" \
+  "{\"plugin_keys\":\"\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$now_utc\"}" \
   "$BAD_SETTINGS" "MISSING"
 
 # C1: sym stale (2h old) → ignored, fall through to direct check
 stale_utc=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)
 run_script_case "stale-sym-2h-ignored" \
-  "{\"plugin_keys\":\"ok\",\"checked_at\":\"$stale_utc\"}" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$stale_utc\"}" \
   "$BAD_SETTINGS" "MISSING"
 
 # C2: sym future-dated (clock skew) → age_sec < 0, skip → fall through
 future_utc=$(date -u -d '1 hour' +%Y-%m-%dT%H:%M:%SZ)
 run_script_case "future-dated-sym-ignored" \
-  "{\"plugin_keys\":\"ok\",\"checked_at\":\"$future_utc\"}" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"__CFG__\",\"checked_at\":\"$future_utc\"}" \
   "$BAD_SETTINGS" "MISSING"
 
 # C3: sym missing checked_at → age unresolvable, skip → fall through
 run_script_case "sym-missing-checked_at-falls-through" \
-  "{\"plugin_keys\":\"ok\"}" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"__CFG__\"}" \
+  "$BAD_SETTINGS" "MISSING"
+
+# ---- D. LANE STAMP (2026-09-15) ----
+# The publisher computes plugin_keys from a PER-LANE input but writes it to one
+# $HOME-anchored file every CCS lane shares. Freshness alone let the last lane to
+# run /dhx:sym win. D1 is the defect as an assertion: a FRESH, WELL-FORMED, correct
+# verdict that simply belongs to another lane must not be served here.
+echo ""
+echo "=== D. lane stamp on sym-health.json ==="
+
+# D1: fresh sym=ok stamped for ANOTHER lane, over bad settings → refused, so the
+#     lane-local check runs and reports its own truth. Without the gate this is
+#     `ok` — a healthy lane masking this lane's real MISSING (the false-clean).
+run_script_case "foreign-stamp-refused-no-false-clean" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"/nonexistent/other-lane\",\"checked_at\":\"$now_utc\"}" \
+  "$BAD_SETTINGS" "MISSING"
+
+# D2: the mirror direction — a foreign `MISSING` must not be served to a lane that
+#     is genuinely fine. A false ALARM is the cheaper failure but still a wrong read.
+run_script_case "foreign-stamp-refused-no-false-alarm" \
+  "{\"plugin_keys\":\"MISSING\",\"config_dir\":\"/nonexistent/other-lane\",\"checked_at\":\"$now_utc\"}" \
+  "$GOOD_SETTINGS" "ok"
+
+# D3: a file written BEFORE the stamp existed carries no config_dir. Unstamped is
+#     unknown provenance, so it is refused rather than trusted; self-heals on the
+#     next /dhx:sym run.
+run_script_case "unstamped-legacy-file-refused" \
+  "{\"plugin_keys\":\"ok\",\"checked_at\":\"$now_utc\"}" \
+  "$BAD_SETTINGS" "MISSING"
+
+# D4: an EMPTY stamp is not a wildcard.
+run_script_case "empty-stamp-refused" \
+  "{\"plugin_keys\":\"ok\",\"config_dir\":\"\",\"checked_at\":\"$now_utc\"}" \
   "$BAD_SETTINGS" "MISSING"
 
 echo "---"

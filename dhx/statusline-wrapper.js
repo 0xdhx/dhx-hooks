@@ -758,10 +758,32 @@ function checkPluginRegistry(configDir, sessionId) {
 // Publisher override: sym-health.json is written by the skills-repo `/dhx:sym`
 // status/audit/repair commands — the authoritative source for plugin_keys
 // (same process that runs `claude plugin enable` publishes the result). When
-// fresh (<1h via checked_at), its plugin_keys replaces health.json's. This
-// lets mid-session `/dhx:sym repair` clear the warning within 60s instead of
-// waiting for the next SessionStart. Stale/missing/malformed → defer to
-// health.json, which already carries the SessionStart-time direct jq check.
+// fresh (<1h via checked_at) AND STAMPED FOR THIS LANE, its plugin_keys
+// replaces health.json's. This lets mid-session `/dhx:sym repair` clear the
+// warning within 60s instead of waiting for the next SessionStart.
+// Stale/missing/malformed/foreign → defer to health.json, which already carries
+// the SessionStart-time direct jq check.
+//
+// The stamp gate is load-bearing (2026-09-15). That publisher computes its
+// verdict from a PER-LANE input — $CLAUDE_CONFIG_DIR/settings.json — and writes
+// it to one $HOME-anchored file every CCS lane shares. Freshness alone let the
+// last lane to run /dhx:sym win, and this reader applied the foreign answer a
+// SECOND time at render, after dhx-health-check.sh had already taken it. The
+// failure is a FALSE-CLEAN: lanes normally link settings.json to the same
+// ~/.ccs/shared/settings.json and agree, so it costs nothing until the one case
+// the detector exists for — a lane whose own link has broken, masked by a
+// healthy lane's `ok`.
+//
+// Deferring to health.json is genuinely lane-local now, which is what makes the
+// refusal cheap rather than a downgrade: dhx-health-check.sh applies the same
+// stamp gate, so the value it wrote is either this lane's own jq check or a
+// publish stamped for this lane. The accepted cost is freshness, not
+// correctness — a lane that did not itself run the repair clears at its next
+// SessionStart rather than within 60s. Computing a live lane-local verdict here
+// instead was considered and rejected: it would mint a SECOND bash/JS predicate
+// pair to keep in agreement, to buy back a window the brief deliberately scoped
+// to the repairing lane.
+// Producer + schema: ~/repos/skills/docs/decisions/2026-09-15-sym-health-lane-stamp.md
 //
 // CORRECTED 2026-09-15 — this used to read "INVARIANT: sole runtime reader of
 // ~/.cache/dhx/health.json", and that was false. A source sweep across both repos
@@ -796,6 +818,25 @@ function checkPluginRegistry(configDir, sessionId) {
 // 2026-04-27 config-dir write-hardening brief). Anything outside $HOME/.claude or
 // a single-segment child of $HOME/.ccs/instances resolves to null, and a null id
 // reads as "no reading for this lane".
+// Does a published sym-health.json verdict belong to THIS lane?
+//
+// INVARIANT (cross-repo, unenforceable by code): the stamp this compares is written
+// by ~/repos/skills/scripts/lib/doctor.sh::cmd_health_export as `readlink -f` of its
+// own $CLAUDE_CONFIG_DIR. Both sides must normalise, and both sides do — a lexical
+// comparison here would rebuild the exact bug a close-gate reviewer refuted in the
+// parallel health.json arc, where a lane symlinked to canonical (or merely named
+// with an internal double slash) compared unequal to itself.
+//
+// Returns false for a missing or empty stamp, which is the deliberate reading of an
+// UNSTAMPED file: written before 2026-09-15, provenance unknown, and unknown
+// provenance is the thing the stamp exists to end. Refusal is cheap — the caller
+// falls back to health.json's lane-local value. realpathSync throws for a config dir
+// deleted mid-session; that is also a refusal, not a crash.
+function symHealthIsForThisLane(symConfigDir, configDir) {
+  if (typeof symConfigDir !== 'string' || symConfigDir === '') return false;
+  try { return symConfigDir === fs.realpathSync(configDir); } catch { return false; }
+}
+
 function laneIdFor(configDir, home) {
   try {
     const real = (p) => { try { return fs.realpathSync(p); } catch { return String(p).replace(/\/+$/, ''); } };
@@ -852,10 +893,12 @@ function readHealthCache(sessionId) {
         const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
         const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
         const ageMs = Date.now() - Date.parse(sym.checked_at || '');
-        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys) {
+        const symConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys
+            && symHealthIsForThisLane(sym.config_dir, symConfigDir)) {
           h.plugin_keys = sym.plugin_keys;
         }
-      } catch { /* absent/malformed — defer to health.json's value */ }
+      } catch { /* absent/malformed/foreign — defer to health.json's value */ }
 
       // Plugin-registry drift runs inline every refresh (no SessionStart
       // publisher) — it's the only class of clobber that can take out the
@@ -3037,6 +3080,9 @@ module.exports = {
   // declared at their definition sites.
   laneIdFor,
   readLaneHealth,
+  // Cross-repo lane stamp on sym-health.json (2026-09-15) — exported PURE so
+  // probe-sym-health-lane-stamp.sh drives the real predicate rather than a copy.
+  symHealthIsForThisLane,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
   // Cross-session drift persistence (Nd) — drift-duration-render (2026-06-25)

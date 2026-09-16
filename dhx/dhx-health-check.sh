@@ -251,19 +251,44 @@ fi
 # ~/.cache/dhx/sym-health.json on every status/audit/repair invocation. That
 # file is the authoritative signal (single source of truth — same process that
 # runs `claude plugin enable` publishes the result). If fresh (<1h via
-# checked_at), prefer its plugin_keys field. Otherwise fall back to the direct
-# jq check below — defense-in-depth when the cache goes stale, the skills repo
-# moves, or the publisher breaks. Resolution of settings.json via
-# CLAUDE_CONFIG_DIR + realpath matches statusline-wrapper.js::hashWarnSettings().
+# checked_at) AND STAMPED FOR THIS LANE, prefer its plugin_keys field. Otherwise
+# fall back to the direct jq check below — defense-in-depth when the cache goes
+# stale, the skills repo moves, or the publisher breaks. Resolution of
+# settings.json via CLAUDE_CONFIG_DIR + realpath matches
+# statusline-wrapper.js::hashWarnSettings().
+#
+# THE LANE STAMP, and why the freshness gate alone was not enough (2026-09-15).
+# The publisher computes its verdict from a PER-LANE input —
+# $CLAUDE_CONFIG_DIR/settings.json — but writes it to one $HOME-anchored file
+# every CCS lane shares. Before it carried `config_dir`, a fresh verdict was
+# simply believed, so the last lane to run /dhx:sym won and this hook served a
+# foreign answer. The failure is a FALSE-CLEAN, the bad direction: all lanes
+# normally link settings.json to the same ~/.ccs/shared/settings.json and agree,
+# so the gap costs nothing until the one case the detector exists for — a lane
+# whose OWN link has broken, whose real MISSING is then masked by a healthy
+# lane's `ok`. The symlink loop below cannot cover it either: settings.json is
+# not one of the five items it walks.
+#
+# Compared as REALPATHS on both sides. $config_dir_real is the same normalised
+# value the lane-identity block derives, and the publisher stamps
+# `readlink -f`. That is the round-1 lesson from the health.json arc, where a
+# lexical-vs-realpath split let a lane symlinked to canonical compare unequal to
+# itself. An UNSTAMPED file is refused, not trusted — written before this
+# change, unknown provenance, and unknown provenance is what the stamp ends.
+# Refusal costs nothing: it falls through to the lane-local jq check below.
+# Producer + schema: ~/repos/skills/docs/decisions/2026-09-15-sym-health-lane-stamp.md
 plugin_keys=""
 sym_health="$CACHE_DIR/sym-health.json"
 if [[ -f "$sym_health" ]]; then
-  checked_at=$(jq -r '.checked_at // empty' "$sym_health" 2>/dev/null)
-  if [[ -n "$checked_at" ]]; then
-    checked_epoch=$(date -u -d "$checked_at" +%s 2>/dev/null || echo 0)
-    age_sec=$(( $(date +%s) - checked_epoch ))
-    if (( checked_epoch > 0 && age_sec >= 0 && age_sec < 3600 )); then
-      plugin_keys=$(jq -r '.plugin_keys // empty' "$sym_health" 2>/dev/null)
+  sym_config_dir=$(jq -r '.config_dir // empty' "$sym_health" 2>/dev/null)
+  if [[ -n "$sym_config_dir" && "$sym_config_dir" == "$config_dir_real" ]]; then
+    checked_at=$(jq -r '.checked_at // empty' "$sym_health" 2>/dev/null)
+    if [[ -n "$checked_at" ]]; then
+      checked_epoch=$(date -u -d "$checked_at" +%s 2>/dev/null || echo 0)
+      age_sec=$(( $(date +%s) - checked_epoch ))
+      if (( checked_epoch > 0 && age_sec >= 0 && age_sec < 3600 )); then
+        plugin_keys=$(jq -r '.plugin_keys // empty' "$sym_health" 2>/dev/null)
+      fi
     fi
   fi
 fi
