@@ -58,7 +58,16 @@ config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # hooks/package.json + plugin dirs, which ride the `hooks` item above), so the
 # old entry was another permanently-missing false `1 broken symlink` token —
 # the same failure mode as the 2026-06-05 rename row above.
-for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches; do
+# 2026-09-15: `dhx-tools` ADDED — it is in symlinks.yaml `ccs-profiles.links` (so
+# `/dhx:sym setup|repair` creates it) but was absent here, and the dashboard's
+# parity check cannot see it either: dhx-dashboard.cjs `readSymlinks()` diffs every
+# instance against the DEFAULT profile and skips that profile itself (`e.name !==
+# ref`), so a `dhx-tools` lost from the reference lane was invisible to both. This
+# item is a BACKSTOP, not a break detector: consumers are $HOME-anchored per
+# install-dhx-tools.sh, so a missing lane link no longer breaks them (the skills-side
+# `/dhx:upstream` call sites were repointed 2026-09-15); ~/repos/cross-repo
+# scripts/upstream/* still lane-anchor MARKER_DIR/WATCH_DRIVER and would break.
+for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches dhx-tools; do
   p="$config_dir/$item"
   if [[ ! -e "$p" ]]; then
     missing=$((missing + 1))

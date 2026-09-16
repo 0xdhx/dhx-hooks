@@ -56,6 +56,13 @@ assert "statusline GSD_FORK_ROOT names 'gsd-local-patches','gsd-core'" "echo \"\
 assert "statusline GSD_FORK_ROOT drops retired 'get-shit-done'" "! echo \"\$FORK_LINE\" | grep -q 'get-shit-done'"
 assert "health-check checklist names 'gsd-core'"              "echo \"\$HEALTH_LOOP\" | grep -q 'gsd-core'"
 assert "health-check checklist drops retired 'get-shit-done'" "! echo \"\$HEALTH_LOOP\" | grep -q 'get-shit-done'"
+# 2026-09-15: the loop's membership, not just the gsd name. `dhx-tools` is in
+# symlinks.yaml ccs-profiles.links and the dashboard's parity check skips its own
+# reference profile, so this loop is the only per-lane detector for it. The
+# retired config-root `package.json` (gsd-core 1.10.0 #2544) must stay out — it
+# counted a permanently-missing item for two months.
+assert "health-check checklist names 'dhx-tools'"             "echo \"\$HEALTH_LOOP\" | grep -q 'dhx-tools'"
+assert "health-check checklist drops retired 'package.json'"  "! echo \"\$HEALTH_LOOP\" | grep -q 'package\.json'"
 
 # --- Static: the 2026-06-05 tail — four runtime surfaces. Target the SPECIFIC
 #     load-bearing literal on each, never the whole file: the gate + triad carry
