@@ -763,9 +763,73 @@ function checkPluginRegistry(configDir, sessionId) {
 // waiting for the next SessionStart. Stale/missing/malformed → defer to
 // health.json, which already carries the SessionStart-time direct jq check.
 //
-// INVARIANT: sole runtime reader of ~/.cache/dhx/health.json. Atomic schema
-// extension (new field in same commit as new reader branch) is safe only
-// while this holds — grep hooks+skills repos for readers before extending.
+// CORRECTED 2026-09-15 — this used to read "INVARIANT: sole runtime reader of
+// ~/.cache/dhx/health.json", and that was false. A source sweep across both repos
+// (anchored on the exact basename, since `health.json` as a substring also matches
+// the unrelated dhx-watch-health.json and dhx-selftest-health.json) found a SECOND
+// runtime reader: the skills repo's dhx/sym/references/sym-gsd-update-report.md
+// runs `jq` against this file in two blocks — step 12.45(c) and step 12.5 check 2 —
+// and hard-exits on .settings_chain, .read_guard, .plugin_keys and .hooks_wiring.
+// So a schema change here reaches a consumer in another repo.
+//
+// The live rule, which is what the old invariant was reaching for: the four fields
+// that reader gates on are all MACHINE-WIDE and all stay at the top level of
+// health.json. Removing or renaming any of them breaks `/dhx:sym gsd-update`
+// post-install verification in a way no probe in this repo would catch. Before
+// extending or moving a field, grep BOTH repos for the exact basename and open
+// every hit — a hit count is not a reading.
+//
+// Per-lane fields live in ~/.cache/dhx/health-lane-<id>.json instead; see
+// readLaneHealth() below and dhx-health-check.sh's lane-identity block.
+
+// Derive a CCS lane id from a config dir, mirroring dhx-health-check.sh.
+//
+// INVARIANT: this MUST agree with the lane-identity block in dhx-health-check.sh.
+// Two implementations in two languages, so the agreement is enforced two ways —
+// the sidecar records the config_dir it was computed for and readLaneHealth()
+// refuses a mismatch (a derivation drift renders unknown rather than serving
+// another lane's reading), and tests/probes/probe-health-lane-scoping.sh asserts
+// the producer and this consumer resolve the same id for the same input.
+//
+// Allowlist, not sanitization: $CLAUDE_CONFIG_DIR is untrusted (a sandboxed CC has
+// previously reached live cache files through a symlink chain — see the shipped
+// 2026-04-27 config-dir write-hardening brief). Anything outside $HOME/.claude or
+// a single-segment child of $HOME/.ccs/instances resolves to null, and a null id
+// reads as "no reading for this lane".
+function laneIdFor(configDir, home) {
+  try {
+    const real = (p) => { try { return fs.realpathSync(p); } catch { return String(p).replace(/\/+$/, ''); } };
+    const cfg = real(configDir);
+    if (cfg === real(path.join(home, '.claude'))) return 'default';
+    const instances = real(path.join(home, '.ccs', 'instances'));
+    if (cfg.startsWith(instances + path.sep)) {
+      const candidate = cfg.slice(instances.length + 1);
+      if (/^[A-Za-z0-9_-]+$/.test(candidate)) return candidate;
+    }
+  } catch { /* fall through to null */ }
+  return null;
+}
+
+// Read the per-lane sidecar for the lane this statusline is rendering for.
+// Returns the lane's missing_symlinks count, or undefined when there is no
+// trustworthy reading — absent file, malformed JSON, a config dir outside the
+// allowlist, a non-integer count, or a sidecar whose recorded config_dir is not
+// this lane's. undefined is NOT zero: the advisory handler renders it as
+// `symlinks:?` so an absent reading can never present as a clean one.
+function readLaneHealth(configDir, home) {
+  try {
+    const id = laneIdFor(configDir, home);
+    if (!id) return undefined;
+    const laneFile = path.join(home, '.cache', 'dhx', `health-lane-${id}.json`);
+    const lane = JSON.parse(fs.readFileSync(laneFile, 'utf8'));
+    if (!lane || lane.config_dir !== fs.realpathSync(configDir)) return undefined;
+    if (!Number.isInteger(lane.missing_symlinks) || lane.missing_symlinks < 0) return undefined;
+    return lane.missing_symlinks;
+  } catch {
+    return undefined;
+  }
+}
+
 function readHealthCache(sessionId) {
   return new Promise((resolve) => {
     const cacheFile = path.join(os.homedir(), '.cache', 'dhx', 'health.json');
@@ -795,6 +859,27 @@ function readHealthCache(sessionId) {
         const state = checkPluginRegistry(configDir, sessionId);
         if (state) h.plugin_registry = state;
       } catch { /* detector errors never block the statusline */ }
+
+      // Per-lane reading (2026-09-15). missing_symlinks is computed against
+      // $CLAUDE_CONFIG_DIR, so it belongs to the lane that computed it, not to
+      // the machine. It now lives in ~/.cache/dhx/health-lane-<id>.json and is
+      // resolved for THIS lane here.
+      //
+      // The assignment is UNCONDITIONAL and that is load-bearing: a legacy
+      // health.json still carrying a top-level missing_symlinks (written by a
+      // pre-2026-09-15 hook, or by any lane that has not started a session since)
+      // must not leak its value into this render. Overwriting with undefined is
+      // what makes an old cross-lane count unreachable rather than merely
+      // deprioritised — the stale trap the split exists to remove.
+      //
+      // undefined reaches ADVISORY_HANDLERS.missing_symlinks below and renders
+      // `symlinks:?`. It does NOT render as a clean line: an absent reading
+      // presenting as healthy is the same silent-zero class as a stale list
+      // producing a permanently-false count.
+      h.missing_symlinks = readLaneHealth(
+        process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+        os.homedir(),
+      );
 
       // Tier classification — field set comes from scripts/lib/tiers.json (D-07
       // Phase 5 migration; Phase 4 D-02 source-of-truth lock). Comparator + format
@@ -831,7 +916,20 @@ function readHealthCache(sessionId) {
       const ADVISORY_HANDLERS = {
         worktree_patches: (v) => v && v !== 'patched' ? `patches:${v}` : null,
         read_guard:       (v) => v && v !== 'patched' ? `read-guard:${v}` : null,
-        missing_symlinks: (v) => v > 0 ? `${v} broken symlink${v > 1 ? 's' : ''}` : null,
+        // Three states, not two. `undefined` means no trustworthy reading exists
+        // for THIS lane (no sidecar yet, malformed, or one recorded against a
+        // different config dir) and renders `symlinks:?` — deliberately NOT null,
+        // because null is silence and silence reads as healthy. 0 still renders
+        // null: a lane that WAS checked and found clean has nothing to say.
+        // `symlinks:?` over a longer phrase on width grounds: the advisory tail
+        // joins every token then appends one `— /dhx:sym repair`, and at the 76-char
+        // content ceiling a worst-case line carrying two real faults alongside it
+        // measures 67 chars with `symlinks:?` and 80 (wrapping, with no hanging
+        // indent, so the continuation lands at column 0) with the spelled-out form.
+        missing_symlinks: (v) => {
+          if (v === undefined) return 'symlinks:?';
+          return v > 0 ? `${v} broken symlink${v > 1 ? 's' : ''}` : null;
+        },
         // config-symlink integrity: $HOME/.claude/CLAUDE.md drifted off its
         // dotfiles-canonical symlink (producer: dhx-health-check.sh; states
         // REAL_FILE | WRONG_TARGET | MISSING). A human phrase (not the raw
@@ -2910,6 +3008,14 @@ module.exports = {
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
+  // Per-lane health scoping (2026-09-15) — exported as PURE functions so
+  // probe-health-lane-scoping.sh can assert this consumer derives the same lane
+  // id as the producer (dhx-health-check.sh) for the same config dir, rather
+  // than reimplementing the derivation and testing the copy. That two-language
+  // agreement is the change's one unenforceable-by-code invariant; both are
+  // declared at their definition sites.
+  laneIdFor,
+  readLaneHealth,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
   // Cross-session drift persistence (Nd) — drift-duration-render (2026-06-25)

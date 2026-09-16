@@ -12,6 +12,64 @@ DHX_SYM="$HOME/.claude/scripts/dhx-sym.sh"
 
 mkdir -p "$CACHE_DIR"
 
+# --- Lane identity (per-profile cache scoping, 2026-09-15) ---
+# $CACHE_FILE is $HOME-anchored and every CCS lane's SessionStart writes it, so
+# any field computed against $CLAUDE_CONFIG_DIR was last-writer-wins across lanes:
+# a lane holding a real symlink fault wrote missing_symlinks:1 and the next
+# SessionStart in ANY healthy lane overwrote it with 0, leaving the faulted lane's
+# statusline rendering a count computed for a different directory. Reproduced in a
+# two-lane fixture before the fix; see docs/decisions.md 2026-09-15 scoping row.
+#
+# Split by scope rather than sharding the whole object. Of the fields this script
+# emits, exactly ONE is lane-sensitive: missing_symlinks (the loop below reads
+# $config_dir). settings_chain, claude_md and hooks_wiring hardcode $HOME/.claude
+# paths; worktree_patches and read_guard delegate to dhx-sym.sh, whose
+# implementation (skills repo scripts/lib/forks.sh) references CLAUDE_CONFIG_DIR
+# nowhere and anchors WORKFLOWS_DIR at "$HOME/.claude". Those six stay in
+# $CACHE_FILE with its existing whole-file atomic write — which also keeps the
+# skills-repo reader working (sym-gsd-update-report.md steps 12.45(c) and 12.5
+# check 2 jq this file and hard-exit on .settings_chain / .read_guard /
+# .plugin_keys / .hooks_wiring; that reader is why statusline-wrapper.js's old
+# "sole runtime reader" claim was false and has been corrected).
+#
+# The lane-sensitive field goes to its own sidecar, $LANE_FILE, written with the
+# same tmp+mv whole-file atomic write. A sidecar-per-lane needs no read-modify-write
+# and therefore no lock: locking $CACHE_FILE itself would be worse than useless,
+# since the atomic `mv` that makes the write safe detaches the lock from the inode
+# every later writer would go on to take.
+#
+# ALLOWLIST, not sanitization. $CLAUDE_CONFIG_DIR is UNTRUSTED here — a sandboxed
+# CC launched with CLAUDE_CONFIG_DIR=$(mktemp -d) has previously reached live cache
+# files through a symlink chain (.planning/backlog/shipped/2026-04-27-heal-hook-
+# config-dir-path-dependent-write-hardening.md, shipped 2026-05-19). Deriving a
+# lane id from an arbitrary realpath would let any caller mint cache entries; a TTL
+# would bound their AGE and not their CARDINALITY. So the id is accepted only from
+# $HOME/.claude ("default") or a single-segment child of $HOME/.ccs/instances, and a
+# config dir matching neither writes NO sidecar at all — its lane then reads as
+# unknown, which is the honest answer. Same allowlist shape the SESSION_ID guard at
+# the foot of this script uses (WR-01).
+#
+# INVARIANT: statusline-wrapper.js::laneIdFor() MUST derive the same id from the
+# same config dir. The sidecar stores its own config_dir and the reader compares it,
+# so a drift between the two implementations renders unknown rather than serving one
+# lane's reading to another. Guarded by tests/probes/probe-health-lane-scoping.sh.
+config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+config_dir="${config_dir%/}"
+config_dir_real="$(readlink -f "$config_dir" 2>/dev/null || echo "$config_dir")"
+claude_home_real="$(readlink -f "$HOME/.claude" 2>/dev/null || echo "$HOME/.claude")"
+instances_real="$(readlink -f "$HOME/.ccs/instances" 2>/dev/null || echo "$HOME/.ccs/instances")"
+
+lane_id=""
+if [[ "$config_dir_real" == "$claude_home_real" ]]; then
+  lane_id="default"
+elif [[ "$config_dir_real" == "$instances_real"/* ]]; then
+  candidate="${config_dir_real#"$instances_real"/}"
+  [[ "$candidate" =~ ^[A-Za-z0-9_-]+$ ]] && lane_id="$candidate"
+fi
+
+LANE_FILE=""
+[[ -n "$lane_id" ]] && LANE_FILE="$CACHE_DIR/health-lane-$lane_id.json"
+
 # Read stdin — session_id available since CC added it to SessionStart events
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
@@ -45,8 +103,11 @@ fi
 # they're the real thing. A real dir where a symlink belongs means invisible
 # drift — e.g., a botched GSD install writing into the profile instead of
 # following the symlink to ~/.claude.
+#
+# THE one lane-sensitive field in this script. It is written to $LANE_FILE, not
+# to $CACHE_FILE — see the lane-identity block at the head of the file.
+# $config_dir is derived there.
 missing=0
-config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # INVARIANT: the gsd runtime item below MUST track the live gsd install dir name.
 # 2026-06-05 `@opengsd/gsd-core@1.3.1` renamed `get-shit-done/` -> `gsd-core/`; the
 # stale `get-shit-done` entry counted a permanently-missing dir and surfaced a false
@@ -252,12 +313,43 @@ if [[ -f "$manifest" ]]; then
   fi
 fi
 
-# --- Write health cache (atomic via temp + mv) ---
+# --- Write MACHINE-WIDE health cache (atomic via temp + mv) ---
+# Every field here is computed against a hardcoded $HOME path, so whichever lane
+# wrote last, the reading is valid for all of them — last-writer-wins is CORRECT
+# for this object and the existing whole-file write is kept unchanged.
+# missing_symlinks deliberately absent: it moved to $LANE_FILE below. Do NOT
+# reinstate it here as a mirror — a second copy with different semantics is the
+# stale trap this split removes, and statusline-wrapper.js now overwrites any
+# legacy value it finds so an old cache can never leak one.
+#
+# plugin_keys STAYS here despite its fallback branch resolving
+# ${CLAUDE_CONFIG_DIR}/settings.json, i.e. despite being mechanically per-lane.
+# Sharding it would not fix it: its fast-path takes a verdict from
+# sym-health.json, which the skills-repo /dhx:sym writes from whatever lane the
+# operator was in and which carries NO lane identity of its own — so a per-lane
+# slot would still be stamped with a foreign lane's answer. Sharding the
+# destination cannot fix an unstamped source, and that source is another repo's.
+# Filed: .planning/backlog/2026-09-15-sym-health-json-carries-no-lane-identity.md.
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","missing_symlinks":$missing,"claude_md":"$claude_md_state","settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","claude_md":"$claude_md_state","settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
+
+# --- Write PER-LANE health sidecar (atomic via temp + mv) ---
+# Empty $LANE_FILE means the config dir failed the allowlist at the head of this
+# script (a sandbox tmpdir, an unexpected root). Writing nothing is deliberate:
+# the reader then finds no reading for that lane and renders `symlinks:?` rather
+# than a count, which is the honest answer and keeps the key space bounded.
+# config_dir_real is safe to interpolate into JSON unquoted-escaping because the
+# allowlist above admits only $HOME/.claude or $HOME/.ccs/instances/<[A-Za-z0-9_-]+>.
+if [[ -n "$LANE_FILE" ]]; then
+  ltmp="$LANE_FILE.tmp.$$"
+  cat > "$ltmp" <<EOF
+{"config_dir":"$config_dir_real","missing_symlinks":$missing,"checked":$(date +%s)}
+EOF
+  mv -f "$ltmp" "$LANE_FILE"
+fi
 
 # --- Clear THIS session's drift snapshots (scoped, not global) ---
 # Wrapper now keys snapshots by (session_id, process_start_ticks), so /resume
@@ -323,5 +415,15 @@ find "$CACHE_DIR" -name 'drift-snapshot-*.json' -mtime +30 -delete 2>/dev/null
 # ephemeral — a /resume rotates the ticks suffix and abandons the old file — so a
 # 1-day TTL is intentional (much tighter than the 30d drift-snapshot catchall).
 find "$CACHE_DIR" -name 'partial-read-seen-*.jsonl' -mtime +1 -delete 2>/dev/null
+
+# --- Prune sidecars for lanes that stopped starting sessions (>30 days) ---
+# Cardinality is already bounded by the allowlist (one entry per CCS instance
+# plus `default`), so this is hygiene, not a safety bound — it collects the
+# sidecar of an instance that was deleted, matching the 30d catchall two blocks
+# up and the file's own "keep the cache scannable during debugging" discipline.
+# Deleting a dormant lane's reading is CORRECT, not lossy: the reader then
+# renders `symlinks:?` for that lane, which is true — nothing has checked it for
+# a month. 30d (not 1d) because a lane legitimately goes weeks between sessions.
+find "$CACHE_DIR" -name 'health-lane-*.json' -mtime +30 -delete 2>/dev/null
 
 exit 0

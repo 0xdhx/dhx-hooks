@@ -139,7 +139,8 @@ A probe is a **version-gated behavior probe** when it asserts a *per-CC-version*
 | `probe-settings-hash.js` | decisions.md 2026-04-16 drift settings_hash row | `node tests/probes/probe-settings-hash.js` |
 | `probe-migration.js` | same row (graceful schema migration) | `node tests/probes/probe-migration.js` |
 | `probe-plugin-keys.sh` | decisions.md 2026-04-16 plugin-keys row (direct jq-check + sym-health.json fast-path) | `bash tests/probes/probe-plugin-keys.sh` |
-| `probe-health-suffix.js` | decisions.md 2026-04-16 actionable-hints row (one-trailing-suffix format) | `node tests/probes/probe-health-suffix.js` |
+| `probe-health-suffix.js` | decisions.md 2026-04-16 actionable-hints row (one-trailing-suffix format) + 2026-09-15 lane-scoping row (render half — `symlinks:?`, refused foreign stamp, no legacy leak) | `node tests/probes/probe-health-suffix.js` |
+| `probe-health-lane-scoping.sh` | decisions.md 2026-09-15 health-cache lane-scoping row (producer half + the cross-lane contract + the bash/JS lane-id agreement invariant) | `bash tests/probes/probe-health-lane-scoping.sh` |
 | `probe-sym-health-override.js` | decisions.md 2026-04-17 sym-health.json consumer + critical/advisory split rows | `node tests/probes/probe-sym-health-override.js` |
 | `probe-settings-path-invariant.sh` | architecture.md § Settings file chain (cross-language canonical resolution) | `bash tests/probes/probe-settings-path-invariant.sh` |
 | `probe-bashrc-wrapper-heal.sh` | decisions.md 2026-04-17 plugin-keys load-gating + bashrc auto-heal row, and the 2026-09-15 plugin-keys row (the heal has one home, `dhx-plugin-keys-heal.sh` run by `dhx-prelaunch.sh`; `.bashrc` keeps only its post-exit symlink repair; jq predicate parity across the heal, `dhx-health-check.sh`, `probe-plugin-keys.sh`, `install-plugin.sh`) | `bash tests/probes/probe-bashrc-wrapper-heal.sh` |

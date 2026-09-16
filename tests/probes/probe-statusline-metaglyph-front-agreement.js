@@ -161,9 +161,25 @@ function preChangeWrapper() {
 }
 
 // Plant a fixture home and spawn `wrapperPath` against it; return the leading glyph.
-function glyphFrom(wrapperPath, { pressureMin = 5, censusMin = 5, trip = null, broken = null, bypass = null } = {}) {
+// `laneHealth` (2026-09-15): the health cache was split by scope, and `missing_symlinks`
+// now lives in a per-lane sidecar whose ABSENCE renders `symlinks:?` in the advisory tail
+// — which computeMetaGlyph() folds into `warn` wholesale (`|| !!healthTail`). So a fixture
+// with no sidecar carries a standing tail token, and every case below would report ⌃
+// regardless of the wsl state it means to exercise. The 'durable trip LATCH alone' case is
+// the one that shows why that matters: its whole job is to prove the latch is EXCLUDED
+// from the glyph, and a masking tail token would make it pass-by-accident-or-fail-by-
+// accident forever after. So the default plants a CLEAN sidecar (checked, zero faults),
+// and the one case that means to exercise the unknown passes `laneHealth: null`.
+function glyphFrom(wrapperPath, { pressureMin = 5, censusMin = 5, trip = null, broken = null, bypass = null, laneHealth = 0 } = {}) {
   const tmp = makeFakeHome('dhx-metaglyph-agreement-');
   try {
+    if (laneHealth !== null) {
+      fs.writeFileSync(path.join(tmp, '.cache', 'dhx', 'health-lane-default.json'), JSON.stringify({
+        config_dir: fs.realpathSync(path.join(tmp, '.claude')),
+        missing_symlinks: laneHealth,
+        checked: 0,
+      }));
+    }
     const dir = path.join(tmp, '.local', 'state', 'wsl-stack');
     fs.mkdirSync(dir, { recursive: true });
     const plant = (name, ageMin, body) => {
@@ -202,6 +218,13 @@ const CASES = [
   { name: 'cap-bypass (seam broken) alone', fx: { bypass: BYPASS_BODY },            expect: '⌃', was: '∙' },
   { name: 'durable trip LATCH alone',     fx: { trip: TRIP_BODY },                  expect: '∙', was: '∙' },
   { name: 'trip latch + probe-broken',    fx: { trip: TRIP_BODY, broken: 'x' },     expect: '⌃', was: '∙' },
+  // 2026-09-15: no health reading for this lane. `was: '∙'` is not a regression — the
+  // pre-change wrapper had no concept of a lane sidecar, so the same fixture was simply
+  // silent. The new ⌃ is deliberate and follows the ESTABLISHED rule rather than adding a
+  // policy: computeMetaGlyph already folds the whole advisory tail into `warn`, and every
+  // other advisory member (patches:REGRESSED, CLAUDE.md unlinked) flips the glyph too. An
+  // exception for this one token would be the carve-out, not the consistency.
+  { name: 'no health reading for this lane', fx: { laneHealth: null },              expect: '⌃', was: '∙' },
 ];
 
 const PRE = preChangeWrapper();
