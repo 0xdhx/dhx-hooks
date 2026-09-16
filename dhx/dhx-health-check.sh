@@ -64,7 +64,14 @@ if [[ "$config_dir_real" == "$claude_home_real" ]]; then
   lane_id="default"
 elif [[ "$config_dir_real" == "$instances_real"/* ]]; then
   candidate="${config_dir_real#"$instances_real"/}"
-  [[ "$candidate" =~ ^[A-Za-z0-9_-]+$ ]] && lane_id="$candidate"
+  # `default` is RESERVED for canonical $HOME/.claude, so an instance literally named
+  # `default` would share its sidecar filename. The reader's config_dir stamp still stops
+  # one being SERVED the other's reading, but they would clobber each other and whichever
+  # wrote second would leave the other rendering `symlinks:?` — a silent loss of signal for
+  # a name collision nothing else announces. Refusing writes no sidecar, so that lane reads
+  # as unknown always, which is at least the honest and STABLE answer. Surfaced by the
+  # close-gate reviewer, 2026-09-15; probe case [14].
+  [[ "$candidate" =~ ^[A-Za-z0-9_-]+$ && "$candidate" != "default" ]] && lane_id="$candidate"
 fi
 
 LANE_FILE=""
@@ -128,11 +135,20 @@ missing=0
 # install-dhx-tools.sh, so a missing lane link no longer breaks them (the skills-side
 # `/dhx:upstream` call sites were repointed 2026-09-15); ~/repos/cross-repo
 # scripts/upstream/* still lane-anchor MARKER_DIR/WATCH_DRIVER and would break.
+# REALPATH, not the lexical spelling — both operands, both tests. The lane identity
+# above is realpath-normalized, so a lexical comparison here decided the CCS-vs-canonical
+# RULE on a different basis than the one that picked the sidecar to write it into, and the
+# two disagree whenever $CLAUDE_CONFIG_DIR names canonical by any spelling other than
+# "$HOME/.claude" exactly. Two measured spellings, both reported missing_symlinks:5 where
+# canonical reports 0 — a lane symlinked at $HOME/.ccs/instances/<n> -> $HOME/.claude, and
+# a plain internal double slash ($HOME//.claude). In both the reading was then SERVED to
+# canonical, because the stamp the reader checks is the realpath and it matched. Found by
+# the close-gate reviewer, 2026-09-15; probe cases [11]-[13].
 for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches dhx-tools; do
-  p="$config_dir/$item"
+  p="$config_dir_real/$item"
   if [[ ! -e "$p" ]]; then
     missing=$((missing + 1))
-  elif [[ "$config_dir" != "$HOME/.claude" && ! -L "$p" ]]; then
+  elif [[ "$config_dir_real" != "$claude_home_real" && ! -L "$p" ]]; then
     missing=$((missing + 1))
   fi
 done

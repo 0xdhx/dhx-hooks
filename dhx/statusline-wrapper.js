@@ -804,7 +804,13 @@ function laneIdFor(configDir, home) {
     const instances = real(path.join(home, '.ccs', 'instances'));
     if (cfg.startsWith(instances + path.sep)) {
       const candidate = cfg.slice(instances.length + 1);
-      if (/^[A-Za-z0-9_-]+$/.test(candidate)) return candidate;
+      // `default` is reserved for canonical ~/.claude — see the producer's matching
+      // refusal. This clause exists for the AGREEMENT, not for safety: the config_dir
+      // stamp below would already refuse to serve canonical's reading to an instance
+      // named `default`. But the producer writes no sidecar for that name, so a reader
+      // that still resolved it would disagree with the producer on the same input, and
+      // that divergence is exactly what probe case [7] is built to catch.
+      if (/^[A-Za-z0-9_-]+$/.test(candidate) && candidate !== 'default') return candidate;
     }
   } catch { /* fall through to null */ }
   return null;

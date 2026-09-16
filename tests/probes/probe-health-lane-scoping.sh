@@ -240,6 +240,52 @@ else
   ok "[10] a checked-and-clean lane emits NO symlink token"
 fi
 
+# ===================================================================================
+# [11]-[14] SPELLING-INDEPENDENCE. Added 2026-09-15 after the close-gate reviewer
+#   REFUTED the first round on exactly this gap: the lane identity was realpath-
+#   normalized while the symlink loop's CCS-vs-canonical rule was still lexical, so a
+#   config dir naming canonical by any other spelling ran the CCS rule over canonical's
+#   real items, counted all five as faults, and — because the stamp the reader checks is
+#   the realpath — SERVED that 5 to canonical. The cases below are the counterexamples
+#   it constructed, kept as assertions. The probe's earlier agreement matrix at [7] tests
+#   canonical, a normal lane, a trailing slash and /tmp; none of those is an ALIAS.
+# ===================================================================================
+H4="$(make_home)"
+CANON_MISSING="$(run_hook "$H4" "$H4/.claude"; lane_missing "$H4" default)"
+chk "[11] control — canonical by its own name" "$CANON_MISSING" "0"
+
+# an instance path that is itself a symlink to canonical
+ln -s "$H4/.claude" "$H4/.ccs/instances/alias" 2>/dev/null || { mkdir -p "$H4/.ccs/instances"; ln -s "$H4/.claude" "$H4/.ccs/instances/alias"; }
+rm -f "$H4/.cache/dhx"/health-lane-*.json
+run_hook "$H4" "$H4/.ccs/instances/alias"
+chk "[12] a lane SYMLINKED to canonical counts like canonical, not like a CCS lane" \
+    "$(lane_missing "$H4" default)" "0"
+
+# the same directory named with an internal double slash
+rm -f "$H4/.cache/dhx"/health-lane-*.json
+run_hook "$H4" "$H4//.claude"
+chk "[13] canonical named with a double slash counts like canonical" \
+    "$(lane_missing "$H4" default)" "0"
+
+# an instance literally named `default` must not write into canonical's sidecar
+H5="$(make_home)"
+# FAULTED deliberately: canonical is clean (0) and this instance is missing a link (1), so
+# the two counts DIFFER. With both healthy the assertion below reads 0 either way and cannot
+# red — it passed against the pre-remediation hook, which is the tell that it was testing
+# nothing. An assertion that cannot fail is decoration.
+make_lane "$H5" default fault >/dev/null
+run_hook "$H5" "$H5/.claude"                       # canonical writes health-lane-default.json
+CANON_BEFORE="$(lane_missing "$H5" default)"
+run_hook "$H5" "$H5/.ccs/instances/default"        # the colliding instance must NOT overwrite it
+chk "[14a] an instance named 'default' does not clobber canonical's sidecar" \
+    "$(lane_missing "$H5" default)" "$CANON_BEFORE"
+got="$(HOME="$H5" node -e '
+  const w = require(process.argv[1]);
+  const r = w.laneIdFor(process.argv[2], process.env.HOME);
+  console.log(r === null ? "<none>" : r);
+' "$WRAPPER" "$H5/.ccs/instances/default" 2>/dev/null)"
+chk "[14b] the consumer refuses the reserved name too (producer/consumer agreement)" "$got" "<none>"
+
 echo
 echo "PASS: $pass  FAIL: $fail"
 exit $(( fail > 0 ? 1 : 0 ))
