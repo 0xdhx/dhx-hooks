@@ -141,6 +141,7 @@ dhx-gsd-canonical-mirror-gate.sh|RECOMMEND|cp $FILE $CANONICAL
 dhx-gsd-drift-surface.sh|DATA|first seen
 dhx-gsd-drift-surface.sh|SLASH|run /dhx:statusline triad
 dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/
+dhx-key-coverage-audit.sh|DATA|deny edits land in BOTH
 session-start.sh|DATA|repeats of this exact failure stay silent
 dhx-ui-vision-guard.sh|JSON|"hookSpecificOutput"
 dhx-ui-vision-guard.sh|JSON|}

@@ -281,6 +281,18 @@ _dhx_child cc-check-update node /home/dhx/.claude/hooks/cc-check-update.js < /de
 # an EMPTY extraction (exit 2 — an anchor stopped matching is not a clean result). Fail-open
 # via the trailing || true. See docs/decisions.md 2026-09-04 row.
 [ -e /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh ] && _dhx_child cc-circuit-breakers bash /home/dhx/repos/hooks/scripts/verify-cc-circuit-breakers.sh < /dev/null || true
+# SSH key-coverage audit (2026-09-15). Sibling to the circuit-breaker monitor above —
+# same "is the security posture still what we think it is" tier. It exists because the
+# same-day narrowing replaced the `Read(~/.ssh/id_*)` deny glob with EXACT names (the
+# glob swallowed `id_ed25519.pub` and CC's matcher has no carve-out), which leaves one
+# residual: a key minted later is covered by no deny rule until someone adds one. This
+# is that residual's detector, so the gap cannot depend on anyone remembering. Locates
+# private keys by inference only (a `*.pub` whose sibling exists, an `IdentityFile`
+# target) and NEVER opens one. Silent unless a key is missing a layer; fail-open, and
+# exits 0 even on a finding so it never trips the child-failure surface above.
+# No stdin needed (filesystem-only). See docs/decisions.md 2026-09-15 rows;
+# tests/probes/probe-dhx-key-coverage-audit.sh.
+_dhx_child key-coverage bash /home/dhx/.claude/hooks/dhx-key-coverage-audit.sh < /dev/null
 # Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
 printf '%s' "$INPUT" | _dhx_child off-main-detector bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh
 
