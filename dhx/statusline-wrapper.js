@@ -2339,6 +2339,8 @@ function parseTranscriptTail(transcriptPath) {
         input: u.input_tokens || 0,
         e1h: (u.cache_creation && u.cache_creation.ephemeral_1h_input_tokens) || 0,
         e5m: (u.cache_creation && u.cache_creation.ephemeral_5m_input_tokens) || 0,
+        output: u.output_tokens || 0,
+        stop: m.stop_reason || null,
         diag: (m.diagnostics && m.diagnostics.cache_miss_reason) || null,
       });
     }
@@ -2544,11 +2546,35 @@ function getCacheAge(data, tail) {
 // Schema discipline (Item C amendment): rows carry v:1; schema changes are
 // ADDITIVE or come with a real offline migration — never rebuild()-on-drift,
 // quota snapshots are not re-derivable. Mode 0600 files / 0700 dirs (f31/f61).
-// Retention: files older than DHX_CACHE_TELEMETRY_RETENTION_DAYS (default 30)
-// are swept opportunistically at most once per day per session.
+// Retention: files older than DHX_CACHE_TELEMETRY_RETENTION_DAYS (default 400,
+// was 30 until 2026-09-16) are swept opportunistically at most once per day per
+// session. The default moved because the spools became the 7d-ratio and
+// request-unit INSTRUMENT (proposal v2 § 3, Design A / P0-b): a 30-day sweep was
+// deleting the record (the 2026-08-16 file was lost from the live spool before
+// the 09-15 archive caught it). The default lives HERE, not in settings.json
+// `env`, because the wrapper hot-loads on the next refresh in EVERY running
+// session (HP-014) while an env change reaches only sessions launched after it
+// — an old session would keep sweeping at 30 days. ≈ 115 MB/month at current
+// traffic; archive both spool dirs with SHA256SUMS to
+// ~/.local/share/dhx/quota-snapshots-archive/<date>/ before any reduction.
+//
+// 2026-09-16 additive fields (P0-b provenance; Design A's REWRITE hypothesis
+// needs c5m, its coverage audit needs output — F7: neither spool carried them):
+//   event row   + input (uncached input tokens), output (output tokens),
+//                 c1h / c5m (cache_creation split by TTL bucket), stop (stop_reason)
+//   snapshot row + rl_keys (every key present on stdin `rate_limits`, sorted —
+//                 records ABSENCE of a scoped bucket as a fact: CC 2.1.273 sends
+//                 only five_hour + seven_day, and the docs define only those two
+//                 plus a gateway-only spend_limit), rl_extra (any key beyond
+//                 five_hour/seven_day, stored raw; present only when non-empty)
+// Percent values are stored AS RECEIVED: the client emits floats such as
+// 28.999999999999996 for 29. The writer preserves the raw value (a consumer
+// cannot tell a float artefact from a genuinely fractional meter after the
+// fact); every CONSUMER rounds to the nearest integer within a declared
+// epsilon (qs-7d-ratio.py / qs-request-units.py: 1e-6) — never int()/floor.
 const TELEMETRY_RETENTION_DAYS = (() => {
   const raw = parseInt(process.env.DHX_CACHE_TELEMETRY_RETENTION_DAYS, 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 30;
+  return Number.isFinite(raw) && raw > 0 ? raw : 400;
 })();
 
 function telemetryBaseDir() {
@@ -2616,6 +2642,12 @@ function recordCacheTelemetry(data, tail, nowMs) {
     ttl_bucket: tail.newest.e1h + tail.newest.e5m > 0
       ? (tail.newest.e1h >= tail.newest.e5m ? '1h' : '5m') : null,
     corrupt: ev.corrupt,
+    // 2026-09-16 additive (P0-b): the usage fields the transcript already carries.
+    input: tail.newest.input || 0,
+    output: tail.newest.output || 0,
+    c1h: tail.newest.e1h || 0,
+    c5m: tail.newest.e5m || 0,
+    stop: tail.newest.stop || null,
   };
   appendSpoolLine(path.join(base, 'cache-events', `${profile}-${sid}.jsonl`), eventRow);
 
@@ -2627,7 +2659,12 @@ function recordCacheTelemetry(data, tail, nowMs) {
       ? { pct: Number(lim.used_percentage), resets_at: lim.resets_at != null ? lim.resets_at : null }
       : null;
     const day = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
-    appendSpoolLine(path.join(base, 'quota-snapshots', `${profile}-${day}.jsonl`), {
+    // Every rate_limits key the client sent (sorted) + any beyond the two we
+    // project, raw. Absence is the finding; nothing is synthesised.
+    const rlKeys = Object.keys(rl).sort();
+    const rlExtra = {};
+    for (const k of rlKeys) if (k !== 'five_hour' && k !== 'seven_day') rlExtra[k] = rl[k];
+    const snapRow = {
       v: 1,
       id: `${sid}:${key}`,
       ts: new Date(now).toISOString(),
@@ -2637,7 +2674,10 @@ function recordCacheTelemetry(data, tail, nowMs) {
       event_key: key,
       five_hour: side(rl.five_hour),
       seven_day: side(rl.seven_day),
-    });
+      rl_keys: rlKeys,
+    };
+    if (Object.keys(rlExtra).length) snapRow.rl_extra = rlExtra;
+    appendSpoolLine(path.join(base, 'quota-snapshots', `${profile}-${day}.jsonl`), snapRow);
   }
 
   // Opportunistic retention sweep, at most once per day per session.
