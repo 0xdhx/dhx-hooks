@@ -273,6 +273,63 @@ else
       "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
 fi
 
+# ===================================================================================
+# [9] ONE RESOLUTION, NOT TWO. Round 1 of this brief's close gate REFUTED it here: the
+#     producer resolved the config dir for the stamp, then INDEPENDENTLY re-resolved
+#     $CLAUDE_CONFIG_DIR/settings.json for the verdict. Two observations of a path that is
+#     free to change between them, so the published object could name one lane and carry a
+#     verdict computed from another -- an incoherent stamp, which is worse than no stamp,
+#     because it is a wrong answer wearing provenance.
+#
+#     Asserted DETERMINISTICALLY, not by racing. A PATH-local `readlink` stub retargets the
+#     lane symlink exactly once, immediately after the config-dir resolution returns, which
+#     is precisely the window between the two reads. Racing it reproduced on the first
+#     iteration before the fix and 0/400 after, but "did not happen in 400 tries" is absence
+#     of evidence under one timing, and an assertion that cannot red on demand is decoration
+#     (tests/probes/README.md § Liveness guards).
+# ===================================================================================
+H6="$(make_home)"
+mkdir -p "$H6/good" "$H6/bad" "$SCRATCH/stubbin"
+printf '%s' "$GOOD_SETTINGS" > "$H6/good/settings.json"
+printf '{}'                  > "$H6/bad/settings.json"
+ln -sfn "$H6/good" "$H6/lane"
+
+REAL_READLINK="$(command -v readlink)"
+cat > "$SCRATCH/stubbin/readlink" <<STUB
+#!/bin/bash
+out="\$("$REAL_READLINK" "\$@")"; rc=\$?
+[[ -n "\$out" ]] && printf '%s\n' "\$out"
+for a in "\$@"; do
+  if [[ "\$a" == "$H6/lane" && ! -e "$SCRATCH/flipped" ]]; then
+    : > "$SCRATCH/flipped"
+    ln -sfn "$H6/bad" "$H6/lane"
+  fi
+done
+exit \$rc
+STUB
+chmod +x "$SCRATCH/stubbin/readlink"
+
+PATH="$SCRATCH/stubbin:$PATH" HOME="$H6" CLAUDE_CONFIG_DIR="$H6/lane" \
+  bash "$PUBLISHER" health-export >/dev/null 2>&1
+
+if [[ ! -e "$SCRATCH/flipped" ]]; then
+  # the stub never fired, so the retarget never happened and the check below would pass
+  # having exercised nothing -- the vacuity shape, reported as a probe error
+  bad "[9] PROBE ERROR: the readlink stub never fired, so no retarget was injected" \
+      "the assertion below would hold having tested nothing"
+else
+  stamp="$(sym_field "$H6" config_dir)"; verdict="$(sym_field "$H6" plugin_keys)"
+  case "${stamp##*/}/$verdict" in
+    good/ok|bad/MISSING)
+      ok "[9] stamp and verdict survive a retarget between them (${stamp##*/}/$verdict)" ;;
+    ABSENT/*|*/ABSENT)
+      bad "[9] PROBE ERROR: the publisher wrote no object under the stub" ;;
+    *)
+      bad "[9] INCOHERENT: the stamp names a different dir than the verdict was computed for" \
+          "stamp:   ${stamp##*/}" "verdict: $verdict" ;;
+  esac
+fi
+
 echo
 echo "PASS: $pass  FAIL: $fail"
 exit $(( fail > 0 ? 1 : 0 ))
