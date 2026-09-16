@@ -280,14 +280,27 @@ fi
 plugin_keys=""
 sym_health="$CACHE_DIR/sym-health.json"
 if [[ -f "$sym_health" ]]; then
-  sym_config_dir=$(jq -r '.config_dir // empty' "$sym_health" 2>/dev/null)
-  if [[ -n "$sym_config_dir" && "$sym_config_dir" == "$config_dir_real" ]]; then
-    checked_at=$(jq -r '.checked_at // empty' "$sym_health" 2>/dev/null)
-    if [[ -n "$checked_at" ]]; then
+  # ONE read of the file; all three fields parsed from the SAME bytes.
+  #
+  # This block used to run three separate `jq` invocations — stamp, then freshness, then
+  # verdict — and a close-gate reviewer refuted the close on it: each `jq` opens the
+  # pathname again, so an atomic replacement landing between them let the stamp be checked
+  # against one object and the verdict taken from another. The publisher writing atomically
+  # does not help; atomicity makes each read see SOME whole file, never the same one.
+  # Demonstrated by swapping in a fresh, foreign-stamped `ok` immediately after the stamp
+  # read, in a lane whose own settings require MISSING: the accepted verdict was `ok`.
+  #
+  # Checking a value and then re-reading it is the same defect the publisher was refuted
+  # for one round earlier (two resolutions of one thing, free to disagree). The rule that
+  # covers the class, rather than these three lines: decide from one read.
+  sym_fields=$(jq -r '[.config_dir // "", .checked_at // "", .plugin_keys // ""] | @tsv' "$sym_health" 2>/dev/null)
+  IFS=$'\t' read -r sym_config_dir checked_at sym_plugin_keys <<<"$sym_fields"
+  if [[ -n "${sym_config_dir:-}" && "$sym_config_dir" == "$config_dir_real" ]]; then
+    if [[ -n "${checked_at:-}" ]]; then
       checked_epoch=$(date -u -d "$checked_at" +%s 2>/dev/null || echo 0)
       age_sec=$(( $(date +%s) - checked_epoch ))
       if (( checked_epoch > 0 && age_sec >= 0 && age_sec < 3600 )); then
-        plugin_keys=$(jq -r '.plugin_keys // empty' "$sym_health" 2>/dev/null)
+        plugin_keys="${sym_plugin_keys:-}"
       fi
     fi
   fi

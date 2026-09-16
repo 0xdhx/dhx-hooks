@@ -832,6 +832,40 @@ function checkPluginRegistry(configDir, sessionId) {
 // provenance is the thing the stamp exists to end. Refusal is cheap — the caller
 // falls back to health.json's lane-local value. realpathSync throws for a config dir
 // deleted mid-session; that is also a refusal, not a crash.
+// THIS LANE's plugin-keys verdict, computed here rather than inherited.
+//
+// A close-gate reviewer refuted the claim this replaces. The override above used to fall
+// back to health.json's value, and a comment here asserted that value was "genuinely
+// lane-local" because the hook applies the same stamp gate. That was FALSE: health.json is
+// one $HOME-anchored file every lane's SessionStart overwrites, so a healthy lane starting
+// a session cleared a broken lane's rendered warning with no sym-health.json involved at
+// all. Deferring to a shared slot is never a lane-local fallback, whatever wrote it.
+//
+// This is the FIFTH copy of the predicate (dhx-health-check.sh, dhx-plugin-keys-heal.sh,
+// install-plugin.sh and probe-plugin-keys.sh carry the other four) and the first in
+// JavaScript. That is a real cost, accepted deliberately: the alternative is rendering
+// another lane's answer. probe-bashrc-wrapper-heal.sh already pins predicate parity across
+// the bash copies and now covers this one, so the divergence is caught by a probe rather
+// than by a reader noticing.
+//
+// An unreadable or dangling settings.json returns 'MISSING', matching the hook's
+// `[[ ! -f "$settings_real" ]]` branch. That is not a defensive default — a lane whose own
+// settings.json link has broken is exactly the fault this whole arc exists to stop being
+// masked, so it must read as a fault here too.
+function pluginKeysForThisLane(configDir) {
+  try {
+    const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
+    const s = JSON.parse(fs.readFileSync(settingsReal, 'utf8'));
+    const enabled = !!(s && s.enabledPlugins && s.enabledPlugins['dhx@dhx-local'] === true);
+    const mk = s && s.extraKnownMarketplaces && s.extraKnownMarketplaces['dhx-local']
+      && s.extraKnownMarketplaces['dhx-local'].source
+      && s.extraKnownMarketplaces['dhx-local'].source.path;
+    return (enabled && typeof mk === 'string' && mk !== '') ? 'ok' : 'MISSING';
+  } catch {
+    return 'MISSING';
+  }
+}
+
 function symHealthIsForThisLane(symConfigDir, configDir) {
   if (typeof symConfigDir !== 'string' || symConfigDir === '') return false;
   try { return symConfigDir === fs.realpathSync(configDir); } catch { return false; }
@@ -865,11 +899,17 @@ function laneIdFor(configDir, home) {
 // `symlinks:?` so an absent reading can never present as a clean one.
 function readLaneHealth(configDir, home) {
   try {
-    const id = laneIdFor(configDir, home);
+    // ONE resolution of configDir. This used to realpath it inside laneIdFor() to build the
+    // path, then realpath it AGAIN for the stamp comparison — two observations of a path
+    // that is free to change between them, the same shape a close-gate reviewer refuted in
+    // the publisher and in the hook. laneIdFor() is idempotent on an already-real path.
+    let real;
+    try { real = fs.realpathSync(configDir); } catch { return undefined; }
+    const id = laneIdFor(real, home);
     if (!id) return undefined;
     const laneFile = path.join(home, '.cache', 'dhx', `health-lane-${id}.json`);
     const lane = JSON.parse(fs.readFileSync(laneFile, 'utf8'));
-    if (!lane || lane.config_dir !== fs.realpathSync(configDir)) return undefined;
+    if (!lane || lane.config_dir !== real) return undefined;
     if (!Number.isInteger(lane.missing_symlinks) || lane.missing_symlinks < 0) return undefined;
     return lane.missing_symlinks;
   } catch {
@@ -889,6 +929,7 @@ function readHealthCache(sessionId) {
         try { h = JSON.parse(data); } catch { h = {}; }
       }
 
+      let symApplied = false;
       try {
         const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
         const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
@@ -897,8 +938,17 @@ function readHealthCache(sessionId) {
         if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys
             && symHealthIsForThisLane(sym.config_dir, symConfigDir)) {
           h.plugin_keys = sym.plugin_keys;
+          symApplied = true;
         }
-      } catch { /* absent/malformed/foreign — defer to health.json's value */ }
+      } catch { /* absent/malformed/foreign — the lane-local check below decides */ }
+
+      // Not our verdict (absent, malformed, stale, foreign or unstamped) -> compute THIS
+      // lane's answer. Never inherit health.json's, which any lane's SessionStart overwrites.
+      if (!symApplied) {
+        h.plugin_keys = pluginKeysForThisLane(
+          process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+        );
+      }
 
       // Plugin-registry drift runs inline every refresh (no SessionStart
       // publisher) — it's the only class of clobber that can take out the
@@ -3083,6 +3133,7 @@ module.exports = {
   // Cross-repo lane stamp on sym-health.json (2026-09-15) — exported PURE so
   // probe-sym-health-lane-stamp.sh drives the real predicate rather than a copy.
   symHealthIsForThisLane,
+  pluginKeysForThisLane,
   isGsdDriftFromForkSync,
   collectGsdDriftDivergingFiles,
   // Cross-session drift persistence (Nd) — drift-duration-render (2026-06-25)

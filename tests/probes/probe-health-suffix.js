@@ -38,10 +38,21 @@ const SUFFIX_REGEX = /— \/dhx:sym repair/g;
 // `lane: null` means NO sidecar — the state of a lane that has not started a session
 // since the split. That renders `symlinks:?`, never silence: an absent reading
 // presenting as a clean one is the failure this split exists to remove.
-function runWith(healthJson, lane = { missing_symlinks: 0 }) {
+//
+// `settings: 'faulted'` replaces the fake home's healthy settings.json with one lacking the
+// plugin keys. Since 2026-09-15 the wrapper computes plugin_keys from
+// $CLAUDE_CONFIG_DIR/settings.json at render time rather than reading it out of the shared
+// health.json, so a case that wants `plugin-keys:MISSING` must now create the actual fault
+// instead of asserting a value in a cache file. That is the point of the change — a
+// close-gate reviewer showed a healthy lane's SessionStart clearing a broken lane's warning
+// through that shared slot — and it means the two cases below now exercise the real source.
+function runWith(healthJson, lane = { missing_symlinks: 0 }, settings = 'healthy') {
   const tmp = makeFakeHome('dhx-probe-');
   try {
     const cacheDir = path.join(tmp, '.cache', 'dhx');
+    if (settings === 'faulted') {
+      fs.writeFileSync(path.join(tmp, '.claude', 'settings.json'), '{}');
+    }
     if (healthJson !== null) {
       fs.writeFileSync(path.join(cacheDir, 'health.json'), healthJson);
     }
@@ -69,8 +80,13 @@ const cases = [
   { name: 'healthy (all ok)',
     cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
     expectSuffix: 0, expectTokens: [] },
-  { name: 'plugin-keys MISSING',
-    cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'ok', plugin_keys: 'MISSING', checked: 0 },
+  // `settings: 'faulted'` creates the ACTUAL fault (a settings.json without the plugin
+  // keys) rather than asserting a value in health.json. The cache still says `ok` here
+  // deliberately: that is the discriminating half — health.json carrying the opposite
+  // answer must NOT win, because any lane's SessionStart can have written it.
+  { name: 'plugin-keys MISSING (from THIS lane\'s settings.json, over a contrary cache)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    settings: 'faulted',
     expectSuffix: 1, expectTokens: ['plugin-keys:MISSING'] },
   { name: 'settings chain REAL_FILE',
     cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'REAL_FILE', plugin_keys: 'ok', checked: 0 },
@@ -100,7 +116,16 @@ const cases = [
   { name: 'all classes at once (front+tail — 2 suffixes, one per tier)',
     cache: { worktree_patches: 'REGRESSED', read_guard: 'REGRESSED', claude_md: 'REAL_FILE', settings_chain: 'WRONG_TARGET', plugin_keys: 'MISSING', checked: 0 },
     lane: { missing_symlinks: 3 },
+    settings: 'faulted',
     expectSuffix: 2, expectTokens: ['patches:REGRESSED', 'read-guard:REGRESSED', 'symlinks:3', 'CLAUDE.md unlinked', 'settings:WRONG_TARGET', 'plugin-keys:MISSING'] },
+  // THE ROUND-2 COUNTEREXAMPLE, AS AN ASSERTION. health.json is one $HOME-anchored file
+  // every lane's SessionStart overwrites, so a healthy lane's run used to clear a broken
+  // lane's rendered warning with no sym-health.json involved at all. A contrary cache value
+  // must not survive this lane's own reading of its own settings.json.
+  { name: 'a healthy cache does NOT clear a genuinely broken lane (round-2 counterexample)',
+    cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'ok', plugin_keys: 'ok', checked: 0 },
+    settings: 'faulted',
+    expectSuffix: 1, expectTokens: ['plugin-keys:MISSING'] },
   { name: 'legacy schema (no plugin_keys field)',
     cache: { worktree_patches: 'patched', read_guard: 'patched', settings_chain: 'ok', checked: 0 },
     expectSuffix: 0, expectTokens: [] },
@@ -136,7 +161,7 @@ for (const c of cases) {
   // and must not silently fall back to the healthy default, which is exactly how the
   // unknown-render cases would rot into re-asserting the clean path.
   const lane = 'lane' in c ? c.lane : { missing_symlinks: 0 };
-  const out = runWith(cacheStr, lane);
+  const out = runWith(cacheStr, lane, c.settings || 'healthy');
   const suffixes = (out.match(SUFFIX_REGEX) || []).length;
   const tokensOk = c.expectTokens.every(t => out.includes(t));
   const rejectOk = (c.rejectTokens || []).every(t => !out.includes(t));

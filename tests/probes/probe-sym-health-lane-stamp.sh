@@ -330,6 +330,78 @@ else
   esac
 fi
 
+# ===================================================================================
+# [10] THE CONSUMER'S OWN SPLIT READ. Round 2 refuted this close here: the hook opened
+#      sym-health.json THREE times -- stamp, then freshness, then verdict -- so a file
+#      replaced between them let the stamp be checked against one object and the verdict
+#      taken from another. The publisher writing atomically does not help: atomicity makes
+#      each read see SOME whole file, never the same one.
+#
+#      Deterministic, like [9]. A PATH-local `jq` stub swaps the file exactly once, right
+#      after the first read of that path returns. The fixture is built so the two objects
+#      disagree: the ORIGINAL is this lane's own, fresh, and says MISSING; the REPLACEMENT
+#      is fresh, foreign-stamped, and says ok. A consumer deciding from one read reports
+#      MISSING; one that re-reads reports the foreign ok.
+# ===================================================================================
+H7="$(make_home)"
+L7="$(make_lane "$H7" split healthy)"
+mkdir -p "$SCRATCH/jqbin"
+now7="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"plugin_keys":"MISSING","config_dir":"%s","checked_at":"%s"}' "$(readlink -f "$L7")" "$now7" \
+  > "$H7/.cache/dhx/sym-health.json"
+printf '{"plugin_keys":"ok","config_dir":"/nonexistent/other-lane","checked_at":"%s"}' "$now7" \
+  > "$SCRATCH/swapin.json"
+
+REAL_JQ="$(command -v jq)"
+cat > "$SCRATCH/jqbin/jq" <<STUB
+#!/bin/bash
+"$REAL_JQ" "\$@"; rc=\$?
+for a in "\$@"; do
+  if [[ "\$a" == "$H7/.cache/dhx/sym-health.json" && ! -e "$SCRATCH/swapped" ]]; then
+    : > "$SCRATCH/swapped"
+    cp "$SCRATCH/swapin.json" "$SCRATCH/swapin.tmp"
+    mv -f "$SCRATCH/swapin.tmp" "$H7/.cache/dhx/sym-health.json"
+  fi
+done
+exit \$rc
+STUB
+chmod +x "$SCRATCH/jqbin/jq"
+
+PATH="$SCRATCH/jqbin:$PATH" HOME="$H7" CLAUDE_CONFIG_DIR="$L7" \
+  bash "$HOOK" <<<'{"session_id":"probe-split"}' >/dev/null 2>&1
+
+if [[ ! -e "$SCRATCH/swapped" ]]; then
+  bad "[10] PROBE ERROR: the jq stub never fired, so no swap was injected" \
+      "the assertion below would hold having tested nothing"
+else
+  chk "[10] the hook decides from ONE read (a file swapped mid-read is not served)" \
+      "$(hook_pk "$H7")" "MISSING"
+fi
+
+# ===================================================================================
+# [11] THE RENDER MUST NOT INHERIT A SHARED VERDICT. Round 2's second counterexample:
+#      plugin_keys lives in health.json, which EVERY lane's SessionStart overwrites, so a
+#      healthy lane's run cleared a broken lane's rendered warning -- with no
+#      sym-health.json present at all. The wrapper now computes this lane's verdict from
+#      its own settings.json instead of inheriting that shared slot.
+# ===================================================================================
+H8="$(make_home)"
+B8="$(make_lane "$H8" broken broken)"
+rm -f "$H8/.cache/dhx/sym-health.json"
+# a health.json written by some OTHER, healthy lane
+cat > "$H8/.cache/dhx/health.json" <<'HJ'
+{"worktree_patches":"patched","read_guard":"patched","claude_md":"ok","settings_chain":"ok","plugin_keys":"ok","hooks_wiring":"ok","checked":0}
+HJ
+if ! out="$(render_live "$H8" "$B8")"; then
+  bad "[11] PROBE ERROR: the statusline wrapper could not be driven" \
+      "wrapper: $WRAPPER | stderr: $(head -2 "$SCRATCH/render.err" | tr '\n' ' ')"
+elif grep -q 'plugin-keys:MISSING' <<<"$out"; then
+  ok "[11] a healthy lane's shared cache does not clear this lane's real fault"
+else
+  bad "[11] the render INHERITED another lane's verdict from health.json" \
+      "line: $(tr -d '\033' <<<"$out" | tail -c 220)"
+fi
+
 echo
 echo "PASS: $pass  FAIL: $fail"
 exit $(( fail > 0 ? 1 : 0 ))

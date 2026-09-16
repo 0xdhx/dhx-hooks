@@ -85,6 +85,23 @@ function makeFakeHome(prefix) {
   fs.mkdirSync(path.join(home, '.cache', 'dhx'), { recursive: true });
   fs.mkdirSync(path.join(home, '.claude', 'hooks'), { recursive: true });
   fs.symlinkSync(REAL_RENDERER, path.join(home, '.claude', 'hooks', 'dhx-statusline.js'));
+  // A HEALTHY settings.json, because since 2026-09-15 the wrapper computes plugin_keys
+  // from $CLAUDE_CONFIG_DIR/settings.json at render time instead of inheriting the value
+  // in the shared health.json (which every lane's SessionStart overwrites — a close-gate
+  // reviewer showed a healthy lane clearing a broken lane's warning through it).
+  //
+  // Without this the wrapper reads an absent settings.json as MISSING — correctly, that is
+  // the fault the change exists to surface — and every fake home would carry a
+  // `plugin-keys:MISSING` token no probe asked for. A fake home stands in for a WORKING
+  // lane, so it gets working keys; a probe that wants the fault overwrites this file.
+  // Extended here rather than per-probe, per this module's own stated contract.
+  fs.writeFileSync(
+    path.join(home, '.claude', 'settings.json'),
+    JSON.stringify({
+      enabledPlugins: { 'dhx@dhx-local': true },
+      extraKnownMarketplaces: { 'dhx-local': { source: { source: 'directory', path: '/p' } } },
+    }),
+  );
   return home;
 }
 

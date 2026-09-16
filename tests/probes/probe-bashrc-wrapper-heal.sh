@@ -81,6 +81,66 @@ for site in "$KEYS_HEAL" "$HEALTH_CHECK" "$PLUGIN_KEYS_PROBE" "$INSTALL_PLUGIN";
   assert_eq "$(basename "$site") jq predicate matches canonical" "$got" "$canonical_pred"
 done
 
+# --- 5. BEHAVIOURAL parity with the JavaScript copy (2026-09-15) ---
+# Since the statusline wrapper computes this lane's plugin-keys verdict itself, there is a
+# FIFTH copy of the predicate and the first one not written in jq — so section 4's textual
+# match cannot reach it. A grep cannot compare across languages; driving both over the same
+# inputs can. Same shape as the two-language lane-id agreement in
+# probe-sym-health-lane-scoping: the invariant is unenforceable by either language, so it is
+# asserted by running them.
+WRAPPER_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/dhx/statusline-wrapper.js"
+PARITY_TMP="$(mktemp -d)"
+trap 'rm -rf "$PARITY_TMP"' EXIT
+
+# bash side: the hook's own resolution — an unreadable settings.json is MISSING, not an error
+bash_verdict() { # bash_verdict <config_dir>
+  local real; real="$(readlink -f "$1/settings.json" 2>/dev/null)"
+  if [[ ! -f "$real" ]] || ! jq -e "$canonical_pred" "$real" >/dev/null 2>&1; then
+    echo MISSING
+  else
+    echo ok
+  fi
+}
+
+js_verdict() { # js_verdict <config_dir>
+  node -e '
+    const w = require(process.argv[1]);
+    process.stdout.write(String(w.pluginKeysForThisLane(process.argv[2])));
+  ' "$WRAPPER_JS" "$1" 2>/dev/null
+}
+
+GOOD='{"enabledPlugins":{"dhx@dhx-local":true},"extraKnownMarketplaces":{"dhx-local":{"source":{"source":"directory","path":"/p"}}}}'
+mk_fixture() { # mk_fixture <name> <content|SPECIAL>
+  local d="$PARITY_TMP/$1"; mkdir -p "$d"
+  case "$2" in
+    ABSENT)   ;;                                              # no settings.json at all
+    DANGLING) ln -sf "$d/nowhere.json" "$d/settings.json" ;;   # broken link, the live lane-zz shape
+    *)        printf '%s' "$2" > "$d/settings.json" ;;
+  esac
+  echo "$d"
+}
+
+for fx in \
+  "healthy|$GOOD" \
+  "enabled-false|{\"enabledPlugins\":{\"dhx@dhx-local\":false},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":\"/p\"}}}}" \
+  "enabled-absent|{\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":\"/p\"}}}}" \
+  "marketplace-absent|{\"enabledPlugins\":{\"dhx@dhx-local\":true}}" \
+  "marketplace-empty|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":\"\"}}}}" \
+  "malformed|not json {{{" \
+  "empty-object|{}" \
+  "absent|ABSENT" \
+  "dangling|DANGLING" \
+; do
+  name="${fx%%|*}"; body="${fx#*|}"
+  d="$(mk_fixture "$name" "$body")"
+  b="$(bash_verdict "$d")"; j="$(js_verdict "$d")"
+  if [[ -z "$j" ]]; then
+    assert_eq "plugin-keys parity [$name] — JS predicate could not be driven" "driven" "not-driven"
+  else
+    assert_eq "plugin-keys parity [$name] (bash=$b js=$j)" "$j" "$b"
+  fi
+done
+
 echo
 echo "$pass passed, $fail failed"
 exit $fail
