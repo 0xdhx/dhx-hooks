@@ -4,5 +4,8 @@
     "~/.ssh/config",
     "/mnt/c/Users/JoshG/.ssh/config"
   ],
-  "extra_key_basenames": []
+  "extra_key_basenames": [
+    "inkling_rig_ed25519",
+    "inkling_test_harness"
+  ]
 }

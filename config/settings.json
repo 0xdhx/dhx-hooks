@@ -154,7 +154,10 @@
     "deny": [
       "Read(./.env*)",
       "Read(~/.aws/**)",
-      "Read(~/.ssh/**)",
+      "Read(~/.ssh/id_*)",
+      "Read(~/.ssh/dhx-to-tospro)",
+      "Read(~/.ssh/inkling_rig_ed25519)",
+      "Read(~/.ssh/inkling_test_harness)",
       "Read(//mnt/c/Users/JoshG/.ssh/id_*)",
       "Bash(*|*taskkill*)",
       "Bash(get-shit-done-cc:*)",
