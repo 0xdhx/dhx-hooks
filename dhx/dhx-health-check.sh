@@ -30,18 +30,21 @@ mkdir -p "$CACHE_DIR"
 # two-lane fixture before the fix; see docs/decisions.md 2026-09-15 scoping row.
 #
 # Split by scope rather than sharding the whole object. Of the fields this script
-# emits, exactly ONE is lane-sensitive: missing_symlinks (the loop below reads
-# $config_dir). settings_chain, claude_md and hooks_wiring hardcode $HOME/.claude
-# paths; worktree_patches and read_guard delegate to dhx-sym.sh, whose
-# implementation (skills repo scripts/lib/forks.sh) references CLAUDE_CONFIG_DIR
-# nowhere and anchors WORKFLOWS_DIR at "$HOME/.claude". Those six stay in
-# $CACHE_FILE with its existing whole-file atomic write — which also keeps the
-# skills-repo reader working (sym-gsd-update-report.md steps 12.45(c) and 12.5
-# check 2 jq this file and hard-exit on .settings_chain / .read_guard /
-# .plugin_keys / .hooks_wiring; that reader is why statusline-wrapper.js's old
-# "sole runtime reader" claim was false and has been corrected).
+# emits, TWO are lane-sensitive: missing_symlinks (the loop below reads
+# $config_dir) and plugin_keys (both of its branches resolve
+# $CLAUDE_CONFIG_DIR). settings_chain, claude_md and hooks_wiring hardcode
+# $HOME/.claude paths; worktree_patches and read_guard delegate to dhx-sym.sh,
+# whose implementation (skills repo scripts/lib/forks.sh) references
+# CLAUDE_CONFIG_DIR nowhere and anchors WORKFLOWS_DIR at "$HOME/.claude". Those
+# five stay in $CACHE_FILE with its existing whole-file atomic write — which also
+# keeps the skills-repo reader working (sym-gsd-update-report.md steps 12.45(c)
+# and 12.5 check 2 jq this file and hard-exit on .settings_chain / .read_guard /
+# .hooks_wiring; that reader is why statusline-wrapper.js's old "sole runtime
+# reader" claim was false and has been corrected). That reader takes plugin_keys
+# from the sidecar instead, selecting it by config_dir stamp — see the sidecar
+# write at the foot of this script.
 #
-# The lane-sensitive field goes to its own sidecar, $LANE_FILE, written with the
+# The two lane-sensitive fields go to one sidecar, $LANE_FILE, written with the
 # same tmp+mv whole-file atomic write. A sidecar-per-lane needs no read-modify-write
 # and therefore no lock: locking $CACHE_FILE itself would be worse than useless,
 # since the atomic `mv` that makes the write safe detaches the lock from the inode
@@ -120,9 +123,9 @@ fi
 # drift — e.g., a botched GSD install writing into the profile instead of
 # following the symlink to ~/.claude.
 #
-# THE one lane-sensitive field in this script. It is written to $LANE_FILE, not
-# to $CACHE_FILE — see the lane-identity block at the head of the file.
-# $config_dir is derived there.
+# ONE of the two lane-sensitive fields in this script (plugin_keys is the other).
+# It is written to $LANE_FILE, not to $CACHE_FILE — see the lane-identity block at
+# the head of the file. $config_dir is derived there.
 missing=0
 # INVARIANT: the gsd runtime item below MUST track the live gsd install dir name.
 # 2026-06-05 `@opengsd/gsd-core@1.3.1` renamed `get-shit-done/` -> `gsd-core/`; the
@@ -430,22 +433,32 @@ fi
 # Every field here is computed against a hardcoded $HOME path, so whichever lane
 # wrote last, the reading is valid for all of them — last-writer-wins is CORRECT
 # for this object and the existing whole-file write is kept unchanged.
-# missing_symlinks deliberately absent: it moved to $LANE_FILE below. Do NOT
-# reinstate it here as a mirror — a second copy with different semantics is the
-# stale trap this split removes, and statusline-wrapper.js now overwrites any
-# legacy value it finds so an old cache can never leak one.
 #
-# plugin_keys STAYS here despite its fallback branch resolving
-# ${CLAUDE_CONFIG_DIR}/settings.json, i.e. despite being mechanically per-lane.
-# Sharding it would not fix it: its fast-path takes a verdict from
-# sym-health.json, which the skills-repo /dhx:sym writes from whatever lane the
-# operator was in and which carries NO lane identity of its own — so a per-lane
-# slot would still be stamped with a foreign lane's answer. Sharding the
-# destination cannot fix an unstamped source, and that source is another repo's.
-# Filed: .planning/backlog/2026-09-15-sym-health-json-carries-no-lane-identity.md.
+# TWO fields are deliberately absent, both because they are computed against
+# $CLAUDE_CONFIG_DIR and therefore belong to a lane rather than to the machine:
+# missing_symlinks and plugin_keys. Both moved to $LANE_FILE below. Do NOT
+# reinstate either here as a mirror — a second copy with different semantics is
+# the stale trap this split removes, and statusline-wrapper.js now overwrites any
+# legacy missing_symlinks it finds so an old cache can never leak one.
+#
+# plugin_keys moved on 2026-09-16, later than missing_symlinks and by a separate
+# decision, because the reason it could not move earlier expired. That reason was
+# real: its fast path takes a verdict from sym-health.json, which the skills-repo
+# /dhx:sym publishes from whatever lane the operator was in, and which at the time
+# carried NO lane identity — so a per-lane slot would still have been stamped with
+# a foreign lane's answer, and sharding a destination cannot fix an unstamped
+# source. That source is stamped now: it carries config_dir, and the fast path
+# above accepts it only on a realpath match, falling back to this lane's own
+# settings.json otherwise. Both branches resolve $CLAUDE_CONFIG_DIR, so the field
+# was always mechanically per-lane; once the source was stamped, nothing was left
+# holding it here. Reversing docs/decisions.md 2026-09-15 AC-3 ("fields that are
+# genuinely machine-wide (plugin_keys, hooks_wiring) stay shared") is deliberate:
+# that classification was wrong for plugin_keys and remains correct for
+# hooks_wiring, which walks $HOME/.claude/hooks paths only.
+# See docs/decisions.md 2026-09-16 plugin-keys lane-scoping row.
 tmp="$CACHE_FILE.tmp.$$"
 cat > "$tmp" <<EOF
-{"worktree_patches":"$wt_state","read_guard":"$rg_state","claude_md":"$claude_md_state","settings_chain":"$settings_chain","plugin_keys":"$plugin_keys","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
+{"worktree_patches":"$wt_state","read_guard":"$rg_state","claude_md":"$claude_md_state","settings_chain":"$settings_chain","hooks_wiring":"$hooks_wiring","checked":$(date +%s)}
 EOF
 mv -f "$tmp" "$CACHE_FILE"
 
@@ -454,12 +467,26 @@ mv -f "$tmp" "$CACHE_FILE"
 # script (a sandbox tmpdir, an unexpected root). Writing nothing is deliberate:
 # the reader then finds no reading for that lane and renders `symlinks:?` rather
 # than a count, which is the honest answer and keeps the key space bounded.
-# config_dir_real is safe to interpolate into JSON unquoted-escaping because the
+#
+# SINCE 2026-09-16 THAT REFUSAL ALSO COSTS plugin_keys, and the cost was weighed
+# rather than discovered: a lane the allowlist refuses now has no plugin_keys
+# reading anywhere, where before it had one in the shared object. That is the
+# same posture missing_symlinks already took, and the value it loses was another
+# lane's answer whenever two lanes disagreed. The cross-repo reader fails CLOSED
+# on the absence (sym-gsd-update-report.md step 12.5 check 2) rather than
+# treating "no reading" as healthy — the false-clean direction this whole arc
+# exists to close.
+#
+# config_dir_real is safe to interpolate into JSON without escaping because the
 # allowlist above admits only $HOME/.claude or $HOME/.ccs/instances/<[A-Za-z0-9_-]+>.
+# $plugin_keys carries NO such guarantee and never did: on the fast path it is
+# whatever string sym-health.json held. It is interpolated here exactly as it was
+# interpolated into $CACHE_FILE before the move — unchanged exposure, moved
+# destination — so this line is not the place to fix it if it ever matters.
 if [[ -n "$LANE_FILE" ]]; then
   ltmp="$LANE_FILE.tmp.$$"
   cat > "$ltmp" <<EOF
-{"config_dir":"$config_dir_real","missing_symlinks":$missing,"checked":$(date +%s)}
+{"config_dir":"$config_dir_real","missing_symlinks":$missing,"plugin_keys":"$plugin_keys","checked":$(date +%s)}
 EOF
   mv -f "$ltmp" "$LANE_FILE"
 fi

@@ -106,8 +106,16 @@ run_script_case() {
   HOME="$home" CLAUDE_CONFIG_DIR="$cfg" \
     bash /home/dhx/repos/hooks/dhx/dhx-health-check.sh <<< '{"session_id":"probe"}' >/dev/null 2>&1
 
+  # The verdict lives in the PER-LANE sidecar, not health.json (moved 2026-09-16 —
+  # both branches that compute it resolve $CLAUDE_CONFIG_DIR, so a $HOME-anchored slot
+  # made the value at rest last-writer-wins). Selected by matching the recorded
+  # config_dir stamp, which is the same selection the cross-repo reader performs, so
+  # this probe exercises the real consumer mechanism. $cfg here is canonical
+  # ($home/.claude), so the hook's allowlist admits it and a sidecar always exists;
+  # ERR still means "no reading for this lane", distinct from a recorded value.
   local got
-  got=$(jq -r '.plugin_keys // "ERR"' "$cache/health.json" 2>/dev/null || echo "ERR")
+  got=$(jq -r --arg d "$cfg_real" 'select(.config_dir == $d) | .plugin_keys' \
+          "$cache"/health-lane-*.json 2>/dev/null | head -1 | grep . || echo "ERR")
 
   if [[ "$got" == "$expected" ]]; then
     printf '  \u2713 %s → plugin_keys=%s\n' "$name" "$got"

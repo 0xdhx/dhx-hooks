@@ -86,7 +86,24 @@ publish() { HOME="$1" CLAUDE_CONFIG_DIR="$2" bash "$PUBLISHER" health-export >/d
 run_hook() { HOME="$1" CLAUDE_CONFIG_DIR="$2" bash "$HOOK" <<<'{"session_id":"probe-stamp"}' >/dev/null 2>&1; }
 
 sym_field() { jq -r --arg f "$2" '.[$f] // "ABSENT"' "$1/.cache/dhx/sym-health.json" 2>/dev/null || echo ABSENT; }
-hook_pk()   { jq -r '.plugin_keys // "ABSENT"' "$1/.cache/dhx/health.json" 2>/dev/null || echo ABSENT; }
+# hook_pk <home> <lane config dir, ANY spelling> -> that lane's recorded plugin_keys
+#
+# 2026-09-16: plugin_keys MOVED from the shared health.json into the per-lane sidecar,
+# so this helper can no longer read one file -- it has to say WHICH lane it means. It
+# selects by the recorded config_dir stamp rather than by deriving the sidecar's
+# filename, which is deliberate: that is the exact selection the cross-repo reader
+# (sym-gsd-update-report.md step 12.5 check 2) performs, so every assertion below now
+# exercises the real consumer mechanism instead of a probe-local shortcut. Deriving the
+# filename would need the lane-id allowlist from the head of dhx-health-check.sh, and
+# putting that in a third language is what the stamp search exists to avoid.
+#
+# ABSENT when no sidecar carries that stamp -- distinct from a recorded value, and the
+# callers below branch on it as a PROBE ERROR rather than treating it as an answer.
+hook_pk() {
+  local d; d="$(readlink -f "$2" 2>/dev/null || echo "$2")"
+  jq -r --arg d "$d" 'select(.config_dir == $d) | .plugin_keys' "$1"/.cache/dhx/health-lane-*.json 2>/dev/null \
+    | head -1 | grep . || echo ABSENT
+}
 
 # LIVENESS GUARD (tests/probes/README.md § Liveness guards). Several assertions below
 # are equality checks whose helpers echo ABSENT for a missing file, and one is an
@@ -124,14 +141,14 @@ HEALTHY="$(make_lane "$H" healthy healthy)"
 
 publish "$H" "$BROKEN"
 run_hook "$H" "$BROKEN"
-chk "[1] the broken lane computes its own verdict" "$(hook_pk "$H")" "MISSING"
+chk "[1] the broken lane computes its own verdict" "$(hook_pk "$H" "$BROKEN")" "MISSING"
 
 publish "$H" "$HEALTHY"
 chk "[2] the healthy lane's publish lands in the shared file" "$(sym_field "$H" plugin_keys)" "ok"
 
 run_hook "$H" "$BROKEN"
 chk "[3] the broken lane's verdict SURVIVES a healthy lane's publish (the defect)" \
-    "$(hook_pk "$H")" "MISSING"
+    "$(hook_pk "$H" "$BROKEN")" "MISSING"
 
 # ===================================================================================
 # [4] SCHEMA: the publisher stamps, and the stamp is the REALPATH — not whatever
@@ -186,12 +203,12 @@ now_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '{"plugin_keys":"ok","config_dir":"/nonexistent/other-lane","checked_at":"%s"}' "$now_utc" \
   > "$H2/.cache/dhx/sym-health.json"
 run_hook "$H2" "$B2"
-chk "[6a] a foreign fresh 'ok' does NOT mask this lane's real MISSING" "$(hook_pk "$H2")" "MISSING"
+chk "[6a] a foreign fresh 'ok' does NOT mask this lane's real MISSING" "$(hook_pk "$H2" "$B2")" "MISSING"
 
 # unstamped legacy file — unknown provenance, refused not trusted
 printf '{"plugin_keys":"ok","checked_at":"%s"}' "$now_utc" > "$H2/.cache/dhx/sym-health.json"
 run_hook "$H2" "$B2"
-chk "[6b] an UNSTAMPED legacy file is refused, not trusted" "$(hook_pk "$H2")" "MISSING"
+chk "[6b] an UNSTAMPED legacy file is refused, not trusted" "$(hook_pk "$H2" "$B2")" "MISSING"
 
 # and the mirror direction: a foreign MISSING must not raise a false alarm
 H3="$(make_home)"
@@ -199,7 +216,7 @@ G3="$(make_lane "$H3" healthy healthy)"
 printf '{"plugin_keys":"MISSING","config_dir":"/nonexistent/other-lane","checked_at":"%s"}' "$now_utc" \
   > "$H3/.cache/dhx/sym-health.json"
 run_hook "$H3" "$G3"
-chk "[6c] a foreign fresh 'MISSING' does NOT raise a false alarm here" "$(hook_pk "$H3")" "ok"
+chk "[6c] a foreign fresh 'MISSING' does NOT raise a false alarm here" "$(hook_pk "$H3" "$G3")" "ok"
 
 # the 60-second post-repair clear the 2026-04-16 row bought must SURVIVE for the lane
 # the repair ran in — that is the UX this fix was not allowed to cost
@@ -207,7 +224,7 @@ printf '{"plugin_keys":"ok","config_dir":"%s","checked_at":"%s"}' "$(readlink -f
   > "$H2/.cache/dhx/sym-health.json"
 run_hook "$H2" "$B2"
 chk "[6d] an OWN-lane publish still overrides the local check (60s clear preserved)" \
-    "$(hook_pk "$H2")" "ok"
+    "$(hook_pk "$H2" "$B2")" "ok"
 
 # ===================================================================================
 # [7] THE THREE-WAY INVARIANT: publisher (bash, skills repo), hook gate (bash, hooks
@@ -247,10 +264,17 @@ for mode in own foreign; do
       continue
     fi
     run_hook "$H4" "$cfg"
-    pk="$(hook_pk "$H4")"
+    # $cfg, NOT $stamp. They are the same path in `own` mode and DIFFERENT in `foreign`
+    # mode -- $stamp is what the PUBLISHER recorded, and the foreign arm deliberately makes
+    # that another lane's dir. Asking for the reading stamped with a foreign dir finds no
+    # sidecar at all, which the guard below then reports as a dead harness rather than as a
+    # refusal. The question this case asks is "what did the hook record FOR THIS LANE", so
+    # the lane is the key. (Invisible before 2026-09-16: the reading lived in one shared
+    # file that needed no key, so own-vs-foreign could not be confused here.)
+    pk="$(hook_pk "$H4" "$cfg")"
     if [[ "$pk" == "ABSENT" ]]; then
-      bad "[7/$mode] PROBE ERROR: the hook wrote no health.json for '${cfg/#$H4/\$HOME}'" \
-          "served-vs-refused cannot be read off an absent file"
+      bad "[7/$mode] PROBE ERROR: the hook wrote no sidecar for '${cfg/#$H4/\$HOME}'" \
+          "served-vs-refused cannot be read off an absent reading"
       continue
     fi
     bash_served="$([[ "$pk" == "MISSING" ]] && echo true || echo false)"
@@ -385,12 +409,12 @@ if [[ ! -e "$SCRATCH/swapped" ]]; then
       "the assertion below would hold having tested nothing"
 else
   chk "[10] the hook decides from ONE read (a file swapped mid-read is not served)" \
-      "$(hook_pk "$H7")" "MISSING"
+      "$(hook_pk "$H7" "$L7")" "MISSING"
 fi
 
 # ===================================================================================
 # [11] THE RENDER MUST NOT INHERIT A SHARED VERDICT. Round 2's second counterexample:
-#      plugin_keys lives in health.json, which EVERY lane's SessionStart overwrites, so a
+#      plugin_keys LIVED in health.json, which every lane's SessionStart overwrites, so a
 #      healthy lane's run cleared a broken lane's rendered warning -- with no
 #      sym-health.json present at all. The wrapper now computes this lane's verdict from
 #      its own settings.json instead of inheriting that shared slot.
@@ -425,11 +449,18 @@ fi
 #      the same stub technique as [9]: retarget immediately after the head resolution.
 # ===================================================================================
 H9="$(make_home)"
-mkdir -p "$H9/good" "$H9/bad" "$SCRATCH/stubbin12"
-printf '%s' "$GOOD_SETTINGS" > "$H9/good/settings.json"
-printf '{}'                  > "$H9/bad/settings.json"
-mkdir -p "$H9/.ccs/instances"
-ln -sfn "$H9/good" "$H9/.ccs/instances/swing"
+# good/ and bad/ live UNDER .ccs/instances/ (they were $H9/good and $H9/bad until
+# 2026-09-16). Not cosmetic: plugin_keys now lands in the per-lane sidecar, which is
+# written only for a config dir the allowlist at the head of dhx-health-check.sh admits
+# -- $HOME/.claude or a single-segment child of $HOME/.ccs/instances. Resolving to
+# $H9/good satisfied neither, so the hook wrote NO sidecar and this case had no reading
+# to assert against. Relocating them keeps the case testing what it was written to test
+# (which resolution the fallback uses) instead of incidentally re-testing the allowlist,
+# which [5a]/[5b] of probe-health-lane-scoping.sh already own.
+mkdir -p "$H9/.ccs/instances/good" "$H9/.ccs/instances/bad" "$SCRATCH/stubbin12"
+printf '%s' "$GOOD_SETTINGS" > "$H9/.ccs/instances/good/settings.json"
+printf '{}'                  > "$H9/.ccs/instances/bad/settings.json"
+ln -sfn "$H9/.ccs/instances/good" "$H9/.ccs/instances/swing"
 now9="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # a FOREIGN stamp forces the refusal branch, which is where the second resolution lived
 printf '{"plugin_keys":"ok","config_dir":"/nonexistent/other-lane","checked_at":"%s"}' "$now9" \
@@ -443,7 +474,7 @@ out="\$("$REAL_READLINK12" "\$@")"; rc=\$?
 for a in "\$@"; do
   if [[ "\$a" == "$H9/.ccs/instances/swing" && ! -e "$SCRATCH/swung" ]]; then
     : > "$SCRATCH/swung"
-    ln -sfn "$H9/bad" "$H9/.ccs/instances/swing"
+    ln -sfn "$H9/.ccs/instances/bad" "$H9/.ccs/instances/swing"
   fi
 done
 exit \$rc
@@ -458,8 +489,53 @@ if [[ ! -e "$SCRATCH/swung" ]]; then
       "the assertion below would hold having tested nothing"
 else
   # the run classified itself against `good` (the head resolution), so its fallback verdict
-  # must be good's `ok` -- a MISSING here means the fallback resolved through `bad`
-  chk "[12] the fallback resolves the lane the run classified itself as" "$(hook_pk "$H9")" "ok"
+  # must be good's `ok` -- a MISSING here means the fallback resolved through `bad`.
+  # Since 2026-09-16 this reads the sidecar keyed to good, so it now asserts something
+  # strictly stronger than it did against the shared file: not merely that the VERDICT is
+  # good's, but that the run filed it under good's identity. An ABSENT would mean the run
+  # classified itself as neither.
+  chk "[12] the fallback resolves the lane the run classified itself as" \
+      "$(hook_pk "$H9" "$H9/.ccs/instances/good")" "ok"
+fi
+
+# ===================================================================================
+# [14] CROSS-LANE ISOLATION OF THE VALUE AT REST (2026-09-16). Cases [6] and [11] cover
+#      the two routes that were closed first -- the PUBLISHER (a foreign sym-health.json
+#      must not be believed) and the RENDER (the statusline computes this lane's verdict
+#      rather than inheriting a shared slot). This case covers the third: the value the
+#      hook STORES. Until plugin_keys moved to the per-lane sidecar it went into the
+#      $HOME-anchored health.json, so whichever lane started a session last owned it --
+#      and the cross-repo reader (sym-gsd-update-report.md step 12.5 check 2) jq's that
+#      value and hard-exits on it. A foreign MISSING aborted a healthy gsd-update; a
+#      foreign `ok` let one proceed past a real plugin-key fault, which is the false-clean
+#      direction and the one that costs something.
+#
+#      Reproduced against the pre-fix hook before the fix landed: lane broken wrote
+#      MISSING, lane healthy's SessionStart replaced it with ok, and a check running in
+#      lane broken then read ok. That reproduction is this assertion.
+#
+#      LIVENESS: [14b] is an equality assertion and hook_pk() answers ABSENT for a lane
+#      with no sidecar, so ABSENT == ABSENT would pass having observed nothing. [14a]
+#      anchors it on a value only a live producer can emit, and gates the rest.
+# ===================================================================================
+H10="$(make_home)"
+B10="$(make_lane "$H10" broken broken)"
+G10="$(make_lane "$H10" healthy healthy)"
+rm -f "$H10/.cache/dhx/sym-health.json"       # no publisher: the lane-local check decides
+
+run_hook "$H10" "$B10"
+PK10_BEFORE="$(hook_pk "$H10" "$B10")"
+if [[ "$PK10_BEFORE" != "MISSING" ]]; then
+  bad "[14a] PROBE ERROR: the broken lane recorded no usable verdict" \
+      "got: $PK10_BEFORE" \
+      "want: MISSING -- ABSENT here means the hook could not be driven, not that it passed"
+else
+  ok "[14a] the broken lane records its own MISSING"
+  run_hook "$H10" "$G10"                      # the OTHER lane starts a session
+  chk "[14b] a healthy lane's SessionStart does NOT overwrite it" \
+      "$(hook_pk "$H10" "$B10")" "MISSING"
+  chk "[14c] and the healthy lane reads its own ok, not the broken lane's verdict" \
+      "$(hook_pk "$H10" "$G10")" "ok"
 fi
 
 # ===================================================================================

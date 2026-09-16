@@ -794,12 +794,21 @@ function checkPluginRegistry(configDir, sessionId) {
 // and hard-exits on .settings_chain, .read_guard, .plugin_keys and .hooks_wiring.
 // So a schema change here reaches a consumer in another repo.
 //
-// The live rule, which is what the old invariant was reaching for: the four fields
-// that reader gates on are all MACHINE-WIDE and all stay at the top level of
-// health.json. Removing or renaming any of them breaks `/dhx:sym gsd-update`
+// The live rule, which is what the old invariant was reaching for: the fields that
+// reader gates on out of health.json are all MACHINE-WIDE and all stay at the top
+// level of it. Removing or renaming any of them breaks `/dhx:sym gsd-update`
 // post-install verification in a way no probe in this repo would catch. Before
 // extending or moving a field, grep BOTH repos for the exact basename and open
 // every hit — a hit count is not a reading.
+//
+// UPDATED 2026-09-16 — that reader now gates on THREE fields here, not four.
+// plugin_keys moved to the per-lane sidecar, because both of its branches resolve
+// $CLAUDE_CONFIG_DIR and a shared slot made its value at rest last-writer-wins. The
+// runbook reads it from ~/.cache/dhx/health-lane-<id>.json, selected by matching its
+// recorded config_dir against one `readlink -f` of this lane's config dir — a stamp
+// search, so no lane-id allowlist is reproduced in markdown. It fails CLOSED when no
+// sidecar matches. This reverses AC-3 of the 2026-09-15 scoping brief, deliberately:
+// that criterion called plugin_keys machine-wide and it never was.
 //
 // Per-lane fields live in ~/.cache/dhx/health-lane-<id>.json instead; see
 // readLaneHealth() below and dhx-health-check.sh's lane-identity block.

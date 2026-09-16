@@ -11,8 +11,17 @@
 #
 # THE CONTRACT NOW:
 #   health.json                  — machine-wide fields only, last-writer-wins (correct)
-#   health-lane-<id>.json        — the one lane-sensitive field, per lane
+#   health-lane-<id>.json        — BOTH lane-sensitive fields, per lane
 #   no sidecar for this lane     — renders `symlinks:?`, NEVER a clean line
+#
+# 2026-09-16: plugin_keys joined missing_symlinks in the sidecar. It is computed from
+# $CLAUDE_CONFIG_DIR on both of its branches and so was always mechanically per-lane;
+# what had kept it in the shared object was that its fast-path source (sym-health.json)
+# carried no lane identity, and sharding a destination cannot fix an unstamped source.
+# That source is stamped now. Cases [4b]-[4d] carry the new field set; the cross-lane
+# isolation of the two plugin_keys VALUES is asserted in probe-sym-health-lane-stamp.sh,
+# which owns that surface and has a fixture that can produce a genuine plugin-key fault
+# (this file's make_lane faults a symlink, which drives missing_symlinks, not plugin_keys).
 #
 # THE INVARIANT THIS EXISTS FOR (case [7]): the lane id is derived TWICE, in bash by
 # dhx-health-check.sh and in JS by statusline-wrapper.js::laneIdFor(). Nothing in
@@ -22,7 +31,8 @@
 # serving one lane's reading to another — but the backstop degrades the signal, so
 # the agreement is asserted here rather than left to it.
 #
-# Backs docs/decisions.md 2026-09-15 health-cache lane-scoping row.
+# Backs docs/decisions.md 2026-09-15 health-cache lane-scoping row + the 2026-09-16
+# plugin-keys lane-scoping row (which reverses the 2026-09-15 row's AC-3).
 # Run: bash tests/probes/probe-health-lane-scoping.sh
 #
 # SAFE_FOR_LIVE: yes  (mktemp fake $HOME per case + HOME override; the hook's and the
@@ -138,15 +148,35 @@ run_hook "$H" "$LANE_B"
 chk "[2] healthy lane b computes its own count" "$(lane_missing "$H" b)" "0"
 chk "[3] lane a's reading SURVIVES lane b's SessionStart (the defect)" "$(lane_missing "$H" a)" "1"
 
-# [4] the shared object no longer carries the lane-sensitive field at all — a mirror
+# [4] the shared object no longer carries EITHER lane-sensitive field — a mirror
 #     would be a second copy with different semantics, i.e. the stale trap the split
-#     removes. Machine-wide fields must still be present and top-level, because the
+#     removes. The machine-wide fields must still be present and top-level, because the
 #     skills-repo reader (sym-gsd-update-report.md steps 12.45(c) / 12.5 check 2) jq's
 #     them straight out of this object and hard-exits on them.
-got="$(jq -r 'has("missing_symlinks")' "$H/.cache/dhx/health.json" 2>/dev/null)"
-chk "[4a] health.json does NOT carry missing_symlinks" "$got" "false"
-got="$(jq -r '[has("settings_chain"),has("read_guard"),has("plugin_keys"),has("hooks_wiring")] | all' "$H/.cache/dhx/health.json" 2>/dev/null)"
-chk "[4b] health.json KEEPS the 4 fields the skills-repo reader gates on" "$got" "true"
+#
+#     LIVENESS GUARD (tests/probes/README.md § Liveness guards). [4a] and [4c] are
+#     ABSENCE assertions, the shape satisfied by a harness that produced nothing. A
+#     MISSING file is already caught — jq errors and the empty result fails the
+#     comparison — but an EMPTY OBJECT is not: `{}` answers `has(...)` with a clean
+#     `false` and would pass both vacuously. So each is anchored on a field the hook
+#     always writes, and asserts presence-and-absence in ONE expression: the `false`
+#     is unreachable unless the producer actually ran.
+got="$(jq -r 'has("settings_chain") and (has("missing_symlinks")|not)' "$H/.cache/dhx/health.json" 2>/dev/null)"
+chk "[4a] health.json does NOT carry missing_symlinks (and is live)" "$got" "true"
+got="$(jq -r 'has("settings_chain") and (has("plugin_keys")|not)' "$H/.cache/dhx/health.json" 2>/dev/null)"
+chk "[4c] health.json does NOT carry plugin_keys (and is live)" "$got" "true"
+got="$(jq -r '[has("settings_chain"),has("read_guard"),has("hooks_wiring")] | all' "$H/.cache/dhx/health.json" 2>/dev/null)"
+chk "[4b] health.json KEEPS the 3 machine-wide fields the skills-repo reader gates on" "$got" "true"
+# [4d] the field did not evaporate: it MOVED. Asserting only its absence above would
+#      pass equally against a hook that stopped computing it altogether, so the
+#      destination is asserted too. MISSING, not ok, is the correct expectation here:
+#      make_home() writes NO settings.json, so the predicate has nothing to resolve and
+#      MISSING is this fixture's honest verdict. What discriminates is MISSING vs the
+#      ABSENT fallback — present-and-lane-local versus not-written-at-all. The
+#      cross-lane ISOLATION of the two values lives in probe-sym-health-lane-stamp.sh,
+#      whose fixture can produce both because it builds a real settings.json per lane.
+got="$(jq -r '.plugin_keys // "ABSENT"' "$H/.cache/dhx/health-lane-b.json" 2>/dev/null || echo ABSENT)"
+chk "[4d] the lane sidecar carries plugin_keys instead" "$got" "MISSING"
 
 # ===================================================================================
 # [5] ALLOWLIST: $CLAUDE_CONFIG_DIR is untrusted. A config dir outside $HOME/.claude
