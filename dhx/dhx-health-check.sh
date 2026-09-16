@@ -307,7 +307,18 @@ if [[ -f "$sym_health" ]]; then
 fi
 if [[ -z "$plugin_keys" ]]; then
   plugin_keys="ok"
-  settings_real=$(readlink -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)
+  # $config_dir_real, NOT a fresh read of $CLAUDE_CONFIG_DIR. This line re-resolved the env
+  # var, and a close-gate reviewer refuted the close on it: the stamp comparison above and
+  # the lane-identity block that wrote this run's sidecar both use $config_dir_real, so a
+  # $CLAUDE_CONFIG_DIR that retargets mid-run let ONE invocation classify itself as lane
+  # `good`, write good's sidecar, and take its supposedly lane-local fallback verdict from
+  # `bad`. The stamp gate and the fallback have to mean the same thing by "this lane".
+  #
+  # That was the FOURTH member of one class found by three review rounds — publisher, hook
+  # cache reads, wrapper lane read, and here — the last two after the class was declared
+  # swept. The claim is no longer prose: probe-sym-health-lane-stamp.sh case [12] greps this
+  # file and fails on any functional $CLAUDE_CONFIG_DIR read outside the one at the head.
+  settings_real=$(readlink -f "$config_dir_real/settings.json" 2>/dev/null)
   if [[ ! -f "$settings_real" ]] || \
      ! jq -e '.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""' "$settings_real" >/dev/null 2>&1; then
     plugin_keys="MISSING"

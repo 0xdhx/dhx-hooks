@@ -402,6 +402,89 @@ else
       "line: $(tr -d '\033' <<<"$out" | tail -c 220)"
 fi
 
+# ===================================================================================
+# [12] THE STAMP GATE AND THE FALLBACK MUST MEAN THE SAME LANE. Round 3 refuted the close
+#      here: the hook snapshots $CLAUDE_CONFIG_DIR once at the head (that snapshot decides
+#      the lane id and the sidecar it writes), compares the published stamp against it --
+#      and then, on refusal, RE-RESOLVED $CLAUDE_CONFIG_DIR/settings.json. One invocation
+#      could therefore classify itself as lane `good`, write good's sidecar, and take its
+#      supposedly lane-local verdict from `bad`.
+#
+#      Reading the env var twice is harmless; RESOLVING it twice is not, because each
+#      realpath walks a symlink chain that can be retargeted in between. Deterministic, via
+#      the same stub technique as [9]: retarget immediately after the head resolution.
+# ===================================================================================
+H9="$(make_home)"
+mkdir -p "$H9/good" "$H9/bad" "$SCRATCH/stubbin12"
+printf '%s' "$GOOD_SETTINGS" > "$H9/good/settings.json"
+printf '{}'                  > "$H9/bad/settings.json"
+mkdir -p "$H9/.ccs/instances"
+ln -sfn "$H9/good" "$H9/.ccs/instances/swing"
+now9="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# a FOREIGN stamp forces the refusal branch, which is where the second resolution lived
+printf '{"plugin_keys":"ok","config_dir":"/nonexistent/other-lane","checked_at":"%s"}' "$now9" \
+  > "$H9/.cache/dhx/sym-health.json"
+
+REAL_READLINK12="$(command -v readlink)"
+cat > "$SCRATCH/stubbin12/readlink" <<STUB
+#!/bin/bash
+out="\$("$REAL_READLINK12" "\$@")"; rc=\$?
+[[ -n "\$out" ]] && printf '%s\n' "\$out"
+for a in "\$@"; do
+  if [[ "\$a" == "$H9/.ccs/instances/swing" && ! -e "$SCRATCH/swung" ]]; then
+    : > "$SCRATCH/swung"
+    ln -sfn "$H9/bad" "$H9/.ccs/instances/swing"
+  fi
+done
+exit \$rc
+STUB
+chmod +x "$SCRATCH/stubbin12/readlink"
+
+PATH="$SCRATCH/stubbin12:$PATH" HOME="$H9" CLAUDE_CONFIG_DIR="$H9/.ccs/instances/swing" \
+  bash "$HOOK" <<<'{"session_id":"probe-swing"}' >/dev/null 2>&1
+
+if [[ ! -e "$SCRATCH/swung" ]]; then
+  bad "[12] PROBE ERROR: the readlink stub never fired, so no retarget was injected" \
+      "the assertion below would hold having tested nothing"
+else
+  # the run classified itself against `good` (the head resolution), so its fallback verdict
+  # must be good's `ok` -- a MISSING here means the fallback resolved through `bad`
+  chk "[12] the fallback resolves the lane the run classified itself as" "$(hook_pk "$H9")" "ok"
+fi
+
+# ===================================================================================
+# [13] THE CLASS, LINTED. Three review rounds found four members of one class -- a decision
+#      made from more than one RESOLUTION of the same path -- and two of them were found
+#      AFTER the class was declared swept by hand. A claim that keeps being wrong is not a
+#      claim to repeat; this greps for the shape so the next one reds instead of shipping.
+#
+#      The rule: a consumer resolves this lane's config dir ONCE per decision and passes the
+#      result down. Re-reading the variable is fine; re-resolving the path is not.
+# ===================================================================================
+# `grep -c` prints 0 AND exits 1 on no match, so `|| echo 0` yields "0\n0" and poisons the
+# arithmetic below. `|| true` keeps the single printed count.
+count() { grep -cE "$2" "$1" 2>/dev/null || true; }
+
+# the hook's ONE authoritative resolution goes through $config_dir, so no `readlink -f`
+# operand should name the env var at all
+chk "[13a] no hook readlink resolves \$CLAUDE_CONFIG_DIR directly" \
+    "$(count "$HOOK" '^[^#]*readlink -f[^#]*CLAUDE_CONFIG_DIR')" "0"
+chk "[13b] the hook binds \$CLAUDE_CONFIG_DIR to config_dir exactly once" \
+    "$(count "$HOOK" '^[^#]*config_dir="\$\{CLAUDE_CONFIG_DIR')" "1"
+
+# NEWLINE-SQUASHED, deliberately. `grep -E` is line-based and the call this lint exists to
+# catch was written across two lines, so the first draft of [13c] passed its own negative
+# control -- it could not see the very shape it names. Squash first, then match.
+squashed="$SCRATCH/wrapper.squashed"
+tr '\n' ' ' < "$WRAPPER" > "$squashed"
+fresh_reads=0
+for pat in 'pluginKeysForThisLane\( *process\.env' 'readLaneHealth\( *process\.env' 'symHealthIsForThisLane\([^,]*, *process\.env'; do
+  n="$(grep -oE "$pat" "$squashed" 2>/dev/null | wc -l)"
+  fresh_reads=$(( fresh_reads + ${n:-0} ))
+done
+chk "[13c] no wrapper decision site takes a fresh env read instead of the pass's resolution" \
+    "$fresh_reads" "0"
+
 echo
 echo "PASS: $pass  FAIL: $fail"
 exit $(( fail > 0 ? 1 : 0 ))

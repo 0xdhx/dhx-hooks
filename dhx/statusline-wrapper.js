@@ -866,9 +866,17 @@ function pluginKeysForThisLane(configDir) {
   }
 }
 
-function symHealthIsForThisLane(symConfigDir, configDir) {
+function symHealthIsForThisLane(symConfigDir, configDir, configDirReal) {
   if (typeof symConfigDir !== 'string' || symConfigDir === '') return false;
-  try { return symConfigDir === fs.realpathSync(configDir); } catch { return false; }
+  try {
+    // configDirReal lets a caller that has ALREADY resolved this pass's config dir hand the
+    // result in, so the stamp comparison and whatever runs on the refusal branch cannot end
+    // up meaning different directories by "this lane". Round 3 of this brief's close gate
+    // refuted exactly that in the hook. Omit it and the function resolves for itself, which
+    // is what the probe's direct two-argument calls rely on.
+    const real = configDirReal || fs.realpathSync(configDir);
+    return symConfigDir === real;
+  } catch { return false; }
 }
 
 function laneIdFor(configDir, home) {
@@ -929,14 +937,27 @@ function readHealthCache(sessionId) {
         try { h = JSON.parse(data); } catch { h = {}; }
       }
 
+      // ONE resolution of this lane's config dir for the whole render pass.
+      //
+      // Reading the ENV VAR repeatedly is harmless — it cannot change inside a process. What
+      // is not harmless is RESOLVING it repeatedly: each realpath walks a symlink chain that
+      // can be retargeted between calls. Round 3 of this brief's close gate refuted the hook
+      // for that exact shape (stamp compared against one resolution, fallback computed from
+      // another), and the same shape was live here: symHealthIsForThisLane resolved the dir,
+      // and then pluginKeysForThisLane resolved it again on the refusal branch. Resolve once,
+      // pass the result down, so every consumer below means the same directory by "this lane".
+      const cfgSpelling = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      let cfgReal = null;
+      try { cfgReal = fs.realpathSync(cfgSpelling); } catch { cfgReal = null; }
+      const cfgForLane = cfgReal || cfgSpelling;
+
       let symApplied = false;
       try {
         const symFile = path.join(os.homedir(), '.cache', 'dhx', 'sym-health.json');
         const sym = JSON.parse(fs.readFileSync(symFile, 'utf8'));
         const ageMs = Date.now() - Date.parse(sym.checked_at || '');
-        const symConfigDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
         if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 3600 * 1000 && sym.plugin_keys
-            && symHealthIsForThisLane(sym.config_dir, symConfigDir)) {
+            && symHealthIsForThisLane(sym.config_dir, cfgSpelling, cfgReal)) {
           h.plugin_keys = sym.plugin_keys;
           symApplied = true;
         }
@@ -945,9 +966,7 @@ function readHealthCache(sessionId) {
       // Not our verdict (absent, malformed, stale, foreign or unstamped) -> compute THIS
       // lane's answer. Never inherit health.json's, which any lane's SessionStart overwrites.
       if (!symApplied) {
-        h.plugin_keys = pluginKeysForThisLane(
-          process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
-        );
+        h.plugin_keys = pluginKeysForThisLane(cfgForLane);
       }
 
       // Plugin-registry drift runs inline every refresh (no SessionStart
@@ -975,10 +994,7 @@ function readHealthCache(sessionId) {
       // `symlinks:?`. It does NOT render as a clean line: an absent reading
       // presenting as healthy is the same silent-zero class as a stale list
       // producing a permanently-false count.
-      h.missing_symlinks = readLaneHealth(
-        process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
-        os.homedir(),
-      );
+      h.missing_symlinks = readLaneHealth(cfgForLane, os.homedir());
 
       // Tier classification — field set comes from scripts/lib/tiers.json (D-07
       // Phase 5 migration; Phase 4 D-02 source-of-truth lock). Comparator + format
