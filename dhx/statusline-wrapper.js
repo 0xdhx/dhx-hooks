@@ -932,9 +932,24 @@ function readHealthCache(sessionId) {
         // content ceiling a worst-case line carrying two real faults alongside it
         // measures 67 chars with `symlinks:?` and 80 (wrapping, with no hanging
         // indent, so the continuation lands at column 0) with the spelled-out form.
+        //
+        // `symlinks:N`, NOT `N broken symlink(s)` (renamed 2026-09-15). The producer
+        // folds FOUR causes into this one integer — absent item, real dir standing in
+        // for a link, link resolving to the wrong target, link dangling — and "broken"
+        // names only the last. It was already false for the real-dir case, which is
+        // exactly why docs/troubleshooting.md carries a section titled "`missing_symlinks
+        // > 0` ... But `find -xtype l` Shows Zero": an operator read the word, ran the
+        // matching command, got zero, and had to be told the word was wrong. The
+        // destination check added the same day made that a fourth cause, so the wording
+        // is now cause-neutral. It also matches the `subject:state` shape every sibling
+        // token uses (`patches:`, `read-guard:`, `settings:`, `plugin-keys:`) and makes
+        // `symlinks:?` a sibling of `symlinks:2` instead of an odd one out — and it is
+        // NARROWER than the phrase it replaces, so the width budget above only improves.
+        // Cause detail belongs where it can be acted on: the per-item diagnose snippet
+        // names the ITEM, which a count can never do.
         missing_symlinks: (v) => {
           if (v === undefined) return 'symlinks:?';
-          return v > 0 ? `${v} broken symlink${v > 1 ? 's' : ''}` : null;
+          return v > 0 ? `symlinks:${v}` : null;
         },
         // config-symlink integrity: $HOME/.claude/CLAUDE.md drifted off its
         // dotfiles-canonical symlink (producer: dhx-health-check.sh; states

@@ -223,7 +223,7 @@ fi
 jq '. + {missing_symlinks: 5}' "$H3/.cache/dhx/health.json" > "$H3/.cache/dhx/health.json.t" \
   && mv "$H3/.cache/dhx/health.json.t" "$H3/.cache/dhx/health.json"
 out="$(render "$H3" "$LANE_C")"
-if grep -q '5 broken symlinks' <<<"$out"; then
+if grep -q 'symlinks:5' <<<"$out"; then
   bad "[9] legacy top-level missing_symlinks LEAKED into the render" "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
 elif grep -q 'symlinks:?' <<<"$out"; then
   ok "[9] legacy top-level missing_symlinks is unreachable; still renders 'symlinks:?'"
@@ -234,7 +234,7 @@ fi
 # [10] and a lane WITH a clean reading stays silent — 0 is not the same as unknown
 run_hook "$H3" "$LANE_C"
 out="$(render "$H3" "$LANE_C")"
-if grep -q 'symlinks:?\|broken symlink' <<<"$out"; then
+if grep -q 'symlinks:' <<<"$out"; then
   bad "[10] a checked-and-clean lane emitted a symlink token" "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
 else
   ok "[10] a checked-and-clean lane emits NO symlink token"

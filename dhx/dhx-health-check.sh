@@ -4,7 +4,16 @@
 # Runs fork verification and symlink checks, writes results to cache.
 # Clears this session's drift snapshot so wrapper writes a fresh baseline on resume.
 # Zero stdout on all paths — purely a cache writer.
-# Cost: ~50ms (4 file reads + 2 greps + ls check). No network, no git, no node.
+# Cost: ~575ms measured 2026-09-15 (3 runs, live lane c), NOT the ~50ms this line used to
+# claim — that figure predated the fork verifiers, the manifest walk and the prune sweeps,
+# and its component list ("4 file reads + 2 greps + ls check") no longer matches the file.
+# Dominant costs: the two dhx-sym.sh fork verifiers (68ms + 51ms measured separately), the
+# jq walk over the plugin manifest, the /proc orphan sweep and three find sweeps. The
+# destination check added below is ~10ms of that (two readlink forks per item); the
+# one-fork batched form is refused because it costs the literal `for item in ...` line that
+# probe-gsd-roots-resolve.sh pins against list staleness. SessionStart only — the repo rule
+# "keep hooks fast" is about per-tool-call hooks and does not bind here.
+# No network, no git, no node.
 
 CACHE_DIR="$HOME/.cache/dhx"
 CACHE_FILE="$CACHE_DIR/health.json"
@@ -144,11 +153,50 @@ missing=0
 # a plain internal double slash ($HOME//.claude). In both the reading was then SERVED to
 # canonical, because the stamp the reader checks is the realpath and it matched. Found by
 # the close-gate reviewer, 2026-09-15; probe cases [11]-[13].
+# 2026-09-15 (second edit, same day): the loop read a link's EXISTENCE and TYPE but never
+# its DESTINATION, so a link that exists, is a symlink, and resolves to a decoy — a stale
+# instance dir, an old `get-shit-done` path, another lane — was indistinguishable from a
+# healthy one. That is the quiet fault of the three: a missing item means something never
+# ran and a real dir means an install wrote to the wrong place, both loud, while a
+# wrong-target link resolves cleanly and silently serves a different tree. Reproduced in a
+# fixture lane before the fix: `dhx-tools` repointed at an existing decoy reported
+# missing_symlinks:0, and repointed at a nonexistent path reported 1 — so `-e` already
+# covered dangling and only "resolves elsewhere" was blind.
+#
+# The expected target is DERIVED, never tabulated: every item here links to
+# ~/.claude/<same basename>, verified across all 25 live lane links plus symlinks.yaml
+# `ccs-profiles.links`, so this is one comparison rather than a per-item map that becomes
+# the next thing to go stale. The membership of this list has already gone stale twice for
+# exactly that reason.
+#
+# ULTIMATE REFERENT, not the immediate target — and this is forced, not preferred. The
+# repair primitive (skills scripts/lib/sym-core.sh cmd_link) decides "already correct" by
+# comparing `readlink -f` on both operands, so a hook comparing one-level targets would
+# count links that repair calls correct and refuses to touch: a permanent false count, the
+# same cry-wolf failure the 2026-06-05 rename and the 2026-08-08 package.json removal each
+# produced. Realpath on BOTH operands for the same reason the CCS-vs-canonical test above
+# uses it, with a live proof: canonical's own `gsd-local-patches` is itself a symlink into
+# ~/repos/dotfiles, so a lexical compare against "$HOME/.claude/$item" flags a healthy lane.
+#
+# BRANCH ORDER IS LOAD-BEARING. `-e` must stay first: two paths resolve EQUAL when both
+# name the same NONEXISTENT final component, so a lane link pointing at an absent canonical
+# item passes the target comparison and is caught only by the existence test. The `! -L`
+# branch stays too — subsuming it into the comparison (a real dir resolves to itself, so it
+# would be counted either way) would collapse "real dir standing in" and "link to the wrong
+# place" into one indistinguishable state, and the diagnose snippet names them separately.
+#
+# KNOWN GAP, filed not fixed: `/dhx:sym repair` cannot currently fix what this branch
+# counts. Its per-path audit (cmd_check) prints `symlink` for a decoy-pointing link, so
+# repair never collects the item — though cmd_link repoints one correctly when asked.
+# Brief: ~/repos/skills/.planning/backlog/2026-09-15-sym-audit-check-is-destination-blind.md
 for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches dhx-tools; do
   p="$config_dir_real/$item"
+  expected_real="$(readlink -f "$claude_home_real/$item" 2>/dev/null || echo "$claude_home_real/$item")"
   if [[ ! -e "$p" ]]; then
     missing=$((missing + 1))
   elif [[ "$config_dir_real" != "$claude_home_real" && ! -L "$p" ]]; then
+    missing=$((missing + 1))
+  elif [[ "$(readlink -f "$p" 2>/dev/null || echo "")" != "$expected_real" ]]; then
     missing=$((missing + 1))
   fi
 done

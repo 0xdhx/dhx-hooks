@@ -39,7 +39,7 @@ function readHealthCache() {
         if (h.read_guard && h.read_guard !== 'patched')
           advisory.push(`read-guard:${h.read_guard}`);
         if (h.missing_symlinks > 0)
-          advisory.push(`${h.missing_symlinks} broken symlink${h.missing_symlinks > 1 ? 's' : ''}`);
+          advisory.push(`symlinks:${h.missing_symlinks}`);
 
         const front = critical.length
           ? `\x1b[38;5;208m⚠ ${critical.join(' ')} — /dhx:sym repair\x1b[0m`
@@ -97,15 +97,15 @@ const scenarios = [
     health: { ...healthy, missing_symlinks: 2 },
     sym: null,
     expectFront: '',
-    expectTailContains: ['2 broken symlinks'],
+    expectTailContains: ['symlinks:2'],
   },
   {
     name: 'all 5 wrong → both populated, correct partition',
     health: { worktree_patches: 'REGRESSED', read_guard: 'REGRESSED', missing_symlinks: 1, settings_chain: 'REAL_FILE', plugin_keys: 'MISSING', checked: 0 },
     sym: null,
     expectFrontContains: ['settings:REAL_FILE', 'plugin-keys:MISSING'],
-    expectFrontNotContains: ['patches', 'read-guard', 'broken symlink'],
-    expectTailContains: ['patches:REGRESSED', 'read-guard:REGRESSED', '1 broken symlink'],
+    expectFrontNotContains: ['patches', 'read-guard', 'symlinks:'],
+    expectTailContains: ['patches:REGRESSED', 'read-guard:REGRESSED', 'symlinks:1'],
     expectTailNotContains: ['settings:', 'plugin-keys:'],
   },
   {
