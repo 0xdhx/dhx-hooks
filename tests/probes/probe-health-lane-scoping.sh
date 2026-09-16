@@ -94,9 +94,31 @@ make_lane() { # make_lane <home> <name> <fault|healthy>
 
 run_hook() { HOME="$1" CLAUDE_CONFIG_DIR="$2" bash "$HOOK" <<<'{"session_id":"probe-lane"}' >/dev/null 2>&1; }
 
-render() { # render <home> <config_dir> -> statusline stdout
+render() { # render <home> <config_dir> -> statusline stdout; stderr kept for diagnosis
   HOME="$1" CLAUDE_CONFIG_DIR="$2" timeout 10 node "$WRAPPER" \
-    <<<'{"session_id":"probe-lane","version":"2.1.112"}' 2>/dev/null
+    <<<'{"session_id":"probe-lane","version":"2.1.112"}' 2>"$SCRATCH/render.err"
+}
+
+# LIVENESS GUARD for every render-based assertion below.
+#
+# An assertion that tests for the ABSENCE of a token is satisfied by a render that
+# produced NOTHING -- the wrapper moved, the node spawn dying, $WRAPPER resolving
+# outside the repo -- so on a broken harness it reports OK in exactly the situation
+# where it can tell you least. That is the same failure [7] carries an rc guard for,
+# and the same one that let [14a] pass its own negative control when it was first
+# written. This proves the render RAN and emitted a line before any caller judges its
+# content; callers branch on the rc and report a dead wrapper as a PROBE ERROR, never
+# as a satisfied assertion.
+render_live() { # render_live <home> <config_dir> -> stdout; rc 1 when nothing rendered
+  local out rc
+  out="$(render "$1" "$2")"; rc=$?
+  (( rc == 0 )) || return 1
+  [[ -n "${out//[[:space:]]/}" ]] || return 1
+  printf '%s\n' "$out"
+}
+render_diag() { # one-line why-it-was-dead, for the bad() detail
+  local e; e="$(head -2 "$SCRATCH/render.err" 2>/dev/null | tr '\n' ' ')"
+  echo "wrapper: $WRAPPER | stderr: ${e:-<none>}"
 }
 
 lane_missing() { jq -r '.missing_symlinks // "ABSENT"' "$1/.cache/dhx/health-lane-$2.json" 2>/dev/null || echo ABSENT; }
@@ -212,8 +234,9 @@ H3="$(make_home)"
 LANE_C="$(make_lane "$H3" c healthy)"
 run_hook "$H3" "$LANE_C"
 rm -f "$H3/.cache/dhx/health-lane-c.json"          # lane has never run under the new hook
-out="$(render "$H3" "$LANE_C")"
-if grep -q 'symlinks:?' <<<"$out"; then
+if ! out="$(render_live "$H3" "$LANE_C")"; then
+  bad "[8] PROBE ERROR: the statusline wrapper could not be driven" "$(render_diag)"
+elif grep -q 'symlinks:?' <<<"$out"; then
   ok "[8] no sidecar for this lane renders 'symlinks:?' (not a clean line)"
 else
   bad "[8] absent reading did not render as unknown" "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
@@ -222,8 +245,9 @@ fi
 # a pre-2026-09-15 cache still carrying the field must not be believed
 jq '. + {missing_symlinks: 5}' "$H3/.cache/dhx/health.json" > "$H3/.cache/dhx/health.json.t" \
   && mv "$H3/.cache/dhx/health.json.t" "$H3/.cache/dhx/health.json"
-out="$(render "$H3" "$LANE_C")"
-if grep -q 'symlinks:5' <<<"$out"; then
+if ! out="$(render_live "$H3" "$LANE_C")"; then
+  bad "[9] PROBE ERROR: the statusline wrapper could not be driven" "$(render_diag)"
+elif grep -q 'symlinks:5' <<<"$out"; then
   bad "[9] legacy top-level missing_symlinks LEAKED into the render" "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
 elif grep -q 'symlinks:?' <<<"$out"; then
   ok "[9] legacy top-level missing_symlinks is unreachable; still renders 'symlinks:?'"
@@ -233,11 +257,15 @@ fi
 
 # [10] and a lane WITH a clean reading stays silent — 0 is not the same as unknown
 run_hook "$H3" "$LANE_C"
-out="$(render "$H3" "$LANE_C")"
-if grep -q 'symlinks:' <<<"$out"; then
+# THE ABSENCE ASSERTION. Everything this case wants to catch shows up as a token that
+# should not be there -- so an empty render satisfies it. Liveness first, content second.
+if ! out="$(render_live "$H3" "$LANE_C")"; then
+  bad "[10] PROBE ERROR: the statusline wrapper could not be driven, so the absence of" \
+      "a symlink token proves nothing" "$(render_diag)"
+elif grep -q 'symlinks:' <<<"$out"; then
   bad "[10] a checked-and-clean lane emitted a symlink token" "line: $(tr -d '\033' <<<"$out" | tail -c 200)"
 else
-  ok "[10] a checked-and-clean lane emits NO symlink token"
+  ok "[10] a checked-and-clean lane emits NO symlink token (render was live)"
 fi
 
 # ===================================================================================
@@ -277,8 +305,19 @@ make_lane "$H5" default fault >/dev/null
 run_hook "$H5" "$H5/.claude"                       # canonical writes health-lane-default.json
 CANON_BEFORE="$(lane_missing "$H5" default)"
 run_hook "$H5" "$H5/.ccs/instances/default"        # the colliding instance must NOT overwrite it
-chk "[14a] an instance named 'default' does not clobber canonical's sidecar" \
-    "$(lane_missing "$H5" default)" "$CANON_BEFORE"
+# THE EQUALITY ASSERTION, and the same class of hole as [10]. lane_missing() echoes
+# ABSENT when the sidecar is not there, so against a producer that writes NO sidecar at
+# all the comparison below is ABSENT == ABSENT and passes having observed nothing.
+# Anchor it on a real reading first: canonical is clean in this fixture, so 0 is the
+# only before-value it can legitimately produce.
+if [[ "$CANON_BEFORE" != "0" ]]; then
+  bad "[14a] PROBE ERROR: canonical wrote no usable sidecar before the collision" \
+      "got before: $CANON_BEFORE" \
+      "want: 0 -- ABSENT here means the producer could not be driven, not that the test passed"
+else
+  chk "[14a] an instance named 'default' does not clobber canonical's sidecar" \
+      "$(lane_missing "$H5" default)" "$CANON_BEFORE"
+fi
 got="$(HOME="$H5" node -e '
   const w = require(process.argv[1]);
   const r = w.laneIdFor(process.argv[2], process.env.HOME);

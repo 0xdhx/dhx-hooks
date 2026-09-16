@@ -27,6 +27,24 @@ Any probe invoking `sync`, `fsync`, `dd`, or a syscall that can enter uninterrup
 - If a D-state-capable syscall IS load-bearing: `cmd >/dev/null 2>&1` minimum. **`timeout` does NOT bound wall time on D-state processes** — SIGTERM is queued but ignored; `timeout`'s `wait` blocks on actual exit, not signal dispatch.
 - Diagnostic recipe when `git commit … | tail -N` hangs without output: `readlink /proc/<tail_pid>/fd/0` reveals the pipe inode; iterating `/proc/*/fd/*` for that inode lists every writer-side holder.
 
+## Liveness guards for absence and equality assertions
+
+An assertion that tests for the **absence** of a token, or the **equality** of two reads, is satisfied by a harness that produced **nothing**. Both report OK in precisely the situation where they can tell you least: the binary under test never ran.
+
+**Failure mode** (found 2026-09-15 by `probe-health-lane-scoping.sh` auditing its own assertions, after the close-gate reviewer separately found that a recorded negative-control recipe could not red the assertion it named). Two cases in that file:
+
+- an absence case rendered the statusline and grepped for a token, failing only when one was **present** — so a missing wrapper, a dead node spawn, or a `$WRAPPER` resolving outside the repo left an empty render that contained no token, and the assertion held;
+- an equality case compared a helper's before/after output, where the helper echoed `ABSENT` for a file that was not there — so against a producer that wrote no file at all the comparison was `ABSENT == ABSENT`.
+
+Both were confirmed by replacing the producer with `/bin/true`: of twenty-one assertions, those two were the **only** ones that still claimed success.
+
+**Rule:**
+
+- **Prove the subject ran before judging what it produced.** Capture the rc and require non-empty output, then branch — and report a dead harness as a `PROBE ERROR`, never as a satisfied assertion. `probe-health-lane-scoping.sh`'s `render_live()` is the reference shape.
+- **Compare against a literal, not against another read of the same surface**, wherever the fixture makes the expected value knowable. `chk … "$got" "undefined"` cannot pass on an empty read; `chk … "$after" "$before"` can. Where the self-comparison is the thing being asserted, anchor the before-value on a literal first.
+- **A sentinel like `ABSENT` is a value, not an error.** Any helper that substitutes one for a missing file has made its callers' equality checks vacuous by default; guard at each call site, or return a distinguishable rc.
+- **Negative controls are the test of the test.** An assertion that stays green when the surface it covers is broken is decoration. Run each new assertion against a deliberately broken subject and record which one reddened — that recording is the artifact, and it has caught an assertion authored so that both sides read the same value and it passed its own control.
+
 ## Integration probes
 
 A probe is an **integration probe** when it exercises the composition of multiple code paths that are architecturally independent but share a runtime invariant. These surface UX/timing issues that per-chunk probes can't.
