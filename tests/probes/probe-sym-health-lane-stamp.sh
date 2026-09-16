@@ -166,6 +166,16 @@ chk "[5c] an absent stamp is REFUSED"       "$(js_gate "$H" "$HEALTHY" "")"     
 chk "[5d] a trailing-slash config dir still matches its realpath stamp" \
     "$(js_gate "$H" "$HEALTHY/" "$(readlink -f "$HEALTHY")")" "true"
 
+# [5e] A caller that already TRIED to resolve and FAILED hands in null. Treating that as
+# "resolve again" is how a second resolution crept back into the one function this arc spent
+# four review rounds removing it from — and lint [13c] cannot see it, because the shape is
+# semantic, not textual. An unresolvable config dir has no identity, so it matches no stamp.
+got="$(HOME="$H" node -e '
+  const w = require(process.argv[1]);
+  console.log(String(w.symHealthIsForThisLane(process.argv[2], process.argv[3], null)));
+' "$WRAPPER" "$(readlink -f "$HEALTHY")" "$HEALTHY" 2>/dev/null)"
+chk "[5e] an explicit FAILED resolution refuses rather than resolving again" "$got" "false"
+
 # ===================================================================================
 # [6] THE FALSE-CLEAN, END TO END through the real hook: a FRESH, well-formed,
 #     entirely correct `ok` that belongs to another lane must not clear this lane.

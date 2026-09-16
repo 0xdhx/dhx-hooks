@@ -857,10 +857,19 @@ function pluginKeysForThisLane(configDir) {
     const settingsReal = fs.realpathSync(path.join(configDir, 'settings.json'));
     const s = JSON.parse(fs.readFileSync(settingsReal, 'utf8'));
     const enabled = !!(s && s.enabledPlugins && s.enabledPlugins['dhx@dhx-local'] === true);
-    const mk = s && s.extraKnownMarketplaces && s.extraKnownMarketplaces['dhx-local']
-      && s.extraKnownMarketplaces['dhx-local'].source
-      && s.extraKnownMarketplaces['dhx-local'].source.path;
-    return (enabled && typeof mk === 'string' && mk !== '') ? 'ok' : 'MISSING';
+    const src = s && s.extraKnownMarketplaces && s.extraKnownMarketplaces['dhx-local']
+      && s.extraKnownMarketplaces['dhx-local'].source;
+    const mk = src ? src.path : undefined;
+    // Match the hook's jq EXACTLY, which is the point of a fallback the criterion calls
+    // "the lane-local jq check". `(… .source.path // empty) != ""` fires its alternative
+    // only on null and false, so jq accepts a path of 0 — or any non-string — and calls it
+    // ok. A `typeof mk === 'string'` test here disagreed with that: driven against
+    // {"source":{"path":0}} a close-gate reviewer got hook=ok, wrapper=MISSING. Whether
+    // strict typing would be BETTER is a separate question from whether the two copies
+    // agree; five copies of one predicate only stay honest if they answer identically, and
+    // probe-bashrc-wrapper-heal.sh now carries the non-string fixture that caught it.
+    const pathOk = mk !== undefined && mk !== null && mk !== false && mk !== '';
+    return (enabled && pathOk) ? 'ok' : 'MISSING';
   } catch {
     return 'MISSING';
   }
@@ -874,7 +883,14 @@ function symHealthIsForThisLane(symConfigDir, configDir, configDirReal) {
     // up meaning different directories by "this lane". Round 3 of this brief's close gate
     // refuted exactly that in the hook. Omit it and the function resolves for itself, which
     // is what the probe's direct two-argument calls rely on.
-    const real = configDirReal || fs.realpathSync(configDir);
+    // `undefined` means the caller did not resolve and this function should. `null` means
+    // the caller TRIED AND FAILED — and treating that as "resolve again" is how the second
+    // resolution crept back in after the whole arc was about removing it: a path absent at
+    // the pass's first resolve but present by the time this ran would be resolved twice,
+    // with lint [13c] still reporting zero. A config dir that would not resolve has no
+    // identity, so it matches no stamp.
+    const real = configDirReal === undefined ? fs.realpathSync(configDir) : configDirReal;
+    if (typeof real !== 'string' || real === '') return false;
     return symConfigDir === real;
   } catch { return false; }
 }

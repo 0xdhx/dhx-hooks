@@ -82,6 +82,11 @@ for site in "$KEYS_HEAL" "$HEALTH_CHECK" "$PLUGIN_KEYS_PROBE" "$INSTALL_PLUGIN";
 done
 
 # --- 5. BEHAVIOURAL parity with the JavaScript copy (2026-09-15) ---
+# The path-zero / path-false / path-null / path-object fixtures are here because the first
+# nine did NOT cover a non-string `source.path`, and a close-gate reviewer drove exactly that
+# gap: jq's `(… // empty) != ""` fires its alternative only on null and false, so the hook
+# calls a path of 0 `ok`, while the JS copy's `typeof mk === 'string'` called it MISSING.
+# Whether strict typing would be better is a separate question from whether the copies agree.
 # Since the statusline wrapper computes this lane's plugin-keys verdict itself, there is a
 # FIFTH copy of the predicate and the first one not written in jq — so section 4's textual
 # match cannot reach it. A grep cannot compare across languages; driving both over the same
@@ -126,6 +131,10 @@ for fx in \
   "enabled-absent|{\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":\"/p\"}}}}" \
   "marketplace-absent|{\"enabledPlugins\":{\"dhx@dhx-local\":true}}" \
   "marketplace-empty|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":\"\"}}}}" \
+  "path-zero|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":0}}}}" \
+  "path-false|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":false}}}}" \
+  "path-null|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":null}}}}" \
+  "path-object|{\"enabledPlugins\":{\"dhx@dhx-local\":true},\"extraKnownMarketplaces\":{\"dhx-local\":{\"source\":{\"path\":{}}}}}" \
   "malformed|not json {{{" \
   "empty-object|{}" \
   "absent|ABSENT" \
