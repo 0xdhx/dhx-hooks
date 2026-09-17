@@ -1,0 +1,25 @@
+{
+  "probe_id": "probe-installed-plugins-uninstalled-dhx-natural-heal",
+  "exit_code": 2,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.275",
+  "cc_version_match": true,
+  "confidence": "LOW",
+  "ts": "2026-09-17T23:52:08Z",
+  "run_id": "d89f033a-a68a-4556-8ea5-11583fd9f785",
+  "observations": {
+    "pre_size": 0,
+    "post_size": 0,
+    "json_validity_post": false,
+    "dhx_entry_present_post": false,
+    "post_fake_a_present": false,
+    "post_fake_b_present": false,
+    "install_path_resolves_to_expected_cache_layout": false,
+    "cell1_auth_method": "none",
+    "cell1_rc": -1,
+    "inode_isolated": false,
+    "cell_outcome": "skipped_no_api_key",
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "skipped"
+}

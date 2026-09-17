@@ -1,0 +1,54 @@
+{
+  "probe_id": "probe-known-marketplaces-natural-heal",
+  "exit_code": 0,
+  "exit_code_convention": "exit_0_means_v1_2_work_warranted",
+  "cc_version": "2.1.275",
+  "cc_version_match": false,
+  "confidence": "HIGH",
+  "ts": "2026-09-17T23:51:37Z",
+  "run_id": "077a46ec-9e3c-4567-b1c9-3f8259f2d183",
+  "observations": {
+    "pre_size": 21,
+    "post_size": 21,
+    "json_validity_post": false,
+    "dhx_marketplace_present_post": false,
+    "known_marketplace_present_post": false,
+    "cell1_auth_method": "none",
+    "cell1_rc": 1,
+    "inode_isolated": true,
+    "cell_outcome": "km_no_heal",
+    "natural": {
+      "UNREADABLE": "healed",
+      "MISSING": "healed",
+      "BADJSON": "not_healed",
+      "STALE": "not_healed",
+      "NO_TIMESTAMP": "not_healed"
+    },
+    "acceptance": {
+      "UNREADABLE": {
+        "verdict": "accepted",
+        "plugins": 1
+      },
+      "MISSING": {
+        "verdict": "accepted",
+        "plugins": 1
+      },
+      "BADJSON": {
+        "verdict": "accepted",
+        "plugins": 1
+      },
+      "STALE": {
+        "verdict": "accepted",
+        "plugins": 1
+      },
+      "NO_TIMESTAMP": {
+        "verdict": "accepted",
+        "plugins": 1
+      }
+    },
+    "acceptance_status": "pass",
+    "control_plugins": 1,
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "v1_2_work_warranted"
+}
