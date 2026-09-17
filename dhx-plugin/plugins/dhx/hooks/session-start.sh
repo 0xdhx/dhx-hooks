@@ -270,6 +270,25 @@ _dhx_child cc-check-update node /home/dhx/.claude/hooks/cc-check-update.js < /de
 # after the critical health/heal/worktree hooks — belt-and-suspenders, not
 # critical-path. See docs/decisions.md 2026-06-02 cc-version-guard wiring row.
 [ -e ~/.claude/dhx-tools/cc-version-guard.sh ] && _dhx_child cc-version-guard bash ~/.claude/dhx-tools/cc-version-guard.sh < /dev/null || true
+# Fleet CC version-CHANGE observer (2026-09-17). The deliberate OPPOSITE disposition to
+# the pin-LOCK guard directly above: the guard speaks only on drift-from-pin and is
+# correctly SILENT on an ordinary intended bump, so a bump landed and nothing surfaced
+# the backlog briefs whose trigger_when keys on a CC version change (cross-repo
+# 2026-08-23-cc-version-bump-has-no-trigger-firing-path: 2.1.235 -> 2.1.241 across five
+# days, six patch bumps, nothing fired — including a /dhx:vet pass auditing those exact
+# triggers). This one is loud exactly once per CHANGE, naming those briefs. Cross-repo-
+# owned (scripts/fleet/cc-version-observer.sh), provisioned into ~/.claude/dhx-tools/ by
+# cross-repo's install-dhx-tools.sh — hence the [ -e ] guard, same shape as the sibling
+# above. Filesystem-only (< /dev/null). Fail-open (the observer's own `set +e` + trailing
+# || true). stdout is PRESERVED and is the deliverable — under SessionStart the notice
+# lands in session context; _dhx_child captures stderr only, so wrapping costs it nothing.
+# Silent on no-change and on first-run baseline init; the stamp
+# (~/.local/state/dhx/cc-version-seen) is written only AFTER the notice emits, so a change
+# is announced once rather than once per session. That stamp is machine-wide: the first
+# lane to start after a bump consumes the notice and the others stay silent — accepted,
+# see .planning/backlog/2026-09-17-cc-version-observer-notice-reaches-one-lane-only.md.
+# See docs/decisions.md 2026-09-17 cc-version-observer wiring row.
+[ -e ~/.claude/dhx-tools/cc-version-observer.sh ] && _dhx_child cc-version-observer bash ~/.claude/dhx-tools/cc-version-observer.sh < /dev/null || true
 # CC permission circuit-breaker DRIFT MONITOR (2026-09-04). Sibling to the version guard
 # above: that one asserts WHICH build runs; this one asserts that the build's bypass-immune
 # registry and permission reducer still match config/cc-circuit-breakers.txt. It exists
