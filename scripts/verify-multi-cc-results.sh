@@ -76,10 +76,23 @@ ALLOWED_PROBES=(
 # NON-DECISIVE conclusion, so a `skipped` or `ambiguous_*` cell can never be
 # cited as "Validated stable".
 #
-# Consumers that must stay in step: the producers (tests/probes/probe-*natural-heal.sh),
+# 2026-09-18: `regression_found_*` ADDED — the first DECISIVE NEGATIVE token in
+# this set. Every other decisive token here reports on whether OUR scoped work is
+# still warranted; this one reports that a runtime dependency we already shipped
+# has BROKEN. Written by Convention-B probes (first: the inverted
+# probe-effort-level-stdin-absent.sh, whose non-zero exit reaches run-probes.sh's
+# default branch and is counted a FAIL by name). It is deliberately NOT a
+# `supersession_found_*` spelling: that family routes to the informational
+# "[SUPERSESSION OBSERVED]" counter that is explicitly not a failure, which is
+# precisely how a dead premise sat unreported for four months. A regression must
+# reach a human. Under Convention A the token is unknown and correctly fail-SAFEs
+# to FAIL via the runner's `*)` arm — asserted, not assumed.
+#
+# Consumers that must stay in step: the producers (tests/probes/probe-*natural-heal.sh,
+# tests/probes/probe-effort-level-stdin-absent.sh),
 # run-probes.sh's Convention-A routing branch, and this file.
 # Companion assertions: tests/probes/probe-conclusion-taxonomy.sh.
-ALLOWED_CONCLUSION_RE='^(validated_stable|supersession_found_[a-z_0-9]+|ambiguous|ambiguous_[a-z_0-9]+|skipped|v1_2_work_warranted)$'
+ALLOWED_CONCLUSION_RE='^(validated_stable|supersession_found_[a-z_0-9]+|regression_found_[a-z_0-9]+|ambiguous|ambiguous_[a-z_0-9]+|skipped|v1_2_work_warranted)$'
 
 # A conclusion is DECISIVE when the probe actually reached a verdict. Everything
 # else (skipped / ambiguous / ambiguous_*) recorded an attempt, not an answer.

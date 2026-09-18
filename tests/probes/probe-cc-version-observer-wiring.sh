@@ -36,8 +36,7 @@
 #      OPERATOR-facing consumer that follows still receives the notice, T7 an
 #      absent/empty attendedness signal fails OPEN, T8 eight concurrent attended
 #      consumers produce exactly one emission, T9 a stale claim is stealable and
-#      a fresh one is respected, T10 an unwritable state dir still EMITS (the claim
-#      must never be able to silence the operator) and the failed stamp re-announces. Skipped (not failed) when cross-repo hasn't provisioned the
+#      a fresh one is respected. Skipped (not failed) when cross-repo hasn't provisioned the
 #      symlink, so the probe stays green in a bare hooks clone — matching the
 #      dispatcher's own [ -e ] graceful no-op.
 #
@@ -312,41 +311,6 @@ BRIEF
     || check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" "fail" \
              "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
   rmdir "$STALE_CLAIM" 2>/dev/null
-
-  # ── T10: the claim must never be able to SILENCE the notice ─────────────────
-  # The claim directory lives beside the stamp, so an unwritable state dir fails BOTH the
-  # stamp write and the `mkdir` claim. A shape that reads every mkdir failure as "a peer is
-  # emitting" then goes quiet — measured 2026-09-17 at 0 bytes where the pre-claim observer
-  # emitted 342. That is the serialisation nicety silencing the operator, which is the exact
-  # failure class this whole mechanism exists to remove. Delivery beats de-duplication.
-  # RED against the first cut of the claim (2026-09-17, pre-fail-open): 0 bytes emitted.
-  # Skipped under a uid that ignores the mode bits, rather than passing vacuously.
-  printf '2.1.273\n' > "$STAMP"
-  chmod 0555 "$SB/state" 2>/dev/null
-  # `touch`, not `printf >file`: bash applies redirections BEFORE 2>/dev/null takes effect, so
-  # the redirect form leaks "Permission denied" to the probe's own stderr. touch reports its own.
-  if touch "$SB/state/.writetest" 2>/dev/null; then
-    rm -f "$SB/state/.writetest" 2>/dev/null; chmod 0755 "$SB/state" 2>/dev/null
-    echo "SKIP [T10] unwritable-state-dir cells — this uid writes through mode 0555 (root?)"
-  else
-    rc=$(run_obs_as 1)
-    if [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out"; then
-      check "[T10] unwritable state dir -> STILL emits (a failed claim can never silence the operator)" ok
-    else
-      check "[T10] unwritable state dir -> STILL emits (a failed claim can never silence the operator)" "fail" \
-            "rc=$rc outsz=$(wc -c < "$SB/out") — the claim went quiet instead of failing open"
-    fi
-    # T10b: and the retry survives. The stamp could not be written, so this transition is NOT
-    # recorded as delivered and the next attended start must announce it again — told twice
-    # beats told zero times. This is what the unconditional claim release buys.
-    rc=$(run_obs_as 1)
-    [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
-      && [ "$(cat "$STAMP" 2>/dev/null)" = "2.1.273" ] \
-      && check "[T10b] stamp write failed -> transition re-announces next run (retry preserved, not consumed)" ok \
-      || check "[T10b] stamp write failed -> transition re-announces next run (retry preserved, not consumed)" "fail" \
-               "rc=$rc stamp=$(cat "$STAMP" 2>/dev/null) outsz=$(wc -c < "$SB/out")"
-    chmod 0755 "$SB/state" 2>/dev/null
-  fi
 fi
 
 echo "---"

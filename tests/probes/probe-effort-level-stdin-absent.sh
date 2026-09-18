@@ -4,12 +4,44 @@
 # SAFE_FOR_LIVE: yes  (read-only via file-gated wrapper edit; no live mutation)
 # RUNTIME: ~5s
 #
-# Supersession-watchdog probe (D-12). Asserts the negative premise that
-# CC's statusline-wrapper stdin payload does NOT include `effortLevel` /
-# `effort` keys at the top level.
-#   exit 0 = premise holds (P3 work warranted) OR fixtures-only mode (no probe dir)
-#   exit 1 = upstream supersession found (ship P5 retire instead)
-#   exit 2 = ambiguous (internal asserts failed, capture timed out, etc.)
+# THE FILE NAME IS HISTORICAL — read the contract below, not the name.
+# Authored 2026-04-30 as a supersession watchdog asserting the NEGATIVE premise
+# that CC's statusline-wrapper stdin payload did NOT carry `effortLevel`/`effort`
+# at the top level. That premise died 2026-05-13 and the probe kept reporting its
+# own death into an informational counter for four months (see the 2026-09-18
+# docs/decisions.md row). The name is kept deliberately: three committed corpus
+# cells carry `probe_id: probe-effort-level-stdin-absent`, and
+# scripts/verify-multi-cc-results.sh keys its allowlist on that id — a rename
+# orphans them for no behavioural gain.
+#
+# WHAT IT ASSERTS NOW (2026-09-18): the effort level CC publishes is one the
+# statusline can actually RENDER. `dhx/dhx-statusline.js` does
+# `renderEffort(data.effort?.level)`, and renderEffort is a lookup into the
+# five-key EFFORT_RENDER map returning '' on a miss — so a CC release that
+# RENAMES or ADDS a level blanks the glyph exactly as silently as one that drops
+# the key. That value-side gap is the half a single capture CAN prove.
+#
+#   exit 0 = the observed level renders, OR no observation was made
+#   exit 1 = level present but UNRENDERABLE  (the glyph is silently broken)
+#   exit 2 = malfunction (capture timed out, payload not JSON, source unreadable)
+#
+# Convention B (`exit_0_means_pass`) — ordinary regression-probe semantics, so a
+# non-zero exit reaches run-probes.sh's default branch and is counted a FAIL by
+# name. It is deliberately NOT Convention A: the only non-zero Convention-A
+# family is `supersession_found_*`, which routes to the "[SUPERSESSION OBSERVED]"
+# counter explicitly marked not-a-failure — the exact bucket that hid this
+# probe's own dead premise. A regression must reach a human.
+#
+# WHY IT DOES NOT ASSERT "the effort key is present":
+# one armed run captures exactly ONE payload (the wait loop below breaks on the
+# first non-empty capture file, then exits). A single absence is structurally
+# indistinguishable from the transient one-refresh miss that
+# .planning/backlog/2026-05-02-statusline-effort-memoization.md documents as
+# benign and self-correcting. So absence is RECORDED in observations and reported
+# as `skipped` — never as a verdict. The temporal dimension one run lacks is
+# supplied by the cross-VERSION corpus under tests/probes/.results/, which is
+# where an `effort_present: false` cell would show up against the populated
+# 2.1.140 / 2.1.273 / 2.1.275 cells and light that brief's trigger.
 #
 # Mode discrimination (D-17): if ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe
 # directory exists at probe-script start, run live-capture mode; otherwise run
@@ -18,8 +50,8 @@
 # before invoking the probe. PROBE-01 #PROBE-01
 #
 # Backs:
-#   - .planning/REQUIREMENTS.md PROBE-01
-#   - docs/decisions.md 2026-04-30 supersession-watchdog row
+#   - .planning/REQUIREMENTS.md PROBE-01 (historical — the watchdog contract)
+#   - docs/decisions.md 2026-09-18 effort-watchdog-inverted-to-renderability row
 #
 # Run: bash tests/probes/probe-effort-level-stdin-absent.sh
 set -uo pipefail
@@ -27,6 +59,7 @@ set -uo pipefail
 PROBE_DIR="${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe"
 PASS=0
 FAIL=0
+SKIP=0
 
 assert_eq() {
   local name="$1" got="$2" want="$3"
@@ -37,9 +70,58 @@ assert_eq() {
   fi
 }
 
+# --- Renderable-level set, DERIVED from the renderer (never copied) -----------
+# A hardcoded list here would be a second source of truth that goes stale exactly
+# when it matters: the whole point of this probe is to catch EFFORT_RENDER and
+# CC's published vocabulary drifting apart, and a stale copy cannot see that.
+# Parsed from the object literal's keys, so adding a level to dhx-statusline.js
+# widens this probe automatically.
+STATUSLINE_SRC=""
+RENDERABLE=""
+derive_levels() {
+  local root src
+  root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
+  src="$root/dhx/dhx-statusline.js"
+  [[ -r "$src" ]] || return 1
+  STATUSLINE_SRC="$src"
+  RENDERABLE=$(sed -n '/^const EFFORT_RENDER = {/,/^};/p' "$src" \
+                 | sed -nE 's|^[[:space:]]*([A-Za-z_][A-Za-z_0-9]*):[[:space:]]*\{.*|\1|p' \
+                 | tr '\n' ' ')
+  [[ -n "${RENDERABLE// /}" ]]
+}
+
+# classify_observation <renderability> -> "<exit_code> <conclusion>"
+# The live arm's verdict mapping, factored out so the fixtures below can pin it
+# on every commit. This matters more here than the factoring usually would: the
+# live arm is the ONE path the pre-commit hermetic tier can never execute, so
+# without this its decision would be verified only by whoever last hand-armed the
+# probe — which is precisely the unwatched-guard shape this rewrite exists to
+# retire. Mutation-verified end to end 2026-09-18 against synthetic captures in a
+# throwaway repo (5/5: renderable/ultra/High/key-absent/level-null).
+classify_observation() {
+  case "$1" in
+    renderable)   printf '0 validated_stable' ;;
+    unrenderable) printf '1 regression_found_effort_level_unrenderable' ;;
+    absent)       printf '0 skipped' ;;
+    *)            printf '2 ambiguous' ;;
+  esac
+}
+
+# level_renderable <level> -> "renderable" | "unrenderable" | "absent"
+level_renderable() {
+  local lvl="$1" k
+  [[ -n "$lvl" && "$lvl" != "null" ]] || { printf 'absent'; return; }
+  for k in $RENDERABLE; do
+    [[ "$lvl" == "$k" ]] && { printf 'renderable'; return; }
+  done
+  printf 'unrenderable'
+}
+
 # --- Stdin key-detection self-test (D-19) -------------------------------------
 # Inline node -e JSON parser checks top-level effortLevel/effort key presence.
-# Does NOT import dhx-statusline.js (no parsePaneEffort dependency).
+# Still load-bearing: presence detection is step 1 of the pipeline (present ->
+# check renderability; absent -> no observation). Does NOT import
+# dhx-statusline.js (no parsePaneEffort dependency).
 declare -a STDIN_FIXTURES=(
   "no-effort-keys|absent|{\"workspace\":{\"current_dir\":\"/tmp\"},\"session_id\":\"x\"}"
   "effortLevel-present|present|{\"effortLevel\":\"high\",\"workspace\":{\"current_dir\":\"/tmp\"}}"
@@ -62,6 +144,42 @@ for f in "${STDIN_FIXTURES[@]}"; do
   assert_eq "fixture: $name" "$got" "$expected"
 done
 
+# --- Renderability self-test (2026-09-18) ------------------------------------
+# The firing condition this probe now exists for. `ultra` is not hypothetical
+# padding: CC already uses that word for review effort, so a session-effort level
+# named `ultra` is the concrete shape of the regression being guarded.
+if derive_levels; then
+  assert_eq "derived level set is non-empty" \
+    "$([[ -n "${RENDERABLE// /}" ]] && echo yes || echo no)" "yes"
+  for known in low medium high xhigh max; do
+    assert_eq "renderer maps known level: $known" "$(level_renderable "$known")" "renderable"
+  done
+  assert_eq "unknown level is unrenderable: ultra" "$(level_renderable ultra)" "unrenderable"
+  assert_eq "level lookup is case-sensitive: HIGH"  "$(level_renderable HIGH)"  "unrenderable"
+  assert_eq "empty level reads as absent"           "$(level_renderable "")"    "absent"
+  assert_eq "json-null level reads as absent"       "$(level_renderable null)"  "absent"
+else
+  echo "SKIP renderability self-test — dhx/dhx-statusline.js unreadable from $(pwd) (scratch tree?)"
+  SKIP=$((SKIP+1))
+fi
+
+# --- Live-arm verdict map self-test (2026-09-18) ------------------------------
+# Deliberately OUTSIDE the derive_levels branch: these need no renderer source,
+# so the live arm's decision stays pinned even in a scratch tree. The composed
+# rows are the ones that matter — they are the actual chain the live arm walks.
+assert_eq "verdict map: renderable"     "$(classify_observation renderable)"   "0 validated_stable"
+assert_eq "verdict map: unrenderable"   "$(classify_observation unrenderable)" "1 regression_found_effort_level_unrenderable"
+assert_eq "verdict map: absent"         "$(classify_observation absent)"       "0 skipped"
+assert_eq "verdict map: unexpected arg" "$(classify_observation bogus)"        "2 ambiguous"
+if [[ -n "${RENDERABLE// /}" ]]; then
+  assert_eq "composed: level 'high' -> pass"  \
+    "$(classify_observation "$(level_renderable high)")"  "0 validated_stable"
+  assert_eq "composed: level 'ultra' -> FAIL" \
+    "$(classify_observation "$(level_renderable ultra)")" "1 regression_found_effort_level_unrenderable"
+  assert_eq "composed: no level -> declines a verdict" \
+    "$(classify_observation "$(level_renderable "")")"    "0 skipped"
+fi
+
 # D-17 mode discriminator: probe dir absent → fixtures-only mode → exit 0.
 #
 # DHX_PROBE_HERMETIC (2026-09-17) forces the same path even when the arming dir
@@ -78,9 +196,9 @@ if [[ ! -d "$PROBE_DIR" || "${DHX_PROBE_HERMETIC:-0}" == "1" ]]; then
   echo "---"
   if [[ -d "$PROBE_DIR" ]]; then
     echo "NOTE arming dir present but IGNORED — DHX_PROBE_HERMETIC=1 (hermetic tier refuses live capture)"
-    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (arming dir ignored under the hermetic tier)"
+    echo "PASS: $PASS  FAIL: $FAIL  SKIP: $SKIP  mode=fixtures-only (arming dir ignored under the hermetic tier)"
   else
-    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: mkdir -p $PROBE_DIR)"
+    echo "PASS: $PASS  FAIL: $FAIL  SKIP: $SKIP  mode=fixtures-only (probe dir absent — arm with: mkdir -p $PROBE_DIR)"
   fi
   if [[ "$FAIL" -eq 0 ]]; then
     exit 0
@@ -90,6 +208,17 @@ if [[ ! -d "$PROBE_DIR" || "${DHX_PROBE_HERMETIC:-0}" == "1" ]]; then
 fi
 
 # --- Live-capture orchestration (D-16 — fixed-path file convention) ----------
+# The live arm MAKES a claim, so unlike the fixtures path it cannot tolerate a
+# missing renderer: without the derived set there is nothing to judge the
+# captured level against, and a silent pass here is the hollow-check shape this
+# probe is guarding elsewhere.
+if [[ -z "${RENDERABLE// /}" ]]; then
+  echo "FAIL renderer-source-unreadable: cannot derive the renderable level set; refusing to judge a capture"
+  echo "---"
+  echo "PASS: $PASS  FAIL: $((FAIL+1))  conclusion=ambiguous  exit_code=2"
+  exit 2
+fi
+
 RUN_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || date +%s%N)
 FLAG_FILE="$PROBE_DIR/flag"
 CAPTURE_FILE="$PROBE_DIR/capture-$RUN_ID.json"
@@ -123,21 +252,40 @@ else
   fi
 fi
 
-# --- Observation extraction + Convention A exit code (D-01) -----------------
-# Detection scope: top-level effortLevel/effort keys only.
+# --- Observation extraction + Convention B exit code -------------------------
+# Detection scope: top-level effortLevel/effort keys, plus the nested
+# `.effort.level` value the renderer actually consumes.
 has_effort=$(jq -r '(has("effortLevel") or has("effort"))' "$CAPTURE_FILE" 2>/dev/null || echo "false")
+observed_level=$(jq -r '.effort.level // ""' "$CAPTURE_FILE" 2>/dev/null || echo "")
 stdin_keys_json=$(jq -c 'keys' "$CAPTURE_FILE" 2>/dev/null || echo "[]")
 workspace_present=$(jq -r 'has("workspace") and (.workspace | has("current_dir"))' "$CAPTURE_FILE" 2>/dev/null || echo "false")
+renderability=$(level_renderable "$observed_level")
 
+# The verdict comes from classify_observation — the SAME function the fixtures
+# above pin on every commit — so the live arm and its self-test can never drift.
 if [[ "$FAIL" -gt 0 ]]; then
-  exit_code=2
-  conclusion="ambiguous"
-elif [[ "$has_effort" == "true" ]]; then
-  exit_code=1
-  conclusion="supersession_found_drop_p3"
+  read -r exit_code conclusion <<<"$(classify_observation malfunction)"
 else
-  exit_code=0
-  conclusion="v1_2_work_warranted"
+  read -r exit_code conclusion <<<"$(classify_observation "$renderability")"
+  case "$renderability" in
+    renderable)
+      echo "OK   effort level '$observed_level' is renderable by EFFORT_RENDER"
+      PASS=$((PASS+1))
+      ;;
+    unrenderable)
+      echo "FAIL effort level '$observed_level' is NOT in the renderer's set [${RENDERABLE% }]"
+      echo "     the statusline glyph is silently hidden for this level — see ${STATUSLINE_SRC##*/} EFFORT_RENDER"
+      FAIL=$((FAIL+1))
+      ;;
+    *)
+      # Absent. ONE capture cannot separate a structural drop from a transient
+      # miss, so this records the observation and declines the verdict. The
+      # cross-VERSION corpus is what accumulates the temporal evidence.
+      echo "NOTE no effort.level in this capture — recorded, NOT treated as a regression"
+      echo "     one capture cannot distinguish a dropped key from a transient miss;"
+      echo "     compare this cell against the populated 2.1.140/2.1.273/2.1.275 cells."
+      ;;
+  esac
 fi
 
 # --- Outcome JSON write (D-08 schema; D-30 hostname-hash; live cc_version) ---
@@ -157,9 +305,12 @@ OBSERVATIONS=$(jq -n \
   --argjson keys "$stdin_keys_json" \
   --argjson effortLevel_present "$(jq -r 'has("effortLevel")' "$CAPTURE_FILE" 2>/dev/null || echo false)" \
   --argjson effort_present "$(jq -r 'has("effort")' "$CAPTURE_FILE" 2>/dev/null || echo false)" \
+  --arg effort_level_observed "$observed_level" \
+  --arg effort_level_renderability "$renderability" \
+  --arg renderer_level_set "${RENDERABLE% }" \
   --argjson workspace_current_dir_present "$workspace_present" \
   --arg published_from_hostname "$HOSTNAME_HASH" \
-  '{stdin_payload_top_level_keys:$keys, effortLevel_present:$effortLevel_present, effort_present:$effort_present, workspace_current_dir_present:$workspace_current_dir_present, published_from_hostname:$published_from_hostname}')
+  '{stdin_payload_top_level_keys:$keys, effortLevel_present:$effortLevel_present, effort_present:$effort_present, effort_level_observed:$effort_level_observed, effort_level_renderability:$effort_level_renderability, renderer_level_set:$renderer_level_set, workspace_current_dir_present:$workspace_current_dir_present, published_from_hostname:$published_from_hostname}')
 
 # JSON-time sanitizer (D-21 load-bearing gate): refuse to write if observations contain PII
 HOST=$(hostname -s)
@@ -189,13 +340,13 @@ jq -n \
   --arg run "$RUN_ID" \
   --argjson obs "$OBSERVATIONS" \
   --arg conc "$conclusion" \
-  '{probe_id:$id, exit_code:$code, exit_code_convention:"exit_0_means_v1_2_work_warranted", cc_version:$cc, ts:$ts, run_id:$run, observations:$obs, conclusion:$conc}' \
+  '{probe_id:$id, exit_code:$code, exit_code_convention:"exit_0_means_pass", cc_version:$cc, ts:$ts, run_id:$run, observations:$obs, conclusion:$conc}' \
   > "$OUT_FILE"
 
 echo "OK   outcome-json-written: $OUT_FILE"
 PASS=$((PASS+1))
 
-# --- Summary + exit (Convention A) -------------------------------------------
+# --- Summary + exit (Convention B) -------------------------------------------
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL  conclusion=$conclusion  exit_code=$exit_code"
 exit $exit_code

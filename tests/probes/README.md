@@ -155,17 +155,18 @@ When a supersession-watchdog probe needs to capture data from a long-running CC 
 - The probe arms live-capture mode by `mkdir -p` of the fixed dir, writes the run_id into the flag file content (D-32 — env vars don't propagate sideways to wrapper subprocesses), waits for the wrapper to write a run-id-stamped capture file, then trap-cleans.
 - The probe ALSO uses directory presence as a **mode discriminator**: dir present → live-capture; dir absent → fixtures-only-mode + exit 0 (the `bash scripts/run-probes.sh` integration path).
 
-`probe-effort-level-stdin-absent.sh` is the reference implementation of this convention.
+`probe-effort-level-stdin-absent.sh` is the reference implementation of this convention — the **arming gesture**, which is what this section describes, and which it still implements unchanged. It is **no longer a supersession watchdog** (inverted 2026-09-18, see below); the gesture and the exit-code convention are separate things, and only the latter changed. `probe-subagent-stop-sync.sh` is a second implementation of the same gesture.
 
 **Current supersession-watchdog probes:**
 
 | Probe | Backs | Run |
 |-------|-------|-----|
-| `probe-effort-level-stdin-absent.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-01 | `mkdir -p ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe && bash tests/probes/probe-effort-level-stdin-absent.sh` |
 | `probe-installed-plugins-no-natural-heal.sh` | decisions.md 2026-04-30 supersession-watchdog row + REQ PROBE-02 + HP-025 | `ANTHROPIC_API_KEY=sk-ant-... bash tests/probes/probe-installed-plugins-no-natural-heal.sh` |
 | `probe-installed-plugins-badjson-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; `ANTHROPIC_API_KEY` only (no key → clean `skipped`; OAuth credentials_file unsafe — 2026-05-24) |
 | `probe-installed-plugins-uninstalled-dhx-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 | Operator-invoked; `ANTHROPIC_API_KEY` only (no key → clean `skipped`) |
 | `probe-known-marketplaces-natural-heal.sh` | decisions.md 2026-05-03 Phase 6 C1 + REQ HEAL-07 + HP-025 (km path) + 2026-09-15 pre-launch row (rewrite: per-state natural heal + heal-then-launch acceptance against the real binary) | `bash tests/probes/probe-known-marketplaces-natural-heal.sh` — no API key needed; also run detached once per installed CC version by `dhx/dhx-km-acceptance.sh` (`--acceptance-out`) |
+
+> **`probe-effort-level-stdin-absent.sh` left this family on 2026-09-18** and is deliberately absent from the table above. Its watchdog premise — that CC's stdin payload carries no `effort` key — died 2026-05-13, and it spent four months reporting that into `[SUPERSESSION OBSERVED]`, where nothing surfaces it. It is now a **Convention B** (`exit_0_means_pass`) regression guard asserting that the effort level CC publishes is one `EFFORT_RENDER` can actually render; on an absent level it emits `skipped` rather than a verdict, because one armed capture cannot separate a dropped key from a transient miss. Its rows in the corpus table below are the **unchanged historical record** and are not re-run or rewritten — the corpus is immutable evidence, and `supersession_found_drop_p3` is what those runs actually concluded. The new `regression_found_*` token it introduces is the shared taxonomy's first decisive-negative. See `docs/decisions.md` 2026-09-18.
 
 **Cross-version corpus state (per-probe × per-CC-version):**
 

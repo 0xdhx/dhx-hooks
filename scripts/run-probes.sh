@@ -333,7 +333,17 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
       #   skipped                     no observation     -> SKIPPED (not pass, not fail)
       #   ambiguous, ambiguous_*      indeterminate      -> FAIL
       #   error                       malfunction        -> FAIL
+      #   regression_found_*          decisive NEGATIVE  -> FAIL (via `*)`, fail SAFE)
       #   anything else               UNKNOWN            -> FAIL (fail SAFE)
+      #
+      # `regression_found_*` (2026-09-18) is a Convention-B token — a shipped
+      # runtime dependency has broken — so it reaches the Convention-B branch
+      # below, not this one, and the FAIL is loud there. It is listed here because
+      # the taxonomy is SHARED: if a Convention-A probe ever emits it, the `*)`
+      # arm's fail-SAFE is the correct landing and probe-conclusion-taxonomy.sh
+      # asserts exactly that. Deliberately NOT given a supersession_found_*
+      # spelling, which would route a live regression into the informational
+      # counter above — the failure this token exists to avoid.
       #
       # The last row is load-bearing and is a CHANGE (2026-08-23). This branch
       # used to send every non-error/non-exact-`ambiguous` token to SUPERSESSION,

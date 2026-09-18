@@ -18,7 +18,15 @@
 #   no observation    : skipped                         -> SKIPPED, exit 0
 #   indeterminate     : ambiguous, ambiguous_*          -> FAIL
 #   malfunction       : error                           -> FAIL
+#   BROKEN DEPENDENCY : regression_found_*              -> FAIL (Conv-B token;
+#                       under Conv-A it lands on `*)` and fail-SAFEs, asserted below)
 #   UNKNOWN TOKEN     : anything else                   -> FAIL (fail SAFE)
+#
+# `regression_found_*` was added 2026-09-18 with the inverted
+# probe-effort-level-stdin-absent.sh. It is the set's only DECISIVE NEGATIVE
+# about OUR shipped code rather than about upstream's: a runtime dependency we
+# already depend on has broken. The validator must ACCEPT it (Part 2) and the
+# runner must never route it anywhere informational (Part 1).
 #
 # The last row is the load-bearing one. Before this fix the runner's Convention-A
 # branch routed EVERY non-error/non-exact-`ambiguous` token to SUPERSESSION, so a
@@ -102,6 +110,11 @@ route_token error
 assert "error -> FAIL" \
   "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[FAIL\]' && echo true || echo false)"
 
+route_token regression_found_effort_level_unrenderable
+assert "regression_found_* -> FAIL, never SUPERSESSION (a broken dependency must reach a human)" \
+  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo false || \
+     { [[ "$R_RC" -ne 0 ]] && echo true || echo false; })"
+
 route_token totally_unknown_token
 assert "an UNKNOWN token -> FAIL, never SUPERSESSION (fail SAFE)" \
   "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo false || \
@@ -128,7 +141,7 @@ echo
 echo "=== Part 2: validator accepted token set ==="
 
 for tok in validated_stable v1_2_work_warranted ambiguous supersession_found_drop_heal \
-           skipped ambiguous_pre_state_abnormal; do
+           skipped ambiguous_pre_state_abnormal regression_found_effort_level_unrenderable; do
   validate_token "$tok"
   assert "validator ACCEPTS '$tok'" "$([[ "$V_RC" -eq 0 ]] && echo true || echo false)"
 done
