@@ -1194,9 +1194,17 @@ const baseSnap = snap();
 //     ~/.claude/hooks and the live statusline re-reads it every 60s.
 //  i) The daily gate is a gate: a second call the same day returns -1 and
 //     deletes nothing.
+//  j) A swept log is ARCHIVED before it is unlinked (gzip + SHA256SUMS row).
+//  k) An archive failure RETAINS the log. This is the enforcement of the
+//     operator's 2026-09-17 condition (60-day window, archive first): without
+//     this arm the window is armed on a promise rather than a mechanism.
+//  l) The archived copy gunzips to the ORIGINAL bytes and the manifest records
+//     that pre-compression digest — verified in the probe, not trusted from the
+//     wrapper's own read-back.
 {
   const {
     writeDriftDebugBreadcrumb,
+    archiveDriftDebugLog,
     sweepDriftDebugLogs,
     maybeSweepDriftDebugLogs,
     driftDebugPayload,
@@ -1400,6 +1408,64 @@ const baseSnap = snap();
     sizeAfter <= ceiling &&                          // and the live log is within bounds
     lines(preFile).length === 1);
 
+  // --- (j)(k)(l) archive-before-unlink: retention is COMPACTION -------------
+  // Operator decision 2026-09-17: 60-day window, conditioned on archiving first.
+  // A one-time hand archive satisfies that once and then silently stops, so the
+  // sweep archives as it goes and must never unlink what it has not verifiably
+  // archived. These arms are the enforcement of that condition.
+  const arcDir = path.join(TMP, 'bc-arc');
+  const arcRoot = path.join(TMP, 'arc-root');
+  fs.mkdirSync(arcDir, { recursive: true });
+  const arcName = 'drift-debug-tobearchived.log';
+  const arcSrc = path.join(arcDir, arcName);
+  const arcBody = JSON.stringify({ trigger: 'gsd', diverging: [{ path: 'q.md', kind: 'mismatch' }] }) + '\n';
+  fs.writeFileSync(arcSrc, arcBody);
+  fs.utimesSync(arcSrc, new Date(old), new Date(old));
+  const arcRemoved = sweepDriftDebugLogs(arcDir, Date.now() - 60 * DAY, 25, arcRoot);
+  const today = new Date().toISOString().slice(0, 10);
+  const arcGz = path.join(arcRoot, today, arcName + '.gz');
+  const arcSums = path.join(arcRoot, today, 'SHA256SUMS');
+
+  assert('[19j] a swept log is archived (.gz + SHA256SUMS row) AND then unlinked',
+    arcRemoved === 1 && !fs.existsSync(arcSrc) &&
+    fs.existsSync(arcGz) && fs.existsSync(arcSums) &&
+    fs.readFileSync(arcSums, 'utf8').includes(arcName));
+
+  // The archive is only an archive if it reads back. Verify independently of the
+  // wrapper's own check — gunzip here, in the probe, and compare to the bytes
+  // that were written.
+  let arcRoundTrip = false, arcDigestOk = false;
+  try {
+    const zlib = require('zlib');
+    const back = zlib.gunzipSync(fs.readFileSync(arcGz)).toString('utf8');
+    arcRoundTrip = (back === arcBody);
+    const want = require('crypto').createHash('sha256').update(arcBody).digest('hex');
+    arcDigestOk = fs.readFileSync(arcSums, 'utf8').startsWith(want + '  ');
+  } catch { /* leaves both false */ }
+  assert('[19l] the archived copy gunzips to the ORIGINAL bytes and SHA256SUMS records that digest',
+    arcRoundTrip && arcDigestOk);
+
+  // FAIL-CLOSED. The operator's condition is only enforced if an unarchivable
+  // file SURVIVES. Make the archive root unopenable by planting a FILE where its
+  // directory must go — mkdirSync then throws ENOTDIR regardless of uid, which a
+  // chmod-000 fixture would not guarantee under root.
+  const blockedRoot = path.join(TMP, 'arc-blocked');
+  fs.writeFileSync(blockedRoot, 'not a directory\n');
+  const failDir = path.join(TMP, 'bc-arc-fail');
+  fs.mkdirSync(failDir, { recursive: true });
+  const failSrc = path.join(failDir, 'drift-debug-mustsurvive.log');
+  fs.writeFileSync(failSrc, arcBody);
+  fs.utimesSync(failSrc, new Date(old), new Date(old));
+  const failRemoved = sweepDriftDebugLogs(failDir, Date.now() - 60 * DAY, 25, blockedRoot);
+  assert('[19k] archive failure RETAINS the log — no unlink without a verified archive',
+    failRemoved === 0 && fs.existsSync(failSrc) &&
+    fs.readFileSync(failSrc, 'utf8') === arcBody);
+
+  // And the archiver's own contract, driven directly: it returns false rather
+  // than throwing, so the sweeper's `continue` arm is reachable.
+  assert('[19k2] archiveDriftDebugLog returns false (never throws) on an unusable archive root',
+    archiveDriftDebugLog(failSrc, blockedRoot) === false);
+
   // --- (h) per-run deletion cap, oldest first -------------------------------
   const capDir = path.join(TMP, 'bc-cap');
   fs.mkdirSync(capDir, { recursive: true });
@@ -1438,6 +1504,7 @@ const baseSnap = snap();
     removed === victims.length && bystandersKept && freshRemoved === 0 &&
     wronglyDeleted.length === 0 && wronglyKept.length === 0 &&
     fs.existsSync(rotated) && fs.existsSync(preFile + '.1') &&
+    arcRemoved === 1 && arcRoundTrip && failRemoved === 0 && fs.existsSync(failSrc) &&
     capRemoved === 3 && secondRun === -1);
 }
 

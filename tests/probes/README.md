@@ -85,11 +85,16 @@ The three measured cases:
 
 **Two disciplines for the mutation run itself**, both of which caught something the same day:
 
-- **Assert each mutant differs from the base by exactly one hunk** before reading any result. A
-  table built from mutants generated at different times silently attributed one arm's catch to
-  seven mutations it had nothing to do with; the tell was an impossible pattern (a sweeper-predicate
-  mutation appearing to break rotation). `diff` the mutant against a pristine base and check the
-  count — do not trust your memory of the commands you ran.
+- **Assert each mutant differs from the base by exactly one hunk** before reading any result, and
+  **re-run that assertion over the WHOLE set every time the base moves** — not just for the mutants
+  you added. This failed twice in one session. First: a table built from mutants generated at
+  different times attributed one arm's catch to seven mutations it had nothing to do with. Then,
+  after the rule was written down, adding a feature and rebuilding only the three NEW mutants left
+  the older nine stale against the new base, and they each carried two differences again. Both times
+  the tell was the same impossible pattern — a mutation in one subsystem appearing to break an
+  unrelated one (a sweeper-predicate mutation "breaking" rotation; a dedupe mutation "breaking" an
+  archive round-trip). `diff` every mutant against a pristine base and print the hunk count as part
+  of the run; do not trust your memory of which ones you regenerated.
 - **Run the NULL mutant first.** An unmutated copy must come back fully green. A harness that
   *crashes* emits **no FAIL lines at all**, which reads identically to "every mutant survived" — a
   nine-row table of `*** SURVIVED ***` was printed from a harness with a JavaScript identifier

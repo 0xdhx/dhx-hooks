@@ -2355,6 +2355,63 @@ const DRIFT_DEBUG_SWEEP_MAX_PER_RUN = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 25;
 })();
 
+// Archive root for the breadcrumb sweep. Retention here is COMPACTION, not
+// deletion, and that is a correctness property rather than a nicety. The
+// operator's condition on the 2026-09-17 retention decision was "archive first";
+// a one-time hand archive satisfies that ONCE and then silently stops — every log
+// written afterwards would be deleted unarchived on a 60-day timer at 25/day,
+// which is quieter than the 0.96s accident it replaced and therefore worse.
+// Measured 2026-09-17: these compress ~14x (334 MB -> 23 MB), so keeping
+// everything costs ~13 MB/year against ~190 MB/year kept live. There is no
+// version of this where deleting is the cheaper answer.
+const DRIFT_DEBUG_ARCHIVE_DIR = process.env.DHX_DRIFT_DEBUG_ARCHIVE_DIR
+  || path.join(os.homedir(), '.local', 'share', 'dhx', 'drift-debug-archive');
+
+// Gzip one breadcrumb into <archiveRoot>/<YYYY-MM-DD>/, READ IT BACK, and prove it
+// decompresses to the source bytes before recording its sha256. Returns true only
+// when that proof holds; the caller unlinks on true and on nothing else.
+//
+// The read-back is the whole point of this function. "Archived" asserted by a
+// successful write is a claim about a syscall; "archived" asserted by a round-trip
+// is a claim about the bytes, and only the second one licenses an unlink. This is
+// the same distinction that cost this repo four hollow guard assertions on
+// 2026-09-17 (tests/probes/README.md § "A guard has two layers") — a positive
+// result from the instrument is not a result about the subject.
+//
+// Fails CLOSED by construction: every failure path returns false, so an
+// unarchivable file is retained rather than deleted. Retaining too long is a disk
+// cost; deleting unarchived is unrecoverable, and this directory's contents are
+// deliberate forensic artifacts.
+function archiveDriftDebugLog(srcPath, archiveRoot = DRIFT_DEBUG_ARCHIVE_DIR, nowMs = Date.now()) {
+  try {
+    const zlib = require('zlib');   // lazy: this runs at most once a day per machine
+    const raw = fs.readFileSync(srcPath);
+    const want = crypto.createHash('sha256').update(raw).digest('hex');
+    const day = new Date(nowMs).toISOString().slice(0, 10);
+    const dir = path.join(archiveRoot, day);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const name = path.basename(srcPath);
+    const dest = path.join(dir, name + '.gz');
+    const tmp = dest + '.tmp.' + process.pid;
+    try {
+      fs.writeFileSync(tmp, zlib.gzipSync(raw), { mode: 0o600 });
+      fs.renameSync(tmp, dest);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* may not exist */ }
+      throw e;
+    }
+    const got = crypto.createHash('sha256')
+      .update(zlib.gunzipSync(fs.readFileSync(dest))).digest('hex');
+    if (got !== want) return false;   // wrote something, but not the source bytes
+    // Manifest records the PRE-compression digest, so `gunzip -c x.gz | sha256sum`
+    // verifies it directly and the archive is checkable without this code.
+    fs.appendFileSync(path.join(dir, 'SHA256SUMS'), `${want}  ${name}\n`, { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Retention for the breadcrumbs. Keyed on the `drift-debug-` PREFIX plus an
 // exact `.log` / `.log.1` suffix — see the block comment above for why a bare
 // extension predicate is unsafe at this directory. Returns the unlink count.
@@ -2364,7 +2421,8 @@ const DRIFT_DEBUG_SWEEP_MAX_PER_RUN = (() => {
 // gate below, which lives in the same directory and shares the prefix). The
 // suffix test is what holds that; probe-drift-detection.js asserts the stamp
 // survives a sweep that deletes every log beside it.
-function sweepDriftDebugLogs(dir, cutoffMs, cap = DRIFT_DEBUG_SWEEP_MAX_PER_RUN) {
+function sweepDriftDebugLogs(dir, cutoffMs, cap = DRIFT_DEBUG_SWEEP_MAX_PER_RUN,
+                             archiveRoot = DRIFT_DEBUG_ARCHIVE_DIR) {
   let names;
   try { names = fs.readdirSync(dir); } catch { return 0; }
   const due = [];
@@ -2381,8 +2439,14 @@ function sweepDriftDebugLogs(dir, cutoffMs, cap = DRIFT_DEBUG_SWEEP_MAX_PER_RUN)
   let removed = 0;
   for (const d of due) {
     if (removed >= cap) break;
+    // INVARIANT: no unlink without a VERIFIED archive. archiveDriftDebugLog()
+    // returns true only after reading its own output back and proving it equals
+    // the source, so `continue` here retains a file we could not compact.
+    // probe-drift-detection.js [19k] asserts this arm by making the archive root
+    // unwritable and requiring the source to survive.
+    if (!archiveDriftDebugLog(d.p, archiveRoot)) continue;
     try { fs.unlinkSync(d.p); removed++; }
-    catch { /* races with a concurrent sweep are fine */ }
+    catch { /* races with a concurrent sweep are fine — the archive already holds it */ }
   }
   return removed;
 }
@@ -3369,6 +3433,7 @@ module.exports = {
   // being fixed was precisely that the shipped sweeper did not reach these
   // files, which a copy of a correct sweeper cannot detect.
   writeDriftDebugBreadcrumb,
+  archiveDriftDebugLog,
   sweepDriftDebugLogs,
   maybeSweepDriftDebugLogs,
   driftDebugPayload,
