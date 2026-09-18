@@ -68,6 +68,14 @@
 #                    scan of the same file is ~0.1s, the -P run is the cost of
 #                    tolerating reordering. Still far cheaper than the tripwire's
 #                    3 API turns.)
+#
+# CC-STDERR-EXEMPT: the one Claude Code invocation here is `claude --version
+#   2>/dev/null` — stderr is DISCARDED at the call site, so no lint line can
+#   reach a classifier. What is classified is `$BIN`, the installed bundle read
+#   as bytes by `/bin/grep -aoP`, which CC never writes to.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 # Sorted, space-separated. Re-pin ONLY after re-measuring with the tripwire.

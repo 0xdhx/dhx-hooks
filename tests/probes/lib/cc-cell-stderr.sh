@@ -53,6 +53,13 @@
 # Pinned by tests/probes/probe-cc-binary-resolution.sh.
 
 # strip_cc_config_advisories <stderr> -> stderr with config advisories removed
+#
+# CC-STDERR-EXEMPT: this file IS the filter. It classifies nothing and spawns
+#   no child; the `claude -p` and `timeout|deadline` strings in the header above
+#   are prose describing the regression it defends against.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 strip_cc_config_advisories() {
   local line out=""
   while IFS= read -r line; do

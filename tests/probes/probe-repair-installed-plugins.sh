@@ -20,6 +20,14 @@
 #
 # Backs docs/decisions.md Phase 19 row + HP-025 active doctrine.
 # Run: bash tests/probes/probe-repair-installed-plugins.sh
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child (the SAFE_FOR_LIVE note above
+#   already says so). Every captured string is `bash "$HELPER"` stderr, and the
+#   classifiers are anchored on the helper's own prefixes (`^repair-installed-
+#   plugins: REFUSE:`), which no settings-lint line can carry.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -u
 
 # Resolve $HELPER relative to this probe's repo root so the probe runs correctly inside a git

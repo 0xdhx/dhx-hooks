@@ -12,6 +12,18 @@
 # Sandbox is PRESERVED on exit so you can re-inspect logs/manifest. Clean up
 # manually when done (path printed at end).
 
+#
+# CC-STDERR-UNMEASURED: this arm drives a REAL `claude --debug-file $DEBUG_LOG
+#   -p 'hi'` and classifies $DEBUG_LOG with `grep -E "session-start|SessionStart"`
+#   to set CONTROL_FIRED. Measured 2026-09-18: the live settings file
+#   (~/.ccs/shared/settings.json) contains 1 line matching that alternation. So
+#   IF Claude Code's --debug-file carries the settings lint, CONTROL_FIRED is
+#   forged yes. Whether it does has NOT been measured — this is a declared open
+#   exposure on a surface the stderr filter does not cover (a file, not a 2>&1
+#   capture), not a cleared one. Counted by probe-cc-stderr-classifier-net.sh.
+#   Brief: .planning/backlog/2026-09-18-run-empirical-arm-classifies-cc-debug-file-which-may-carry-the-settings-lint.md
+#
+
 set -uo pipefail
 
 HOOKS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

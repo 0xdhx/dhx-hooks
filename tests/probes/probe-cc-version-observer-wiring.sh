@@ -62,6 +62,13 @@
 # (dhx-tools indirection, _dhx_child-wrapped, stdout preserved)" row.
 # Run: bash tests/probes/probe-cc-version-observer-wiring.sh
 
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child. `$SB/bin/claude` is a symlink
+#   PASSED to the dhx observer and never executed; the classified strings are
+#   `$SB/out` / `$SB/err`, the observer script's own streams.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

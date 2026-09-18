@@ -29,6 +29,15 @@
 #   - .planning/backlog/2026-09-18-installed-plugins-probes-resolve-claude-twice-toctou-misfiles-cell.md
 #
 # Run: bash tests/probes/probe-cc-binary-resolution.sh
+#
+# CC-STDERR-EXEMPT: this IS lib/cc-cell-stderr.sh's pinning cell (§ 5). It
+#   sources the lib to test it, never to clean a capture: it spawns no Claude
+#   Code child at all — its "binaries" are `printf '#!/bin/sh...'` stubs — and
+#   § 5 classifies a VERBATIM pinned advisory string on purpose, because that
+#   string is the subject under test. Filtering it would delete the test.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 PROBE_ID="probe-cc-binary-resolution"

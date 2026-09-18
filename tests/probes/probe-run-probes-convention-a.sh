@@ -31,6 +31,14 @@
 #   yields, falling back to `unknown`).
 #
 # Run: bash tests/probes/probe-run-probes-convention-a.sh
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child. Every capture is
+#   `bash scripts/run-probes.sh` run over mktemp FIXTURE probes. Measured
+#   2026-09-18: the only `claude -p` in this file is line 152, a comment naming
+#   another probe. Convention: tests/probes/README.md § "A classifier's INPUT is
+#   a surface too".
+#
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -87,6 +87,15 @@
 # RUNTIME: ~90-180s    (three claude -p turns)
 set -uo pipefail
 
+# CC-STDERR: filtered
+# Claude Code lints whatever settings.json it is handed and echoes each rule it
+# considers questionable VERBATIM to stderr — which lands in the same `2>&1`
+# capture this probe then classifies. Route every capture through the filter
+# BEFORE any regex touches it. Rationale + exactly what is dropped, and the
+# measured 3/3 forged-timeout regression that motivated it: lib/cc-cell-stderr.sh.
+# shellcheck source=lib/cc-cell-stderr.sh
+source "$(dirname "$0")/lib/cc-cell-stderr.sh"
+
 LEGACY_CONTROL_MODEL="claude-sonnet-4-5"   # in R → guard active → must BLOCK
 BLOCK_RE='has not been read yet'
 AUTH_FAIL_RE='Not logged in|Please run /login|Invalid API key|invalid x-api-key|authentication_error|authentication_failed|Invalid authentication credentials|Failed to authenticate|api_error_status":401|Credit balance is too low|OAuth token has expired'
@@ -119,16 +128,21 @@ fi
 # on a REACHABLE path (--add-dir) with the full toolset. Both are load-bearing —
 # withholding either re-creates the false pass this rewrite fixes.
 drive() { # $1 = tool (Edit|Write), $2 = target path, $3 = model ("" = account default)
-  local tool="$1" tgt="$2" model="$3" prompt
+  local tool="$1" tgt="$2" model="$3" prompt raw n
   local -a model_arg=(); [ -n "$model" ] && model_arg=(--model "$model")
   if [ "$tool" = "Edit" ]; then
     prompt="Use the Edit tool to change the first line of ${tgt} from 'a' to 'A'. Do NOT read the file first — attempt the Edit directly. If the tool errors, report the exact error text."
   else
     prompt="Use the Write tool to overwrite ${tgt} with the single line 'Z'. Do NOT read the file first — attempt the Write directly. If the tool errors, report the exact error text."
   fi
-  CLAUDE_CONFIG_DIR="$SANDBOX/.claude" timeout 180 \
+  raw=$(CLAUDE_CONFIG_DIR="$SANDBOX/.claude" timeout 180 \
     claude -p "$prompt" --output-format stream-json --include-hook-events --verbose \
-      --permission-mode acceptEdits --add-dir "$WORK" "${model_arg[@]}" 2>&1 || true
+      --permission-mode acceptEdits --add-dir "$WORK" "${model_arg[@]}" 2>&1 || true)
+  # Filter HERE, at the single capture site, so no caller can classify a raw
+  # stream: check_cell greps $out for AUTH_FAIL_RE before the JSON extractors run.
+  n=$(count_cc_config_advisories "$raw")
+  [ "$n" -gt 0 ] && echo "INFO ${tool} cell stderr: $n config-advisory line(s) dropped before classification (lib/cc-cell-stderr.sh)" >&2
+  strip_cc_config_advisories "$raw"
 }
 
 # Extract the init event's model id from a captured stream.

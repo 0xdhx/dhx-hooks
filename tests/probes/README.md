@@ -119,6 +119,86 @@ paragraphs) and commits `df2bb624`, `5a507827`, `16ee63f7`, `0447556f`. The patt
 each applying the other's unrelated finding to its own work — worth knowing, because in all three
 cases the author's own suite could not surface it.
 
+## A classifier's INPUT is a surface too
+
+The section above says a guard has two layers — the tooth and the net — and that either can be
+hollow. This is the layer *neither* of them inspects: **the string the tooth is applied to.**
+
+**Measured 2026-09-18.** Three `probe-installed-plugins-*-natural-heal.sh` watchdogs reported
+`timeout_124` on **every rc=0 cell, 3/3**. Nothing was wrong with their logic. Claude Code reads the
+applicable `settings.json`, and for each rule it considers questionable it echoes that rule
+**verbatim** to stderr. The operator's live settings carry `Bash(timeout * gh *)`, so the literal
+word `timeout` arrived inside the same `2>&1` capture the classifier `grep -qiE 'timeout|deadline'`
+then read. The tooth fired correctly on text that was never evidence about the child.
+
+Three things make this its own failure class rather than a flaky regex:
+
+- **The contaminating input is the operator's own configuration**, which is not where anyone looks
+  for one. A probe author reasons about what the child under test prints. This text is not produced
+  by the thing being tested — it arrives from outside the experiment, describing the machine.
+- **It is silent in the direction that matters.** The forged verdict routed to a SKIP
+  (`did not complete — inconclusive`). A forged FAIL gets investigated; a forged SKIP is a probe
+  that has quietly stopped testing, and the suite stays green.
+- **It had never fired before** because the cells had been exiting 127 at the wrapper since
+  2026-08-07. Fixing the binary is what exposed it — a repair revealing a second, older defect.
+
+**Rule — route the capture, then classify it.**
+
+```bash
+# shellcheck source=lib/cc-cell-stderr.sh
+source "$(dirname "$0")/lib/cc-cell-stderr.sh"
+
+raw=$(claude -p "$prompt" ... 2>&1 || true)
+n=$(count_cc_config_advisories "$raw")           # so a cleaned noisy cell is
+[ "$n" -gt 0 ] && echo "INFO $n advisory line(s) dropped" >&2   # distinguishable
+strip_cc_config_advisories "$raw"                # from a genuinely clean one
+```
+
+Filter at the **single capture site** — inside the `drive()` helper, not at each classifier — so no
+future cell can be added that classifies a raw stream. `lib/cc-cell-stderr.sh` drops only lines
+describing the INPUT CONFIG (`Permission allow rule (…)`, `Permission deny rule (…)`) and the
+sandbox's own missing-hook noise (`<Event> hook [...] failed:`). Real auth, network and timeout
+failures are reported on their own lines and survive — `probe-cc-binary-resolution.sh` § 5 asserts
+exactly that, with a positive control.
+
+**Do NOT fix this by tightening the classifier.** Specificity is what makes
+`probe-agent-registry-session-start-cached.sh`'s exposure zero today — its `AUTH_FAIL_RE` is eleven
+specific multi-word phrases, and grepping the live settings for the whole alternation returns 0. It
+is one settings edit from being wrong: a rule naming `Authorization`, `401` or `unauthorized`
+reaches classifiers that look nothing like the `timeout` one. A fix that depends on nobody adding
+such a rule is not a fix; it is the current accident, written down.
+
+**Every file under `tests/probes/` that can reach a Claude Code binary carries exactly one tag.**
+`probe-cc-stderr-classifier-net.sh` is the net and it **fails closed** — an untagged candidate is a
+RED for a human to triage, never a silent pass:
+
+| tag | meaning |
+|---|---|
+| `# CC-STDERR: filtered` | routes its capture through `lib/cc-cell-stderr.sh` before any regex touches it |
+| `# CC-STDERR-EXEMPT: <why>` | a config echo cannot reach its classifier — stated as a claim **with its measurement** |
+| `# CC-STDERR-UNMEASURED: <what>` | same mechanism, on a surface not yet measured; the count is pinned so a new one cannot merge untriaged |
+
+The net is **deliberately over-inclusive**, because the obvious population — "probes matching
+`claude -p`" — is a *spelling*, and the section above is about exactly that. Measured while building
+it: that spelling **over-counts** (4 files match on a comment and spawn no child) and
+**under-counts** (5 more reach a CC binary as `$CC_BIN`, `resolve-cc-binary` or `claude --version`
+and match none of it). A false candidate costs one tag. A missed one is an unguarded classifier
+nobody ever looks at.
+
+An exemption is a **claim, not an opt-out**. `probe-read-guard-model-set-pin.sh`'s is the reference
+shape: *the one CC invocation is `claude --version 2>/dev/null` — stderr is discarded at the call
+site*. That is checkable. "This classifier is specific enough" is not, unless the grep that shows it
+is in the comment.
+
+**What the net cannot catch, stated rather than implied:** a `filtered` probe that calls the filter
+and then **discards** the result. That inversion is invisible to static text — it is covered instead
+by `probe-cc-binary-resolution.sh` § 5, which drives the filter's *behaviour* on a verbatim live
+advisory. Section 5 of the net probe closes the other half from the live side: it crosses every
+permission rule in the resolved `settings.json` against every classifier regex harvested from the
+filtered probes, and asserts the filter drops the advisory for each match. Today that reports **3
+live hazards, 3 defended** — the original `Bash(timeout * gh *)` finding, re-derived from the
+machine on every run rather than remembered.
+
 ## Integration probes
 
 A probe is an **integration probe** when it exercises the composition of multiple code paths that are architecturally independent but share a runtime invariant. These surface UX/timing issues that per-chunk probes can't.
@@ -229,6 +309,7 @@ A probe is a **version-gated behavior probe** when it asserts a *per-CC-version*
 
 | Probe | Backs | Run |
 |-------|-------|-----|
+| `probe-cc-stderr-classifier-net.sh` | decisions.md 2026-09-18 stderr-classifier-input row + § "A classifier's INPUT is a surface too" (fail-closed net: every file that can reach a CC binary carries exactly one `# CC-STDERR*` tag; § 5 crosses the live settings' permission rules against the classifier regexes harvested from the tree) | `bash tests/probes/probe-cc-stderr-classifier-net.sh` |
 | `probe-settings-hash.js` | decisions.md 2026-04-16 drift settings_hash row | `node tests/probes/probe-settings-hash.js` |
 | `probe-migration.js` | same row (graceful schema migration) | `node tests/probes/probe-migration.js` |
 | `probe-plugin-keys.sh` | decisions.md 2026-04-16 plugin-keys row (direct jq-check + sym-health.json fast-path) | `bash tests/probes/probe-plugin-keys.sh` |

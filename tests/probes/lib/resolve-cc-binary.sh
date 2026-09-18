@@ -64,6 +64,13 @@
 # With an explicit path, that path is canonicalized and used; a bad explicit
 # path is an ERROR, never a silent fall-through to the default (asking for a
 # specific binary and silently getting another is the attribution bug again).
+#
+# CC-STDERR-EXEMPT: resolves a path, classifies nothing. Measured 2026-09-18:
+#   this file contains no `grep -q` and no `2>&1` capture, so it has no
+#   classifier for a settings-lint line to reach.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 resolve_cc_binary() {
   local explicit="${1:-}" bin=""
   if [[ -n "$explicit" ]]; then

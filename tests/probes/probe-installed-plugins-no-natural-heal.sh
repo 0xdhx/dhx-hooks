@@ -52,6 +52,16 @@
 # set -e re-enable. Targeted `set +e ... rc=$?` blocks gate every subprocess
 # call so an early jq/stat exit-1 cannot abort before the ambiguous outcome
 # JSON is written.
+#
+# CC-STDERR: filtered
+#   This probe drives a real `claude -p` child and classifies its `2>&1` capture,
+#   so Claude Code's settings lint is an INPUT to the classifier. The capture is
+#   routed through strip_cc_config_advisories() before any regex touches it, and
+#   the dropped-line count is printed so a cleaned noisy cell is distinguishable
+#   from a genuinely clean one. Rationale: lib/cc-cell-stderr.sh.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 PROBE_ID="probe-installed-plugins-no-natural-heal"

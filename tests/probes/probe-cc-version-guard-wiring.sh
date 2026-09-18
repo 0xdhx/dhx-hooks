@@ -27,6 +27,14 @@
 # (dhx-tools indirection)" row.
 # Run: bash tests/probes/probe-cc-version-guard-wiring.sh
 
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child. `$SB/bin/claude` is a symlink
+#   PASSED to the dhx guard as CC_BIN_LINK and never executed; the classified
+#   string is `$SB/err`, the guard script's own stderr, captured from
+#   `bash "$INSTALLED_GUARD" < /dev/null 2>"$SB/err"`.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

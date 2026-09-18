@@ -22,6 +22,14 @@
 # Backs docs/decisions.md Phase 10.1 Plan 1 RED row + HP-020 (read-path finding
 # under empirical test) + HP-025 § Cache-staleness detection (lands in Plan 2).
 # Run: bash tests/probes/probe-plugin-cache-staleness.sh
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child. Cells run `bash "$HOOK"` and a
+#   sed-neutralized COPY of the live SessionStart dispatcher whose every
+#   `bash ~/.claude/hooks/*.sh` dispatch is rewritten to `echo "DISPATCH:<name>"`.
+#   Measured 2026-09-18: the only `claude -p` in this file is line 486, a comment.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -u
 
 # Resolve $HOOK relative to this probe's repo root so the probe runs correctly

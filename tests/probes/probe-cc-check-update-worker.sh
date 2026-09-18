@@ -29,6 +29,13 @@
 #   [4] npm emits non-JSON -> latest='unknown', max_published OMITTED (graceful:
 #       the combined-call JSON.parse throws, both fields degrade, no crash)
 
+#
+# CC-STDERR-EXEMPT: spawns no real Claude Code child — `claude` is STUBBED on a
+#   tmp PATH for every cell. Measured 2026-09-18: all three `claude --version`
+#   occurrences in this file are comments describing the stub's output shape.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

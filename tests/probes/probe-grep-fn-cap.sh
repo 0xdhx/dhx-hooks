@@ -39,6 +39,14 @@
 # LIVE_RUNTIME: no
 # RUNTIME: ~3s
 
+#
+# CC-STDERR-EXEMPT: spawns no Claude Code child, so there is no settings lint to
+#   inherit. Every cell runs `bash "$HOOK"` with CLAUDE_ENV_FILE set; the only
+#   `claude -p` in this file is prose in the header paragraph. Measured 2026-09-18:
+#   `grep -nE 'claude -p|claude --print' ` returns line 11 only, a comment.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -u
 
 HOOK="/home/dhx/repos/hooks/dhx/dhx-grep-fn-cap.sh"

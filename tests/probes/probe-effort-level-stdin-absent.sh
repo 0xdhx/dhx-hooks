@@ -75,6 +75,18 @@
 #     see the 2026-09-17 hermetic-tier-refuses-live-capture row.
 #
 # Run: bash tests/probes/probe-effort-level-stdin-absent.sh
+#
+# CC-STDERR-EXEMPT: the only Claude Code invocation is `claude --version
+#   2>/dev/null` (the HOST_VERSION line) — stderr is DISCARDED at the call site,
+#   so no settings-lint line can reach a classifier. Every other `claude
+#   --version` in this file is a comment.
+#   DO NOT route resolve_cell_version() through the stderr filter, or refactor
+#   its `grep -oE | head -1`: that function is the CORPUS PATH SANITIZER between
+#   a captured payload and a filesystem path, pinned by a fixture whose name
+#   contains "traversal is not a version". It is not a failure classifier.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 PROBE_DIR="${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe"

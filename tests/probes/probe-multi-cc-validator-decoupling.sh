@@ -36,6 +36,14 @@
 # token, so a `skipped` fixture here would silently stop testing anything.
 #
 # Run: bash tests/probes/probe-multi-cc-validator-decoupling.sh
+#
+# CC-STDERR-EXEMPT: the only Claude Code invocation here is
+#   `claude --version 2>/dev/null` — stderr is DISCARDED at the call site, so no
+#   settings-lint line can reach any classifier. Measured 2026-09-18: every
+#   `claude` occurrence in this file is either that redirected call or a comment.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

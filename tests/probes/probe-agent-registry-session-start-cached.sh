@@ -76,6 +76,15 @@
 # RUNTIME: ~60-180s    (two claude -p turns)
 set -uo pipefail
 
+# CC-STDERR: filtered
+# Claude Code lints whatever settings.json it is handed and echoes each rule it
+# considers questionable VERBATIM to stderr — which lands in the same `2>&1`
+# capture this probe then classifies. Route every capture through the filter
+# BEFORE any regex touches it. Rationale + exactly what is dropped, and the
+# measured 3/3 forged-timeout regression that motivated it: lib/cc-cell-stderr.sh.
+# shellcheck source=lib/cc-cell-stderr.sh
+source "$(dirname "$0")/lib/cc-cell-stderr.sh"
+
 AUTH_FAIL_RE='Not logged in|Please run /login|Invalid API key|invalid x-api-key|authentication_error|authentication_failed|Invalid authentication credentials|Failed to authenticate|api_error_status":401|Credit balance is too low|OAuth token has expired'
 
 CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
@@ -130,6 +139,8 @@ EOF
 OUT1=$( (cd "$WORK" && timeout 240 claude -p --permission-mode bypassPermissions \
   --model haiku "$PROMPT1" 2>&1) )
 RC1=$?
+echo "INFO child 1 stderr: $(count_cc_config_advisories "$OUT1") config-advisory line(s) dropped before classification (lib/cc-cell-stderr.sh)"
+OUT1=$(strip_cc_config_advisories "$OUT1")
 
 if [ $RC1 -ne 0 ] || grep -qE "$AUTH_FAIL_RE" < <(printf '%s' "$OUT1"); then
   echo "SKIP child 1 did not complete (rc=$RC1 / auth failure) — inconclusive"
@@ -193,6 +204,8 @@ fi
 OUT2=$( (cd "$WORK" && timeout 240 claude -p --permission-mode bypassPermissions \
   --model haiku "Use the Agent tool with subagent_type=\"$AGENT\" and prompt=\"Reply with exactly $TEST_TOKEN and nothing else.\" Then print the returned token, or the first line of the error verbatim. Be terse." 2>&1) )
 RC2=$?
+echo "INFO child 2 stderr: $(count_cc_config_advisories "$OUT2") config-advisory line(s) dropped before classification (lib/cc-cell-stderr.sh)"
+OUT2=$(strip_cc_config_advisories "$OUT2")
 
 if [ $RC2 -ne 0 ] || grep -qE "$AUTH_FAIL_RE" < <(printf '%s' "$OUT2"); then
   echo "SKIP child 2 did not complete (rc=$RC2 / auth failure) — the negative above is UNCONFIRMED"

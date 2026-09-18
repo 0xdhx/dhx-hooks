@@ -112,6 +112,15 @@
 # RUNTIME: ~120-240s   (four claude -p turns: control + single-file-grep + grep-tool + compound)
 set -uo pipefail
 
+# CC-STDERR: filtered
+# Claude Code lints whatever settings.json it is handed and echoes each rule it
+# considers questionable VERBATIM to stderr — which lands in the same `2>&1`
+# capture this probe then classifies. Route every capture through the filter
+# BEFORE any regex touches it. Rationale + exactly what is dropped, and the
+# measured 3/3 forged-timeout regression that motivated it: lib/cc-cell-stderr.sh.
+# shellcheck source=lib/cc-cell-stderr.sh
+source "$(dirname "$0")/lib/cc-cell-stderr.sh"
+
 BLOCK_RE='has not been read yet'
 EDIT_OK_RE='updated successfully|has been updated'
 AUTH_FAIL_RE='Not logged in|Please run /login|Invalid API key|invalid x-api-key|authentication_error|authentication_failed|Invalid authentication credentials|Failed to authenticate|api_error_status":401|Credit balance is too low|OAuth token has expired'
@@ -216,9 +225,15 @@ fi
 # test. If the control ever stops blocking here, this probe is measuring nothing.
 drive() { # $1 = prompt; $2.. = exact tool names to expose
   local prompt="$1"; shift
-  CLAUDE_CONFIG_DIR="$SANDBOX/.claude" timeout 120 \
+  local raw n
+  raw=$(CLAUDE_CONFIG_DIR="$SANDBOX/.claude" timeout 120 \
     claude -p "$prompt" --output-format stream-json --include-hook-events --verbose \
-      --permission-mode acceptEdits --add-dir "$WORK" --tools "$@" 2>&1 || true
+      --permission-mode acceptEdits --add-dir "$WORK" --tools "$@" 2>&1 || true)
+  # Filter HERE, at the single capture site: classify_grep_cell applies SEVEN
+  # regexes to this string and every one of them would otherwise see the lint.
+  n=$(count_cc_config_advisories "$raw")
+  [ "$n" -gt 0 ] && echo "INFO cell stderr: $n config-advisory line(s) dropped before classification (lib/cc-cell-stderr.sh)" >&2
+  strip_cc_config_advisories "$raw"
 }
 
 PASS=0; FAIL=0; INCONCLUSIVE=0
