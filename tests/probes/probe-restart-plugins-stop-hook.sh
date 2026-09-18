@@ -184,8 +184,23 @@ reset_cache
   done
   # pattern at line 151 = first line of tail -n 50's output
   echo '{"type":"user","message":{"role":"user","content":"<command-name>/reload-plugins</command-name>"}}'
-  # one giant line (256KB > 64KB pipe buffer) — guarantees SIGPIPE on broken impl
-  printf '{"type":"assistant","text":"giant-line %s"}\n' "$(printf 'x%.0s' {1..262144})"
+  # One giant line AFTER the match. 1MB, and the size is load-bearing — do NOT
+  # trim it for speed. The old comment here said "256KB > 64KB pipe buffer —
+  # guarantees SIGPIPE", which is the single-factor story HP-028 already
+  # refutes: the buffer figure is not the threshold. Swept 2026-09-18, bulk
+  # written after the match, everything else fixed:
+  #
+  #   after-match   ugrep   GNU grep
+  #   64KB          0 0     0 0        <- BOTH silent: writer fits, nothing SIGPIPEs
+  #   256KB         0 0     141 0      <- the old fixture lived HERE, engine-dependent
+  #   512KB+        141 0   141 0      <- both fire
+  #
+  # At 256KB this fixture proved the regression only under GNU. Probes run as
+  # `bash <probe>.sh` and do get GNU, so it was sound where it runs — but its
+  # soundness rode on a threshold nobody had written down, and trimming the
+  # filler would have slid it into the 64KB row where BOTH engines go quiet and
+  # the fixture passes on broken code. 1MB clears both thresholds with margin.
+  printf '{"type":"assistant","text":"giant-line %s"}\n' "$(head -c 1048576 /dev/zero | tr '\0' 'x')"
   # 48 small trailing lines to fill out tail-50
   for i in $(seq 1 48); do
     printf '{"type":"assistant","text":"trailing-%d"}\n' "$i"
