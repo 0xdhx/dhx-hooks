@@ -62,10 +62,26 @@ for f in "${STDIN_FIXTURES[@]}"; do
   assert_eq "fixture: $name" "$got" "$expected"
 done
 
-# D-17 mode discriminator: probe dir absent → fixtures-only mode → exit 0
-if [[ ! -d "$PROBE_DIR" ]]; then
+# D-17 mode discriminator: probe dir absent → fixtures-only mode → exit 0.
+#
+# DHX_PROBE_HERMETIC (2026-09-17) forces the same path even when the arming dir
+# EXISTS. Set by run-probes.sh whenever the resolved filter set asks for
+# LIVE_RUNTIME=no — i.e. the pre-commit gate (check #8a). Under that tier a live
+# capture is two things the tier must not do: a live-runtime dependency its own
+# filter exists to exclude, and a write into the TRACKED corpus that mutates the
+# commit candidate while it is being validated. A `/tmp` arming dir left behind
+# after a hand-run silently escalated this probe on every probe-touching commit
+# for two days before 30-deletion-audit.sh caught the mutation. Arming remains
+# the operator's deliberate publication path on every other invocation.
+# See docs/decisions.md 2026-09-17 hermetic-tier-refuses-live-capture row.
+if [[ ! -d "$PROBE_DIR" || "${DHX_PROBE_HERMETIC:-0}" == "1" ]]; then
   echo "---"
-  echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: mkdir -p $PROBE_DIR)"
+  if [[ -d "$PROBE_DIR" ]]; then
+    echo "NOTE arming dir present but IGNORED — DHX_PROBE_HERMETIC=1 (hermetic tier refuses live capture)"
+    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (arming dir ignored under the hermetic tier)"
+  else
+    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: mkdir -p $PROBE_DIR)"
+  fi
   if [[ "$FAIL" -eq 0 ]]; then
     exit 0
   else

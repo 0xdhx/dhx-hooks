@@ -62,6 +62,24 @@ write_outcome() {
   [[ -n "$cc_version" ]] || cc_version="unknown"
 
   local out_dir_base="$REPO_ROOT/tests/probes/.results/v1.3-phase-9"
+  # Publish gate (2026-09-17) — scoped to the BASELINE, and only to it. The
+  # baseline is the one outcome under v1.3-phase-9/ that .gitignore un-ignores
+  # (`!.../fixtures-only-baseline.json`), so it is the only file this probe can
+  # turn into a commit candidate. It is also a CONSTANT: all 64 on disk at
+  # ruling hashed identically once built_against_cc_version was removed, over an
+  # empty observations object. Written unconditionally it accrued one untracked
+  # directory per CC version from the mere act of committing — ten of them,
+  # 2.1.258 through 2.1.275 — and it contradicted this probe's own
+  # SAFE_FOR_LIVE.md row, which claimed fixtures-only mode was "read-only when
+  # probe dir absent". Live-arm outcomes are deliberately NOT gated: .gitignore
+  # already excludes them, so they can never become commit candidates, and the
+  # operator wants them written in-repo to read after a capture.
+  # See docs/decisions.md 2026-09-17 baseline-publish-gate row.
+  local publishing=1
+  if [[ "$arm" == "fixtures-only" && "$run_id" == "baseline" && "${DHX_PROBE_PUBLISH:-0}" != "1" ]]; then
+    publishing=0
+    out_dir_base="${TMPDIR:-/tmp}/dhx-probe-results-$$/v1.3-phase-9"
+  fi
   local out_dir="$out_dir_base/$cc_version"
   # IN-03: probe declares set -uo pipefail (no -e); critical-path file ops
   # need explicit rc-handling so an operator running the probe with a
@@ -102,6 +120,14 @@ write_outcome() {
   fi
 
   echo "OK   outcome-json-written: $out_file"
+  # Name the publication path at the moment it is declined. The repo's idiom —
+  # a refusal prints the exact command that clears it (verify-hook-patterns.sh
+  # check #8c) — is what keeps a gated write from quietly becoming a write
+  # nobody ever takes again.
+  if [[ "$publishing" -eq 0 ]]; then
+    echo "NOTE baseline NOT published to the repo corpus (scratch above)."
+    echo "     To publish: DHX_PROBE_PUBLISH=1 bash tests/probes/probe-subagent-stop-sync.sh"
+  fi
 }
 
 assert_eq() {
@@ -121,10 +147,25 @@ assert_eq "fixture: sync flag-parse run_id" "$got_run" "abc-123"
 read -r got_arm got_run <<< "bg def-456"
 assert_eq "fixture: bg flag-parse arm" "$got_arm" "bg"
 
-# Mode discriminator: probe dir absent → fixtures-only mode → exit 0
-if [[ ! -d "$PROBE_DIR" ]]; then
+# Mode discriminator: probe dir absent → fixtures-only mode → exit 0.
+#
+# DHX_PROBE_HERMETIC (2026-09-17) forces the same path even when the arming dir
+# EXISTS. Set by run-probes.sh whenever the resolved filter set asks for
+# LIVE_RUNTIME=no — i.e. the pre-commit gate (check #8a). The live arm waits up
+# to TIMEOUT_SECS (300s) for a SubagentStop, which is ten times run-probes.sh's
+# 30s per-probe cap, so a stray arming dir under the gate is not merely a live
+# dependency the tier's filter exists to exclude — it is a guaranteed [TIMED OUT]
+# and therefore a repo-wide commit block. Arming stays the operator's deliberate
+# path on every other invocation, exactly as the runbook in this header describes.
+# See docs/decisions.md 2026-09-17 hermetic-tier-refuses-live-capture row.
+if [[ ! -d "$PROBE_DIR" || "${DHX_PROBE_HERMETIC:-0}" == "1" ]]; then
   echo "---"
-  echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: install -d -m 700 $PROBE_DIR)"
+  if [[ -d "$PROBE_DIR" ]]; then
+    echo "NOTE arming dir present but IGNORED — DHX_PROBE_HERMETIC=1 (hermetic tier refuses live capture)"
+    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (arming dir ignored under the hermetic tier)"
+  else
+    echo "PASS: $PASS  FAIL: $FAIL  mode=fixtures-only (probe dir absent — arm with: install -d -m 700 $PROBE_DIR)"
+  fi
   # D-18 + G-02: deterministic fixtures-only baseline write
   write_outcome "fixtures-only" "baseline" "fixtures_only_baseline" 0 '{}'
   if [[ "$FAIL" -eq 0 ]]; then

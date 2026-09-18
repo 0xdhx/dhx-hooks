@@ -194,6 +194,28 @@ active_cc=$(printf '%s' "$cc_full" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 # remove the live differentials from every other surface.
 if [[ ${#FILTER_KEYS[@]} -eq 0 ]]; then FILTER_KEYS=("SAFE_FOR_LIVE"); FILTER_VALS=("yes"); fi
 
+# ----- 2026-09-17: hermetic-tier marker — the gate refuses live-capture mode ---
+# A caller asking for LIVE_RUNTIME=no is asking for the tier whose whole contract
+# is "no probe in here depends on live runtime" — in practice the pre-commit gate
+# (verify-hook-patterns.sh check #8a). Two probes are MODE-DISCRIMINATED on an
+# arming directory under $XDG_RUNTIME_DIR and escalate themselves to live-capture
+# mode whenever that directory merely EXISTS. A directory left behind after a
+# hand-run therefore promotes a gate probe into a 30s live statusline capture that
+# writes a TRACKED corpus cell — which is how the commit candidate changed under
+# 30-deletion-audit.sh on 2026-09-17, and which would have exited 2 (ambiguous →
+# FAIL → repo-wide block) had no statusline refresh landed inside the window.
+#
+# The marker is set from the RESOLVED filter set, after default injection, so it
+# tracks what will actually be run rather than what was typed. It is deliberately
+# NOT set on a bare or live invocation: arming is the operator's deliberate
+# publication path for a corpus cell and must keep working exactly as documented
+# in each probe's header. Fails toward running the probe hermetically, never
+# toward skipping it — the probe still executes, on its fixtures-only path.
+# Companion assertions: tests/probes/probe-hermetic-tier-no-tree-writes.sh.
+if [[ "$(filter_val_for LIVE_RUNTIME)" == "no" ]]; then
+  export DHX_PROBE_HERMETIC=1
+fi
+
 # D-26 (+2026-08-20 multi-key): filter check — returns 0 (run) if EVERY requested
 # filter passes, 1 (skip) if any excludes. Keys AND together.
 #
