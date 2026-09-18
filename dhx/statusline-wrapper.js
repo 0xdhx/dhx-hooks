@@ -189,11 +189,13 @@ process.stdin.on('end', () => {
     // `⚠ wslProbeBroken?` sigil would contradict fail-silent (the segment renders its own
     // ⚠ on a real break, and an absent flag is the healthy/silent state).
     const wslProbeBrokenWarning = unwrap(wslProbeBrokenR, () => '');
-    // claude-cap bypass is fail-silent exactly like the wsl readers: own try/catch → ''
-    // on ANY error. Deliberately omitted from sigilCount — a `⚠ claudeCapBypass?` sigil
-    // would contradict fail-silent (the segment renders its own token on a real bypass,
-    // and an absent flag is the healthy/silent state).
-    const claudeCapBypassWarning = unwrap(claudeCapBypassR, () => '');
+    // claude-cap bypass is fail-silent exactly like the wsl readers: own try/catch →
+    // { token: '', fault: '' } on ANY error. Deliberately omitted from sigilCount — a
+    // `⚠ claudeCapBypass?` sigil would contradict fail-silent (the segment renders its own
+    // token on a real bypass, and an absent flag is the healthy/silent state). An OBJECT,
+    // like wslMonitor, because the token and the meta-glyph fault DIVERGE on one arm: a
+    // misplaced-only flag renders a dim token but is not a current session fault.
+    const claudeCapBypass = unwrap(claudeCapBypassR, () => ({ token: '', fault: '' }));
     // wsl-stack producer-liveness is fail-silent exactly like the three flag readers: own
     // try/catch → { token: '', kind: null } on ANY error. Deliberately omitted from
     // sigilCount — a `⚠ wslMonitor?` sigil would contradict fail-silent. NOTE the fallback
@@ -241,7 +243,7 @@ process.stdin.on('end', () => {
       trip: wslPressureWarning,
       monitor: wslMonitor,
       broken: wslProbeBrokenWarning,
-      bypass: claudeCapBypassWarning,
+      bypass: claudeCapBypass,
     })) front.push(token);
     if (driftWarning) front.push(driftWarning);
     if (health.front) front.push(health.front);
@@ -281,7 +283,10 @@ process.stdin.on('end', () => {
     const currentFaults = [
       wslMonitor.token,        // wsl:monitor-dead    — wsl telemetry unvouchable now
       wslProbeBrokenWarning,   // wsl:probe-broken    — pressure unknowable now
-      claudeCapBypassWarning,  // claude:seam-broken  — cap bypassed now
+      claudeCapBypass.fault,   // claude:seam-broken / uncapped — cap bypassed now ('' for
+                               // claude:misplaced: capped by the wrong scope, a tracked
+                               // placement gap that moves per daemon restart, not a fault
+                               // of this session — lighting ⌃ for days would teach ∙ to lie)
       driftWarning,            // session stale now
       health.front,            // session wiring degraded now
       // NOT wslPressureWarning   — a LATCH over a frozen count, not a current reading.
@@ -1308,30 +1313,46 @@ function readWslProbeBroken() {
 // found by hand — cross-repo .planning/debug/resolved/claude-cap-uncapped-launch.md).
 const CLAUDE_CAP_BYPASS_FLAG = path.join(os.homedir(), '.local', 'state', 'wsl-stack', 'claude-cap-bypass.flag');
 
-// claude-cap bypass alarm. TWO severity classes, split by CAUSE (the flag's machine
-// line carries `capped=N uncapped=N seam_ok=K`):
+// claude-cap bypass alarm. Severity split by CAUSE (the flag's machine line carries
+// `capped=N uncapped=N seam_ok=K`, and since cross-repo c6cf10ba1 (2026-09-18) APPENDS
+// ` misplaced=P scopes=S` — the regexes below are word-bounded, so appended fields are
+// invisible to the first three arms):
 //   seam_ok=0      → RED `⚠ claude:seam-broken uncapped=N` — the control is dead for
 //                    every FUTURE launch (structurally wsl:probe-broken: blind ≥ tripped).
-//   seam_ok=1,N>0  → orange-208 `claude:uncapped=N` — historical residue with a healthy
-//                    seam; drains on its own as sessions turn over. Advisory, not act-now
-//                    (RED here would train the operator to ignore the badge).
+//   seam_ok=1,N>0  → orange-208 `claude:uncapped=N` — Claude Code roots outside the cap
+//                    with a healthy seam. Advisory, not act-now (RED here would train the
+//                    operator to ignore the badge). Not "self-draining": the census now sees
+//                    background roots (daemons, pty-hosts), which are replaced at their
+//                    daemon's next restart, never drained.
+//   seam_ok=1,N=0,misplaced=P>0
+//                  → DIM `claude:misplaced=P` — nothing escaped the cap; background roots sit
+//                    in an interactive session's scope. A tracked placement gap (cross-repo
+//                    brief 2026-09-04-claude-daemon-and-bg-spares-…) that persists until
+//                    each daemon restarts, so it renders quietly and its `fault` is '' —
+//                    it must not drive the meta-glyph or it would read ⌃ for days.
 //   unparseable    → orange-208 `claude:bypass` — never go silent on a real bypass
 //                    (mirrors readWslPressure's `wsl:pressure` fallback; also covers a
 //                    lingering pre-seam_ok-format flag).
 // NON-STICKY, unlike the operator-cleared trip flag: the census rewrites the flag every
 // run and rm's it on a clean one, so absence = census-clean and no rm instruction is
-// rendered. Fail-silent: any error → '' (absent flag = cap applying = silent).
+// rendered. Fail-silent: any error → { token: '', fault: '' } (absent flag = cap applying
+// = silent). Returns { token, fault }: `token` renders in the front; `fault` feeds the
+// meta-glyph and equals `token` on every arm except misplaced.
 function readClaudeCapBypass() {
   try {
     const body = fs.readFileSync(CLAUDE_CAP_BYPASS_FLAG, 'utf8');
     const seam = body.match(/\bseam_ok=([01])\b/);
     const un = body.match(/\buncapped=(\d+)\b/);
+    const mis = body.match(/\bmisplaced=(\d+)\b/);
     const uncapped = un ? parseInt(un[1], 10) : 0;
-    if (seam && seam[1] === '0') return `\x1b[31m⚠ claude:seam-broken uncapped=${uncapped}\x1b[0m`;
-    if (seam && uncapped > 0) return `\x1b[38;5;208mclaude:uncapped=${uncapped}\x1b[0m`;
-    return `\x1b[38;5;208mclaude:bypass\x1b[0m`;
+    const misplaced = mis ? parseInt(mis[1], 10) : 0;
+    const fault = (token) => ({ token, fault: token });
+    if (seam && seam[1] === '0') return fault(`\x1b[31m⚠ claude:seam-broken uncapped=${uncapped}\x1b[0m`);
+    if (seam && uncapped > 0) return fault(`\x1b[38;5;208mclaude:uncapped=${uncapped}\x1b[0m`);
+    if (seam && un && misplaced > 0) return { token: `\x1b[2mclaude:misplaced=${misplaced}\x1b[0m`, fault: '' };
+    return fault(`\x1b[38;5;208mclaude:bypass\x1b[0m`);
   } catch {
-    return ''; // no flag = cap applying = silent
+    return { token: '', fault: '' }; // no flag = cap applying = silent
   }
 }
 
@@ -1561,7 +1582,7 @@ function composeWslFront({ trip, monitor, broken, bypass }) {
   const pressureStale = kind === 'monitor' || kind === 'pressure';
   const censusStale   = kind === 'monitor' || kind === 'census';
   if (broken && !pressureStale) out.push(broken);
-  if (bypass && !censusStale) out.push(bypass);
+  if (bypass && bypass.token && !censusStale) out.push(bypass.token);
   return out;
 }
 

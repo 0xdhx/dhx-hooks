@@ -192,10 +192,12 @@ function check(name, ok, detail) {
 
 // =========================================================================
 // Pure-function arbitration — which stale flags get suppressed
+// `bypass` is the readClaudeCapBypass() OBJECT ({ token, fault }) since 2026-09-18, like
+// `monitor`: composeWslFront renders its `.token`; the meta-glyph reads its `.fault`.
 // =========================================================================
 {
   const c = (kind, tok) => composeWslFront({
-    trip: 'TRIP', monitor: { token: tok || (kind ? 'DEAD' : ''), kind }, broken: 'BROKEN', bypass: 'BYPASS',
+    trip: 'TRIP', monitor: { token: tok || (kind ? 'DEAD' : ''), kind }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' },
   });
   check('arbitrate: no liveness state → all three flag tokens render',
     JSON.stringify(c(null, '')) === JSON.stringify(['TRIP', 'BROKEN', 'BYPASS']));
@@ -206,9 +208,9 @@ function check(name, ok, detail) {
   check('arbitrate: census dead → cap-bypass suppressed, probe-broken KEPT (different producer)',
     JSON.stringify(c('census')) === JSON.stringify(['TRIP', 'DEAD', 'BROKEN']));
   check('arbitrate: trip ALWAYS survives (durable by decision, never suppressed)',
-    composeWslFront({ trip: 'TRIP', monitor: { token: 'DEAD', kind: 'monitor' }, broken: '', bypass: '' })[0] === 'TRIP');
+    composeWslFront({ trip: 'TRIP', monitor: { token: 'DEAD', kind: 'monitor' }, broken: '', bypass: { token: '', fault: '' } })[0] === 'TRIP');
   check('arbitrate: ordering is trip → liveness → broken → bypass',
-    JSON.stringify(composeWslFront({ trip: 'T', monitor: { token: 'D', kind: null }, broken: 'B', bypass: 'Y' }))
+    JSON.stringify(composeWslFront({ trip: 'T', monitor: { token: 'D', kind: null }, broken: 'B', bypass: { token: 'Y', fault: 'Y' } }))
       === JSON.stringify(['T', 'D', 'B', 'Y']) || // kind null ⇒ no suppression
     JSON.stringify(c(null, 'D')) === JSON.stringify(['TRIP', 'D', 'BROKEN', 'BYPASS']));
 }

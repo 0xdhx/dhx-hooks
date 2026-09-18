@@ -8,8 +8,16 @@
 // asserts the render contract:
 //   - seam_ok=0                    → RED `⚠ claude:seam-broken uncapped=N` (the seam is
 //                                    dead for every FUTURE launch — blind ≥ tripped)
-//   - seam_ok=1, uncapped>0        → orange-208 `claude:uncapped=N` (draining residue,
-//                                    healthy seam — advisory, NOT act-now)
+//   - seam_ok=1, uncapped>0        → orange-208 `claude:uncapped=N` (roots outside the
+//                                    cap, healthy seam — advisory, NOT act-now)
+//   - appended fields (2026-09-18) → the census appends ` misplaced=P scopes=S` after
+//                                    seam_ok; the first three arms render byte-identically
+//   - seam_ok=1, uncapped=0,       → DIM `claude:misplaced=P`, never a bypass label. That
+//     misplaced=P>0                  it is NOT a meta-glyph fault is asserted where the glyph
+//                                    has a clean baseline: probe-statusline-metaglyph-front-
+//                                    agreement.js § 2 ('cap misplaced alone' → ∙). This
+//                                    probe's fake home carries a standing tail token, so a
+//                                    glyph comparison here is vacuous (measured: ⌃ with no flag).
 //   - unparseable flag content     → orange-208 `claude:bypass` (never go silent on a
 //                                    real bypass; mirrors readWslPressure's fallback)
 //   - pre-seam_ok-format flag      → `claude:bypass` (a lingering old-format flag has
@@ -63,6 +71,16 @@ const FLAG = ({ capped = 9, uncapped = 0, seam_ok = 1 }) => [
   `  capped=${capped} uncapped=${uncapped} seam_ok=${seam_ok}`,
   '  seam: login-shell `claude` -> /home/dhx/.local/bin/claude  (want /home/dhx/.local/capbin/claude)',
   '  Do NOT kill it to clear this flag — it holds a user\'s work.',
+].join('\n');
+
+const DIM = '\x1b[2m';
+const MISPLACED_TOKEN = (n) => `${DIM}claude:misplaced=${n}${RESET}`;
+// Current producer shape (cross-repo claude-cap-census.sh c6cf10ba1): appended fields.
+const FLAG2 = ({ capped = 18, uncapped = 0, seam_ok = 1, misplaced = 0, scopes = 10 }) => [
+  `=== 2026-09-18 04:44:30 !! CLAUDE CAP ${uncapped > 0 || seam_ok === 0 ? 'BYPASS' : 'MISPLACED'}: reasons; `,
+  `  capped=${capped} uncapped=${uncapped} seam_ok=${seam_ok} misplaced=${misplaced} scopes=${scopes}`,
+  '  misplaced roots (background role in an interactive session\'s scope):',
+  '    pid=55834 role=daemon scope=claude-cap-88372.scope unit_rss_kb=4719324 children: bg-host=11',
 ].join('\n');
 
 // Pre-seam_ok producer format (before cross-repo 02dc97bf): machine line lacks seam_ok=.
@@ -154,6 +172,29 @@ function check(name, ok, detail) {
   const ok = capIdx >= 0 && fleetIdx >= 0 && capIdx < fleetIdx && !out.includes(CAP_SIGIL);
   check('seam-broken alone precedes coexisting fleet token', ok,
     ok ? '' : `capIdx=${capIdx} fleetIdx=${fleetIdx}; output: ${JSON.stringify(out)}`);
+}
+
+// --- appended fields: the first three arms render byte-identically ---
+{
+  const out = runWith({ bypass: FLAG2({ uncapped: 2, misplaced: 3 }) });
+  check('appended fields, uncapped=2 misplaced=3 → orange claude:uncapped=2 (byte-identical)',
+    out.includes(RESIDUE_TOKEN(2)) && !out.includes('claude:misplaced') && !out.includes(CAP_SIGIL),
+    `expected ${JSON.stringify(RESIDUE_TOKEN(2))}; output: ${JSON.stringify(out)}`);
+}
+{
+  const out = runWith({ bypass: FLAG2({ uncapped: 0, seam_ok: 0, misplaced: 3 }) });
+  check('appended fields, seam_ok=0 → RED seam-broken (byte-identical)',
+    out.includes(SEAM_TOKEN(0)) && !out.includes(CAP_SIGIL),
+    `expected ${JSON.stringify(SEAM_TOKEN(0))}; output: ${JSON.stringify(out)}`);
+}
+
+// --- misplaced only → DIM token, no bypass claim ---
+{
+  const out = runWith({ bypass: FLAG2({ uncapped: 0, misplaced: 9 }) });
+  check('misplaced only → dim claude:misplaced=9, never claude:bypass / uncapped / seam-broken',
+    out.includes(MISPLACED_TOKEN(9)) && !out.includes('claude:bypass') && !out.includes('claude:uncapped=')
+      && !out.includes('claude:seam-broken') && !out.includes(CAP_SIGIL),
+    `expected ${JSON.stringify(MISPLACED_TOKEN(9))}; output: ${JSON.stringify(out)}`);
 }
 
 console.log('---');

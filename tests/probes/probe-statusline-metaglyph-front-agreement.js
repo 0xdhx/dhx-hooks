@@ -58,6 +58,8 @@ const UP_OLD = String(72 * 3600 * 1000); // well past the boot grace
 
 const TRIP_BODY = '2026-08-15T09:14:02Z !! WSL process-pressure CRITICAL: bash=500 (>400) climbing toward .wslconfig ceiling';
 const BYPASS_BODY = 'capped=0 uncapped=4 seam_ok=0';
+const CAP_UNCAPPED_BODY = 'capped=18 uncapped=2 seam_ok=1 misplaced=3 scopes=10';
+const CAP_MISPLACED_BODY = 'capped=18 uncapped=0 seam_ok=1 misplaced=9 scopes=10';
 
 let pass = 0, fail = 0;
 function check(name, ok, detail) {
@@ -119,7 +121,7 @@ check('§1 the three cross-repo/backlog members are excluded',
   ['fleetWarning', 'watchWarning', 'skillPressureWarning'].every(m => excluded.includes(m)),
   `excluded = ${excluded.join(', ')}`);
 check('§1 the three current-fault wsl/seam members are included',
-  ['wslMonitor.token', 'wslProbeBrokenWarning', 'claudeCapBypassWarning'].every(m => included.includes(m)),
+  ['wslMonitor.token', 'wslProbeBrokenWarning', 'claudeCapBypass.fault'].every(m => included.includes(m)),
   `included = ${included.join(', ')}`);
 
 // INVARIANT: the glyph reads READER OUTPUTS, never composeWslFront's rendered tokens.
@@ -225,6 +227,15 @@ const CASES = [
   // other advisory member (patches:REGRESSED, CLAUDE.md unlinked) flips the glyph too. An
   // exception for this one token would be the carve-out, not the consistency.
   { name: 'no health reading for this lane', fx: { laneHealth: null },              expect: '⌃', was: '∙' },
+  // 2026-09-18: the census appends ` misplaced=P scopes=S`. An escaped root is still a
+  // current fault; a misplaced-only flag (background roots capped by an interactive
+  // session's scope) is NOT — it persists until each daemon restarts, and a glyph that
+  // read ⌃ for days would teach the operator that ⌃ means nothing. `was: '∙'` at the
+  // pinned ref only because cap-bypass did not yet participate there; against the
+  // wrapper immediately before this change the misplaced row read ⌃ (a misplaced-only
+  // flag fell through to the `claude:bypass` fallback, which is a fault).
+  { name: 'cap uncapped (appended fields) alone', fx: { bypass: CAP_UNCAPPED_BODY }, expect: '⌃', was: '∙' },
+  { name: 'cap misplaced alone',          fx: { bypass: CAP_MISPLACED_BODY },       expect: '∙', was: '∙' },
 ];
 
 const PRE = preChangeWrapper();
