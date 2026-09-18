@@ -44,9 +44,20 @@
 #      with invariant 1's display-message path (ONE tmux call max per turn).
 #  16. kill-switch: DHX_REGISTRY_SKIP_PANE_BACKFILL=1 disables the pane-walk =>
 #      status-quo blank coords AND no `list-panes` call (runtime-reversible).
+#   --- end-reason sidecar instrument (TEMPORARY, 2026-09-18) ---
+#  17. the end hook ALSO appends `<iso_ts>\t<uuid>\t<reason>` to a SEPARATE file
+#      at literal $HOME/.cache/dhx/session-end-reasons.tsv, while the registry
+#      `end` row stays 3-field (the contract is NOT amended). `reason` is an
+#      enum ALLOWLIST — the six documented values round-trip verbatim, anything
+#      else (absent, unknown, or carrying a tab/newline) becomes `other`, which
+#      is what keeps the row one atomic O_APPEND under PIPE_BUF. Fail-open: no
+#      sidecar row where there is no contract row (bad JSON, missing uuid).
+#      DELETED together with the instrument — see the hook header's retirement
+#      condition (the reason->continuation table landing in HP-042).
 #
 # Backs: docs/decisions.md 2026-06-08 session-registry-producer row +
-#        docs/decisions.md 2026-06-09 UserPromptSubmit-backfill producer-fix row.
+#        docs/decisions.md 2026-06-09 UserPromptSubmit-backfill producer-fix row +
+#        docs/decisions.md 2026-09-18 end-reason sidecar instrument row.
 # Run:   bash tests/probes/probe-session-registry.sh
 #
 # SAFE_FOR_LIVE: yes
@@ -144,6 +155,69 @@ chk "end field3 = uuid"               '[ "$(cut -f3 <<<"$row")" = uuid-AAA ]'
 printf '' | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"; rc=$?
 chk "end exit 0 on empty stdin"       '[ "$rc" = 0 ]'
 chk "end writes no row on empty"      '[ ! -s "$REG" ]'
+
+# --- 7b. end-reason sidecar instrument (TEMPORARY — added 2026-09-18) ---
+# The instrument is a SEPARATE file: the ratified 9-field contract is not amended
+# and `end` rows stay 3-field (asserted below, alongside the sidecar row). These
+# assertions are DELETED with the instrument — see the hook header's retirement
+# condition.
+INSTR="$T/.cache/dhx/session-end-reasons.tsv"
+
+rm -f "$INSTR"
+echo '{"session_id":"uuid-RSN","reason":"prompt_input_exit"}' \
+  | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "sidecar written under \$HOME"    '[ -s "$INSTR" ]'
+srow=$(cat "$INSTR")
+chk "sidecar row has 3 fields"        '[ "$(awk -F"\t" "{print NF}" <<<"$srow")" = 3 ]'
+chk "sidecar field1 = iso ts"         '[[ "$(cut -f1 <<<"$srow")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]'
+chk "sidecar field2 = uuid"           '[ "$(cut -f2 <<<"$srow")" = uuid-RSN ]'
+chk "sidecar field3 = reason"         '[ "$(cut -f3 <<<"$srow")" = prompt_input_exit ]'
+
+# The contract row is UNCHANGED by the instrument — the whole point of Fork A.
+chk "registry end row still 3 NF"     '[ "$(awk -F"\t" "\$2==\"end\"{print NF}" "$REG" | sort -u)" = 3 ]'
+
+# Every documented enum value round-trips verbatim.
+for r in clear resume logout prompt_input_exit bypass_permissions_disabled other; do
+  rm -f "$INSTR"
+  echo "{\"session_id\":\"uuid-$r\",\"reason\":\"$r\"}" \
+    | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+  chk "sidecar reason=$r verbatim"    "[ \"\$(cut -f3 < '$INSTR')\" = $r ]"
+done
+
+# Absent / unrecognised / separator-carrying reasons collapse to `other`. This is
+# an enum ALLOWLIST, not a sanitiser: it is what keeps the row a single atomic
+# O_APPEND under PIPE_BUF, asserted rather than assumed.
+rm -f "$INSTR"
+echo '{"session_id":"uuid-NOR"}' | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "absent reason => other"          '[ "$(cut -f3 < "$INSTR")" = other ]'
+chk "absent-reason row still 3 NF"    '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
+
+rm -f "$INSTR"
+echo '{"session_id":"uuid-UNK","reason":"some_future_reason"}' \
+  | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "unknown reason => other"         '[ "$(cut -f3 < "$INSTR")" = other ]'
+
+rm -f "$INSTR"
+echo '{"session_id":"uuid-TAB","reason":"clear\tlogout"}' \
+  | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "tab-carrying reason => other"    '[ "$(cut -f3 < "$INSTR")" = other ]'
+chk "tab-injection row still 3 NF"    '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
+chk "tab-injection is ONE line"       '[ "$(wc -l < "$INSTR")" = 1 ]'
+
+rm -f "$INSTR"
+echo '{"session_id":"uuid-NL","reason":"clear\nlogout"}' \
+  | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "newline reason => one line"      '[ "$(wc -l < "$INSTR")" = 1 ]'
+
+# Fail-open: the instrument never fires where the contract row does not.
+rm -f "$INSTR"
+echo 'not-json{' | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"; rc=$?
+chk "sidecar exit 0 on bad JSON"      '[ "$rc" = 0 ]'
+chk "sidecar no row on bad JSON"      '[ ! -e "$INSTR" ]'
+
+rm -f "$INSTR"
+echo '{"reason":"clear"}' | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "sidecar no row when uuid absent" '[ ! -e "$INSTR" ]'
 
 # --- 8. concurrent atomic appends: 30 parallel starts => 30 intact 9-NF rows ---
 : > "$REG"

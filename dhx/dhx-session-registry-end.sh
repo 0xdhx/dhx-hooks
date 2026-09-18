@@ -21,9 +21,47 @@
 # doc, 2026-06-08); any error => exit 0 silently. Fires on every end `reason`
 # (clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other) — the
 # manifest registers it with no matcher so all reasons record an end.
+#
+# ---------------------------------------------------------------------------
+# TEMPORARY INSTRUMENT — end-reason sidecar log (added 2026-09-18)
+#
+# Second, SEPARATE append of `<iso_ts>\t<uuid>\t<reason>` to
+# $HOME/.cache/dhx/session-end-reasons.tsv. The registry row above is untouched:
+# the ratified 9-field positional contract is NOT amended, `end` rows stay
+# 3-field, and no registry consumer sees a new field.
+#
+# WHY: SessionEnd fires MULTIPLY and NON-TERMINALLY (HP-042 — 905 same-uuid
+# end-end gaps, max 75.1 d), and `reason` is on stdin but has never been
+# persisted, so nothing on this machine can say WHICH reasons preserve a session
+# id. One decision is blocked on that: whether /dhx:history alive's `--no-end`
+# view becomes the default. A live run measured 87 recoverable held-open rows of
+# which 66 were `end-seen` — rows annotated "a SessionEnd fired" with no way to
+# tell a non-terminal /clear or /resume from a real close.
+#
+# SCOPE CEILING: `reason` is annotation-grade, never gate-grade. A nominally
+# terminal reason may still be followed by recovery, so no filter or destructive
+# action may ever be gated on it. HP-042's rule stands: a SessionEnd hook may
+# record, and must not destroy.
+#
+# RETIREMENT CONDITION (written at birth, deliberately): this block and its
+# append are DELETED once the reason->continuation table is written into HP-042.
+# Backstop so it cannot quietly become permanent: /dhx:schedule
+# sch_01M2SFTXKZ528MFDG7CBWBACTW, dated 2026-10-02 (~108 continuation events at
+# the measured 7.7/day). If you are
+# reading this after that table exists in docs/hook-patterns.md, the instrument
+# is overdue for removal — delete it, drop the sidecar assertions from
+# tests/probes/probe-session-registry.sh, and rm the .tsv.
+#
+# Analysis method when the table is written: take activity from the TRANSCRIPTS,
+# not from this log or the registry (neither records turns). Two confounds will
+# invent the finding if skipped — see
+# ~/repos/cross-repo/docs/research/2026-09-18-cc-transcript-activity-scans-two-confounds.md
+# ---------------------------------------------------------------------------
 set -uo pipefail
 
 REGISTRY="$HOME/.claude/dhx-session-registry.tsv"
+INSTRUMENT_DIR="$HOME/.cache/dhx"
+INSTRUMENT="$INSTRUMENT_DIR/session-end-reasons.tsv"
 
 INPUT=$(cat)
 
@@ -38,6 +76,21 @@ fi
 [ -n "$UUID" ] || exit 0
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# The contract row FIRST — it is the load-bearing one. The instrument below is
+# additive and must never be able to cost us this append.
 printf '%s\t%s\t%s\n' "$TS" end "$UUID" >> "$REGISTRY"
+
+# --- temporary instrument (see header) ---
+# Enum-allowlist, not a sanitiser: anything outside the six documented values
+# becomes `other`, so a tab or newline can never reach the file and the row
+# stays a single atomic O_APPEND under PIPE_BUF. Asserted, not assumed.
+REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null)
+case "$REASON" in
+  clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other) ;;
+  *) REASON=other ;;
+esac
+mkdir -p "$INSTRUMENT_DIR" 2>/dev/null || true
+printf '%s\t%s\t%s\n' "$TS" "$UUID" "$REASON" >> "$INSTRUMENT" 2>/dev/null || true
 
 exit 0
