@@ -40,8 +40,9 @@
 # benign and self-correcting. So absence is RECORDED in observations and reported
 # as `skipped` — never as a verdict. The temporal dimension one run lacks is
 # supplied by the cross-VERSION corpus under tests/probes/.results/, which is
-# where an `effort_present: false` cell would show up against the populated
-# 2.1.140 / 2.1.273 / 2.1.275 cells and light that brief's trigger.
+# where an `effort_present: false` cell would show up against every populated cell
+# already in it and light that brief's trigger. Not enumerated on purpose — the set
+# grows on every firing, so any list here goes stale the first time this probe fires.
 #
 # Mode discrimination (D-17): if ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe
 # directory exists at probe-script start, run live-capture mode; otherwise run
@@ -290,7 +291,7 @@ else
       # cross-VERSION corpus is what accumulates the temporal evidence.
       echo "NOTE no effort.level in this capture — recorded, NOT treated as a regression"
       echo "     one capture cannot distinguish a dropped key from a transient miss;"
-      echo "     compare this cell against the populated 2.1.140/2.1.273/2.1.275 cells."
+      echo "     compare this cell against every populated cell in the corpus."
       ;;
   esac
 fi
