@@ -406,7 +406,20 @@ fi
 # substring match against $HOST is intentionally over-broad on hostname for
 # defense-in-depth — false positives are recoverable, leaks are not).
 HOST=$(hostname -s)
-if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
+# Herestring, NOT `echo | grep -q` (2026-09-17). Under this probe's `set -o
+# pipefail`, a pipeline whose READER exits early reports failure: grep -q stops
+# at the first matching LINE, the writer takes SIGPIPE, and the pipeline goes
+# non-zero — so the `if` reads FALSE and this refusal is SKIPPED exactly when
+# PII is present. Fail-OPEN on a sanitizer, not a false red. Measured: match on
+# an early short line with ~200 KB after it gives PIPESTATUS "141 0" on 3 of 3
+# runs under both the ugrep wrapper and `command grep`; a match inside ONE long
+# line gives "0 0", because grep cannot decide a line matched until it sees that
+# line's newline. Both legs are needed — shape AND bulk past ~70-100 KB — and
+# observations are jq-pretty-printed (28 lines, 593 bytes measured), so the SHAPE
+# already qualifies and only the size keeps this latent. A herestring has no pipe
+# and no reader to die, so the gate cannot invert at any size. See the peer brief
+# 6098e475 for the other 53 sites of this pattern.
+if grep -qE "(/home/|/Users/|$HOST)" <<<"$OBSERVATIONS"; then
   echo "FATAL: observations contain PII; refusing write"
   exit 2
 fi
