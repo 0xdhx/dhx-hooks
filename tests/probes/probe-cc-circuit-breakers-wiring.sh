@@ -35,9 +35,9 @@ echo "--- A. SessionStart wiring ---"
 [ -f "$DISPATCHER" ]; ck $? "dispatcher present"
 LINE=$(grep -nE 'verify-cc-circuit-breakers\.sh' "$DISPATCHER" | grep -v '^[0-9]*:[[:space:]]*#' | head -1)
 [ -n "$LINE" ]; ck $? "dispatcher invokes verify-cc-circuit-breakers.sh (non-comment line)"
-printf '%s\n' "$LINE" | grep -q '< */dev/null'; ck $? "invoked with < /dev/null (filesystem-only)"
-printf '%s\n' "$LINE" | grep -qE '\|\| *true *$'; ck $? "invocation is fail-open (trailing || true)"
-printf '%s\n' "$LINE" | grep -q '\[ -e '; ck $? "invocation is behind an [ -e ] existence guard"
+grep -q '< */dev/null' <<<"$LINE"; ck $? "invoked with < /dev/null (filesystem-only)"
+grep -qE '\|\| *true *$' <<<"$LINE"; ck $? "invocation is fail-open (trailing || true)"
+grep -q '\[ -e ' <<<"$LINE"; ck $? "invocation is behind an [ -e ] existence guard"
 ! grep -q 'verify-cc-circuit-breakers' "$REPO/.github/workflows/publish-mirror.yml" 2>/dev/null
 ck $? "monitor is NOT wired into the CI workflow (the hosted runner has no CC binary — it would pass vacuously)"
 [ -x "$MON" ]; ck $? "monitor script is executable"
@@ -134,8 +134,8 @@ REG4="${REG4//classifierRouted:!1\}/classifierRouted:!1,hostPersonOnly:!1,localP
 mk "$TMP/v/9.1.0" "$REG4,claudeSettingsFile:{bypassImmune:!1,classifierRouted:!1,hostPersonOnly:!0,localProjectionOnly:!1}" "$GEN_OTHER"
 out=$(bash "$MON" --print "$TMP/v/9.1.0" 2>/dev/null); rc=$?
 [ $rc -eq 0 ] && [ "$(printf '%s\n' "$out" | grep -c '^registry ')" = 7 ] \
-  && printf '%s\n' "$out" | grep -q '^registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0$' \
-  && printf '%s\n' "$out" | grep -q '^registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0$'
+  && grep -q '^registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0$' <<<"$out" \
+  && grep -q '^registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0$' <<<"$out"
 ck $? "T11 four-flag entries (2.1.269 shape): 7 of 7 keys extract, extra flags emitted after the fixed columns (rc=$rc)"
 
 # 2.1.270 carries the JS bundle twice in one executable (byte-identical, +178,229,248 bytes), so

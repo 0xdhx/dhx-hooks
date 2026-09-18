@@ -98,13 +98,13 @@ OUTPUT=$(DHX_DRIFT_CACHE="$CACHE" DHX_TRIAD_BACKUP_META="$META" \
   bash "$TRIAD" 2>&1)
 
 assert "[1a] DRIFT row present" \
-  bash -c 'echo "$1" | grep -qF "DRIFT"' _ "$OUTPUT"
+  bash -c 'grep -qF "DRIFT" <<<"$1"' _ "$OUTPUT"
 assert "[1b] fixture path in output" \
-  bash -c 'echo "$1" | grep -qF "workflows/execute-plan.md"' _ "$OUTPUT"
+  bash -c 'grep -qF "workflows/execute-plan.md" <<<"$1"' _ "$OUTPUT"
 assert "[1c] first-detected date suffix present" \
-  bash -c 'echo "$1" | grep -qE "first detected: 20[0-9][0-9]-[0-9]{2}-[0-9]{2}"' _ "$OUTPUT"
+  bash -c 'grep -qE "first detected: 20[0-9][0-9]-[0-9]{2}-[0-9]{2}" <<<"$1"' _ "$OUTPUT"
 assert "[1d] days-unresolved suffix present" \
-  bash -c 'echo "$1" | grep -qE "[0-9]+ days unresolved"' _ "$OUTPUT"
+  bash -c 'grep -qE "[0-9]+ days unresolved" <<<"$1"' _ "$OUTPUT"
 
 # ---- Test 2: graceful-degrade — cache absent, same divergent fixture ----
 OUTPUT2=$(DHX_DRIFT_CACHE="/nonexistent-cache.json" DHX_TRIAD_BACKUP_META="$META" \
@@ -112,9 +112,9 @@ OUTPUT2=$(DHX_DRIFT_CACHE="/nonexistent-cache.json" DHX_TRIAD_BACKUP_META="$META
   bash "$TRIAD" 2>&1)
 
 assert "[2a] DRIFT row still fires from live/canonical divergence" \
-  bash -c 'echo "$1" | grep -qF "DRIFT"' _ "$OUTPUT2"
+  bash -c 'grep -qF "DRIFT" <<<"$1"' _ "$OUTPUT2"
 assert "[2b] no first-detected suffix leaked when cache absent" \
-  bash -c '! echo "$1" | grep -qF "first detected:"' _ "$OUTPUT2"
+  bash -c '! grep -qF "first detected:" <<<"$1"' _ "$OUTPUT2"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
