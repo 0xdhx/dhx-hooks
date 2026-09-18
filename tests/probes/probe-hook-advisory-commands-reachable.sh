@@ -322,13 +322,13 @@ fi
 # the deleted command, so these must read UNCOMMENTED source only.
 uncommented() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null; }
 
-if uncommented "$REPO_ROOT/dhx/dhx-agent-leak-check.sh" | grep -q 'git stash push'; then
+if grep -q 'git stash push' < <(uncommented "$REPO_ROOT/dhx/dhx-agent-leak-check.sh"); then
   bad "dhx-agent-leak-check.sh: the git-stash recovery recipe is back (deleted 2026-08-06)"
 else
   ok "dhx-agent-leak-check.sh: git-stash recovery recipe stays deleted"
 fi
 
-if uncommented "$REPO_ROOT/dhx/dhx-merge-reminder.sh" | grep -qF 'git checkout main && git merge'; then
+if grep -qF 'git checkout main && git merge' < <(uncommented "$REPO_ROOT/dhx/dhx-merge-reminder.sh"); then
   bad "dhx-merge-reminder.sh: the checkout-main round trip is back (deleted 2026-08-06)"
 else
   ok "dhx-merge-reminder.sh: checkout-main round trip stays deleted"

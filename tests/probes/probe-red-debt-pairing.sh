@@ -299,7 +299,7 @@ assert "D1: #8d drops the roster handoff file" \
 assert "D1: the drop is stamped with the sha the roster was measured against" \
   "$([ "$(head -1 "$TD1/.git/dhx-red-probes.pending" 2>/dev/null)" = "$HEAD_D1" ] && echo true || echo false)"
 assert "D1: the drop names the attributed red probe" \
-  "$(tail -n +2 "$TD1/.git/dhx-red-probes.pending" 2>/dev/null | grep -qx 'probe-fixture-mine.sh' && echo true || echo false)"
+  "$(grep -qx 'probe-fixture-mine.sh' < <(tail -n +2 "$TD1/.git/dhx-red-probes.pending" 2>/dev/null) && echo true || echo false)"
 
 # ---- D2: a real `git commit` through BOTH hooks lands BOTH trailers ----------
 # The only assertion that proves the chain end to end rather than a link at a
@@ -323,7 +323,7 @@ assert "D2: the committed history carries the roster trailer" \
 assert "D2: the committed history carries the reason trailer" \
   "$([ "$E2E_REASON" = "e2e red half" ] && echo true || echo false)"
 assert "D2: the bypass is greppable in history, which is the whole audit claim" \
-  "$(git -C "$TD2" log --grep='^DHX-Red-Commit:' --format=%H | grep -q . && echo true || echo false)"
+  "$(grep -q . < <(git -C "$TD2" log --grep='^DHX-Red-Commit:' --format=%H) && echo true || echo false)"
 
 # D3 — and now #8e must SEE the debt this very chain just created.
 run_gate "$TD2"

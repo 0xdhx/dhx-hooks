@@ -97,22 +97,22 @@ grep -qE 'bash ~/\.claude/dhx-tools/cc-version-observer\.sh' "$DISPATCHER" \
   && check "observer invoked via ~/.claude/dhx-tools/ (dhx-tools indirection, like the sibling guard)" ok \
   || check "observer invoked via ~/.claude/dhx-tools/ (dhx-tools indirection, like the sibling guard)" "fail"
 
-printf '%s\n' "$OBS_LINE" | grep -qE '< */dev/null' \
+grep -qE '< */dev/null' <<<"$OBS_LINE" \
   && check "observer invoked with < /dev/null (no stdin dependency)" ok \
   || check "observer invoked with < /dev/null (no stdin dependency)" "fail"
 
-printf '%s\n' "$OBS_LINE" | grep -qE '\|\| *true *$' \
+grep -qE '\|\| *true *$' <<<"$OBS_LINE" \
   && check "observer invocation is fail-open (trailing || true)" ok \
   || check "observer invocation is fail-open (trailing || true)" "fail"
 
 # Failure-surfacing wrapper: the repo convention since e8fb4189 (2026-09-14).
-printf '%s\n' "$OBS_LINE" | grep -qE '_dhx_child +cc-version-observer ' \
+grep -qE '_dhx_child +cc-version-observer ' <<<"$OBS_LINE" \
   && check "observer runs under _dhx_child (child-failure first-sight surface)" ok \
   || check "observer runs under _dhx_child (child-failure first-sight surface)" "fail"
 
 # INVARIANT (see header): stdout is the deliverable. Any stdout redirect on this
 # line deletes the feature silently. stderr redirects are _dhx_child's business.
-if printf '%s\n' "$OBS_LINE" | grep -qE '(^|[^2])> */dev/null|&> */dev/null'; then
+if grep -qE '(^|[^2])> */dev/null|&> */dev/null' <<<"$OBS_LINE"; then
   check "observer stdout is NOT redirected (the notice is the deliverable)" "fail" \
     "found a stdout redirect on the invocation line"
 else
