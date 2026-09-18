@@ -30,8 +30,11 @@
 #
 # REPORT-ONLY, by that DEC's disposition. This hook sets no permissionDecision
 # and ALWAYS exits 0 — it never stops a dispatch. Promotion to a spawn-stop is a
-# one-line edit gated on the DEC's promotion condition (over one full phase,
-# VIOLATED >= 3 with UNDECLARED < 20%), which is the DEC's call to make on
+# one-line edit gated on the DEC's promotion condition, which Amendment 3
+# (2026-09-17) made CUMULATIVE across phases: >= 3 cumulative VIOLATED at
+# >= 2/3 confirmed true positives with UNDECLARED < 20%, and no ruling at all
+# below 15 cumulative declared rows. The per-phase bar this comment used to
+# name was withdrawn as unreachable. Still the DEC's call to make on
 # `dispatch`-station numbers, not this hook's.
 #
 # What a clean run establishes: the tool compares reality against a label
