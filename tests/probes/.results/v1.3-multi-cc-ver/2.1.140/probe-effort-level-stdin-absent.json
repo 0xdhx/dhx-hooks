@@ -28,5 +28,12 @@
     "workspace_current_dir_present": true,
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "supersession_found_drop_p3"
+  "conclusion": "supersession_found_drop_p3",
+  "attribution": {
+    "verified": false,
+    "reason": "Cell predates payload-sourced attribution (2026-09-18). Its release label came from the HOST's `claude --version`, while the payload it judges was written by whichever live session refreshed first — on this mixed-version host those can be different releases.",
+    "recoverable": false,
+    "why_not": "The probe's EXIT trap rm -f's the capture, and the cell records the payload's key NAMES but never its version VALUE. Nothing on disk can settle it after the fact.",
+    "supersedes_when": "Overwritten by a payload-attributed re-run at this release; the marker going away is correct — the uncertain observation no longer occupies the slot."
+  }
 }

@@ -5,7 +5,7 @@
 //     reconciliation-lineage stamp, NOT a wrapper-content version. A hand-bump
 //     overshoots the real gsd-core line (1.4.6 overshot live 1.4.5, 2026-06-15).
 //     Guard: tests/probes/probe-gsd-hook-version-mirrors-runtime.sh
-// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053, HP-054, HP-056
+// Patterns: HP-013, HP-014, HP-016, HP-019, HP-025, HP-026, HP-031, HP-032, HP-034, HP-053, HP-054, HP-056, HP-064
 // Statusline wrapper — pipes stdin through dhx-statusline.js, appends git/cache/burn.
 // Previously delegated to gsd-statusline.js; switched 2026-04-18 to dhx-owned renderer
 // so dhx-specific segments (compact model, CCS letter, conditional line 2, repo signals)
@@ -39,12 +39,54 @@ process.stdin.on('end', () => {
   // Run-id propagation channel: flag file content (env var doesn't reach this sibling subprocess from the probe's bash).
   const probeDir = (process.env.XDG_RUNTIME_DIR || '/tmp') + '/dhx-statusline-stdin-probe';
   const flagPath = probeDir + '/flag';
+  //
+  // SESSION-TARGETED (2026-09-18). The flag MAY carry a `session=<uuid>` line after
+  // the run id. When it does, ONLY the session whose payload `.session_id` matches
+  // writes the capture; every other live session on this machine no-ops here.
+  //
+  // Why: without that predicate this is a machine-global channel, so the probe judged
+  // whichever session refreshed first while stamping its corpus cell from the HOST's
+  // `claude --version`. Those are the same string only on a single-version host. A
+  // session started before an upgrade keeps its own binary for life, so on this box
+  // they diverge for that session's whole lifetime — measured 2026-09-18, six
+  // consecutive captures landed payloads from five sessions across 2.1.275 and
+  // 2.1.276 while `claude --version` read 2.1.276 throughout. The mislabel is
+  // unfalsifiable after the fact: the probe's EXIT trap removes the capture and the
+  // cell records the payload's key NAMES, never its version VALUE.
+  //
+  // A flag with NO `session=` line keeps the old any-session behaviour, so an older
+  // probe still captures against a newer wrapper.
   if (fs.existsSync(flagPath)) {
     try {
       let runId = 'latest';
-      try { const c = fs.readFileSync(flagPath, 'utf8').trim(); if (c) runId = c; } catch { /* fall back to latest */ }
-      const captureFile = probeDir + '/capture-' + runId + '.json';
-      fs.writeFileSync(captureFile, input);
+      let wantSession = '';
+      try {
+        const lines = fs.readFileSync(flagPath, 'utf8').split('\n').map(s => s.trim()).filter(Boolean);
+        if (lines.length && !lines[0].startsWith('session=')) runId = lines[0];
+        const sline = lines.find(s => s.startsWith('session='));
+        if (sline) wantSession = sline.slice('session='.length);
+      } catch { /* fall back to latest, untargeted */ }
+
+      // An unattributable payload must not be published. A parse failure means we
+      // cannot prove whose session produced this, so we decline rather than guess —
+      // the host's version is not evidence about a payload it did not produce, and
+      // falling back to it recreates the defect exactly where attribution is weakest.
+      let eligible = true;
+      if (wantSession) {
+        eligible = false;
+        try { eligible = JSON.parse(input).session_id === wantSession; } catch { eligible = false; }
+      }
+
+      if (eligible) {
+        // temp-file + rename, not a bare writeFileSync: writeFileSync truncates in
+        // place, and the probe polls for a NON-EMPTY file. A torn read therefore
+        // surfaces as `captured-payload-not-json` — a malfunction the probe would
+        // report as a real finding. rename(2) within one directory is atomic.
+        const captureFile = probeDir + '/capture-' + runId + '.json';
+        const tmpFile = captureFile + '.' + process.pid + '.tmp';
+        fs.writeFileSync(tmpFile, input);
+        fs.renameSync(tmpFile, captureFile);
+      }
     } catch { /* probe-only */ }
   }
 

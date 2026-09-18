@@ -44,6 +44,19 @@
 # already in it and light that brief's trigger. Not enumerated on purpose — the set
 # grows on every firing, so any list here goes stale the first time this probe fires.
 #
+# WHICH RELEASE A CELL IS FILED UNDER (2026-09-18): the payload's own `version`,
+# never the host's `claude --version`. The capture channel is machine-global, so
+# before this the probe judged whichever session refreshed first while labelling
+# the cell with the newest INSTALLED release — measured 2026-09-18, six back-to-
+# back captures landed payloads from five sessions across two releases while
+# `claude --version` read one of them throughout. The flag now carries a
+# `session=` predicate the wrapper enforces, so a foreign session's payload is
+# not captured at all; the label is a second line of defence, and the cell
+# records both versions plus whether the producer was this session. That matters
+# more than a label: the cell path is ONE fixed filename per release directory,
+# so the release label is the observation's SLOT, and a wrong label does not just
+# mis-name an observation — it overwrites a different one.
+#
 # Mode discrimination (D-17): if ${XDG_RUNTIME_DIR:-/tmp}/dhx-statusline-stdin-probe
 # directory exists at probe-script start, run live-capture mode; otherwise run
 # fixtures-only mode (the bash scripts/run-probes.sh path) and exit 0. Operator
@@ -115,6 +128,21 @@ classify_observation() {
   esac
 }
 
+# resolve_cell_version <raw> -> sanitized dotted triple, or "" when none
+# The corpus cell's release label. Factored out for the same reason
+# classify_observation is: the live arm is the one path the pre-commit tier
+# cannot execute, so the fixtures below are what keep it honest.
+#
+# This is ALSO the path sanitizer. The value reaches a filesystem path, and
+# since 2026-09-18 it is sourced from the captured PAYLOAD rather than from
+# `claude --version` — i.e. from data, not from a local binary's own report. A
+# raw substitution would let any non-triple string steer the write; the dotted-
+# triple extraction is what makes that structurally impossible, so the traversal
+# fixture below is load-bearing, not decorative.
+resolve_cell_version() {
+  printf '%s' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true
+}
+
 # level_renderable <level> -> "renderable" | "unrenderable" | "absent"
 level_renderable() {
   local lvl="$1" k
@@ -175,6 +203,15 @@ fi
 # Deliberately OUTSIDE the derive_levels branch: these need no renderer source,
 # so the live arm's decision stays pinned even in a scratch tree. The composed
 # rows are the ones that matter — they are the actual chain the live arm walks.
+# Cell-attribution self-test (2026-09-18). The traversal row is the security
+# assertion: the payload is data, and it reaches a path.
+assert_eq "cell version: clean triple"        "$(resolve_cell_version '2.1.276')"                "2.1.276"
+assert_eq "cell version: from --version banner" "$(resolve_cell_version '2.1.276 (Claude Code)')" "2.1.276"
+assert_eq "cell version: first triple wins"   "$(resolve_cell_version '2.1.276 then 9.9.9')"     "2.1.276"
+assert_eq "cell version: empty reads as none" "$(resolve_cell_version '')"                       ""
+assert_eq "cell version: junk reads as none"  "$(resolve_cell_version 'not-a-version')"          ""
+assert_eq "cell version: traversal is not a version" "$(resolve_cell_version '../../../etc')"    ""
+
 assert_eq "verdict map: renderable"     "$(classify_observation renderable)"   "0 validated_stable"
 assert_eq "verdict map: unrenderable"   "$(classify_observation unrenderable)" "1 regression_found_effort_level_unrenderable"
 assert_eq "verdict map: absent"         "$(classify_observation absent)"       "0 skipped"
@@ -232,11 +269,20 @@ FLAG_FILE="$PROBE_DIR/flag"
 CAPTURE_FILE="$PROBE_DIR/capture-$RUN_ID.json"
 
 # Trap-clean only this run's flag + capture file (preserve probe dir for operator concurrency)
-trap 'rm -f "$FLAG_FILE" "$CAPTURE_FILE"' EXIT
+trap 'rm -f "$FLAG_FILE" "$CAPTURE_FILE" "$CAPTURE_FILE".*.tmp' EXIT
 
 # Run-id propagation channel: flag file content (env var doesn't reach the wrapper subprocess
 # launched by CC's parent process — sibling, not child, of probe's bash).
-echo "$RUN_ID" > "$FLAG_FILE"
+# Session predicate (2026-09-18): the wrapper writes the capture ONLY when the
+# refreshing session's payload `.session_id` matches this line, so the probe can
+# no longer judge a foreign session's payload and file it under this host's
+# release. Without CLAUDE_CODE_SESSION_ID the flag stays untargeted and the old
+# first-arrival behaviour applies — the run then records that it could not
+# confirm the producer rather than quietly asserting it did.
+{
+  echo "$RUN_ID"
+  if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then echo "session=$CLAUDE_CODE_SESSION_ID"; fi
+} > "$FLAG_FILE"
 echo ""
 echo "Live capture: trigger a statusline refresh (any keystroke / new turn). Waiting up to 30s..."
 
@@ -296,12 +342,55 @@ else
   esac
 fi
 
-# --- Outcome JSON write (D-08 schema; D-30 hostname-hash; live cc_version) ---
-CC_VERSION=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-[[ -n "$CC_VERSION" ]] || CC_VERSION="unknown"
+# --- Outcome JSON write (D-08 schema; D-30 hostname-hash) --------------------
+# THE CELL'S RELEASE LABEL COMES FROM THE PAYLOAD (2026-09-18), not from
+# `claude --version`. The host binary is the newest INSTALLED release; the
+# payload was published by the session actually under observation, and a session
+# started before an upgrade keeps its own build for life — so on this box the two
+# diverge for that session's whole lifetime rather than momentarily.
+#
+# There is deliberately NO host fallback. The host's version is not evidence
+# about a payload it did not produce, so falling back to it would assert an
+# attribution precisely where attribution is weakest. An unresolvable capture
+# lands in `unattributed/` instead: the observation is real and worth keeping,
+# only its release label is unknown, and saying so is cheaper than a false row.
+#
+# The 2026-05-26 invariant that created this path — dir-key == emitted
+# `.cc_version` — is PRESERVED, because both move to the payload together. That
+# is what keeps verify-multi-cc-results.sh (field must equal the directory name)
+# and the pre-commit corpus gate (version derived from the staged path) green.
+PAYLOAD_VERSION=$(resolve_cell_version "$(jq -r '.version // ""' "$CAPTURE_FILE" 2>/dev/null || echo "")")
+HOST_VERSION=$(resolve_cell_version "$(claude --version 2>/dev/null || echo "")")
+[[ -n "$HOST_VERSION" ]] || HOST_VERSION="unknown"
+
+# Did the payload come from THIS session? Under a session-targeted flag the
+# wrapper guarantees it; recorded anyway, because an untargeted flag (no
+# CLAUDE_CODE_SESSION_ID) still reaches here and the cell must say which it was.
+CAPTURED_SESSION=$(jq -r '.session_id // ""' "$CAPTURE_FILE" 2>/dev/null || echo "")
+if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" && -n "$CAPTURED_SESSION" \
+      && "$CAPTURED_SESSION" == "$CLAUDE_CODE_SESSION_ID" ]]; then
+  SESSION_MATCHED=true
+else
+  SESSION_MATCHED=false
+fi
+
+if [[ -n "$PAYLOAD_VERSION" ]]; then
+  CC_VERSION="$PAYLOAD_VERSION"
+  VERSION_SOURCE="payload"
+else
+  CC_VERSION="unattributed"
+  VERSION_SOURCE="unattributed"
+  echo "NOTE capture carried no resolvable version — cell lands in unattributed/, not under a release"
+  echo "     the observation is kept; the release label is declined, not guessed."
+fi
+if [[ "$VERSION_SOURCE" == "payload" && "$PAYLOAD_VERSION" != "$HOST_VERSION" ]]; then
+  echo "NOTE payload release ($PAYLOAD_VERSION) != host \`claude --version\` ($HOST_VERSION)"
+  echo "     cell is filed under the PAYLOAD's release — both values are recorded."
+fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/../.." && pwd)")
-# CC-keyed corpus path (quick-260526-10r) — never writes to the frozen v1.2 baseline; validator scans this dir
+# Payload-keyed corpus path (2026-09-18; was host-keyed, quick-260526-10r) — never
+# writes to the frozen v1.2 baseline; validator scans this dir
 OUT_DIR="$REPO_ROOT/tests/probes/.results/v1.3-multi-cc-ver/$CC_VERSION"
 mkdir -p "$OUT_DIR"
 OUT_FILE="$OUT_DIR/probe-effort-level-stdin-absent.json"
@@ -317,8 +406,12 @@ OBSERVATIONS=$(jq -n \
   --arg effort_level_renderability "$renderability" \
   --arg renderer_level_set "${RENDERABLE% }" \
   --argjson workspace_current_dir_present "$workspace_present" \
+  --arg cell_version_source "$VERSION_SOURCE" \
+  --arg payload_version "$PAYLOAD_VERSION" \
+  --arg host_version "$HOST_VERSION" \
+  --argjson capture_session_was_probe_session "$SESSION_MATCHED" \
   --arg published_from_hostname "$HOSTNAME_HASH" \
-  '{stdin_payload_top_level_keys:$keys, effortLevel_present:$effortLevel_present, effort_present:$effort_present, effort_level_observed:$effort_level_observed, effort_level_renderability:$effort_level_renderability, renderer_level_set:$renderer_level_set, workspace_current_dir_present:$workspace_current_dir_present, published_from_hostname:$published_from_hostname}')
+  '{stdin_payload_top_level_keys:$keys, effortLevel_present:$effortLevel_present, effort_present:$effort_present, effort_level_observed:$effort_level_observed, effort_level_renderability:$effort_level_renderability, renderer_level_set:$renderer_level_set, workspace_current_dir_present:$workspace_current_dir_present, cell_version_source:$cell_version_source, payload_version:$payload_version, host_version:$host_version, capture_session_was_probe_session:$capture_session_was_probe_session, published_from_hostname:$published_from_hostname}')
 
 # JSON-time sanitizer (D-21 load-bearing gate): refuse to write if observations contain PII
 HOST=$(hostname -s)

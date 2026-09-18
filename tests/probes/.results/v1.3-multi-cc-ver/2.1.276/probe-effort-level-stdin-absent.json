@@ -36,5 +36,10 @@
     "workspace_current_dir_present": true,
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "validated_stable"
+  "conclusion": "validated_stable",
+  "attribution": {
+    "verified": true,
+    "method": "Out-of-band snapshot polling at 50ms — faster than the probe's 1s loop, so it won the capture file before the EXIT trap removed it. Taken in parallel with the armed run, 2026-09-18: payload version=2.1.276, session_id=210c3366…, i.e. the probe's own session.",
+    "scope": "Checked, not guaranteed — the run had no control over which session answered, and the probe's own output would have looked identical either way. That is precisely what the 2026-09-18 change fixes."
+  }
 }
