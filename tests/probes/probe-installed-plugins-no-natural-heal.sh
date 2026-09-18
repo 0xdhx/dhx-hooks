@@ -394,7 +394,12 @@ OBSERVATIONS=$(jq -n \
 # JSON-time sanitizer: refuse to write if observations contain /home/, /Users/,
 # or system hostname. Defense-in-depth pairs with D-09 sync-public-mirror.sh scrub.
 HOST=$(hostname -s)
-if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST)"; then
+# Herestring, NOT `echo | grep -q`: under this file's `set -o pipefail` a pipe here
+# FAILS OPEN. `grep -q` exits at the first complete matching line, `echo` takes
+# SIGPIPE, the pipeline goes non-zero, and this refusal is SKIPPED exactly when
+# PII is present and the payload is large. See HP-028 and the 2026-09-17
+# decisions row; behaviour asserted by tests/probes/probe-pii-gate-fail-open.sh.
+if grep -qE "(/home/|/Users/|$HOST)" <<<"$OBSERVATIONS"; then
   echo "FATAL: observations contain PII; refusing write"
   exit 2
 fi

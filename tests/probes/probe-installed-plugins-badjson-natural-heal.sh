@@ -394,7 +394,12 @@ if [[ -z "$HOST" ]] || [[ "$HOST" == "localhost" ]]; then
   HOST="__no_host_check__"   # sentinel that won't match any real string
 fi
 HOST_ESCAPED=$(printf '%s' "$HOST" | sed 's/[][\\.*^$/+?(){}|]/\\&/g')
-if echo "$OBSERVATIONS" | grep -qE "(/home/|/Users/|$HOST_ESCAPED)"; then
+# Herestring, NOT `echo | grep -q`: under this file's `set -o pipefail` a pipe here
+# FAILS OPEN. `grep -q` exits at the first complete matching line, `echo` takes
+# SIGPIPE, the pipeline goes non-zero, and this refusal is SKIPPED exactly when
+# PII is present and the payload is large. See HP-028 and the 2026-09-17
+# decisions row; behaviour asserted by tests/probes/probe-pii-gate-fail-open.sh.
+if grep -qE "(/home/|/Users/|$HOST_ESCAPED)" <<<"$OBSERVATIONS"; then
   echo "FATAL: observations contain PII; refusing write"
   exit 2
 fi
