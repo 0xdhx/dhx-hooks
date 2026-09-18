@@ -40,7 +40,11 @@
 #      must never be able to silence the operator) and the failed stamp re-announces,
 #      T11/T12 the two claim RACES scheduled deterministically with a `mkdir` shim —
 #      a peer finishing mid-claim, and losing a stale-claim steal — neither of which
-#      T8's barrier can schedule and both of which it stayed green against. Skipped (not failed) when cross-repo hasn't provisioned the
+#      T8's barrier can schedule and both of which it stayed green against, and
+#      T13/T14 the remaining two rows of the observer's claim-outcome table: a stale
+#      claim that cannot be REMOVED must still emit (a dead owner silencing the
+#      transition forever is worse than the defect), and the indeterminate residue
+#      deliberately emits rather than going silent. Skipped (not failed) when cross-repo hasn't provisioned the
 #      symlink, so the probe stays green in a bare hooks clone — matching the
 #      dispatcher's own [ -e ] graceful no-op.
 #
@@ -405,6 +409,58 @@ SHIMEOF
           "rc=$rc outsz=$outsz competitor_claim_present=$([ -d "$STALE2" ] && echo yes || echo no)"
   fi
   /bin/rmdir "$STALE2" 2>/dev/null; rm -rf "$SHIM"
+
+  # ── T13/T14: the last two rows of the claim-outcome table ───────────────────
+  # The claim point asks one question — "is another process going to deliver this?" — and the
+  # filesystem answers it in exactly six ways (see the observer's CLAIM header). T6-T12 cover
+  # four. These are the other two, and both were wrong at some point in this arc BECAUSE the
+  # code inferred an answer instead of observing one.
+  SHIM="$SB/shim"; mkdir -p "$SHIM"
+
+  # T13: the stale claim could not be REMOVED. "mkdir failed and a directory is there" also
+  # describes the claim we failed to remove, not only a competitor that recreated it — and its
+  # owner is already dead, so treating it as a live owner means NOBODY delivers, forever.
+  # RED against cross-repo a21880ac2: 0 bytes on every invocation.
+  printf '2.1.273\n' > "$STAMP"
+  STALE3="$STAMP.claim.2.1.275"; /bin/mkdir -p "$STALE3"
+  touch -d '2 hours ago' "$STALE3" 2>/dev/null || touch -t 200001010000 "$STALE3" 2>/dev/null
+  chmod 0555 "$SB/state" 2>/dev/null
+  if touch "$SB/state/.wt" 2>/dev/null; then
+    rm -f "$SB/state/.wt" 2>/dev/null; chmod 0755 "$SB/state" 2>/dev/null
+    echo "SKIP [T13] unremovable-stale-claim cell — this uid writes through mode 0555 (root?)"
+  else
+    rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
+    chmod 0755 "$SB/state" 2>/dev/null
+    [ "$rc" = "0" ] && [ "$outsz" -gt 0 ] \
+      && check "[T13] stale claim that cannot be REMOVED -> still emits (a dead owner must not silence forever)" ok \
+      || check "[T13] stale claim that cannot be REMOVED -> still emits (a dead owner must not silence forever)" "fail" \
+               "rc=$rc outsz=$outsz — treated an unremovable dead claim as a live owner"
+  fi
+  /bin/rmdir "$STALE3" 2>/dev/null
+
+  # T14: THE RESIDUE POLICY, pinned deliberately. When no claim can be taken and none exists,
+  # the outcome is indeterminate by construction — you cannot serialise without a serialising
+  # primitive — and it admits exactly two policies: emit (tell the operator twice) or exit
+  # (tell them zero times). This observer chooses EMIT, because the brief rules a missed notice
+  # the defect and a duplicate mere noise. Two claimless runs against an unadvanced stamp must
+  # BOTH emit. This cell exists so that choice cannot be quietly flipped to silence by someone
+  # "fixing" a duplicate-delivery report without reading why it is there.
+  cat > "$SHIM/mkdir" <<'SHIMEOF'
+#!/usr/bin/env bash
+exit 1
+SHIMEOF
+  chmod +x "$SHIM/mkdir"
+  printf '2.1.273\n' > "$STAMP"
+  n1=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null 2>/dev/null | wc -c)
+  printf '2.1.273\n' > "$STAMP"
+  n2=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null 2>/dev/null | wc -c)
+  [ "$n1" -gt 0 ] && [ "$n2" -gt 0 ] \
+    && check "[T14] no claim takeable -> BOTH claimless consumers emit (the documented residue: duplicate beats silence)" ok \
+    || check "[T14] no claim takeable -> BOTH claimless consumers emit (the documented residue: duplicate beats silence)" "fail" \
+             "run1=${n1}B run2=${n2}B — the fail-open residue was flipped to silence"
+  rm -rf "$SHIM"
 fi
 
 echo "---"
