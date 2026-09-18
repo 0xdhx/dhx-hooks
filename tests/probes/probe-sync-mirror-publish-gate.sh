@@ -38,6 +38,10 @@
 # Run: bash tests/probes/probe-sync-mirror-publish-gate.sh
 #
 # HERMETIC_TIER: no
+# SUITE_TIMEOUT: 120   (measured 26-27s idle, 33s under load, and its own header above
+#                       records 28s/50s. O(commits) and climbing, so this budget will need
+#                       revisiting — the [BUDGET] line reports it every run so the creep is
+#                       visible rather than arriving as a permanent red.)
 #   COST, not liveness. This probe runs the REAL scripts/sync-public-mirror.sh five
 #   times, and each run does `git clone --no-local` + `git filter-repo` over the FULL
 #   history. Measured 2026-09-05: 28s idle, 50s under load, against run-probes.sh's 30s

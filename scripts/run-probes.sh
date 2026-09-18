@@ -3,7 +3,12 @@
 #
 # Wraps the inline `for p in tests/probes/probe-*.{js,sh}; do ...` loop
 # documented in tests/probes/README.md:49-57 with exit-code aggregation
-# AND a per-probe `timeout 30` wrapper (D-16; POSIX coreutils `timeout`).
+# AND a per-probe time budget (POSIX coreutils `timeout`): `SUITE_TIMEOUT: <seconds>`
+#   in the probe header, default 30s. NOT D-16 — that citation stood here until
+#   2026-09-18 and was dangling: D-16 in docs/decisions.md is the rejected prompt-type
+#   Stop hook, and D-16/D-17 in tests/probes/README.md is the arming-gesture convention.
+#   Neither ruled on a probe timeout; the cap's original rationale is unrecorded. The
+#   budget mechanism's rationale is the 2026-09-18 decisions row.
 # Stuck probes no longer block the pre-commit gate — exit code 124 = TIMED OUT.
 #
 # Authored Wave 0 of v1.1 Phase 1 (Option B read-guard ownership rewrite)
@@ -229,6 +234,49 @@ fi
 #                   forgets its tag therefore lands in the tier that runs MORE
 #                   often, never the one that runs less. probe-live-runtime-tier.sh
 #                   asserts the tag/roster parity that catches the omission.
+# ----- Per-probe time budget (2026-09-18) -----
+# Every probe used to get a hardcoded `timeout 30`. Two probes are structurally
+# over it and cannot be made faster:
+#   probe-sync-mirror-publish-gate.sh          runs the REAL mirror script 5x, each a
+#                                              `git clone --no-local` + `git filter-repo`
+#                                              over full history. O(commits), 2,529 and
+#                                              climbing. Its own header records 28s idle /
+#                                              50s loaded.
+#   probe-agent-registry-session-start-cached.sh  spawns TWO real `claude -p` children.
+#                                              Measured 39s, 3/3. Only reachable under
+#                                              --filter SAFE_FOR_LIVE=no, where it died
+#                                              at 30s every single run.
+#
+# A probe declares `SUITE_TIMEOUT: <seconds>` in its header. Absent == 30, unchanged.
+#
+# WHY THIS IS NOT AN ALLOWLIST, AND WHY THAT DISTINCTION IS LOAD-BEARING. A budget is an
+# exemption mechanism, and an exemption with no ongoing signal is how a known cost becomes
+# an unmeasured one — the argument the 2026-09-18 HP-028 row used to reject an allowlist in
+# favour of a ratchet. So every probe consuming >= BUDGET_REPORT_PCT of its own allowance
+# prints its elapsed-against-budget, whatever that allowance is. Granting 120s does not buy
+# silence; it buys a larger number to be reported against.
+#
+# A RATCHET WAS CONSIDERED AND REJECTED: elapsed time is load-dependent (the sync-mirror
+# probe measured 26s idle and 33s under this session's own survey load), so a
+# committed-high-water-mark would red on a busy machine and teach its reader to ignore it —
+# the precise defect this change exists to remove.
+BUDGET_DEFAULT=30
+BUDGET_REPORT_PCT=50   # untagged probes report only above this; tagged ones ALWAYS report
+
+# Read a probe's declared budget. A MALFORMED tag is a hard failure, never a fallback:
+# a `SUITE_TIMEOUT: banana` silently reading as 30 is the shape where someone's intended
+# 300 quietly does not apply, which is indistinguishable from not having written it.
+probe_budget() {
+  local file="$1" raw
+  raw=$(grep -m1 -oE '^(# |// )SUITE_TIMEOUT: *[^ ]*' "$file" 2>/dev/null | sed -E 's|^(# \|// )SUITE_TIMEOUT: *||')
+  if [ -z "$raw" ]; then echo "$BUDGET_DEFAULT"; return 0; fi
+  case "$raw" in
+    ''|*[!0-9]*) echo "MALFORMED:$raw"; return 1 ;;
+  esac
+  if [ "$raw" -lt 1 ] || [ "$raw" -gt 900 ]; then echo "MALFORMED:$raw"; return 1; fi
+  echo "$raw"
+}
+
 matches_filter() {
   local file="$1" i key val tagged
   for i in "${!FILTER_KEYS[@]}"; do
@@ -286,13 +334,35 @@ for p in "$REPO"/tests/probes/probe-*.{js,sh}; do
     echo "---"
     continue
   fi
+  if ! BUDGET=$(probe_budget "$p"); then
+    echo "[FAIL] $(basename "$p") — malformed SUITE_TIMEOUT tag (${BUDGET#MALFORMED:}); expected an integer 1-900 seconds."
+    echo "       Refusing to run it under the default budget: a silently-ignored tag is"
+    echo "       indistinguishable from never having written one."
+    FAIL=$((FAIL+1))
+    FAILED_NAMES+=("$(basename "$p")")
+    echo "---"
+    continue
+  fi
+  _t0=$(date +%s)
   case "$p" in
-    *.js) timeout 30 node "$p" ;;
-    *.sh) timeout 30 bash "$p" ;;
+    *.js) timeout "$BUDGET" node "$p" ;;
+    *.sh) timeout "$BUDGET" bash "$p" ;;
   esac
   RC=$?
+  _elapsed=$(( $(date +%s) - _t0 ))
+  # The ongoing signal that keeps a granted budget from becoming an unmeasured one.
+  # An EXPLICITLY BUDGETED probe always reports, whatever fraction it used. A generous
+  # allowance must not buy silence — that is the whole failure this replaces, one level up:
+  # grant 120s, run at 33s, report nothing, and the cost is unmeasured again with a bigger
+  # number hiding it. Untagged probes report only when they near the default, so the
+  # ordinary 150-probe run stays quiet.
+  _pct=0
+  [ "$BUDGET" -gt 0 ] && _pct=$(( _elapsed * 100 / BUDGET ))
+  if [ "$BUDGET" -ne "$BUDGET_DEFAULT" ] || [ "$_pct" -ge "$BUDGET_REPORT_PCT" ]; then
+    echo "[BUDGET] $(basename "$p") — ${_elapsed}s of ${BUDGET}s (${_pct}%)"
+  fi
   if [ "$RC" -eq 124 ]; then
-    echo "[TIMED OUT] $(basename "$p") — exceeded 30s (D-16)"
+    echo "[TIMED OUT] $(basename "$p") — exceeded ${BUDGET}s (per-probe SUITE_TIMEOUT budget; default ${BUDGET_DEFAULT}s)"
     TIMEOUT=$((TIMEOUT+1))
     FAIL=$((FAIL+1))
     FAILED_NAMES+=("$(basename "$p")")

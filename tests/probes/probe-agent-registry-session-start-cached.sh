@@ -68,6 +68,11 @@
 # SAFE_FOR_LIVE=no keeps it out of the default pre-commit suite).
 #
 # SAFE_FOR_LIVE: no    (spawns claude -p subprocesses; mktemp project dir only)
+# SUITE_TIMEOUT: 120   (measured 39s, 3/3. Spawns TWO real `claude -p` children; its own
+#                       per-child `timeout 240` bounds CORRECTNESS, so this is a STALL bound
+#                       — killing a hung run at 120s beats waiting out 480s. Only reachable
+#                       under --filter SAFE_FOR_LIVE=no, where the old 30s cap killed it on
+#                       every single run.)
 # RUNTIME: ~60-180s    (two claude -p turns)
 set -uo pipefail
 

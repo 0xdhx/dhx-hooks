@@ -139,5 +139,109 @@ rm -rf "$TE"
 
 # ---- Summary ----------------------------------------------------------------
 echo "---"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SUITE_TIMEOUT per-probe time budget (added 2026-09-18)
+#
+# Same contract as the cells above — how run-probes.sh assigns a verdict to one
+# probe — on its other FAIL path: `[TIMED OUT]` increments FAIL just as a bad RC
+# does. Filed here rather than as its own probe for that reason.
+#
+# The budget replaced a hardcoded `timeout 30`. Two probes are structurally over
+# it and cannot be made faster (probe-sync-mirror-publish-gate.sh, O(commits) git
+# filter-repo; probe-agent-registry-session-start-cached.sh, two real `claude -p`
+# children at 39s) — the second died at 30s on EVERY run under
+# --filter SAFE_FOR_LIVE=no.
+#
+# The parser is SOURCED OUT OF THE LIVE SCRIPT, never transcribed. A copied
+# regex passes while the shipped one is wrong, which is the failure these cells
+# exist to catch.
+
+BUDGET_FN=$(mktemp)
+sed -n '/^probe_budget() {/,/^}/p' "$REAL_RUN_PROBES" > "$BUDGET_FN"
+assert "budget parser extracted from the live run-probes.sh" \
+  "$([[ -s "$BUDGET_FN" ]] && grep -q 'MALFORMED' "$BUDGET_FN" && echo true || echo false)"
+
+# bt <tag-line> -> echoes "<rc>|<stdout>".
+# The rc rides on STDOUT deliberately: `bt` is called inside $( ), which is a
+# SUBSHELL, so a variable it sets is discarded at the boundary while stdout
+# crosses it. An earlier cut set BT_RC in the function and read it in the parent,
+# where under `set -u` it was simply unbound — the same shape as the documented
+# `arr+=()` inside $( ) trap.
+bt() {
+  local tagline="$1" f; f=$(mktemp)
+  { echo '#!/usr/bin/env bash'; [[ -n "$tagline" ]] && echo "$tagline"; echo 'echo hi'; } > "$f"
+  local out rc
+  out=$(bash -c 'BUDGET_DEFAULT=30; source "$1"; probe_budget "$2"' _ "$BUDGET_FN" "$f"); rc=$?
+  rm -f "$f"; echo "${rc}|${out}"
+}
+bt_out() { bt "$1" | cut -d'|' -f2-; }
+bt_rc()  { bt "$1" | cut -d'|' -f1; }
+
+assert "untagged probe gets exactly the 30s default (asserted, not assumed)" \
+  "$([[ "$(bt_out '')" == "30" ]] && echo true || echo false)"
+assert "a declared budget is honoured verbatim (120)" \
+  "$([[ "$(bt_out '# SUITE_TIMEOUT: 120')" == "120" ]] && echo true || echo false)"
+assert "the // comment form is read too (JS probes)" \
+  "$([[ "$(bt_out '// SUITE_TIMEOUT: 90')" == "90" ]] && echo true || echo false)"
+assert "upper bound 900 accepted" \
+  "$([[ "$(bt_out '# SUITE_TIMEOUT: 900')" == "900" ]] && echo true || echo false)"
+for bad in 'banana' '-5' '901' '0'; do
+  _o=$(bt_out "# SUITE_TIMEOUT: $bad"); _r=$(bt_rc "# SUITE_TIMEOUT: $bad")
+  assert "malformed budget '$bad' REFUSES (rc!=0), never silently falls back to 30" \
+    "$([[ "$_r" -ne 0 && "$_o" != "30" ]] && echo true || echo false)"
+done
+rm -f "$BUDGET_FN"
+
+# End-to-end: the budget must actually reach `timeout`. A parser that returns the
+# right number while the loop still passes 30 to `timeout` satisfies every cell above.
+# bsleep <case> <tagline> <sleep-secs> -> tmp REPO root
+bsleep() {
+  local name="$1" tagline="$2" secs="$3" tmp; tmp=$(mktemp -d)
+  mkdir -p "$tmp/scripts" "$tmp/tests/probes"
+  cp "$REAL_RUN_PROBES" "$tmp/scripts/run-probes.sh"
+  { echo '#!/usr/bin/env bash'
+    echo '# SAFE_FOR_LIVE: yes'
+    [[ -n "$tagline" ]] && echo "$tagline"
+    echo "touch \"$tmp/RAN\""
+    echo "sleep $secs"
+    echo 'echo "1 passed, 0 failed"'
+  } > "$tmp/tests/probes/probe-fixture-$name.sh"
+  echo "$tmp"
+}
+
+T=$(bsleep budget-tiny '# SUITE_TIMEOUT: 1' 3)
+OUT=$(bash "$T/scripts/run-probes.sh" 2>&1 || true)
+assert "tiny budget actually reaches timeout — probe is killed and named" \
+  "$(grep -q 'TIMED OUT.*probe-fixture-budget-tiny.*exceeded 1s' <<<"$OUT" && echo true || echo false)"
+rm -rf "$T"
+
+# The mutation PAIR: identical body, only the tag differs, opposite outcome.
+T=$(bsleep budget-generous '# SUITE_TIMEOUT: 60' 3)
+OUT=$(bash "$T/scripts/run-probes.sh" 2>&1 || true)
+assert "same 3s body under a 60s budget completes — the pair proves the tag is causal" \
+  "$(! grep -q 'TIMED OUT' <<<"$OUT" && grep -q '1 passed, 0 failed' <<<"$OUT" && echo true || echo false)"
+assert "an explicitly budgeted probe ALWAYS reports elapsed-vs-budget" \
+  "$(grep -qE '\[BUDGET\] probe-fixture-budget-generous\.sh — [0-9]+s of 60s' <<<"$OUT" && echo true || echo false)"
+rm -rf "$T"
+
+# A malformed tag must REFUSE THE RUN, not run it under the default. If the probe
+# executes, its marker file appears — that is the discriminator a message-only
+# assertion would miss.
+T=$(bsleep budget-bad '# SUITE_TIMEOUT: banana' 0)
+OUT=$(bash "$T/scripts/run-probes.sh" 2>&1 || true)
+assert "malformed budget is reported as a FAIL, not skipped silently" \
+  "$(grep -q 'FAIL.*probe-fixture-budget-bad.*malformed SUITE_TIMEOUT' <<<"$OUT" && echo true || echo false)"
+assert "...and the probe did NOT execute under a fallback budget" \
+  "$([[ ! -f "$T/RAN" ]] && echo true || echo false)"
+rm -rf "$T"
+
+# An untagged fast probe must stay quiet, or a 150-probe run drowns in [BUDGET].
+T=$(bsleep budget-quiet '' 0)
+OUT=$(bash "$T/scripts/run-probes.sh" 2>&1 || true)
+assert "untagged fast probe emits no [BUDGET] line (the suite stays readable)" \
+  "$(! grep -q '\[BUDGET\] probe-fixture-budget-quiet' <<<"$OUT" && echo true || echo false)"
+rm -rf "$T"
+
 echo "$PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
