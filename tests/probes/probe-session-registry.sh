@@ -48,9 +48,13 @@
 #  17. the end hook ALSO appends `<iso_ts>\t<uuid>\t<reason>` to a SEPARATE file
 #      at literal $HOME/.cache/dhx/session-end-reasons.tsv, while the registry
 #      `end` row stays 3-field (the contract is NOT amended). `reason` is an
-#      enum ALLOWLIST — the six documented values round-trip verbatim, anything
-#      else (absent, unknown, or carrying a tab/newline) becomes `other`, which
-#      is what keeps the row one atomic O_APPEND under PIPE_BUF. Fail-open: no
+#      enum ALLOWLIST with THREE distinct out-of-enum outcomes: the six documented
+#      values round-trip verbatim, an ABSENT field becomes `absent` (never `other`,
+#      which is itself a documented value — conflating them would make "CC said
+#      other" and "CC said nothing" one row), and an unknown value keeps its name
+#      as `x-<sanitised>`. `tr -cd` strips every byte outside [A-Za-z0-9_-] and a
+#      32-char bound applies, so a separator structurally cannot reach the file and
+#      the row stays one atomic O_APPEND under PIPE_BUF. Fail-open: no
 #      sidecar row where there is no contract row (bad JSON, missing uuid).
 #      DELETED together with the instrument — see the hook header's retirement
 #      condition (the reason->continuation table landing in HP-042).
@@ -184,23 +188,28 @@ for r in clear resume logout prompt_input_exit bypass_permissions_disabled other
   chk "sidecar reason=$r verbatim"    "[ \"\$(cut -f3 < '$INSTR')\" = $r ]"
 done
 
-# Absent / unrecognised / separator-carrying reasons collapse to `other`. This is
-# an enum ALLOWLIST, not a sanitiser: it is what keeps the row a single atomic
-# O_APPEND under PIPE_BUF, asserted rather than assumed.
+# THREE distinct out-of-enum outcomes, never one. `other` is itself a documented
+# CC value, so an absent field must NOT land on it — otherwise "CC said other"
+# and "CC said nothing" are the same row and the measurement inherits a corrupted
+# category. An unknown value keeps its NAME (a future CC reason is the thing worth
+# knowing), and `tr -cd` is what makes that safe: it strips every byte outside
+# [A-Za-z0-9_-], so a separator structurally cannot reach the file.
 rm -f "$INSTR"
 echo '{"session_id":"uuid-NOR"}' | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
-chk "absent reason => other"          '[ "$(cut -f3 < "$INSTR")" = other ]'
+chk "absent reason => absent"         '[ "$(cut -f3 < "$INSTR")" = absent ]'
+chk "absent NOT conflated with other" '[ "$(cut -f3 < "$INSTR")" != other ]'
 chk "absent-reason row still 3 NF"    '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
 
 rm -f "$INSTR"
 echo '{"session_id":"uuid-UNK","reason":"some_future_reason"}' \
   | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
-chk "unknown reason => other"         '[ "$(cut -f3 < "$INSTR")" = other ]'
+chk "unknown reason keeps its name"   '[ "$(cut -f3 < "$INSTR")" = x-some_future_reason ]'
+chk "unknown NOT conflated w/ other"  '[ "$(cut -f3 < "$INSTR")" != other ]'
 
 rm -f "$INSTR"
 echo '{"session_id":"uuid-TAB","reason":"clear\tlogout"}' \
   | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
-chk "tab-carrying reason => other"    '[ "$(cut -f3 < "$INSTR")" = other ]'
+chk "tab stripped, name preserved"    '[ "$(cut -f3 < "$INSTR")" = x-clearlogout ]'
 chk "tab-injection row still 3 NF"    '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
 chk "tab-injection is ONE line"       '[ "$(wc -l < "$INSTR")" = 1 ]'
 
@@ -208,6 +217,15 @@ rm -f "$INSTR"
 echo '{"session_id":"uuid-NL","reason":"clear\nlogout"}' \
   | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
 chk "newline reason => one line"      '[ "$(wc -l < "$INSTR")" = 1 ]'
+chk "newline row still 3 NF"          '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
+
+# The 32-char bound keeps the row one atomic O_APPEND even on a hostile value.
+rm -f "$INSTR"
+long=$(printf 'z%.0s' $(seq 1 400))
+echo "{\"session_id\":\"uuid-LONG\",\"reason\":\"$long\"}" \
+  | env -i HOME="$T" PATH="/usr/bin:/bin" bash "$E"
+chk "long reason truncated to 32"     '[ "$(cut -f3 < "$INSTR" | wc -c)" -le 36 ]'
+chk "long-reason row still 3 NF"      '[ "$(awk -F"\t" "{print NF}" < "$INSTR")" = 3 ]'
 
 # Fail-open: the instrument never fires where the contract row does not.
 rm -f "$INSTR"

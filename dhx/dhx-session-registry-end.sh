@@ -47,10 +47,10 @@
 # append are DELETED once the reason->continuation table is written into HP-042.
 # Backstop so it cannot quietly become permanent: /dhx:schedule
 # sch_01M2SFTXKZ528MFDG7CBWBACTW, dated 2026-10-02 (~108 continuation events at
-# the measured 7.7/day). If you are
-# reading this after that table exists in docs/hook-patterns.md, the instrument
-# is overdue for removal — delete it, drop the sidecar assertions from
-# tests/probes/probe-session-registry.sh, and rm the .tsv.
+# the measured 7.7/day). If you are reading this after that table exists in
+# docs/hook-patterns.md, the instrument is overdue for removal — delete it, drop
+# the 23 sidecar assertions from tests/probes/probe-session-registry.sh, and rm
+# the .tsv.
 #
 # Analysis method when the table is written: take activity from the TRANSCRIPTS,
 # not from this log or the registry (neither records turns). Two confounds will
@@ -82,13 +82,24 @@ TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '%s\t%s\t%s\n' "$TS" end "$UUID" >> "$REGISTRY"
 
 # --- temporary instrument (see header) ---
-# Enum-allowlist, not a sanitiser: anything outside the six documented values
-# becomes `other`, so a tab or newline can never reach the file and the row
-# stays a single atomic O_APPEND under PIPE_BUF. Asserted, not assumed.
+# Enum allowlist with THREE distinct out-of-enum outcomes, never one. `other` is
+# itself a documented CC value, so collapsing "field absent" onto it would make
+# "CC said other" and "CC said nothing" the same row — and the measurement this
+# instrument exists for would inherit that as a corrupted category. Found from
+# live data: the first four real rows all read `other`, which is exactly the
+# signature an absent field would produce. So:
+#   in the enum        -> verbatim
+#   absent / null      -> `absent`
+#   present, unknown   -> `x-<sanitised>` (a future CC value, name preserved)
+# `tr -cd` is the atomicity guard rather than a length check: it strips every
+# byte outside [A-Za-z0-9_-], so a tab or newline structurally cannot reach the
+# file, and the 32-char bound keeps the row one O_APPEND under PIPE_BUF.
+# Asserted by probe, not assumed.
 REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null)
 case "$REASON" in
   clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other) ;;
-  *) REASON=other ;;
+  "") REASON=absent ;;
+  *)  REASON="x-$(printf '%s' "$REASON" | tr -cd 'A-Za-z0-9_-' | cut -c1-32)" ;;
 esac
 mkdir -p "$INSTRUMENT_DIR" 2>/dev/null || true
 printf '%s\t%s\t%s\n' "$TS" "$UUID" "$REASON" >> "$INSTRUMENT" 2>/dev/null || true
