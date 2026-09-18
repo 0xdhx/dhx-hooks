@@ -99,7 +99,7 @@ TA=$(build_sandbox "case-a" 1 yes \
 run_case "$TA"
 assert "CASE A: supersession_found at exit 1 → FAIL count == 0" "$([[ "$SUM_FAIL" -eq 0 ]] && echo true || echo false)"
 assert "CASE A: SUPERSESSION count >= 1" "$([[ "$SUM_SUP" -ge 1 ]] && echo true || echo false)"
-assert "CASE A: [SUPERSESSION OBSERVED] line present" "$(printf '%s' "$RUN_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo true || echo false)"
+assert "CASE A: [SUPERSESSION OBSERVED] line present" "$(grep -q '\[SUPERSESSION OBSERVED\]' < <(printf '%s' "$RUN_OUT") && echo true || echo false)"
 assert "CASE A: run-probes exits 0" "$([[ "$RUN_RC" -eq 0 ]] && echo true || echo false)"
 rm -rf "$TA"
 

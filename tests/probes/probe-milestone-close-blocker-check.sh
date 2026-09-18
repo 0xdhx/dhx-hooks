@@ -140,7 +140,7 @@ assert_block_json() {
 
 assert_reason_contains() {
   local label="$1" needle="$2"
-  if echo "$STDOUT_CAP" | jq -r '.reason' 2>/dev/null | grep -qF "$needle"; then
+  if grep -qF "$needle" < <(echo "$STDOUT_CAP" | jq -r '.reason' 2>/dev/null); then
     echo "[PASS] $label (reason contains: $needle)"
     PASS=$((PASS + 1))
   else

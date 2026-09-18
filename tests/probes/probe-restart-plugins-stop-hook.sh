@@ -49,7 +49,7 @@ assert_marker_present() {
 
 assert_marker_absent() {
   local label="$1"
-  if find "$TMP/.cache/dhx" -name 'plugins-rebaseline-*.marker' -print 2>/dev/null | grep -q .; then
+  if grep -q . < <(find "$TMP/.cache/dhx" -name 'plugins-rebaseline-*.marker' -print 2>/dev/null); then
     local found
     found=$(find "$TMP/.cache/dhx" -name 'plugins-rebaseline-*.marker' -print 2>/dev/null)
     echo "FAIL $label (unexpected marker: $found)"

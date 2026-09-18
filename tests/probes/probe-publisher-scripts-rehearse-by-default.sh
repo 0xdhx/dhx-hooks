@@ -90,7 +90,7 @@ PUBLISH_VERB='git([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+push|g
 _publisher_files() {
   local f
   while IFS= read -r f; do
-    if grep -vE '^[[:space:]]*(#|//)' "$REPO/$f" 2>/dev/null | grep -qE "$PUBLISH_VERB"; then
+    if grep -qE "$PUBLISH_VERB" < <(grep -vE '^[[:space:]]*(#|//)' "$REPO/$f" 2>/dev/null); then
       echo "$f"
     fi
   # Glob widened per finding 6 — nested paths and non-.sh publishers were invisible to

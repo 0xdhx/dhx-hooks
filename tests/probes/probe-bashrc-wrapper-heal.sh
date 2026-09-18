@@ -71,7 +71,7 @@ assert "bashrc carries no plugin-keys predicate" "! grep -q 'enabledPlugins\[\"d
 assert "dhx-plugin-keys-heal.sh exists" "[[ -f '$KEYS_HEAL' ]]"
 assert "dhx-prelaunch.sh runs dhx-plugin-keys-heal.sh" "grep -qE '^run_child dhx-plugin-keys-heal\.sh' '$PRELAUNCH'"
 assert "keys heal invokes no 'claude' subcommand (comments aside)" \
-  "! grep -vE '^[[:space:]]*#' '$KEYS_HEAL' | grep -qE '(^|[[:space:];|&(])claude[[:space:]]+plugin'"
+  "! grep -qE '(^|[[:space:];|&(])claude[[:space:]]+plugin' < <(grep -vE '^[[:space:]]*#' '$KEYS_HEAL')"
 
 # --- 4. jq predicate parity across every site that checks the keys ---
 canonical_pred='.enabledPlugins["dhx@dhx-local"] == true and (.extraKnownMarketplaces["dhx-local"].source.path // empty) != ""'

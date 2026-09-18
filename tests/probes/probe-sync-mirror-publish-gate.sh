@@ -321,7 +321,7 @@ _assert "[32] the fixture environment genuinely has NO committer identity" "yes"
 RC_NOID=$( cd "$REPO" && PUBLIC_REMOTE="$BARE_NOID" env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL GIT_CONFIG_GLOBAL="$TMP/empty.gitconfig" timeout 900 bash "$SCRIPT" --push >/dev/null 2>&1; echo $? )
 _assert "[33] a publish with no committer identity still succeeds" "0" "$RC_NOID"
 _assert "[34] ...and the version tag actually lands" "yes" \
-  "$(git --git-dir="$BARE_NOID" tag -l 2>/dev/null | grep -q . && echo yes || echo no)"
+  "$(grep -q . < <(git --git-dir="$BARE_NOID" tag -l 2>/dev/null) && echo yes || echo no)"
 
 # Drive the trap. The mutant lives under the repo's gitignored tmp/ because the publisher
 # derives REPO_ROOT from `realpath "$0"/..` — a copy in /tmp resolves to a non-repo and
