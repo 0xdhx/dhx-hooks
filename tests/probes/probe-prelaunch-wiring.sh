@@ -94,6 +94,7 @@ mkfix() {
 km="$CLAUDE_CONFIG_DIR/plugins/known_marketplaces.json"
 {
   printf 'pid=%s\n' "$$"
+  printf 'tmpdir=%s\n' "${TMPDIR:-}"
   if jq -e '(."dhx-local" | type) == "object" and ([.[] | (.lastUpdated | type) == "string"] | all)' "$km" >/dev/null 2>&1; then
     echo "repaired=yes"
   else
@@ -130,8 +131,13 @@ mkdir -p "$r/home/.local/bin"
 ln -s "$r/bin/claude" "$r/home/.local/bin/claude"
 printf 'CAPPED-STDIN' | env -i PATH=/usr/bin:/bin HOME="$r/home" CLAUDE_CONFIG_DIR="$r/cfg" \
   CLAUDE_CAP_DISABLE=1 FAKE_RECORD="$r/record" bash "$CAPPED" alpha >/dev/null 2>&1
+# Remove the lane the launcher actually handed the fake — by the TMPDIR it recorded, never by a
+# name rebuilt from the pid. /tmp/claude-lane-<pid> may be a DEAD earlier holder's dir that the
+# launcher refused to adopt (it mints claude-lane-<pid>-XXXXXX then; cross-repo 2026-09-18), and
+# rebuilding the name deleted that stranger's lane — which a live orphan may still hold.
 lane_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$r/record" 2>/dev/null)
-[[ -n "$lane_pid" && -d "/tmp/claude-lane-$lane_pid" ]] && rm -rf "/tmp/claude-lane-$lane_pid"
+lane_dir=$(sed -n 's/^tmpdir=//p' "$r/record" 2>/dev/null)
+[[ -n "$lane_pid" && "$lane_dir" =~ ^/tmp/claude-lane-$lane_pid(-[A-Za-z0-9]+)?$ && -d "$lane_dir" ]] && rm -rf "$lane_dir"
 grep -qx 'repaired=yes' "$r/record" 2>/dev/null && grep -qx 'arg=alpha' "$r/record" \
   && grep -qx 'stdin=CAPPED-STDIN' "$r/record"
 check "W5 capped: registry repaired before launch (capped's own call); argv and stdin intact" $?
