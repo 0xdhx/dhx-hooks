@@ -26,5 +26,5 @@ tests/probes/probe-sync-mirror-publish-gate.sh	1
 tests/probes/probe-triad-duration-enrichment.sh	6
 tests/probes/probe-triad-empty-files-retired.sh	4
 tests/probes/probe-vet-closures.sh	1
-scripts/verify-hook-patterns.sh	2
+scripts/verify-hook-patterns.sh	1
 scripts/verify-mirror-ruleset.sh	1

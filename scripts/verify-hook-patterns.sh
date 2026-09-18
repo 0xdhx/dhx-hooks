@@ -305,7 +305,7 @@ ERROR: $f:$lineno introduces a SIGPIPE+pipefail-prone shape (HP-028).
 
   $content
 
-  Replace 'cmd | grep -q PAT' (or 'cmd | grep -m N PAT') with one of:
+  Replace the HP-028 shape 'cmd | grep -q PAT' (or 'cmd | grep -m N PAT') with:
     grep -q PAT <<< "\$VAR"        # for variable inputs
     grep -q PAT < <(cmd args)     # for command outputs
     (same swap shape applies to grep -m N)
