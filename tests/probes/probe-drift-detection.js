@@ -29,6 +29,8 @@
 //  17. Drift-debug breadcrumb for plugins trigger (forensic shortcut)
 //  18. gsdDriftPersistenceDays: cross-session drift persistence (Nd) render
 //      + the >=1d gate (drift-duration-render, 2026-06-25)
+//  19. Drift-debug breadcrumb BOUNDS: dedupe, rotation, prefix-keyed
+//      retention + its scope guard, per-run deletion cap (2026-09-17)
 //
 // Run: node tests/probes/probe-drift-detection.js
 //
@@ -1131,6 +1133,211 @@ const baseSnap = snap();
     gsdDriftPersistenceDays({ 'a.md': 'not-a-date' }, now) === 0);
   assert('[18g] render gate: >=1d emits " (Nd)" in the exact wrapper format',
     renderToken({ 'a.md': iso(now - 6 * DAY) }) === ' (6d)');
+}
+
+// --- 19. Drift-debug breadcrumb BOUNDS: dedupe, rotation, retention ---------
+//
+// Scenario 17 above pins the breadcrumb's EMISSION contract against a local
+// mirror. This scenario pins its BOUNDS, and deliberately does NOT mirror:
+// every assertion drives the wrapper's real exported writer/sweeper. A
+// reimplementation would be worthless here — the defect being fixed was that
+// the SHIPPED sweeper never reached these files, and a local copy of a correct
+// sweeper cannot detect that. Same reasoning as the laneIdFor / readLaneHealth
+// exports (2026-09-15).
+//
+// Why these bounds exist (measured 2026-09-17 on the largest surviving log,
+// before it was swept): 18,206 lines over 6.6 days, 206.6 MB, carrying 11
+// distinct payloads. 8,651 of 8,680 gsd fires were exactly 60s apart. The
+// drift path never re-baselines the snapshot — by design, so the ⚠ warning
+// persists until the operator acts — so the writer sat inside a branch that
+// stays TRUE on every refresh. The 2026-05-13 row's "fires rarely / naturally
+// sparse" premise described events; the branch is a state.
+//
+// Invariants under test:
+//  a) An identical payload does NOT append a second line (dedupe).
+//  b) A CHANGED payload DOES append (dedupe must never suppress a real change).
+//  c) Dedupe compares the PAYLOAD, not the whole line: a stored line carrying
+//     the same payload under a different `ts` still collapses. Constructed with
+//     a fixed seeded ts, never by racing two real writes — the racing form was
+//     flaky (it depended on the two writes straddling a millisecond).
+//  d) RETENTION REACHES drift-debug-*.log. This is the arm the whole change
+//     exists for: before the fix, sweepSpoolDir skipped any name not ending
+//     `.jsonl` and was pointed only at three SUBdirectories, so a breadcrumb
+//     at the cache base was unreachable on both counts.
+//  e) The sweeper touches NOTHING else in the same directory. The cache base
+//     holds 3,342 partial-read-detect-*.jsonl from an unrelated hook, the
+//     wrapper's own statusline-errors.jsonl, and 17 non-breadcrumb .log files.
+//     A bare extension predicate aimed here unlinks them; this asserts the
+//     prefix+suffix predicate does not.
+//  f) The daily stamp survives a sweep that deletes every log beside it. The
+//     stamp shares the `drift-debug-` prefix, so only the suffix test saves it
+//     — this is the companion assertion for that INVARIANT comment.
+//  g) Rotation at the byte ceiling renames to `.log.1` and starts a fresh
+//     `.log`; no line is ever truncated (docs/decisions.md 2026-09-03 records
+//     a sibling breadcrumb's per-line cap silently dropping 289 of 614 rows,
+//     longest first).
+//  h) The per-run deletion cap holds, and drains OLDEST first. Introducing
+//     retention to a never-swept store makes the first run delete the entire
+//     backlog: on 2026-09-17 that cost 348 files / 1.90 GiB about one second
+//     after the writer was saved, because this file is symlinked from
+//     ~/.claude/hooks and the live statusline re-reads it every 60s.
+//  i) The daily gate is a gate: a second call the same day returns -1 and
+//     deletes nothing.
+{
+  const {
+    writeDriftDebugBreadcrumb,
+    sweepDriftDebugLogs,
+    maybeSweepDriftDebugLogs,
+    driftDebugPayload,
+  } = require('../../dhx/statusline-wrapper.js');
+
+  const DAY = 86400_000;
+  const sid = `probe-19-${Date.now()}-${process.pid}`;
+  const cacheDir = path.join(TMP, 'bc-cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const logFile = path.join(cacheDir, `drift-debug-${sid}.log`);
+  const lines = (f) => {
+    try { return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean); }
+    catch { return []; }
+  };
+
+  // --- (a)(b)(c) dedupe -----------------------------------------------------
+  const rowA = { trigger: 'gsd', diverging: [{ path: 'a.md', kind: 'mismatch' }], current_mtime: 2, snapshot_mtime: 1 };
+  const rowB = { trigger: 'gsd', diverging: [{ path: 'b.md', kind: 'mismatch' }], current_mtime: 3, snapshot_mtime: 1 };
+
+  const r1 = writeDriftDebugBreadcrumb(cacheDir, sid, rowA);
+  const r2 = writeDriftDebugBreadcrumb(cacheDir, sid, rowA);
+  assert('[19a] identical payload does NOT append a second line (dedupe)',
+    r1 === 'written' && r2 === 'duplicate' && lines(logFile).length === 1);
+
+  const r3 = writeDriftDebugBreadcrumb(cacheDir, sid, rowB);
+  assert('[19b] CHANGED payload DOES append (dedupe never suppresses a real change)',
+    r3 === 'written' && lines(logFile).length === 2);
+
+  // ts-blindness, constructed rather than raced. An earlier version of this arm
+  // wrote rowB twice and asserted the two `ts` values differed — which only
+  // holds if the writes straddle a millisecond boundary. It passed on one run
+  // and failed on the next. Seed a line carrying rowB's payload under a FIXED,
+  // obviously-different ts instead: a whole-line comparison cannot match it,
+  // so only a payload comparison can return 'duplicate'.
+  const tsSid = `${sid}-ts`;
+  const tsFile = path.join(cacheDir, `drift-debug-${tsSid}.log`);
+  fs.writeFileSync(tsFile, `{"ts":"2020-01-01T00:00:00.000Z",${JSON.stringify(rowB).slice(1)}\n`);
+  const r4 = writeDriftDebugBreadcrumb(cacheDir, tsSid, rowB);
+  assert('[19c] dedupe compares payload, not the whole line (a different ts still collapses)',
+    r4 === 'duplicate' && lines(tsFile).length === 1 &&
+    JSON.parse(lines(tsFile)[0]).ts === '2020-01-01T00:00:00.000Z' &&
+    driftDebugPayload(lines(tsFile)[0]) === JSON.stringify(rowB));
+
+  // --- (d)(e)(f) retention reaches breadcrumbs, and ONLY breadcrumbs --------
+  const sweepDir = path.join(TMP, 'bc-sweep');
+  fs.mkdirSync(sweepDir, { recursive: true });
+  const old = Date.now() - 90 * DAY;
+
+  // Breadcrumbs the sweep MUST reach (both generations).
+  const victims = ['drift-debug-aaa.log', 'drift-debug-bbb.log', 'drift-debug-ccc.log.1'];
+  // Bystanders that MUST survive — every class actually present at the cache
+  // base on 2026-09-17, aged well past the cutoff so only the predicate saves them.
+  const bystanders = [
+    'partial-read-detect-xyz.jsonl',   // 3,342 of these, unrelated hook
+    'statusline-errors.jsonl',         // the wrapper's OWN error log
+    'read-dedup-stats.jsonl',
+    'gemini-review-usage.jsonl',
+    'gsd-install-20260716T074853Z.log',
+    'source-write-flag.log',
+    'cd-compound-read-allow.log',
+    'drift-snapshot-somesession.json', // shares no prefix, but cheap to pin
+    'drift-debug-sweep.stamp',         // shares the PREFIX — only the suffix saves it
+  ];
+  for (const n of [...victims, ...bystanders]) {
+    const p = path.join(sweepDir, n);
+    fs.writeFileSync(p, 'x\n');
+    fs.utimesSync(p, new Date(old), new Date(old));
+  }
+
+  const removed = sweepDriftDebugLogs(sweepDir, Date.now() - 60 * DAY);
+  const victimsGone = victims.every((n) => !fs.existsSync(path.join(sweepDir, n)));
+  assert('[19d] retention REACHES drift-debug-*.log and .log.1 (the defect this change fixes)',
+    removed === victims.length && victimsGone);
+
+  const bystandersKept = bystanders
+    .filter((n) => n !== 'drift-debug-sweep.stamp')
+    .every((n) => fs.existsSync(path.join(sweepDir, n)));
+  assert('[19e] sweeper touches nothing else in the directory (.jsonl, foreign .log, snapshots)',
+    bystandersKept);
+
+  assert('[19f] drift-debug-sweep.stamp survives its own sweep (prefix shared, suffix saves it)',
+    fs.existsSync(path.join(sweepDir, 'drift-debug-sweep.stamp')));
+
+  // A log NEWER than the cutoff must be kept — proves the sweep is age-gated,
+  // not a blanket delete (a sweeper that removes everything also passes [19d]).
+  const freshDir = path.join(TMP, 'bc-fresh');
+  fs.mkdirSync(freshDir, { recursive: true });
+  fs.writeFileSync(path.join(freshDir, 'drift-debug-fresh.log'), 'x\n');
+  const freshRemoved = sweepDriftDebugLogs(freshDir, Date.now() - 60 * DAY);
+  assert('[19d2] a log INSIDE the window is kept (age gate, not a blanket delete)',
+    freshRemoved === 0 && fs.existsSync(path.join(freshDir, 'drift-debug-fresh.log')));
+
+  // --- (g) rotation ---------------------------------------------------------
+  const rotDir = path.join(TMP, 'bc-rot');
+  fs.mkdirSync(rotDir, { recursive: true });
+  const rotSid = `${sid}-rot`;
+  const rotFile = path.join(rotDir, `drift-debug-${rotSid}.log`);
+  // Seed past the ceiling with COMPLETE lines, then write one more.
+  const filler = JSON.stringify({ trigger: 'gsd', pad: 'y'.repeat(4096) }) + '\n';
+  const ceiling = Number(process.env.DHX_DRIFT_DEBUG_MAX_BYTES) || 5242880;
+  let seeded = '';
+  while (seeded.length < ceiling) seeded += filler;
+  fs.writeFileSync(rotFile, seeded);
+  const seededLineCount = seeded.split('\n').filter(Boolean).length;
+
+  writeDriftDebugBreadcrumb(rotDir, rotSid, { trigger: 'plugins', max_path: '/after/rotation' });
+  const rotated = rotFile + '.1';
+  const postLines = lines(rotFile);
+  assert('[19g] rotation renames to .log.1 and starts a fresh .log; no line truncated',
+    fs.existsSync(rotated) &&
+    lines(rotated).length === seededLineCount &&
+    lines(rotated).every((l) => { try { JSON.parse(l); return true; } catch { return false; } }) &&
+    postLines.length === 1 &&
+    JSON.parse(postLines[0]).max_path === '/after/rotation');
+
+  // --- (h) per-run deletion cap, oldest first -------------------------------
+  const capDir = path.join(TMP, 'bc-cap');
+  fs.mkdirSync(capDir, { recursive: true });
+  // 10 logs, ages 100d down to 91d — all due against a 60d cutoff.
+  for (let i = 0; i < 10; i++) {
+    const p = path.join(capDir, `drift-debug-cap${i}.log`);
+    fs.writeFileSync(p, 'x\n');
+    const when = Date.now() - (100 - i) * DAY;
+    fs.utimesSync(p, new Date(when), new Date(when));
+  }
+  const capRemoved = sweepDriftDebugLogs(capDir, Date.now() - 60 * DAY, 3);
+  const survivors = fs.readdirSync(capDir).sort();
+  assert('[19h] per-run cap holds and drains OLDEST first (first-sweep cliff guard)',
+    capRemoved === 3 && survivors.length === 7 &&
+    !survivors.includes('drift-debug-cap0.log') &&
+    !survivors.includes('drift-debug-cap2.log') &&
+    survivors.includes('drift-debug-cap3.log') &&
+    survivors.includes('drift-debug-cap9.log'));
+
+  // --- (i) daily gate -------------------------------------------------------
+  const gateDir = path.join(TMP, 'bc-gate');
+  fs.mkdirSync(gateDir, { recursive: true });
+  const gateVictim = path.join(gateDir, 'drift-debug-gate.log');
+  fs.writeFileSync(gateVictim, 'x\n');
+  fs.utimesSync(gateVictim, new Date(old), new Date(old));
+  const firstRun = maybeSweepDriftDebugLogs(gateDir);
+  // Re-create a due file; a gated second run must leave it alone.
+  fs.writeFileSync(gateVictim, 'x\n');
+  fs.utimesSync(gateVictim, new Date(old), new Date(old));
+  const secondRun = maybeSweepDriftDebugLogs(gateDir);
+  assert('[19i] daily gate: second call the same day returns -1 and deletes nothing',
+    firstRun === 1 && secondRun === -1 && fs.existsSync(gateVictim));
+
+  assert('[19] breadcrumb bounds hold (dedupe, ts-blind, retention reaches, scope-safe, rotation, cap, daily gate)',
+    r1 === 'written' && r2 === 'duplicate' && r3 === 'written' && r4 === 'duplicate' &&
+    removed === victims.length && bystandersKept && freshRemoved === 0 &&
+    fs.existsSync(rotated) && capRemoved === 3 && secondRun === -1);
 }
 
 // --- Cleanup + summary ---

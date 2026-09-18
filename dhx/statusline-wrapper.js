@@ -2208,11 +2208,205 @@ function writeAtomic(targetPath, dataObj) {
   }
 }
 
+// --- Drift-debug breadcrumb: bounded writer + prefix-keyed retention ---------
+//
+// The 2026-05-13 row introduced this breadcrumb on the premise that the drift-
+// detected branch "fires rarely", leaving the log "naturally sparse". That
+// premise was wrong about the MECHANISM, not merely the magnitude: the drift
+// path deliberately never re-baselines the snapshot (writeAtomic(snapshotFile,…)
+// runs only at first baseline, on the /restart-plugins marker, and on the
+// gsdSuppressed zero-trigger path), because the ⚠ warning must persist on screen
+// until the operator acts. So a drift is a STICKY STATE, and the writer sat
+// inside a branch that stays true on every 60-second refresh for as long as the
+// drift lasts. Measured 2026-09-17 on the largest surviving log: 18,206 lines
+// over 6.6 days carrying 11 distinct payloads, 8,651 of 8,680 gsd fires exactly
+// 60s apart, 206.6 MB. See docs/decisions.md 2026-09-17 row.
+//
+// Three bounds, in the order they apply per fire:
+//   1. DEDUPE — skip the write when the payload (every key except `ts`) equals
+//      the previous line's. Payloads occupy CONTIGUOUS runs (measured: 5 runs
+//      for gsd, 6 for plugins), so comparing against the last line alone
+//      collapsed the 18,206-line corpus to 11. Fail-OPEN by construction: any
+//      read failure, or a line longer than the tail window, writes the line.
+//      Suppressing a genuine change is the only unacceptable error here.
+//   2. ROTATE — at DRIFT_DEBUG_MAX_BYTES, rename to `.log.1` (one generation).
+//      Never truncate a line. docs/decisions.md 2026-09-03 records a per-line
+//      cap on a sibling dhx breadcrumb silently truncating 289 of 614 rows and
+//      removing the LONGEST entries — exactly the population forensics needs.
+//      Same shape as dhx/dhx-read-dedup.sh's STATS_MAX_BYTES → `.1` rotation.
+//   3. SWEEP — delete logs older than DRIFT_DEBUG_RETENTION_DAYS.
+//
+// WHY A DEDICATED SWEEPER RATHER THAN WIDENING sweepSpoolDir: that helper skips
+// any name not ending `.jsonl` and is only ever pointed at three SUBdirectories
+// (cache-events, quota-snapshots, cache-telemetry). Breadcrumbs sit at the cache
+// BASE, so they escaped retention on both counts and fixing either alone changes
+// nothing. Neither of the obvious widenings is safe: measured 2026-09-17, the
+// base holds 3,342 `partial-read-detect-*.jsonl` from an unrelated hook plus
+// statusline-errors.jsonl / read-dedup-stats.jsonl / gemini-review-usage.jsonl,
+// and 17 non-breadcrumb `.log` files (gsd-install-*.log, source-write-flag.log,
+// gsd-130-watch.log, cd-compound-read-allow.log). An extension predicate aimed
+// at the base unlinks those. This predicate is keyed on the `drift-debug-`
+// PREFIX and an exact `.log`/`.log.1` suffix, so it can never reach them.
+//
+// WHY NOT TELEMETRY_RETENTION_DAYS: that constant is 400 (raised from 30 on
+// 2026-09-16 because the spools became the quota instrument). The oldest
+// breadcrumb is ~100 days old, so reusing it would delete nothing — measurement,
+// not preference, forces a separate window.
+const DRIFT_DEBUG_RETENTION_DAYS = (() => {
+  const raw = parseInt(process.env.DHX_DRIFT_DEBUG_RETENTION_DAYS, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+})();
+// 5 MiB matches dhx/dhx-read-dedup.sh's STATS_MAX_BYTES. Under dedupe the worst
+// observed session would write ~264 KB, so this is ~20x headroom before rotation.
+const DRIFT_DEBUG_MAX_BYTES = (() => {
+  const raw = parseInt(process.env.DHX_DRIFT_DEBUG_MAX_BYTES, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5242880;
+})();
+// Tail window for the dedupe read: 10x the largest line observed (24,647 B).
+// A line longer than this reads as "no previous payload" and is written.
+const DRIFT_DEBUG_TAIL_BYTES = 262144;
+
+// Strip the leading `{"ts":"<iso>",` so two lines compare on payload alone.
+// Returns the line unchanged when it carries no ts prefix (hand-edited or a
+// future schema) — still a valid comparison basis, never a crash.
+function driftDebugPayload(line) {
+  return line.replace(/^\{"ts":"[^"]*",/, '{');
+}
+
+// Payload of the file's last COMPLETE line, or null when there isn't one.
+// Reads at most DRIFT_DEBUG_TAIL_BYTES from the end. Byte-slicing is safe
+// against multi-byte UTF-8 because only the text AFTER the final newline is
+// used and 0x0A cannot occur inside a multi-byte sequence — any partial
+// character at the window's head is discarded with the rest of that line.
+function driftDebugLastPayload(file) {
+  let fd;
+  try {
+    const size = fs.statSync(file).size;
+    if (!size) return null;
+    const win = Math.min(size, DRIFT_DEBUG_TAIL_BYTES);
+    const buf = Buffer.alloc(win);
+    fd = fs.openSync(file, 'r');
+    fs.readSync(fd, buf, 0, win, size - win);
+    let text = buf.toString('utf8');
+    if (text.endsWith('\n')) text = text.slice(0, -1);
+    const nl = text.lastIndexOf('\n');
+    if (nl >= 0) return driftDebugPayload(text.slice(nl + 1));
+    // No newline in the window: only trustworthy when the window IS the file.
+    return win === size ? driftDebugPayload(text) : null;
+  } catch {
+    return null;   // fail-open — an unreadable tail must never suppress a write
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing */ } }
+  }
+}
+
+// The single breadcrumb emit path for BOTH triggers. `row` must NOT carry `ts`
+// — this adds it, so the on-disk line's non-ts remainder is byte-identical to
+// the string dedupe compares. Returns 'written' | 'duplicate' | 'skipped'
+// (exported and returned for the probe; no caller branches on it).
+// Never throws: drift detection takes priority over the breadcrumb.
+function writeDriftDebugBreadcrumb(cacheDir, sessionId, row) {
+  try {
+    // Basename-escape threat model, unchanged from the 2026-05-13 writer and
+    // mirroring dhx-restart-plugins-stop.sh:43-48.
+    if (!sessionId || /[/\\]|\.\./.test(sessionId)) return 'skipped';
+    // The ts-free form driftDebugPayload() yields for an on-disk line.
+    const payload = JSON.stringify(row);
+    const file = path.join(cacheDir, `drift-debug-${sessionId}.log`);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    if (driftDebugLastPayload(file) === payload) return 'duplicate';
+    try {
+      if (fs.statSync(file).size >= DRIFT_DEBUG_MAX_BYTES) {
+        fs.renameSync(file, file + '.1');   // one generation; never truncate a line
+      }
+    } catch { /* absent file — nothing to rotate */ }
+    fs.appendFileSync(file, `{"ts":"${new Date().toISOString()}",${payload.slice(1)}\n`);
+    return 'written';
+  } catch {
+    return 'skipped';   // breadcrumb failure must not affect drift detection
+  }
+}
+
+// Per-run deletion cap. Introducing retention to a store that has NEVER been
+// swept makes the FIRST run delete the entire historical backlog at once — the
+// steady-state rate (a handful of files a day aging past the window) is nothing
+// like the first-run rate (everything ever accumulated). Measured cost of
+// learning this on 2026-09-17: a first sweep removed 348 files / 1.90 GiB
+// roughly one second after the writer was saved, because this file is
+// symlinked from ~/.claude/hooks and the live statusline re-reads it every 60s
+// — editing it IS a fleet-wide deploy. The cap converts that cliff into a drain
+// the operator can see and stop: at 25/day the same backlog would have taken
+// two weeks to clear. It costs nothing in steady state, where a day's
+// out-of-window set is far below the cap.
+const DRIFT_DEBUG_SWEEP_MAX_PER_RUN = (() => {
+  const raw = parseInt(process.env.DHX_DRIFT_DEBUG_SWEEP_MAX_PER_RUN, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 25;
+})();
+
+// Retention for the breadcrumbs. Keyed on the `drift-debug-` PREFIX plus an
+// exact `.log` / `.log.1` suffix — see the block comment above for why a bare
+// extension predicate is unsafe at this directory. Returns the unlink count.
+// Deletes oldest-first and stops at `cap`, so a backlog drains deterministically
+// from the end the operator cares least about rather than in readdir order.
+// INVARIANT: this predicate must never match drift-debug-sweep.stamp (the daily
+// gate below, which lives in the same directory and shares the prefix). The
+// suffix test is what holds that; probe-drift-detection.js asserts the stamp
+// survives a sweep that deletes every log beside it.
+function sweepDriftDebugLogs(dir, cutoffMs, cap = DRIFT_DEBUG_SWEEP_MAX_PER_RUN) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return 0; }
+  const due = [];
+  for (const n of names) {
+    if (!n.startsWith('drift-debug-')) continue;
+    if (!/\.log(\.1)?$/.test(n)) continue;
+    const p = path.join(dir, n);
+    try {
+      const m = fs.statSync(p).mtimeMs;
+      if (m < cutoffMs) due.push({ p, m });
+    } catch { /* vanished under us — nothing to do */ }
+  }
+  due.sort((a, b) => a.m - b.m);   // oldest first
+  let removed = 0;
+  for (const d of due) {
+    if (removed >= cap) break;
+    try { fs.unlinkSync(d.p); removed++; }
+    catch { /* races with a concurrent sweep are fine */ }
+  }
+  return removed;
+}
+
+// Daily gate, machine-wide rather than per-session: any session may run the
+// sweep, and one run a day across the fleet is strictly less work than one per
+// session. The stamp's own mtime is the clock — no parse, no schema. Runs on
+// every refresh path (not only when drift fires), because a machine that has
+// stopped drifting still holds logs that need to age out.
+function maybeSweepDriftDebugLogs(cacheDir, nowMs = Date.now()) {
+  const stamp = path.join(cacheDir, 'drift-debug-sweep.stamp');
+  try {
+    const st = fs.statSync(stamp);
+    if (nowMs - st.mtimeMs < 86400_000) return -1;   // -1 = not due
+  } catch { /* no stamp yet — first sweep on this machine */ }
+  try {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(stamp, '');   // claim the day BEFORE sweeping, so a throw
+                                   // mid-sweep cannot re-run it every refresh
+  } catch { return -1; }
+  return sweepDriftDebugLogs(cacheDir, nowMs - DRIFT_DEBUG_RETENTION_DAYS * 86400_000);
+}
+
 function checkDrift(data) {
   return new Promise((resolve) => {
     if (!data.session_id) return resolve('');
 
     const cacheDir = path.join(os.homedir(), '.cache', 'dhx');
+
+    // Breadcrumb retention. Deliberately OUTSIDE the drift-detected branch and
+    // not on the telemetry sweep's gate: that one is reached only from
+    // recordCacheTelemetry, which returns early unless a transcript cache event
+    // advanced, so a session that merely drifts would never prune. Self-gated
+    // to once a day machine-wide; -1 when not due.
+    maybeSweepDriftDebugLogs(cacheDir);
+
     // Key by (session_id, CC's process start-ticks) so /resume into a new CC
     // process gets a fresh snapshot — eliminates the "stale snapshot from previous
     // process life" failure mode without depending on SessionStart hook firing.
@@ -2323,33 +2517,27 @@ function checkDrift(data) {
         current.plugins_count < snapshot.plugins_count) {
       triggers.push('plugins');
       // Forensic breadcrumb — plugins trigger only (YAGNI: not extended to
-      // other triggers). Fires INSIDE the drift-detected branch; not on every
-      // refresh. The signal is `max_path`: which file's mtime won the scan
-      // (the data point that took ~20 minutes to recover in the 2026-05-13
-      // .in_use/<pid> forensics). See docs/statusline-wrapper.md § "Debug
-      // breadcrumb" and docs/decisions.md 2026-05-13 row for the filter-
-      // extension lineage (.orphaned_at → temp_git_* → .in_use/<pid>) that
-      // motivated this. Sanitize session_id mirroring dhx-restart-plugins-
-      // stop.sh:43-48 — reject path separators / `..` so a malicious id can't
-      // escape ~/.cache/dhx via the log basename. Cache-write failures are
-      // silent: drift detection takes priority over breadcrumb.
-      try {
-        const sessionId = data.session_id;
-        if (sessionId && !/[/\\]|\.\./.test(sessionId)) {
-          fs.mkdirSync(cacheDir, { recursive: true });
-          const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
-          const line = JSON.stringify({
-            ts: new Date().toISOString(),
-            trigger: 'plugins',
-            max_path: current.plugins_maxPath ?? '',
-            current_mtime: current.plugins_mtime,
-            snapshot_mtime: snapshot.plugins_mtime,
-            current_count: current.plugins_count,
-            snapshot_count: snapshot.plugins_count,
-          }) + '\n';
-          fs.appendFileSync(breadcrumbFile, line);
-        }
-      } catch { /* breadcrumb failure must not affect drift detection */ }
+      // other triggers). The signal is `max_path`: which file's mtime won the
+      // scan (the data point that took ~20 minutes to recover in the
+      // 2026-05-13 .in_use/<pid> forensics). See docs/statusline-wrapper.md
+      // § "Debug breadcrumb" and docs/decisions.md 2026-05-13 row for the
+      // filter-extension lineage (.orphaned_at → temp_git_* → .in_use/<pid>)
+      // that motivated this.
+      //
+      // This branch is entered on EVERY refresh for as long as the drift
+      // persists — the drift path does not re-baseline, by design. Sparsity is
+      // therefore a property of the WRITER, not of this call site:
+      // writeDriftDebugBreadcrumb dedupes against the previous line and bounds
+      // the file. Session-id sanitization and the silent-on-failure discipline
+      // live there too. Do not re-open-code an appendFileSync here.
+      writeDriftDebugBreadcrumb(cacheDir, data.session_id, {
+        trigger: 'plugins',
+        max_path: current.plugins_maxPath ?? '',
+        current_mtime: current.plugins_mtime,
+        snapshot_mtime: snapshot.plugins_mtime,
+        current_count: current.plugins_count,
+        snapshot_count: snapshot.plugins_count,
+      });
     }
     if (current.version !== snapshot.version) {
       triggers.push('version');
@@ -2441,24 +2629,23 @@ function checkDrift(data) {
     // Forensic breadcrumb — mirrors the plugins-trigger pattern (above). Writes
     // the full diverging-file list to ~/.cache/dhx/drift-debug-<session>.log
     // so the next /dhx:statusline debug session can read it without re-walking
-    // the live tree. Silent on cache-write failure: drift detection takes
-    // priority over breadcrumb (same discipline as plugins branch).
+    // the live tree.
+    //
+    // The list is written WHOLE, deliberately. It averaged 24,647 B/line and
+    // was 98.7% of all breadcrumb bytes (measured 2026-09-17), but the cost was
+    // repetition, not payload: this branch re-fired every 60s against an
+    // unresolved divergence. writeDriftDebugBreadcrumb dedupes that away, after
+    // which the full list costs ~3 lines per session. Truncating it instead
+    // would drop the largest divergences — the exact population forensics needs
+    // — which is the failure docs/decisions.md 2026-09-03 records on a sibling
+    // breadcrumb (289 of 614 rows truncated, longest entries first).
     if (gsdDiverging) {
-      try {
-        const sessionId = data.session_id;
-        if (sessionId && !/[/\\]|\.\./.test(sessionId)) {
-          fs.mkdirSync(cacheDir, { recursive: true });
-          const breadcrumbFile = path.join(cacheDir, `drift-debug-${sessionId}.log`);
-          const line = JSON.stringify({
-            ts: new Date().toISOString(),
-            trigger: 'gsd',
-            diverging: gsdDiverging,
-            current_mtime: current.gsd_mtime,
-            snapshot_mtime: snapshot.gsd_mtime,
-          }) + '\n';
-          fs.appendFileSync(breadcrumbFile, line);
-        }
-      } catch { /* breadcrumb failure must not affect drift detection */ }
+      writeDriftDebugBreadcrumb(cacheDir, data.session_id, {
+        trigger: 'gsd',
+        diverging: gsdDiverging,
+        current_mtime: current.gsd_mtime,
+        snapshot_mtime: snapshot.gsd_mtime,
+      });
 
       // Cross-session first-seen cache writer (Phase 16, D-16/D-17/D-22/D-25 —
       // HP-031). gsdDiverging is the AUTHORITATIVE drift state: build the new
@@ -3163,6 +3350,16 @@ module.exports = {
   hashWarnSettings,
   canonicalize,
   checkPluginRegistry,
+  // Drift-debug breadcrumb bounds (2026-09-17) — exported so
+  // probe-drift-detection.js drives the REAL writer, sweeper and daily gate
+  // rather than the local mirror scenario [17] uses for the emission contract.
+  // A retention arm built on a reimplementation guards nothing: the defect
+  // being fixed was precisely that the shipped sweeper did not reach these
+  // files, which a copy of a correct sweeper cannot detect.
+  writeDriftDebugBreadcrumb,
+  sweepDriftDebugLogs,
+  maybeSweepDriftDebugLogs,
+  driftDebugPayload,
   // Per-lane health scoping (2026-09-15) — exported as PURE functions so
   // probe-health-lane-scoping.sh can assert this consumer derives the same lane
   // id as the producer (dhx-health-check.sh) for the same config dir, rather
