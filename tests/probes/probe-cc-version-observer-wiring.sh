@@ -304,15 +304,24 @@ BRIEF
   STALE_CLAIM="$STAMP.claim.2.1.275"
   mkdir -p "$STALE_CLAIM" 2>/dev/null
   touch -d '2 hours ago' "$STALE_CLAIM" 2>/dev/null || touch -t 200001010000 "$STALE_CLAIM" 2>/dev/null
+  _pre_inode=$(stat -c %i "$STALE_CLAIM" 2>/dev/null)
   rc=$(run_obs_as 1)
+  _post_inode=$(stat -c %i "$STALE_CLAIM" 2>/dev/null)
+  # NOT "stolen" — since 2026-09-18 the observer never mutates a claim it did not create.
+  # A stale claim is simply not an obstacle: it is left exactly where it is and the decision
+  # falls through to the stamp re-read. Asserting the inode is UNCHANGED is what pins the
+  # no-mutation invariant; four separate races traced to acting on this path from a stale read.
   [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
-    && check "[T9] a STALE abandoned claim is stolen (an interrupted emit cannot silence a version forever)" ok \
-    || check "[T9] a STALE abandoned claim is stolen (an interrupted emit cannot silence a version forever)" "fail" \
-             "rc=$rc out=$(head -c 120 "$SB/out")"
+    && [ -n "$_pre_inode" ] && [ "$_pre_inode" = "$_post_inode" ] \
+    && check "[T9] a STALE abandoned claim does not block, and is NOT mutated (same inode after)" ok \
+    || check "[T9] a STALE abandoned claim does not block, and is NOT mutated (same inode after)" "fail" \
+             "rc=$rc inode $_pre_inode -> $_post_inode out=$(head -c 100 "$SB/out")"
 
   # T9b: the inverse — a FRESH claim is respected, or T8's guarantee is vacuous.
   printf '2.1.273\n' > "$STAMP"
-  mkdir -p "$STALE_CLAIM" 2>/dev/null
+  # Build a FRESH claim deliberately: T9 leaves its stale one in place now, and `mkdir -p` on an
+  # existing directory does NOT refresh the mtime the age test reads.
+  rmdir "$STALE_CLAIM" 2>/dev/null; mkdir -p "$STALE_CLAIM" 2>/dev/null; touch "$STALE_CLAIM" 2>/dev/null
   rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
   [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ "$(cat "$STAMP" 2>/dev/null)" = "2.1.273" ] \
     && check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" ok \
@@ -384,29 +393,28 @@ SHIMEOF
     || check "[T11] a peer finished mid-claim -> silent (no duplicate notice into a second lane)" "fail" \
              "rc=$rc outsz=$outsz — emitted a transition a peer had already announced"
 
-  # T12: we LOST THE STEAL. The claim is stale, so we rmdir it and re-mkdir — and a competitor
-  # wins that reacquisition and is now mid-emit. The shim IS that competitor: it recreates the
-  # claim, then fails our mkdir. We must stay silent rather than emit without owning it, and we
-  # must not delete the competitor's claim on the way out.
-  # RED against cross-repo da2bbd61e (fell through with _claimed=no and emitted).
-  cat > "$SHIM/mkdir" <<SHIMEOF
-#!/usr/bin/env bash
-/bin/mkdir "\$@" 2>/dev/null
-exit 1
-SHIMEOF
-  chmod +x "$SHIM/mkdir"
+  # T12: the ABA PRECONDITION IS STRUCTURALLY ABSENT. The round-5 refutation reproduced two
+  # processes that had both classified one claim as stale, each removing the OTHER's freshly
+  # created claim and both emitting — an ABA on the pathname, because `rmdir` names a path and
+  # not the inode you inspected. The repair deleted the steal rather than hardening it, so the
+  # property to pin is that a non-owner performs no mutation at all: run against a stale claim
+  # with a shim that makes any mkdir attempt observable, and require that the claim survives
+  # untouched and that no second claim was created.
+  # RED against cross-repo 351e67c2f, which removed and recreated it.
   printf '2.1.273\n' > "$STAMP"
-  STALE2="$STAMP.claim.2.1.275"; /bin/mkdir -p "$STALE2"
+  STALE2="$STAMP.claim.2.1.275"; /bin/rmdir "$STALE2" 2>/dev/null; /bin/mkdir -p "$STALE2"
   touch -d '2 hours ago' "$STALE2" 2>/dev/null || touch -t 200001010000 "$STALE2" 2>/dev/null
-  rc=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
-       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
-       bash "$INSTALLED_OBS" </dev/null >"$SB/out" 2>/dev/null; echo $?)
-  outsz=$(wc -c < "$SB/out")
-  if [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ -d "$STALE2" ]; then
-    check "[T12] lost the stale-claim steal -> silent, and the winner's claim is left alone" ok
+  _ino2=$(stat -c %i "$STALE2" 2>/dev/null)
+  _mt2=$(stat -c %Y "$STALE2" 2>/dev/null)
+  rc=$(run_obs_as 1)
+  _ino2b=$(stat -c %i "$STALE2" 2>/dev/null)
+  _mt2b=$(stat -c %Y "$STALE2" 2>/dev/null)
+  _nclaims=$(find "$SB/state" -maxdepth 1 -name 'cc-version-seen.claim.*' 2>/dev/null | wc -l)
+  if [ "$rc" = "0" ] && [ "$_ino2" = "$_ino2b" ] && [ "$_mt2" = "$_mt2b" ] && [ "$_nclaims" -eq 1 ]; then
+    check "[T12] a non-owner never mutates the claim path (no remove, no recreate -> no ABA)" ok
   else
-    check "[T12] lost the stale-claim steal -> silent, and the winner's claim is left alone" "fail" \
-          "rc=$rc outsz=$outsz competitor_claim_present=$([ -d "$STALE2" ] && echo yes || echo no)"
+    check "[T12] a non-owner never mutates the claim path (no remove, no recreate -> no ABA)" "fail" \
+          "inode $_ino2->$_ino2b mtime $_mt2->$_mt2b claims=$_nclaims (want 1, unchanged)"
   fi
   /bin/rmdir "$STALE2" 2>/dev/null; rm -rf "$SHIM"
 
@@ -431,10 +439,11 @@ SHIMEOF
   else
     rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
     chmod 0755 "$SB/state" 2>/dev/null
-    [ "$rc" = "0" ] && [ "$outsz" -gt 0 ] \
-      && check "[T13] stale claim that cannot be REMOVED -> still emits (a dead owner must not silence forever)" ok \
-      || check "[T13] stale claim that cannot be REMOVED -> still emits (a dead owner must not silence forever)" "fail" \
-               "rc=$rc outsz=$outsz — treated an unremovable dead claim as a live owner"
+    # Assert the NOTICE, not merely "some bytes" — unrelated stdout would satisfy a byte count.
+    [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
+      && check "[T13] stale claim + unwritable state dir -> still announces (a dead owner must not silence forever)" ok \
+      || check "[T13] stale claim + unwritable state dir -> still announces (a dead owner must not silence forever)" "fail" \
+               "rc=$rc outsz=$outsz out=$(head -c 100 "$SB/out") — a dead claim was treated as a live owner"
   fi
   /bin/rmdir "$STALE3" 2>/dev/null
 
@@ -451,15 +460,17 @@ exit 1
 SHIMEOF
   chmod +x "$SHIM/mkdir"
   printf '2.1.273\n' > "$STAMP"
-  n1=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
-       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null 2>/dev/null | wc -c)
+  PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null >"$SB/r1" 2>/dev/null
   printf '2.1.273\n' > "$STAMP"
-  n2=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
-       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null 2>/dev/null | wc -c)
-  [ "$n1" -gt 0 ] && [ "$n2" -gt 0 ] \
+  PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" </dev/null >"$SB/r2" 2>/dev/null
+  # The transition LINE, not a byte count: a byte count is satisfied by any stray stdout.
+  n1=$(grep -c '2\.1\.273 -> 2\.1\.275' "$SB/r1"); n2=$(grep -c '2\.1\.273 -> 2\.1\.275' "$SB/r2")
+  [ "$n1" -eq 1 ] && [ "$n2" -eq 1 ] \
     && check "[T14] no claim takeable -> BOTH claimless consumers emit (the documented residue: duplicate beats silence)" ok \
     || check "[T14] no claim takeable -> BOTH claimless consumers emit (the documented residue: duplicate beats silence)" "fail" \
-             "run1=${n1}B run2=${n2}B — the fail-open residue was flipped to silence"
+             "run1 notices=$n1 run2 notices=$n2 (want 1 each) — the fail-open residue was flipped to silence"
   rm -rf "$SHIM"
 fi
 
