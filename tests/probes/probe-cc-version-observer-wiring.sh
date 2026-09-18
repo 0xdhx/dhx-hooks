@@ -37,7 +37,10 @@
 #      absent/empty attendedness signal fails OPEN, T8 eight concurrent attended
 #      consumers produce exactly one emission, T9 a stale claim is stealable and
 #      a fresh one is respected, T10 an unwritable state dir still EMITS (the claim
-#      must never be able to silence the operator) and the failed stamp re-announces. Skipped (not failed) when cross-repo hasn't provisioned the
+#      must never be able to silence the operator) and the failed stamp re-announces,
+#      T11/T12 the two claim RACES scheduled deterministically with a `mkdir` shim —
+#      a peer finishing mid-claim, and losing a stale-claim steal — neither of which
+#      T8's barrier can schedule and both of which it stayed green against. Skipped (not failed) when cross-repo hasn't provisioned the
 #      symlink, so the probe stays green in a bare hooks clone — matching the
 #      dispatcher's own [ -e ] graceful no-op.
 #
@@ -347,6 +350,61 @@ BRIEF
                "rc=$rc stamp=$(cat "$STAMP" 2>/dev/null) outsz=$(wc -c < "$SB/out")"
     chmod 0755 "$SB/state" 2>/dev/null
   fi
+
+  # ── T11/T12: the claim RACES, scheduled deterministically ───────────────────
+  # T8's barrier proves one-of-N under natural scheduling, but it cannot schedule the two
+  # interleavings that actually break the contract, so it stayed green against both of them.
+  # A `mkdir` shim on PATH interposes at exactly the moment the observer tries to claim —
+  # after it has read the stamp — which is the window both races live in. Same technique the
+  # close-gate reviewer used to reproduce them (2026-09-17, round 3).
+  SHIM="$SB/shim"; mkdir -p "$SHIM"
+
+  # T11: the WINNER FINISHED while we were failing to claim. Both sessions read the old stamp;
+  # A takes the claim, emits, stamps, releases. B's mkdir fails and B then finds NO claim
+  # directory. An implementation that infers "nobody holds one, so emit" announces a transition
+  # A already announced. The shim IS lane A: it advances the stamp, then fails our mkdir.
+  # RED against cross-repo da2bbd61e (fell through and emitted a duplicate).
+  cat > "$SHIM/mkdir" <<SHIMEOF
+#!/usr/bin/env bash
+printf '2.1.275\n' > "$STAMP"
+exit 1
+SHIMEOF
+  chmod +x "$SHIM/mkdir"
+  printf '2.1.273\n' > "$STAMP"
+  rc=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
+       bash "$INSTALLED_OBS" </dev/null >"$SB/out" 2>/dev/null; echo $?)
+  outsz=$(wc -c < "$SB/out")
+  [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] \
+    && check "[T11] a peer finished mid-claim -> silent (no duplicate notice into a second lane)" ok \
+    || check "[T11] a peer finished mid-claim -> silent (no duplicate notice into a second lane)" "fail" \
+             "rc=$rc outsz=$outsz — emitted a transition a peer had already announced"
+
+  # T12: we LOST THE STEAL. The claim is stale, so we rmdir it and re-mkdir — and a competitor
+  # wins that reacquisition and is now mid-emit. The shim IS that competitor: it recreates the
+  # claim, then fails our mkdir. We must stay silent rather than emit without owning it, and we
+  # must not delete the competitor's claim on the way out.
+  # RED against cross-repo da2bbd61e (fell through with _claimed=no and emitted).
+  cat > "$SHIM/mkdir" <<SHIMEOF
+#!/usr/bin/env bash
+/bin/mkdir "\$@" 2>/dev/null
+exit 1
+SHIMEOF
+  chmod +x "$SHIM/mkdir"
+  printf '2.1.273\n' > "$STAMP"
+  STALE2="$STAMP.claim.2.1.275"; /bin/mkdir -p "$STALE2"
+  touch -d '2 hours ago' "$STALE2" 2>/dev/null || touch -t 200001010000 "$STALE2" 2>/dev/null
+  rc=$(PATH="$SHIM:$PATH" CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" \
+       CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
+       bash "$INSTALLED_OBS" </dev/null >"$SB/out" 2>/dev/null; echo $?)
+  outsz=$(wc -c < "$SB/out")
+  if [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ -d "$STALE2" ]; then
+    check "[T12] lost the stale-claim steal -> silent, and the winner's claim is left alone" ok
+  else
+    check "[T12] lost the stale-claim steal -> silent, and the winner's claim is left alone" "fail" \
+          "rc=$rc outsz=$outsz competitor_claim_present=$([ -d "$STALE2" ] && echo yes || echo no)"
+  fi
+  /bin/rmdir "$STALE2" 2>/dev/null; rm -rf "$SHIM"
 fi
 
 echo "---"
