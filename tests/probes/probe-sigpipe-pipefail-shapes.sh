@@ -138,6 +138,24 @@ _hp028_lcp_len() {
   printf '%s' "$i"
 }
 
+# Is offset K of string S outside every quoted region? A redirect spliced INSIDE
+# a quoted grep PATTERN is not a redirect at all — it is pattern text — and the
+# reconstruction rebuilds it perfectly while the assertion silently changes
+# meaning. Measured 2026-09-18: the converter turned `grep -qF "cp "` into
+# `grep -qF "cp <<<"$1" "`, this check passed it, `bash -n` passed it (it IS
+# valid shell), and four assertions in one probe flipped from OK to FAIL.
+_hp028_outside_quotes() {
+  local s="$1" k="$2" i=0 sq=0 dq=0 c
+  while [[ $i -lt $k ]]; do
+    c="${s:i:1}"
+    if [[ "$c" == '\' ]]; then i=$((i + 2)); continue; fi
+    [[ $dq -eq 0 && "$c" == "'" ]] && sq=$((1 - sq))
+    [[ $sq -eq 0 && "$c" == '"' ]] && dq=$((1 - dq))
+    i=$((i + 1))
+  done
+  [[ $sq -eq 0 && $dq -eq 0 ]]
+}
+
 # hp028_classify_transform OLD NEW
 #   Emits a rule name + returns 0 when NEW is EXACTLY one sanctioned transform
 #   of OLD; emits UNSANCTIONED:<reason> + returns 1 otherwise.
@@ -208,7 +226,45 @@ hp028_classify_transform() {
   [[ $k -gt $kmax ]] && k=$kmax
   while [[ $k -ge 0 ]]; do
     if [[ "${old_grep:0:$k}${redirect}${old_grep:$k}" == "$new_grep" ]]; then
-      printf '%s' "$rule"; return 0
+      # The redirect must land on a WORD BOUNDARY. Measured 2026-09-18: the
+      # converter emitted `grep -qF  <<<"$1""cp "`, where the here-string word
+      # and the pattern word CONCATENATE into `$1cp ` and grep loses its
+      # pattern argument entirely. Valid shell, reconstructs exactly, outside
+      # every quote — and wrong. The redirect already opens with a space, so
+      # only its right-hand edge needs checking.
+      # Legal landing sites. A redirect must not CONCATENATE with the word
+      # that follows. Measured 2026-09-18: the converter emitted
+      # `grep -qF  <<<"$1""cp "`, where the here-string and the pattern fuse
+      # into the single word `$1cp ` and grep loses its pattern argument —
+      # valid shell, reconstructs exactly, outside every quote, and wrong.
+      #
+      # Whitespace and end-of-clause are obviously legal. A QUOTE is legal too,
+      # but only once grep has actually taken an argument: after an argument a
+      # quote CLOSES an enclosing context (`bash -c '...'`, an assert string),
+      # while before one it OPENS the pattern and fusing is exactly the defect.
+      # So the discriminator is position, not character.
+      local argstart=0
+      [[ "$old_grep" =~ ^grep[[:space:]]+-[qm][A-Za-z0-9]*[[:space:]]* ]] \
+        && argstart=${#BASH_REMATCH[0]}
+      local nxt="${old_grep:$k:1}"
+      # A shell METACHARACTER always terminates a word, so it can never fuse.
+      # A quote terminates only once grep has taken an argument. Anything else
+      # — a letter, a digit, `$` — fuses, and that is the defect.
+      if [[ -n "$nxt" ]]; then
+        case "$nxt" in
+          [[:space:]]|';'|'&'|'|'|'('|')'|'<'|'>') ;;
+          "'"|'"') [[ $k -gt $argstart ]] || {
+                     printf 'UNSANCTIONED:redirect-would-CONCATENATE-with-the-next-word'
+                     return 1; } ;;
+          *) printf 'UNSANCTIONED:redirect-would-CONCATENATE-with-the-next-word'
+             return 1 ;;
+        esac
+      fi
+      if _hp028_outside_quotes "$old_grep" "$k"; then
+        printf '%s' "$rule"; return 0
+      fi
+      printf 'UNSANCTIONED:redirect-spliced-INSIDE-a-quoted-region-of-the-grep-clause'
+      return 1
     fi
     k=$((k - 1))
   done
@@ -216,11 +272,66 @@ hp028_classify_transform() {
   return 1
 }
 
+if [[ "${1:-}" == "--self-test" ]]; then
+  # The verifier's OWN mutation suite. It lives here, beside the thing it
+  # tests, because the previous run's verifier died in a job scratch directory
+  # and had to be rebuilt from scratch — a verifier whose correctness the next
+  # session cannot re-run is asserted, not established. It is deleted with the
+  # rest of this scaffolding when the ratchet goes.
+  #
+  # NULL MUTANT FIRST: every sanctioned transform must pass. Then each mutant
+  # must be refused. Three of these cells were written AFTER the live converter
+  # produced exactly that defect and this verifier waved it through.
+  _P=0; _F=0
+  _t() { local want="$1" label="$2" old="$3" new="$4" got
+         got=$(hp028_classify_transform "$old" "$new")
+         if [[ "$got" == "$want"* ]]; then _P=$((_P+1)); printf 'OK   %-56s %s\n' "$label" "$got"
+         else _F=$((_F+1)); printf 'FAIL %-56s got=%s want=%s*\n' "$label" "$got" "$want"; fi; }
+
+  echo "── NULL MUTANT: the sanctioned transforms ──"
+  _t R1 'echo, escaped-quote assert argument'  '  assert "names gsd-core" "echo \"$LIVE_LINE\" | grep -q \"gsd-core\""'  '  assert "names gsd-core" "grep -q \"gsd-core\" <<<\"$LIVE_LINE\""'   # HP-028 fixture: constructs the broken shape on purpose
+  _t R1 'echo, negation class'  "  assert \"drops retired\" \"! echo \\\"\$L\\\" | grep -q 'gone'\""  "  assert \"drops retired\" \"! grep -q 'gone' <<<\\\"\$L\\\"\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t R1 'echo, nested inside bash -c'  "  bash -c 'echo \"\$1\" | grep -qF \"cp \"' _ \"\$OUT\""  "  bash -c 'grep -qF \"cp \" <<<\"\$1\"' _ \"\$OUT\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t R2 "printf '%s\\n'"  "    if printf '%s\\n' \"\$OUT\" | grep -q 'BLOCKED'; then"  "    if grep -q 'BLOCKED' <<<\"\$OUT\"; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t R2 'redirect before a continuation backslash'  "printf '%s\\n' \"\$G\" | grep -qE '< \*/dev/null' \\"  "grep -qE '< \*/dev/null' <<<\"\$G\" \\"   # HP-028 fixture: constructs the broken shape on purpose
+  _t R3 "printf '%s' takes process substitution, NOT a here-string"  "    \"\$(printf '%s' \"\$O\" | grep -q 'x' && echo false || echo true)\""  "    \"\$(grep -q 'x' < <(printf '%s' \"\$O\") && echo false || echo true)\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t R3 'command producer'  "    \"\$(git log --format=%H | grep -q . && echo true || echo false)\""  "    \"\$(grep -q . < <(git log --format=%H) && echo true || echo false)\""   # HP-028 fixture: constructs the broken shape on purpose
+
+  echo
+  echo "── MUTANTS: each must be REFUSED ──"
+  _t UNSANCTIONED 'M1 reverted line'  "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then" "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M2 grep ARGUMENT altered'  "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then" "    if grep -q 'BX' <<<\"\$O\"; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M3 trailing branch text altered'  "    \"\$(printf '%s' \"\$O\" | grep -q 'x' && echo false || echo true)\""  "    \"\$(grep -q 'x' < <(printf '%s' \"\$O\") && echo true || echo false)\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M4 producer altered inside the redirect'  "    \"\$(git log --format=%H | grep -q . && echo true)\""  "    \"\$(grep -q . < <(git diff --format=%H) && echo true)\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED "M5 printf '%s' wrongly made a here-string"  "    if printf '%s' \"\$O\" | grep -q 'B'; then" "    if grep -q 'B' <<<\"\$O\"; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M6 grep FLAG altered'  "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then" "    if grep -qi 'B' <<<\"\$O\"; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M7 text left of grep altered'  "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then" "    if ! grep -q 'B' <<<\"\$O\"; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M8 redirect omitted'  "    if printf '%s\\n' \"\$O\" | grep -q 'B'; then" "    if grep -q 'B'; then"   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M9 redirect AFTER a continuation backslash'  "printf '%s\\n' \"\$G\" | grep -qE '< \*/dev/null' \\"  "grep -qE '< \*/dev/null' \\ <<<\"\$G\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M10 redirect spliced INSIDE a quoted pattern'  "  bash -c 'echo \"\$1\" | grep -qF \"cp \"' _ \"\$OUT\""  "  bash -c 'grep -qF \"cp <<<\"\$1\" \"' _ \"\$OUT\""   # HP-028 fixture: constructs the broken shape on purpose
+  _t UNSANCTIONED 'M11 redirect CONCATENATED with the pattern word'  "  bash -c 'echo \"\$1\" | grep -qF \"cp \"' _ \"\$OUT\""  "  bash -c 'grep -qF  <<<\"\$1\"\"cp \"' _ \"\$OUT\""   # HP-028 fixture: constructs the broken shape on purpose
+  echo
+  echo "$_P passed, $_F failed"
+  [ "$_F" -eq 0 ]
+  exit $?
+fi
+
 if [[ "${1:-}" == "--verify-conversion" ]]; then
   BASE_REF="${2:-HEAD}"
   cd "$REPO_ROOT" || exit 1
 
-  TOUCHED=$(git diff --name-only "$BASE_REF" -- 'tests/probes/*.sh' 'scripts/*.sh' 2>/dev/null)
+  # Optional trailing file list. These repos are a SHARED WORKING TREE with
+  # peers committing every few minutes, so `everything that differs from the
+  # ref` routinely includes another session's in-progress file — which this
+  # verifier then reports as unsanctioned, burying the signal for the files
+  # this commit actually touches. Scope explicitly and the noise goes away.
+  shift 2>/dev/null || true
+  shift 2>/dev/null || true
+  if [[ "$#" -gt 0 ]]; then
+    TOUCHED=$(git diff --name-only "$BASE_REF" -- "$@" 2>/dev/null)
+  else
+    TOUCHED=$(git diff --name-only "$BASE_REF" -- 'tests/probes/*.sh' 'scripts/*.sh' 2>/dev/null)
+  fi
   if [[ -z "$TOUCHED" ]]; then
     echo "FAIL --verify-conversion: no .sh files differ from $BASE_REF in the ratcheted roots"
     exit 1
