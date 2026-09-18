@@ -58,41 +58,82 @@ INDETERMINATE=0
 BC45A2E_EPOCH=1777222640    # 2026-04-26 11:57:20 CDT (bc45a2e commit time)
 SEVEN_DAYS=604800
 
-# ----- Helper: parse eldest live CC bin/claude PID start time → epoch ------
+# ----- Helper: ONE process-table snapshot of live CC bin/claude procs ------
+# Emits `<pid><TAB><lstart>` per matching process. ONE `ps` read, so every pid
+# arrives already carrying its own start time.
+#
+# WHY A SNAPSHOT. Gates 3 and 4 previously ran `pgrep -f bin/claude` and then a
+# separate `ps -o lstart= -p <pid>` per pid. A CC process exiting between the two
+# reads returned an empty lstart, and Gate 4 counted that as INDETERMINATE —
+# making the whole probe exit 2 and, inside the pre-commit hermetic tier, block
+# every session's probe-touching commit. Measured 2026-09-18: 15/15 runs clean at
+# rest, but under churn of short-lived processes matching `bin/claude`, 22 of 40
+# runs reported `PASS: 4  FAIL: 0  INDETERMINATE: 1` with Gate 4 the sole
+# indeterminate — the exact signature observed in the tier that day. Gate 3
+# survived the same churn only because its walk happened to `continue` past a
+# vanished pid instead of flagging it.
+#
+# A pid that has exited is not a LIVE process, which is the only thing either
+# gate asks about, so the right answer was never "indeterminate" — it was "not
+# in the snapshot". The window is now closed rather than tolerated.
+#
 # Honors DHX_PROBE_PGREP_FAKE_OUTPUT (canned newline-separated PID list) and
-# DHX_PROBE_PS_LSTART_OVERRIDE (canned lstart string) for companion-test injection.
+# DHX_PROBE_PS_LSTART_OVERRIDE (canned lstart string) for companion-test
+# injection. Nothing in tests/ or scripts/ exercised either var as of 2026-09-18.
+# Return: 0 = one or more lines emitted; 1 = no CC procs; 2 = ps unusable.
+cc_proc_snapshot() {
+  local pid lstart
+  if [[ -n "${DHX_PROBE_PGREP_FAKE_OUTPUT-}" ]]; then
+    for pid in $DHX_PROBE_PGREP_FAKE_OUTPUT; do
+      if [[ -n "${DHX_PROBE_PS_LSTART_OVERRIDE-}" ]]; then
+        lstart="$DHX_PROBE_PS_LSTART_OVERRIDE"
+      else
+        lstart="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      fi
+      printf '%s\t%s\n' "$pid" "$lstart"
+    done
+    return 0
+  fi
+
+  # lstart is exactly 5 whitespace-separated fields (DoW Mon DD HH:MM:SS YYYY),
+  # so pid is $1 and lstart is $2..$6 whatever the command line holds. The awk
+  # program's own argv carries `bin\/claude`, not `bin/claude`, so it cannot
+  # match itself; $1 != own-pid drops this probe's own process tree anyway.
+  local out
+  out="$(ps -eo pid=,lstart=,args= 2>/dev/null \
+    | awk -v self="$$" '/bin\/claude/ && $1 != self { printf "%s\t%s %s %s %s %s\n", $1, $2, $3, $4, $5, $6 }')"
+  [[ -z "$out" ]] && return 1
+  printf '%s\n' "$out"
+  return 0
+}
+
+# ----- Helper: eldest live CC bin/claude start time → epoch ------
 # Stdout: epoch on success.
 # Return: 0 = epoch printed; 1 = no CC procs (treated as gate-pass condition);
 #         2 = parse failure (treated as INDETERMINATE).
 eldest_cc_epoch() {
-  local pids
-  if [[ -n "${DHX_PROBE_PGREP_FAKE_OUTPUT-}" ]]; then
-    pids="$DHX_PROBE_PGREP_FAKE_OUTPUT"
-  else
-    pids="$(pgrep -f "bin/claude" 2>/dev/null)"
-    local pgrep_rc=$?
-    # pgrep exit 1 = no matches; 2/3 = error
-    if [[ "$pgrep_rc" -eq 1 ]]; then return 1; fi
-    if [[ "$pgrep_rc" -ne 0 ]]; then return 2; fi
-  fi
-  [[ -z "$pids" ]] && return 1
+  local snap snap_rc oldest_epoch="" pid lstart epoch
+  snap="$(cc_proc_snapshot)"; snap_rc=$?
+  [[ "$snap_rc" -ne 0 ]] && return "$snap_rc"
 
-  local oldest_epoch=""
-  local pid lstart epoch
-  for pid in $pids; do
-    if [[ -n "${DHX_PROBE_PS_LSTART_OVERRIDE-}" ]]; then
-      lstart="$DHX_PROBE_PS_LSTART_OVERRIDE"
-    else
-      lstart="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -z "$lstart" ]] && continue
-    fi
+  while IFS=$'\t' read -r pid lstart; do
+    [[ -z "$pid" ]] && continue
+    # Empty only on the injected path; the snapshot pairs pid with lstart.
+    [[ -z "$lstart" ]] && continue
     epoch="$(date -d "$lstart" +%s 2>/dev/null)"
     [[ -z "$epoch" ]] && return 2
     if [[ -z "$oldest_epoch" || "$epoch" -lt "$oldest_epoch" ]]; then
       oldest_epoch="$epoch"
     fi
-  done
-  [[ -z "$oldest_epoch" ]] && return 2
+  done <<< "$snap"
+
+  # Every entry skipped for want of a start time means no process the gate can
+  # call live — the same condition as an empty snapshot, so it returns 1 (a
+  # gate-pass) rather than 2. Returning 2 here was what made Gate 3 report
+  # INDETERMINATE on precisely the input Gate 4 now calls GREEN, and that
+  # disagreement between two gates reading ONE pid list is what made the
+  # original 2026-09-18 flicker so hard to attribute.
+  [[ -z "$oldest_epoch" ]] && return 1
   echo "$oldest_epoch"
   return 0
 }
@@ -177,39 +218,31 @@ else
 fi
 
 # ----- Gate 4: no live bin/claude proc predates bc45a2e -------------------
-if [[ -n "${DHX_PROBE_PGREP_FAKE_OUTPUT-}" ]]; then
-  cc_pids="$DHX_PROBE_PGREP_FAKE_OUTPUT"
-  pgrep_rc=0
-else
-  cc_pids="$(pgrep -f "bin/claude" 2>/dev/null)"
-  pgrep_rc=$?
-fi
+gate4_snap="$(cc_proc_snapshot)"; gate4_snap_rc=$?
 
-# pgrep exit 1 = no matches → Gate 4 GREEN. exit 0 with PIDs → walk them.
-# exit 2/3 = error → INDETERMINATE.
-if [[ "$pgrep_rc" -eq 1 || -z "$cc_pids" ]]; then
-  echo "Gate 4 GREEN: no live bin/claude procs (pgrep returned no matches)"
+if [[ "$gate4_snap_rc" -eq 1 || -z "$gate4_snap" ]]; then
+  echo "Gate 4 GREEN: no live bin/claude procs in the process-table snapshot"
   PASS=$((PASS+1))
-elif [[ "$pgrep_rc" -ne 0 ]]; then
-  echo "Gate 4 INDETERMINATE: pgrep returned rc=$pgrep_rc"
+elif [[ "$gate4_snap_rc" -ne 0 ]]; then
+  echo "Gate 4 INDETERMINATE: process-table snapshot unreadable (rc=$gate4_snap_rc)"
   INDETERMINATE=$((INDETERMINATE+1))
 else
   gate4_failed_pid=""
   gate4_failed_epoch=""
-  gate4_indeterminate=0
-  for pid in $cc_pids; do
-    if [[ -n "${DHX_PROBE_PS_LSTART_OVERRIDE-}" ]]; then
-      lstart="$DHX_PROBE_PS_LSTART_OVERRIDE"
-    else
-      lstart="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    fi
+  gate4_unparsed_pid=""
+  while IFS=$'\t' read -r pid lstart; do
+    [[ -z "$pid" ]] && continue
     if [[ -z "$lstart" ]]; then
-      gate4_indeterminate=1
+      # Reachable only via DHX_PROBE_PGREP_FAKE_OUTPUT. A pid the snapshot could
+      # not pair with a start time is not a live process, which is the only thing
+      # this gate asks about — so it is skipped, not counted indeterminate.
       continue
     fi
     epoch="$(date -d "$lstart" +%s 2>/dev/null)"
     if [[ -z "$epoch" ]]; then
-      gate4_indeterminate=1
+      # A start time the snapshot DID produce but `date` cannot read is a real
+      # parse failure, not a vanished process. That is worth an INDETERMINATE.
+      gate4_unparsed_pid="$pid"
       continue
     fi
     if [[ "$epoch" -lt "$BC45A2E_EPOCH" ]]; then
@@ -217,12 +250,13 @@ else
       gate4_failed_epoch="$epoch"
       break
     fi
-  done
+  done <<< "$gate4_snap"
+
   if [[ -n "$gate4_failed_pid" ]]; then
     echo "Gate 4 RED: PID $gate4_failed_pid lstart epoch $gate4_failed_epoch < bc45a2e epoch $BC45A2E_EPOCH (HP-017 stale-snapshot risk)"
     FAIL=$((FAIL+1))
-  elif [[ "$gate4_indeterminate" -eq 1 ]]; then
-    echo "Gate 4 INDETERMINATE: ps/date parse failure for at least one PID"
+  elif [[ -n "$gate4_unparsed_pid" ]]; then
+    echo "Gate 4 INDETERMINATE: \`date\` could not parse the start time the snapshot gave for PID $gate4_unparsed_pid — a locale/format fault, NOT a process that exited mid-read (the snapshot pairs pid with start time in one ps call, so that race cannot reach here)"
     INDETERMINATE=$((INDETERMINATE+1))
   else
     echo "Gate 4 GREEN: all live bin/claude procs started post-bc45a2e ($BC45A2E_EPOCH)"

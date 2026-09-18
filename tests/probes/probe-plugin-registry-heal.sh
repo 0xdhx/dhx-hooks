@@ -44,6 +44,10 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 PASS=0
 FAIL=0
+# Assertions that could not run (e.g. no strace for the scope-guard arm). Reported
+# on its own line when non-zero; the PASS/FAIL summary line keeps its exact shape
+# so nothing parsing it has to change.
+SKIPPED=0
 
 # Build a fake CLAUDE_CONFIG_DIR with a populated cache under dhx-local/dhx/<version>.
 # Each scenario gets its own subdir so state never leaks between runs.
@@ -471,18 +475,64 @@ printf '%s' "$KM_UNRELATED" > "$cfg/plugins/known_marketplaces.json"
 run_hook "$cfg" >/dev/null
 assert_unchanged "wrong-class: IP unchanged regardless of km state (Phase 6 scope guard)" "$cfg/plugins/installed_plugins.json" "$HEALTHY_JSON"
 
-# ---- 8. happy-path timing: hook runs under ~100ms (post-Phase-6: ~1ms early-exit) ----
+# ---- 8. happy path: the scope guard early-exits, asserted BEHAVIOURALLY ----
+# This arm used to FAIL when one wall-clock sample of the hook reached 100ms. It
+# measured 128ms inside the pre-commit tier on 2026-09-18 and passed standalone
+# minutes later, blocking every session's probe-touching commit in between.
+#
+# The threshold was never measuring the hook. Interleaved against bare `bash -c :`
+# on this machine that day: idle 2ms/2ms, 2x-nproc 10ms/10ms, 8x-nproc 34ms/30ms —
+# the hook costs LESS than starting the interpreter, and at 8x-nproc bare
+# `bash -c :` alone peaked at 73ms. A 100ms absolute bound under load is a
+# scheduler measurement wearing a hook's name, and docs/decisions.md's 2026-09-18
+# SUITE_TIMEOUT row already ruled that a load-dependent red "trains its reader to
+# ignore it".
+#
+# The claim this arm's own comment always made is "the scope guard early-exits
+# before any check" — so assert THAT, by counting opens of the registry file.
+# A syscall count does not move with load: measured 0 opens idle and 0 under
+# 8x-nproc, against 1 for a hook that does read the file. The elapsed time is
+# still printed, because a zero-opens assertion cannot see a hook that becomes
+# slow without touching the file — but it never fails the probe again.
 cfg=$(make_case "timing" "$HEALTHY_JSON")
 t_start=$(date +%s%N)
 HOME=$(dirname "$cfg") CLAUDE_CONFIG_DIR="$cfg" bash "$HOOK" < /dev/null >/dev/null 2>&1
 t_end=$(date +%s%N)
 elapsed_ms=$(( (t_end - t_start) / 1000000 ))
-if (( elapsed_ms < 100 )); then
-  printf '  ✓ timing: happy path = %sms (< 100ms target — scope guard early-exit)\n' "$elapsed_ms"
-  PASS=$((PASS + 1))
+
+if command -v strace >/dev/null 2>&1 && strace -f -e trace=openat -o /dev/null true >/dev/null 2>&1; then
+  # The control runs FIRST and in the same conditions: if a hook that genuinely
+  # reads the registry shows zero opens, the instrument is broken and the real
+  # assertion below would be a false green. Refuse to report either way then.
+  ctl_hook="$(dirname "$cfg")/reads-the-registry.sh"
+  printf '#!/usr/bin/env bash\ncat "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" >/dev/null 2>&1\n' > "$ctl_hook"
+  ctl_trace=$(mktemp)
+  HOME=$(dirname "$cfg") CLAUDE_CONFIG_DIR="$cfg" \
+    strace -f -e trace=openat -o "$ctl_trace" bash "$ctl_hook" < /dev/null >/dev/null 2>&1
+  ctl_opens=$(grep -c 'installed_plugins\.json' "$ctl_trace" 2>/dev/null || true)
+  rm -f "$ctl_trace" "$ctl_hook"
+
+  hook_trace=$(mktemp)
+  HOME=$(dirname "$cfg") CLAUDE_CONFIG_DIR="$cfg" \
+    strace -f -e trace=openat -o "$hook_trace" bash "$HOOK" < /dev/null >/dev/null 2>&1
+  hook_opens=$(grep -c 'installed_plugins\.json' "$hook_trace" 2>/dev/null || true)
+  rm -f "$hook_trace"
+
+  if (( ctl_opens < 1 )); then
+    printf '  ⚠ scope guard: SKIPPED — strace ran but the positive control saw 0 opens, so the instrument is not measuring; asserted nothing (elapsed %sms)\n' "$elapsed_ms"
+    SKIPPED=$((SKIPPED + 1))
+  elif (( hook_opens == 0 )); then
+    printf '  ✓ scope guard: 0 opens of installed_plugins.json (control saw %s) — early-exit before any check; elapsed %sms, informational\n' "$ctl_opens" "$elapsed_ms"
+    PASS=$((PASS + 1))
+  else
+    printf '  ✗ scope guard: %s opens of installed_plugins.json — the guard did NOT early-exit (elapsed %sms)\n' "$hook_opens" "$elapsed_ms"
+    FAIL=$((FAIL + 1))
+  fi
 else
-  printf '  ✗ timing: happy path = %sms (>= 100ms target)\n' "$elapsed_ms"
-  FAIL=$((FAIL + 1))
+  # Loud, and counted. A skipped assertion that prints nothing is the same
+  # false-green class this arm was rewritten to remove.
+  printf '  ⚠ scope guard: SKIPPED — strace unavailable or ptrace denied; asserted nothing (elapsed %sms)\n' "$elapsed_ms"
+  SKIPPED=$((SKIPPED + 1))
 fi
 
 # ============================================================================
@@ -1046,4 +1096,5 @@ assert_all_entries_timestamped "non-object" "$km_path"
 
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"
+(( SKIPPED > 0 )) && echo "SKIPPED: $SKIPPED  (assertions that could not run — see the ⚠ lines above)"
 exit $FAIL

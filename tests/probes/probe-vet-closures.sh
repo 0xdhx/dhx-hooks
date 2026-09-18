@@ -27,6 +27,9 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 WORKER="$REPO_ROOT/dhx/dhx-vet-closures-render.sh"
 SHIM="$REPO_ROOT/dhx/dhx-vet-closures.sh"
 
+# shellcheck source=lib/run-hook-envelope.sh
+source "$(dirname "$0")/lib/run-hook-envelope.sh"
+
 PASS=0; FAIL=0
 ok(){ printf 'OK   %s\n' "$1"; PASS=$((PASS+1)); }
 bad(){ printf 'FAIL %s\n' "$1"; FAIL=$((FAIL+1)); }
@@ -199,23 +202,36 @@ fi
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 
 # ── Shim contract ────────────────────────────────────────────────────────────────
-shim_out=$(printf '{"hook_event_name":"SessionStart","source":"startup"}' \
-  | DHX_SKIP_VET_CLOSURES=1 DHX_VET_CLOSURES_WORKER="$WORKER" bash "$SHIM" 2>/dev/null); shim_rc=$?
-assert "$([ -z "$shim_out" ] && [ "$shim_rc" = 0 ] && echo 1)" "shim: DHX_SKIP_VET_CLOSURES=1 → empty, exit 0"
+# Every arm below goes through run_hook_envelope, which pipes the envelope in the
+# dispatcher's own shape but reports the SHIM's exit status ($RHE_RC) rather than
+# the pipeline's. The first arm is why: the shim exits at its suppression guard
+# BEFORE `INPUT=$(cat)`, so the writer takes SIGPIPE and this file's `set -uo
+# pipefail` used to surface the writer's 141 as the shim's rc — 3 failures in 30
+# runs under 2x-nproc load, 0 in 30 idle, measured 2026-09-18. The shim's own rc
+# was 0 throughout. See lib/run-hook-envelope.sh and HP-028's zero-read leg.
+ENVELOPE='{"hook_event_name":"SessionStart","source":"startup"}'
 
-shim_out=$(printf '{"hook_event_name":"SessionStart"}' \
-  | DHX_VET_CLOSURES_WORKER="$TMP/does-not-exist.sh" bash "$SHIM" 2>/dev/null); shim_rc=$?
-assert "$([ -z "$shim_out" ] && [ "$shim_rc" = 0 ] && echo 1)" "shim: absent worker → graceful no-op, exit 0"
+DHX_SKIP_VET_CLOSURES=1 DHX_VET_CLOSURES_WORKER="$WORKER" \
+  run_hook_envelope "$ENVELOPE" "$SHIM"
+assert "$([ -z "$RHE_OUT" ] && [ "$RHE_RC" = 0 ] && echo 1)" "shim: DHX_SKIP_VET_CLOSURES=1 → empty, exit 0"
 
-shim_out=$(printf '{"hook_event_name":"SessionStart"}' \
-  | DHX_VET_CLOSURES_LEDGER="$LEDGER" DHX_VET_CLOSURES_WORKER="$WORKER" bash "$SHIM" 2>/dev/null); shim_rc=$?
-assert "$([ "$shim_rc" = 0 ] && [[ "$shim_out" == *"Pending vet closures"* ]] && echo 1)" \
+DHX_VET_CLOSURES_WORKER="$TMP/does-not-exist.sh" \
+  run_hook_envelope '{"hook_event_name":"SessionStart"}' "$SHIM"
+assert "$([ -z "$RHE_OUT" ] && [ "$RHE_RC" = 0 ] && echo 1)" "shim: absent worker → graceful no-op, exit 0"
+
+DHX_VET_CLOSURES_LEDGER="$LEDGER" DHX_VET_CLOSURES_WORKER="$WORKER" \
+  run_hook_envelope '{"hook_event_name":"SessionStart"}' "$SHIM"
+assert "$([ "$RHE_RC" = 0 ] && [[ "$RHE_OUT" == *"Pending vet closures"* ]] && echo 1)" \
   "shim: delegates to worker and passes the block through"
 
+# The oversized arm asserts the WRITER's status, not the shim's — that is the
+# actual HP-015 drain claim, and reading it off the pipeline conflated the two.
+# Here the shim reaches `INPUT=$(cat)`, so a live writer is the evidence it drained.
 big=$(head -c 200000 /dev/zero | tr '\0' 'x')
-shim_out=$(printf '{"hook_event_name":"SessionStart","pad":"%s"}' "$big" \
-  | DHX_VET_CLOSURES_WORKER="$TMP/does-not-exist.sh" bash "$SHIM" 2>/dev/null); shim_rc=$?
-assert "$([ "$shim_rc" = 0 ] && echo 1)" "shim: drains oversized stdin without SIGPIPE (HP-015)"
+DHX_VET_CLOSURES_WORKER="$TMP/does-not-exist.sh" \
+  run_hook_envelope "$(printf '{"hook_event_name":"SessionStart","pad":"%s"}' "$big")" "$SHIM"
+assert "$([ "$RHE_WRITER_RC" = 0 ] && [ "$RHE_RC" = 0 ] && echo 1)" \
+  "shim: drains oversized stdin without SIGPIPE — writer survives (HP-015)"
 
 # ── Header-comment invariant is present in the source ────────────────────────────
 assert "$(grep -q 'INVARIANT: the action line is a RE-VET' "$WORKER" && echo 1)" \

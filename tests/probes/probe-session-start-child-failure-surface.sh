@@ -152,6 +152,52 @@ GOT=$(PATH="$NOTOOLS" _dhx_child nodigest child_fail 2>/dev/null)
 check "without sha256sum/shasum: child ran, nothing printed" "$( [ -z "$GOT" ] && echo ok )" "got: $GOT"
 check "without sha256sum/shasum: nothing written" "$( [ "$(ls -d "$_DHX_CF_DIR"/nodigest.* 2>/dev/null | wc -l)" = 0 ] && echo ok )"
 
+# ---- 9. a child that exits WITHOUT draining stdin must not surface anything ----
+# Every child is invoked as `printf '%s' "$INPUT" | _dhx_child <label> bash <hook>`
+# under the dispatcher's `set -uo pipefail`. A child that exits at a suppression
+# guard before its `INPUT=$(cat)` closes the read end unread, so the printf takes
+# SIGPIPE and exits 141 and pipefail makes the PIPELINE's status 141.
+#
+# That must stay invisible: _dhx_child captures rc from the CHILD alone, returns 0,
+# and the dispatcher discards the pipeline status at statement level with no errexit.
+# Nothing asserted this until 2026-09-18, when the property became load-bearing —
+# probe-vet-closures.sh reports the shim's own rc precisely BECAUSE the writer's 141
+# is discarded in production. If this arm ever reds, the correct fix moves from that
+# probe to the shim itself (drain stdin before the guard), so read it as a routing
+# signal, not a nuisance.
+rm -rf "$_DHX_CF_DIR"
+SKIPPER="$TMPROOT/exits-before-cat.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SKIPPER"
+OUT9="$TMPROOT/out9"; ERR9="$TMPROOT/err9"
+# Run it the way the DISPATCHER does: the pipeline is a bare statement with more
+# script after it, so its status is discarded rather than becoming anyone's exit
+# code. Wrapping it in a subshell instead makes the subshell's status BE the
+# pipeline's 141 — which is a property of the wrapper, not of production. That
+# mistake was made here first and caught by running the arm.
+#
+# The writer is delayed so the reader ALWAYS wins the race — without it this arm
+# passes ~9 times in 10 by luck and proves nothing.
+cat > "$TMPROOT/dispatch9.sh" <<DISPATCH9
+set -uo pipefail
+source "$FUNCS"
+_DHX_CF_DIR="$_DHX_CF_DIR"
+{ sleep 0.05; printf '%s' '{"hook_event_name":"SessionStart"}'; } \
+  | _dhx_child skipper bash "$SKIPPER"
+echo "REACHED_NEXT_STATEMENT"
+DISPATCH9
+set +e
+bash "$TMPROOT/dispatch9.sh" >"$OUT9" 2>"$ERR9"
+ARM9_RC=$?
+set -e
+check "suppressed child: the dispatcher script still exits 0" \
+  "$( [ "$ARM9_RC" = 0 ] && echo ok )" "got rc=$ARM9_RC"
+check "suppressed child: the statement AFTER the pipeline still runs" \
+  "$( grep -qx 'REACHED_NEXT_STATEMENT' "$OUT9" && echo ok )" "got: $(cat "$OUT9")"
+check "suppressed child: no failure line on the operator surface" \
+  "$( [ -z "$(grep -v '^REACHED_NEXT_STATEMENT$' "$OUT9")" ] && echo ok )" "got: $(cat "$OUT9")"
+check "suppressed child: no failure marker claimed" \
+  "$( [ "$(ls -d "$_DHX_CF_DIR"/skipper.* 2>/dev/null | wc -l)" = 0 ] && echo ok )"
+
 echo "---"
 echo "PASS: $PASS  FAIL: $FAIL"
 exit $FAIL
