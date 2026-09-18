@@ -936,7 +936,11 @@ const baseSnap = snap();
 //  d) Multiple drift fires within the same session APPEND (not overwrite)
 //     — verifies fs.appendFileSync, not writeFileSync.
 //  e) Breadcrumb does NOT fire when drift is NOT detected — verifies the
-//     writer sits INSIDE the drift-detected branch, not on every refresh.
+//     writer sits INSIDE the drift-detected branch. NOTE: that placement
+//     does NOT make emission rare, and this arm never claimed it did —
+//     the branch is entered on every refresh for as long as a drift
+//     persists, because the drift path does not re-baseline. Sparsity is
+//     the writer's job; scenario [19] is where it is asserted.
 {
   // Reimplemented breadcrumb writer — mirrors wrapper's emission contract
   // exactly. Any divergence (extra key, missing key, reordered keys, wrong
