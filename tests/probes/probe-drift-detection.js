@@ -1173,6 +1173,10 @@ const baseSnap = snap();
 //     wrapper's own statusline-errors.jsonl, and 17 non-breadcrumb .log files.
 //     A bare extension predicate aimed here unlinks them; this asserts the
 //     prefix+suffix predicate does not.
+//     [19e2] additionally asserts the predicate's SHAPE over a GENERATED
+//     prefix×suffix matrix, because (e)'s list is hardcoded and a hardcoded list
+//     in a guard stops guarding the moment an unheard-of class appears: an
+//     unanchored `/\.log/` typo passed every other arm in this scenario.
 //  f) The daily stamp survives a sweep that deletes every log beside it. The
 //     stamp shares the `drift-debug-` prefix, so only the suffix test saves it
 //     — this is the companion assertion for that INVARIANT comment.
@@ -1276,6 +1280,65 @@ const baseSnap = snap();
   assert('[19f] drift-debug-sweep.stamp survives its own sweep (prefix shared, suffix saves it)',
     fs.existsSync(path.join(sweepDir, 'drift-debug-sweep.stamp')));
 
+  // [19e2] The predicate's SHAPE, generated rather than enumerated. [19e] above
+  // pins the file classes actually observed at the cache base on 2026-09-17, which
+  // is a useful regression sentinel but is a HARDCODED LIST — and a hardcoded list
+  // in a guard assertion silently loses its tooth as soon as a class it never heard
+  // of appears. Demonstrated, not theorised: an unanchored `/\.log/` in place of
+  // `/\.log(\.1)?$/` — an ordinary typo — passed [19a]-[19i] and [19d2] intact,
+  // because no bystander in that list carries BOTH the `drift-debug-` prefix and a
+  // non-terminal `.log`. Such a predicate would delete `drift-debug-x.log.bak`.
+  //
+  // So this arm builds the cross product of the two dimensions the predicate
+  // actually tests and requires the deleted set to equal the matching set EXACTLY.
+  // A future file class is then covered by its shape rather than by anyone
+  // remembering to add it here. (Credit: session Hk 09-17-tier-probes-write-tracked-
+  // cells found the same shape in its own probe — a class guarantee that grepped a
+  // token which survived an inverted guard — and the reciprocal check found this.)
+  const shapeDir = path.join(TMP, 'bc-shape');
+  fs.mkdirSync(shapeDir, { recursive: true });
+  const PREFIXES = [
+    { p: 'drift-debug-', match: true },   // the real one
+    { p: 'drift-debug', match: false },   // no trailing dash
+    { p: 'drift_debug-', match: false },  // underscore
+    { p: 'xdrift-debug-', match: false }, // does not START with it
+    { p: 'gsd-install-', match: false },  // a real foreign class
+  ];
+  const SUFFIXES = [
+    { s: '.log', match: true },           // the live generation
+    { s: '.log.1', match: true },         // the rotated generation
+    { s: '.log.2', match: false },        // only ONE generation is ours
+    { s: '.logx', match: false },         // unanchored-regex bait
+    { s: '.log.1.bak', match: false },    // unanchored-regex bait
+    { s: '.log~', match: false },         // editor backup
+    { s: '.jsonl', match: false },        // 3,342 of these live beside us
+    { s: '.stamp', match: false },        // our own daily gate
+    { s: '.json', match: false },         // drift snapshots
+  ];
+  const shapeOld = Date.now() - 90 * DAY;
+  const shouldDelete = new Set();
+  let caseN = 0;
+  for (const pre of PREFIXES) {
+    for (const suf of SUFFIXES) {
+      const name = `${pre.p}case${caseN++}${suf.s}`;
+      const p = path.join(shapeDir, name);
+      fs.writeFileSync(p, 'x\n');
+      fs.utimesSync(p, new Date(shapeOld), new Date(shapeOld));
+      if (pre.match && suf.match) shouldDelete.add(name);
+    }
+  }
+  const shapeBefore = fs.readdirSync(shapeDir).sort();
+  // Cap raised past the fixture size so the cap cannot mask a scope error here.
+  sweepDriftDebugLogs(shapeDir, Date.now() - 60 * DAY, 1000);
+  const shapeAfter = new Set(fs.readdirSync(shapeDir));
+  const wronglyDeleted = shapeBefore.filter((n) => !shouldDelete.has(n) && !shapeAfter.has(n));
+  const wronglyKept = [...shouldDelete].filter((n) => shapeAfter.has(n));
+  assert('[19e2] predicate matches EXACTLY the prefix×suffix shapes it should, over a generated matrix',
+    shapeBefore.length === PREFIXES.length * SUFFIXES.length &&
+    shouldDelete.size === 2 &&
+    wronglyDeleted.length === 0 &&
+    wronglyKept.length === 0);
+
   // A log NEWER than the cutoff must be kept — proves the sweep is age-gated,
   // not a blanket delete (a sweeper that removes everything also passes [19d]).
   const freshDir = path.join(TMP, 'bc-fresh');
@@ -1373,6 +1436,7 @@ const baseSnap = snap();
   assert('[19] breadcrumb bounds hold (dedupe, ts-blind, retention reaches, scope-safe, rotation, cap, daily gate)',
     r1 === 'written' && r2 === 'duplicate' && r3 === 'written' && r4 === 'duplicate' &&
     removed === victims.length && bystandersKept && freshRemoved === 0 &&
+    wronglyDeleted.length === 0 && wronglyKept.length === 0 &&
     fs.existsSync(rotated) && fs.existsSync(preFile + '.1') &&
     capRemoved === 3 && secondRun === -1);
 }
