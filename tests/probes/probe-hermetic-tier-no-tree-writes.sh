@@ -39,18 +39,29 @@
 # Not enforceable by the shell — the latch is a filesystem fact and the probes
 # are independent scripts — so it is asserted here.
 #
-# MUTATION COVERAGE (measured 2026-09-17, 3 mutants, all caught BY NAME). The
-# first shape of this probe asserted the invariant with a grep for the marker on
+# MUTATION COVERAGE (measured 2026-09-17, 4 mutants, all caught BY NAME, each
+# verified to differ from the unmutated base by exactly ONE file — a mutant table
+# built from a stale base reports its own drift as coverage). Run the NULL mutant
+# first, always: a crashed harness emits no FAIL lines, which reads identically to
+# "every mutant survived".
+#
+# The first shape of this probe asserted the invariant with a grep for the marker on
 # the discriminator line, and that was hollow: it caught the marker being DELETED
 # and MISSED it being INVERTED (`== "0"` — token still present, grep still green;
 # the mutant was caught only incidentally, by an unrelated assertion). Section 3
 # is therefore behavioural and iterates the SAME discovered set, arming each probe
-# via its own PROBE_DIR line. The load-bearing assertion is the middle one — the
+# via its own XDG_RUNTIME_DIR assignment — whatever variable name it uses, and in
+# either brace spelling. The load-bearing assertion is the middle one — the
 # probe must SAY it saw the latch and ignored it — because "wrote nothing" is
 # satisfied equally by a probe that never noticed the latch, a misspelled arming
 # path, or a no-op. Mutants: (1) inverted guard, (2) guard deleted, (3) a NEW latch
-# probe added with no guard at all, which is the case the class tooth exists for.
-# Re-run those three before changing section 2 or 3; a structural-only rewrite
+# probe added with no guard at all, which is the case the class tooth exists for,
+# and (4) a latch probe spelled `PROBE_DIR="$XDG_RUNTIME_DIR/x"` without braces —
+# which under the original brace-only discovery was not caught but INVISIBLE, the
+# suite staying fully green while that probe wrote a cell. Mutant 4 is the reason
+# discovery now nets every XDG_RUNTIME_DIR reference and makes each candidate prove
+# itself; an undiscovered probe must never read as "nothing to check".
+# Re-run all four before changing section 2 or 3; a structural-only rewrite
 # passes the suite and silently removes the tooth.
 #
 # Run: bash tests/probes/probe-hermetic-tier-no-tree-writes.sh
@@ -138,23 +149,54 @@ chk "[1c] live tier leaves DHX_PROBE_HERMETIC unset" \
 echo "---"
 
 # ═══ 2. CLASS PARITY — every arming-latch probe honours the marker ════════════
-# Discovered from source, never from a hardcoded list: a hardcoded roster is the
-# shape that goes stale exactly when a third probe is added, which is the case
-# this arm exists to catch.
-LATCH_PROBES=$(grep -l 'PROBE_DIR="\${XDG_RUNTIME_DIR' "$REPO"/tests/probes/probe-*.sh 2>/dev/null || true)
+# DISCOVERY IS ON THE MECHANISM, NOT A SPELLING, and it is fail-closed.
+#
+# This scan used to be `grep -l 'PROBE_DIR="${XDG_RUNTIME_DIR'`. Measured
+# 2026-09-17: a latch probe written `PROBE_DIR="$XDG_RUNTIME_DIR/x"` — no braces,
+# an ordinary spelling, not a contrived one — was not caught but INVISIBLE, and the
+# whole suite stayed 16/16 green while that probe wrote a cell into .results/. An
+# undiscovered probe read as "nothing to check" rather than as a red. That is the
+# same defect one level up from the inverted guard: an enumeration wearing a
+# tooth's clothing, where a miss is silent.
+#
+# The irreducible marker of the mechanism is a reference to XDG_RUNTIME_DIR — you
+# cannot build this latch without one — so that is the candidate net, and every
+# candidate must then PROVE it is safe: either it carries an arming discriminator
+# (and faces the behavioural arms below), or its only references are in comments.
+# A candidate that uses XDG_RUNTIME_DIR in code with no recognisable discriminator
+# is a RED to be classified by a human, never a silent pass. Self-excluded: this
+# file references XDG_RUNTIME_DIR as its own test scaffolding.
+#
+# Found via cross-session review: session "Hk 09-16-drift-debug-retention" hit the
+# identical shape in its own sweeper guard (a hardcoded bystander list that missed
+# an unanchored `.log` predicate) and reported it. Neither suite could catch its
+# own instance.
+SELF="$(basename "$0")"
+LATCH_PROBES=$(grep -l 'XDG_RUNTIME_DIR' "$REPO"/tests/probes/probe-*.sh 2>/dev/null \
+                 | grep -v "/$SELF\$" || true)
 LATCH_COUNT=$(printf '%s\n' "$LATCH_PROBES" | grep -c . || true)
 
-chk "[2] at least one arming-latch probe found (scan is live, not a stale roster)" \
+chk "[2] at least one XDG_RUNTIME_DIR candidate found (scan is live, not a stale roster)" \
     "$([ "$LATCH_COUNT" -ge 1 ] && echo yes || echo no)"
 
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   base=$(basename "$p")
-  # The discriminator is the `if [[ ! -d "$PROBE_DIR" ...` line; the marker must
-  # appear IN it, not merely somewhere in the file (a comment would pass that).
-  disc=$(grep -n 'if \[\[ ! -d "\$PROBE_DIR"' "$p" | head -1 | cut -d: -f1)
+  # The discriminator is the `! -d "$VAR"` branch, where VAR is whatever this probe
+  # assigned its arming path to — keyed on the assignment, not on the name
+  # "PROBE_DIR", so a probe that calls it something else is still checked.
+  latch_var=$(sed -nE 's|^[[:space:]]*(readonly[[:space:]]+)?([A-Za-z_][A-Za-z_0-9]*)="\$\{?XDG_RUNTIME_DIR.*|\2|p' "$p" | head -1)
+  if [ -z "$latch_var" ]; then
+    # No CODE assignment from XDG_RUNTIME_DIR. Legitimate only if every reference
+    # is commentary; anything else is unclassified and fails closed.
+    code_refs=$(grep -n 'XDG_RUNTIME_DIR' "$p" | grep -vcE '^[0-9]+:[[:space:]]*#' || true)
+    chk "[2] $base — references XDG_RUNTIME_DIR in comments only (not a latch probe)" \
+        "$([ "$code_refs" -eq 0 ] && echo yes || echo no)"
+    continue
+  fi
+  disc=$(grep -n "if \[\[ ! -d \"\\\$$latch_var\"" "$p" | head -1 | cut -d: -f1)
   if [ -z "$disc" ]; then
-    bad "[2] $base — no recognisable arming-dir discriminator to check"
+    bad "[2] $base — assigns \$$latch_var from XDG_RUNTIME_DIR but has no recognisable arming discriminator — classify it"
     continue
   fi
   line=$(sed -n "${disc}p" "$p")
@@ -188,13 +230,29 @@ git -C "$GR" init -q 2>/dev/null
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   base=$(basename "$p")
-  # Derive the latch directory from the probe's own PROBE_DIR line, so the arming
-  # path can never drift out of step with the probe it is meant to arm.
-  latch=$(sed -nE 's|^PROBE_DIR="\$\{XDG_RUNTIME_DIR:-/tmp\}/([^"]+)".*|\1|p' "$p" | head -1)
+  # Derive the latch directory from the probe's OWN assignment line, so the arming
+  # path can never drift out of step with the probe it is meant to arm. Both
+  # spellings are accepted — `${XDG_RUNTIME_DIR:-/tmp}/x` and `$XDG_RUNTIME_DIR/x`
+  # — because the brace-only form is exactly what made an ordinary spelling
+  # invisible here before (see section 2's note).
+  latch=$(sed -nE 's|^[[:space:]]*(readonly[[:space:]]+)?[A-Za-z_][A-Za-z_0-9]*="\$\{?XDG_RUNTIME_DIR(:-[^}]*)?\}?/([^"]+)".*|\3|p' "$p" | head -1)
   if [ -z "$latch" ]; then
-    bad "[3] $base — could not derive its arming dir from PROBE_DIR"
+    # No code assignment at all → section 2 already ruled it comment-only and
+    # passed or failed it there; nothing to arm here. A probe that DOES assign one
+    # but whose path we cannot parse is a different animal and must red.
+    if grep -qE '^[[:space:]]*(readonly[[:space:]]+)?[A-Za-z_][A-Za-z_0-9]*="\$\{?XDG_RUNTIME_DIR' "$p"; then
+      bad "[3] $base — assigns an XDG_RUNTIME_DIR path this probe cannot parse; cannot arm it, so cannot clear it"
+    fi
     continue
   fi
+  # A candidate section 2 already redded for having NO discriminator is not a latch
+  # probe with a broken guard — it is unclassified. Section 2's message is the
+  # accurate one; arming it here would add a second failure line whose wording
+  # ("SAYS it ignored the latch") misdescribes what is actually wrong, and a
+  # misleading red is how the next investigation gets sent the wrong way. One
+  # defect, one diagnostic.
+  latch_var=$(sed -nE 's|^[[:space:]]*(readonly[[:space:]]+)?([A-Za-z_][A-Za-z_0-9]*)="\$\{?XDG_RUNTIME_DIR.*|\2|p' "$p" | head -1)
+  grep -q "if \[\[ ! -d \"\\\$$latch_var\"" "$p" || continue
   mkdir -p "$XRD/$latch"
   chmod 700 "$XRD/$latch"          # probe-subagent-stop-sync.sh asserts 0700 (D-14)
   cp "$p" "$GR/tests/probes/"
