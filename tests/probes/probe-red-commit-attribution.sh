@@ -108,9 +108,9 @@ OUT1=$(cd "$T1" && DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON="red half of a pair" \
 assert "1: red caused ONLY by a staged probe -> allowed (exit 0)" \
   "$([[ "$RC1" -eq 0 ]] && echo true || echo false)"
 assert "1: says the opt-out was honoured" \
-  "$(printf '%s' "$OUT1" | grep -q 'DHX_RED_COMMIT=1 honoured' && echo true || echo false)"
+  "$(grep -q 'DHX_RED_COMMIT=1 honoured' < <(printf '%s' "$OUT1") && echo true || echo false)"
 assert "1: names the red it attributed to this commit" \
-  "$(printf '%s' "$OUT1" | grep -q 'attributed red: probe-fixture-mine.sh' && echo true || echo false)"
+  "$(grep -q 'attributed red: probe-fixture-mine.sh' < <(printf '%s' "$OUT1") && echo true || echo false)"
 
 # ---- CASE 2: an inherited red -> REFUSED ------------------------------------
 # The shape of 24afeee: a probe IS staged, but the red is somewhere else.
@@ -125,11 +125,11 @@ OUT2=$(cd "$T2" && DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON="trying it on" \
 assert "2: a red this commit does not touch -> REFUSED" \
   "$([[ "$RC2" -ne 0 ]] && echo true || echo false)"
 assert "2: names the unattributed red" \
-  "$(printf '%s' "$OUT2" | grep -q 'unattributed red: probe-fixture-inherited.sh' && echo true || echo false)"
+  "$(grep -q 'unattributed red: probe-fixture-inherited.sh' < <(printf '%s' "$OUT2") && echo true || echo false)"
 assert "2: points at diagnosis, never at a wider bypass" \
-  "$(printf '%s' "$OUT2" | grep -qi 'no-verify' && echo false || echo true)"
+  "$(grep -qi 'no-verify' < <(printf '%s' "$OUT2") && echo false || echo true)"
 assert "2: does NOT name the staged-but-green probe as unattributed" \
-  "$(printf '%s' "$OUT2" | grep -q 'unattributed red: probe-fixture-mine.sh' && echo false || echo true)"
+  "$(grep -q 'unattributed red: probe-fixture-mine.sh' < <(printf '%s' "$OUT2") && echo false || echo true)"
 
 # ---- CASE 3: no reason -> REFUSED, and before the tier runs -----------------
 T3=$(sandbox yes)
@@ -139,9 +139,9 @@ OUT3=$(cd "$T3" && DHX_RED_COMMIT=1 bash scripts/verify-hook-patterns.sh 2>&1); 
 assert "3: no DHX_RED_COMMIT_REASON -> REFUSED" \
   "$([[ "$RC3" -ne 0 ]] && echo true || echo false)"
 assert "3: the refusal names the missing reason" \
-  "$(printf '%s' "$OUT3" | grep -q 'DHX_RED_COMMIT_REASON' && echo true || echo false)"
+  "$(grep -q 'DHX_RED_COMMIT_REASON' < <(printf '%s' "$OUT3") && echo true || echo false)"
 assert "3: refuses BEFORE paying for the tier run" \
-  "$(printf '%s' "$OUT3" | grep -q 'Running hermetic probe tier' && echo false || echo true)"
+  "$(grep -q 'Running hermetic probe tier' < <(printf '%s' "$OUT3") && echo false || echo true)"
 
 # ---- CASE 4: audit hook not wired -> REFUSED fail-closed --------------------
 T4=$(sandbox no)
@@ -152,7 +152,7 @@ OUT4=$(cd "$T4" && DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON="red half" \
 assert "4: commit-msg audit hook unwired -> REFUSED (fail closed)" \
   "$([[ "$RC4" -ne 0 ]] && echo true || echo false)"
 assert "4: the refusal prints the installer command" \
-  "$(printf '%s' "$OUT4" | grep -q 'install-hooks.sh' && echo true || echo false)"
+  "$(grep -q 'install-hooks.sh' < <(printf '%s' "$OUT4") && echo true || echo false)"
 
 # ---- CASE 5: opt-out set but the tier is green -> allowed, and says so ------
 T5=$(sandbox yes)
@@ -163,7 +163,7 @@ OUT5=$(cd "$T5" && DHX_RED_COMMIT=1 DHX_RED_COMMIT_REASON="belt and braces" \
 assert "5: green tier under the opt-out -> allowed" \
   "$([[ "$RC5" -eq 0 ]] && echo true || echo false)"
 assert "5: tells the operator the opt-out was unnecessary" \
-  "$(printf '%s' "$OUT5" | grep -q 'was unnecessary' && echo true || echo false)"
+  "$(grep -q 'was unnecessary' < <(printf '%s' "$OUT5") && echo true || echo false)"
 
 echo
 echo "=== commit-msg: the bypass leaves a trace in history ==="
@@ -188,13 +188,13 @@ msg_case "$T6" "" "test(x): a RED probe"
 assert "6: DHX_RED_COMMIT=1 with no trailer and no reason -> REFUSED" \
   "$([[ "$MRC" -ne 0 ]] && echo true || echo false)"
 assert "6: the refusal names the required trailer" \
-  "$(printf '%s' "$MOUT" | grep -q 'DHX-Red-Commit:' && echo true || echo false)"
+  "$(grep -q 'DHX-Red-Commit:' < <(printf '%s' "$MOUT") && echo true || echo false)"
 
 msg_case "$T6" "target machinery does not exist yet" "test(x): a RED probe"
 assert "7: a reason in the env APPENDS the trailer and passes" \
   "$([[ "$MRC" -eq 0 ]] && echo true || echo false)"
 assert "7: the trailer carries the reason verbatim" \
-  "$(printf '%s' "$MBODY" | grep -q '^DHX-Red-Commit: target machinery does not exist yet$' && echo true || echo false)"
+  "$(grep -q '^DHX-Red-Commit: target machinery does not exist yet$' < <(printf '%s' "$MBODY") && echo true || echo false)"
 
 msg_case "$T6" "" "test(x): a RED probe
 
@@ -219,7 +219,7 @@ assert "10: and it does not inject a trailer" \
 
 # ---- CASE 11: greppability — the whole point of the trailer ----------------
 assert "11: the trailer shape is git-log --grep-able" \
-  "$(printf 'x\n\nDHX-Red-Commit: why\n' | grep -qE '^DHX-Red-Commit: .+$' && echo true || echo false)"
+  "$(grep -qE '^DHX-Red-Commit: .+$' < <(printf 'x\n\nDHX-Red-Commit: why\n') && echo true || echo false)"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

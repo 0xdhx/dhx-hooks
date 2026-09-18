@@ -8,14 +8,11 @@ tests/probes/probe-cc-grep-operand-extractor.sh	3
 tests/probes/probe-cc-version-guard-wiring.sh	2
 tests/probes/probe-cc-version-observer-wiring.sh	4
 tests/probes/probe-conclusion-taxonomy.sh	8
-tests/probes/probe-drift-multi-anchor-distinct-surfacing.sh	10
 tests/probes/probe-drift-single-anchor-no-overcount.sh	4
 tests/probes/probe-hook-advisory-commands-reachable.sh	2
 tests/probes/probe-milestone-close-blocker-check.sh	1
 tests/probes/probe-milestone-close-vocab-parity.sh	4
-tests/probes/probe-multi-cc-validator-decoupling.sh	10
 tests/probes/probe-publisher-scripts-rehearse-by-default.sh	1
-tests/probes/probe-red-commit-attribution.sh	12
 tests/probes/probe-red-debt-pairing.sh	2
 tests/probes/probe-restart-plugins-stop-hook.sh	1
 tests/probes/probe-run-probes-convention-a.sh	1

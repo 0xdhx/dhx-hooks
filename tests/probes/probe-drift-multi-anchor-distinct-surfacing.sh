@@ -59,15 +59,15 @@ EOF
 OUTPUT=$(printf '%s' "$ENV" | DHX_DRIFT_CACHE="$CACHE" bash "$EMITTER" 2>&1)
 
 assert "[1a] plan.md path present" \
-  bash -c 'echo "$1" | grep -qF "workflows/execute-plan.md"' _ "$OUTPUT"
+  bash -c 'grep -qF "workflows/execute-plan.md" <<<"$1"' _ "$OUTPUT"
 assert "[1b] phase.md path present" \
-  bash -c 'echo "$1" | grep -qF "workflows/execute-phase.md"' _ "$OUTPUT"
+  bash -c 'grep -qF "workflows/execute-phase.md" <<<"$1"' _ "$OUTPUT"
 assert "[1c] plan.md ISO date present" \
-  bash -c 'echo "$1" | grep -qF "2026-05-12"' _ "$OUTPUT"
+  bash -c 'grep -qF "2026-05-12" <<<"$1"' _ "$OUTPUT"
 assert "[1d] phase.md ISO date present" \
-  bash -c 'echo "$1" | grep -qF "2026-05-15"' _ "$OUTPUT"
+  bash -c 'grep -qF "2026-05-15" <<<"$1"' _ "$OUTPUT"
 assert "[1e] age label present" \
-  bash -c 'echo "$1" | grep -qE "[0-9]+d unresolved"' _ "$OUTPUT"
+  bash -c 'grep -qE "[0-9]+d unresolved" <<<"$1"' _ "$OUTPUT"
 
 # D-02 oldest-first: plan.md (2026-05-12) must render before phase.md (2026-05-15).
 PLAN_LINE=$(echo "$OUTPUT" | grep -nF 'workflows/execute-plan.md' | head -1 | cut -d: -f1)
@@ -76,9 +76,9 @@ assert "[1f] D-02 oldest-first ordering (plan before phase)" \
   bash -c '[ -n "$1" ] && [ -n "$2" ] && [ "$1" -lt "$2" ]' _ "$PLAN_LINE" "$PHASE_LINE"
 
 assert "[1g] D-05 header literal (2 file(s) diverged, oldest first)" \
-  bash -c 'echo "$1" | grep -qF "⚠ GSD canonical drift — 2 file(s) diverged (oldest first)"' _ "$OUTPUT"
+  bash -c 'grep -qF "⚠ GSD canonical drift — 2 file(s) diverged (oldest first)" <<<"$1"' _ "$OUTPUT"
 assert "[1h] D-01 Run to repair footer" \
-  bash -c 'echo "$1" | grep -qF "Run to repair:"' _ "$OUTPUT"
+  bash -c 'grep -qF "Run to repair:" <<<"$1"' _ "$OUTPUT"
 
 CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*gsd-core/workflows/')
 assert "[1i] 2 cp lines emitted" \
@@ -100,14 +100,14 @@ EOF
 OUTPUT6=$(printf '%s' "$ENV" | DHX_DRIFT_CACHE="$CACHE6" bash "$EMITTER" 2>&1)
 
 assert "[2a] header says 6 file(s) diverged" \
-  bash -c 'echo "$1" | grep -qF "6 file(s) diverged"' _ "$OUTPUT6"
+  bash -c 'grep -qF "6 file(s) diverged" <<<"$1"' _ "$OUTPUT6"
 
 FILE_LINE_COUNT=$(echo "$OUTPUT6" | grep -cE 'first seen [0-9]{4}-[0-9]{2}-[0-9]{2}')
 assert "[2b] exactly 5 file lines emitted (D-04 cap)" \
   bash -c '[ "$1" -eq 5 ]' _ "$FILE_LINE_COUNT"
 
 assert "[2c] +1 more truncation indicator present" \
-  bash -c 'echo "$1" | grep -qF "+1 more — run /dhx:statusline triad"' _ "$OUTPUT6"
+  bash -c 'grep -qF "+1 more — run /dhx:statusline triad" <<<"$1"' _ "$OUTPUT6"
 
 CP_COUNT6=$(echo "$OUTPUT6" | grep -cE '^  cp .*gsd-core/workflows/')
 assert "[2d] exactly 5 cp lines emitted" \
@@ -120,7 +120,7 @@ assert "[2d] exactly 5 cp lines emitted" \
 rm -f "$TMPDIR/per-session-snapshot.json" 2>/dev/null || true
 OUTPUT2=$(printf '%s' "$ENV" | DHX_DRIFT_CACHE="$CACHE" bash "$EMITTER" 2>&1)
 assert "[3a] cache survives simulated session restart" \
-  bash -c 'echo "$1" | grep -qF "2026-05-12"' _ "$OUTPUT2"
+  bash -c 'grep -qF "2026-05-12" <<<"$1"' _ "$OUTPUT2"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
