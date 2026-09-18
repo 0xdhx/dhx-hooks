@@ -194,8 +194,18 @@ hp028_classify_transform() {
   #    rejected two of five sanctioned transforms). Reconstruction proves
   #    grep's ARGUMENTS and the TRAILING BRANCH TEXT are byte-identical,
   #    because anything else fails to rebuild.
+  #    A line ending in a CONTINUATION backslash bounds where the redirect may
+  #    land: inserting after the `\` yields `grep -q PAT \ <<<"$V"`, which the
+  #    reconstruction happily rebuilds while the shell stops continuing the
+  #    line. Measured 2026-09-18 — the converter produced exactly that and this
+  #    check passed it 2/2 before the bound was added.
+  local kmax=${#old_grep}
+  if [[ "$old_grep" =~ ^(.*[^[:space:]])[[:space:]]*\\$ ]]; then
+    kmax=${#BASH_REMATCH[1]}
+  fi
   local k
   k=$(_hp028_lcp_len "$old_grep" "$new_grep")
+  [[ $k -gt $kmax ]] && k=$kmax
   while [[ $k -ge 0 ]]; do
     if [[ "${old_grep:0:$k}${redirect}${old_grep:$k}" == "$new_grep" ]]; then
       printf '%s' "$rule"; return 0
@@ -221,8 +231,8 @@ if [[ "${1:-}" == "--verify-conversion" ]]; then
   # would leave --include's behaviour on an explicit path deciding the net.
   V_CENSUS=$(for root in tests/probes scripts; do hp028_census "$REPO_ROOT/$root"; done)
 
-  V_CHANGED=0; V_OK=0; V_BAD=0; V_EXEMPT=0; V_REMAIN=0
-  V_PROBLEMS=()
+  V_CHANGED=0; V_BAD=0; V_UNPAIRED=0; V_EXEMPT=0; V_REMAIN=0
+  V_PROBLEMS=(); V_DETAIL=()
   echo "── HP-028 conversion verification vs $BASE_REF ──"
   echo
 
@@ -233,18 +243,15 @@ if [[ "${1:-}" == "--verify-conversion" ]]; then
 
     # TOOTH — pair changed lines hunk by hunk, straight out of git diff.
     declare -A RULES=()
-    f_changed=0; f_bad=0
+    f_changed=0; f_bad=0; f_unpaired=0
     OLDS=(); NEWS=()
     flush_hunk() {
       local i
       if [[ "${#OLDS[@]}" -ne "${#NEWS[@]}" ]]; then
-        for i in "${!OLDS[@]}"; do
-          V_PROBLEMS+=("$f: unpaired hunk (${#OLDS[@]} removed, ${#NEWS[@]} added) — needs manual review")
-          f_bad=$((f_bad + 1)); break
-        done
-        [[ "${#OLDS[@]}" -eq 0 && "${#NEWS[@]}" -gt 0 ]] && {
-          V_PROBLEMS+=("$f: ${#NEWS[@]} line(s) added with nothing removed — needs manual review")
-          f_bad=$((f_bad + 1)); }
+        # A conversion is a 1:1 line rewrite. Anything else is a change this
+        # verifier has no transform for, and it is NAMED rather than counted.
+        V_PROBLEMS+=("$f: unpaired hunk (${#OLDS[@]} removed, ${#NEWS[@]} added) — needs manual review")
+        f_unpaired=$((f_unpaired + 1))
       else
         for i in "${!OLDS[@]}"; do
           f_changed=$((f_changed + 1))
@@ -252,8 +259,8 @@ if [[ "${1:-}" == "--verify-conversion" ]]; then
           verdict=$(hp028_classify_transform "${OLDS[$i]}" "${NEWS[$i]}") && {
             RULES["$verdict"]=$(( ${RULES["$verdict"]:-0} + 1 )); continue; }
           V_PROBLEMS+=("$f: $verdict")
-          V_PROBLEMS+=("    was: ${OLDS[$i]}")
-          V_PROBLEMS+=("    now: ${NEWS[$i]}")
+          V_DETAIL+=("    was: ${OLDS[$i]}")
+          V_DETAIL+=("    now: ${NEWS[$i]}")
           f_bad=$((f_bad + 1))
         done
       fi
@@ -273,7 +280,7 @@ if [[ "${1:-}" == "--verify-conversion" ]]; then
     for r in "${!RULES[@]}"; do printf '  %-32s %s\n' "$r" "${RULES[$r]}"; done
     V_CHANGED=$((V_CHANGED + f_changed))
     V_BAD=$((V_BAD + f_bad))
-    V_OK=$((V_OK + f_changed - f_bad))
+    V_UNPAIRED=$((V_UNPAIRED + f_unpaired))
 
     # NET — the census's own definition, run independently of the tooth.
     remain=$(awk -F'\t' -v f="$f" '$1==f {print $2}' <<<"$V_CENSUS")
@@ -301,14 +308,29 @@ if [[ "${1:-}" == "--verify-conversion" ]]; then
     echo
   done <<<"$TOUCHED"
 
+  # SECOND NET — the file must still PARSE. The tooth reasons about one line at
+  # a time and is structurally blind to a change that breaks the shell's view of
+  # the FILE; `bash -n` is the cheapest instrument that is not.
+  V_PARSE=0
+  while IFS= read -r f; do
+    [[ -z "$f" || ! -f "$f" ]] && continue
+    bash -n "$f" 2>/dev/null || {
+      V_PROBLEMS+=("$f: no longer parses as shell (bash -n)")
+      V_PARSE=$((V_PARSE + 1))
+    }
+  done <<<"$TOUCHED"
+
   echo "────────────────────────────────────────────────────────────────────"
-  echo "TOOTH  $V_CHANGED changed line(s), $((V_CHANGED - V_BAD)) sanctioned, $V_BAD unsanctioned"
+  echo "PARSE  $V_PARSE touched file(s) no longer parse"
+  echo "TOOTH  $V_CHANGED paired line(s), $((V_CHANGED - V_BAD)) sanctioned, $V_BAD unsanctioned"
+  echo "HUNK   $V_UNPAIRED unpaired hunk(s) — a conversion is a 1:1 line rewrite"
   echo "NET    $V_REMAIN HP-028 site(s) remain in touched files"
   echo "EXEMPT $V_EXEMPT new HP-028 exemption line(s)"
-  if [[ "${#V_PROBLEMS[@]}" -gt 0 ]]; then
+  if [[ "${#V_PROBLEMS[@]}" -gt 0 || "$V_UNPAIRED" -ne 0 ]]; then
     echo
     echo "PROBLEMS:"
     for p in "${V_PROBLEMS[@]}"; do echo "  $p"; done
+    [[ "${#V_DETAIL[@]}" -gt 0 ]] && { echo; for p in "${V_DETAIL[@]}"; do echo "$p"; done; }
     exit 1
   fi
   echo
