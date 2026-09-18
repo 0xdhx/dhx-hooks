@@ -50,19 +50,19 @@ LIVE_LINE="$(grep -nE 'const GSD_LIVE_ROOT' "$WRAPPER" || true)"
 FORK_LINE="$(grep -nE 'const GSD_FORK_ROOT' "$WRAPPER" || true)"
 HEALTH_LOOP="$(grep -nE '^for item in .* hooks ' "$HEALTH" || true)"
 
-assert "statusline GSD_LIVE_ROOT names 'gsd-core'"            "echo \"\$LIVE_LINE\" | grep -q \"'gsd-core'\""
-assert "statusline GSD_LIVE_ROOT drops retired 'get-shit-done'" "! echo \"\$LIVE_LINE\" | grep -q 'get-shit-done'"
-assert "statusline GSD_FORK_ROOT names 'gsd-local-patches','gsd-core'" "echo \"\$FORK_LINE\" | grep -q \"'gsd-local-patches', 'gsd-core'\""
-assert "statusline GSD_FORK_ROOT drops retired 'get-shit-done'" "! echo \"\$FORK_LINE\" | grep -q 'get-shit-done'"
-assert "health-check checklist names 'gsd-core'"              "echo \"\$HEALTH_LOOP\" | grep -q 'gsd-core'"
-assert "health-check checklist drops retired 'get-shit-done'" "! echo \"\$HEALTH_LOOP\" | grep -q 'get-shit-done'"
+assert "statusline GSD_LIVE_ROOT names 'gsd-core'"            "grep -q \"'gsd-core'\" <<<\"\$LIVE_LINE\""
+assert "statusline GSD_LIVE_ROOT drops retired 'get-shit-done'" "! grep -q 'get-shit-done' <<<\"\$LIVE_LINE\""
+assert "statusline GSD_FORK_ROOT names 'gsd-local-patches','gsd-core'" "grep -q \"'gsd-local-patches', 'gsd-core'\" <<<\"\$FORK_LINE\""
+assert "statusline GSD_FORK_ROOT drops retired 'get-shit-done'" "! grep -q 'get-shit-done' <<<\"\$FORK_LINE\""
+assert "health-check checklist names 'gsd-core'"              "grep -q 'gsd-core' <<<\"\$HEALTH_LOOP\""
+assert "health-check checklist drops retired 'get-shit-done'" "! grep -q 'get-shit-done' <<<\"\$HEALTH_LOOP\""
 # 2026-09-15: the loop's membership, not just the gsd name. `dhx-tools` is in
 # symlinks.yaml ccs-profiles.links and the dashboard's parity check skips its own
 # reference profile, so this loop is the only per-lane detector for it. The
 # retired config-root `package.json` (gsd-core 1.10.0 #2544) must stay out — it
 # counted a permanently-missing item for two months.
-assert "health-check checklist names 'dhx-tools'"             "echo \"\$HEALTH_LOOP\" | grep -q 'dhx-tools'"
-assert "health-check checklist drops retired 'package.json'"  "! echo \"\$HEALTH_LOOP\" | grep -q 'package\.json'"
+assert "health-check checklist names 'dhx-tools'"             "grep -q 'dhx-tools' <<<\"\$HEALTH_LOOP\""
+assert "health-check checklist drops retired 'package.json'"  "! grep -q 'package\.json' <<<\"\$HEALTH_LOOP\""
 
 # --- Static: the 2026-06-05 tail — four runtime surfaces. Target the SPECIFIC
 #     load-bearing literal on each, never the whole file: the gate + triad carry
@@ -77,8 +77,8 @@ DRAFT_BUFFER="$REPO_ROOT/scripts/dhx-draft-buffer.sh"
 
 # Gate: the GSD_LIVE_ROOT assignment (not the rename-note comment).
 GATE_ROOT_LINE="$(grep -nE '^GSD_LIVE_ROOT=' "$GATE" || true)"
-assert "gate GSD_LIVE_ROOT names 'gsd-core'"                "echo \"\$GATE_ROOT_LINE\" | grep -q 'gsd-core'"
-assert "gate GSD_LIVE_ROOT drops retired 'get-shit-done'"   "! echo \"\$GATE_ROOT_LINE\" | grep -q 'get-shit-done'"
+assert "gate GSD_LIVE_ROOT names 'gsd-core'"                "grep -q 'gsd-core' <<<\"\$GATE_ROOT_LINE\""
+assert "gate GSD_LIVE_ROOT drops retired 'get-shit-done'"   "! grep -q 'get-shit-done' <<<\"\$GATE_ROOT_LINE\""
 
 # Gate prefix-managed arms (2026-07-15 widen): the case arms MUST track
 # gsd-core's GSD_PREFIX_MANAGED_DIRS contract (gsd-tools.cjs — agents/skills/
@@ -92,15 +92,15 @@ done
 
 # Drift-surface: the cp repair-command printf line.
 DRIFT_CP_LINE="$(grep -nF 'printf '\''  cp ~/.claude/' "$DRIFT_SURFACE" || true)"
-assert "drift-surface cp command names 'gsd-core'"          "echo \"\$DRIFT_CP_LINE\" | grep -q 'gsd-core'"
-assert "drift-surface cp command drops 'get-shit-done'"     "! echo \"\$DRIFT_CP_LINE\" | grep -q 'get-shit-done'"
+assert "drift-surface cp command names 'gsd-core'"          "grep -q 'gsd-core' <<<\"\$DRIFT_CP_LINE\""
+assert "drift-surface cp command drops 'get-shit-done'"     "! grep -q 'get-shit-done' <<<\"\$DRIFT_CP_LINE\""
 
 # Triad: the root defaults AND the rel-strip dialect (both load-bearing per D-32).
 TRIAD_ROOT_LINES="$(grep -nE '^(LIVE_ROOT|CANONICAL_ROOT)=' "$TRIAD" || true)"
 TRIAD_STRIP_NEW="$(grep -cF 'rel#gsd-core/' "$TRIAD" || true)"
 TRIAD_STRIP_OLD="$(grep -cF 'rel#get-shit-done/' "$TRIAD" || true)"
-assert "triad LIVE/CANONICAL roots name 'gsd-core'"         "echo \"\$TRIAD_ROOT_LINES\" | grep -q 'gsd-core'"
-assert "triad roots drop retired 'get-shit-done'"           "! echo \"\$TRIAD_ROOT_LINES\" | grep -q 'get-shit-done'"
+assert "triad LIVE/CANONICAL roots name 'gsd-core'"         "grep -q 'gsd-core' <<<\"\$TRIAD_ROOT_LINES\""
+assert "triad roots drop retired 'get-shit-done'"           "! grep -q 'get-shit-done' <<<\"\$TRIAD_ROOT_LINES\""
 assert "triad rel-strip dialect is 'gsd-core/' (both sites)" "[ \"\$TRIAD_STRIP_NEW\" -eq 2 ]"
 assert "triad rel-strip drops 'get-shit-done/'"             "[ \"\$TRIAD_STRIP_OLD\" -eq 0 ]"
 

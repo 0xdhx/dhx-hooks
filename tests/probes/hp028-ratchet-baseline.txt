@@ -10,8 +10,6 @@ tests/probes/probe-cc-version-observer-wiring.sh	4
 tests/probes/probe-conclusion-taxonomy.sh	8
 tests/probes/probe-drift-multi-anchor-distinct-surfacing.sh	10
 tests/probes/probe-drift-single-anchor-no-overcount.sh	4
-tests/probes/probe-gsd-canonical-mirror-gate-tiered-outcome.sh	14
-tests/probes/probe-gsd-roots-resolve.sh	14
 tests/probes/probe-hook-advisory-commands-reachable.sh	2
 tests/probes/probe-milestone-close-blocker-check.sh	1
 tests/probes/probe-milestone-close-vocab-parity.sh	4

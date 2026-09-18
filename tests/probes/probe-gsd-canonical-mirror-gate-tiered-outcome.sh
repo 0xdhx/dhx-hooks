@@ -118,9 +118,9 @@ run_gate "$MEMBER_FILE" "$BACKUP_META_POPULATED"
 assert "[a] member (populated files[]) w/o marker → exit 2" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[a] member → 'load-bearing' message" \
-  bash -c 'echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+  bash -c 'grep -qF "load-bearing" <<<"$1"' _ "$OUT"
 assert "[a] member → emits a cp mirror command" \
-  bash -c 'echo "$1" | grep -qF "cp "' _ "$OUT"
+  bash -c 'grep -qF "cp " <<<"$1"' _ "$OUT"
 
 # ---- Case (b): PASS — valid marker (unexpired, path listed) ----
 # // INVARIANT: a valid marker (expires_at in the future AND the rel path in
@@ -145,11 +145,11 @@ run_gate "$NON_MEMBER_FILE" "$BACKUP_META_POPULATED"
 assert "[c] non-member (populated files[]) w/o marker → exit 2 (block-all)" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[c] non-member → 'no live fork patch' message" \
-  bash -c 'echo "$1" | grep -qF "no live fork patch"' _ "$OUT"
+  bash -c 'grep -qF "no live fork patch" <<<"$1"' _ "$OUT"
 assert "[c] non-member → NOT 'load-bearing' (truthful: it is not a member)" \
-  bash -c '! echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+  bash -c '! grep -qF "load-bearing" <<<"$1"' _ "$OUT"
 assert "[c] non-member → NOT 'WARN:' (block-all, no warn downgrade)" \
-  bash -c '! echo "$1" | grep -qF "WARN:"' _ "$OUT"
+  bash -c '! grep -qF "WARN:" <<<"$1"' _ "$OUT"
 
 # ---- Case (d): happy path — file outside the guarded subtree ----
 run_gate "/tmp/random-non-gsd-file.txt" "$BACKUP_META_POPULATED"
@@ -169,7 +169,7 @@ run_gate "$MEMBER_FILE" "$BACKUP_META_POPULATED"
 assert "[e] expired marker treated as absent → exit 2" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[e] expired marker → BLOCK tier (BLOCKED:)" \
-  bash -c 'echo "$1" | grep -qF "BLOCKED:"' _ "$OUT"
+  bash -c 'grep -qF "BLOCKED:" <<<"$1"' _ "$OUT"
 
 # ---- Case (f): CORRUPT backup-meta → WR-02 fail-safe BLOCK, honest message ----
 # // INVARIANT: an unreadable / non-array backup-meta blocks (mirror state
@@ -180,9 +180,9 @@ run_gate "$NON_MEMBER_FILE" "$BACKUP_META_CORRUPT"
 assert "[f] corrupt backup-meta → exit 2 (fail-safe)" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[f] corrupt → 'unreadable/corrupt' message" \
-  bash -c 'echo "$1" | grep -qF "unreadable/corrupt"' _ "$OUT"
+  bash -c 'grep -qF "unreadable/corrupt" <<<"$1"' _ "$OUT"
 assert "[f] corrupt → NOT 'load-bearing' (it is not a member; it is corrupt)" \
-  bash -c '! echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+  bash -c '! grep -qF "load-bearing" <<<"$1"' _ "$OUT"
 
 # ---- Case (g): EMPTY files[] (NEGATIVE CONTROL) → block-all, truthful message ----
 # // INVARIANT (negative control, ratified 2026-07-14): a parseable `files: []`
@@ -195,9 +195,9 @@ run_gate "$NON_MEMBER_FILE" "$BACKUP_META_EMPTY"
 assert "[g] parseable-empty files[] → exit 2 (block-all steady state)" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[g] parseable-empty → 'no live fork patch' message (truthful)" \
-  bash -c 'echo "$1" | grep -qF "no live fork patch"' _ "$OUT"
+  bash -c 'grep -qF "no live fork patch" <<<"$1"' _ "$OUT"
 assert "[g] parseable-empty → NOT 'load-bearing' (negative control vs pre-fix)" \
-  bash -c '! echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+  bash -c '! grep -qF "load-bearing" <<<"$1"' _ "$OUT"
 
 # ---- Case (h): ABSENT backup-meta (fresh install) → the one surviving WARN ----
 # // INVARIANT: a missing backup-meta is legitimate (fork mirror not yet
@@ -208,7 +208,7 @@ run_gate "$NON_MEMBER_FILE" "$BACKUP_META_ABSENT"
 assert "[h] absent backup-meta → exit 1 (WARN, fresh-install advisory)" \
   bash -c '[ "$1" = "1" ]' _ "$EC"
 assert "[h] absent → 'WARN:' message" \
-  bash -c 'echo "$1" | grep -qF "WARN:"' _ "$OUT"
+  bash -c 'grep -qF "WARN:" <<<"$1"' _ "$OUT"
 
 # ════ 2026-07-15 prefix-managed arms (agents/skills/commands gsd-*) ════
 # // INVARIANT: the gate's guarded surface includes the GSD_PREFIX_MANAGED_DIRS
@@ -223,9 +223,9 @@ run_gate "$HOME/.claude/agents/gsd-ui-auditor.md" "$BACKUP_META_POPULATED"
 assert "[i] agents/ member (gsd-ui-auditor) w/o marker → exit 2" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[i] agents/ member → 'load-bearing' message" \
-  bash -c 'echo "$1" | grep -qF "load-bearing"' _ "$OUT"
+  bash -c 'grep -qF "load-bearing" <<<"$1"' _ "$OUT"
 assert "[i] agents/ member → cp command targets gsd-local-patches/agents/" \
-  bash -c 'echo "$1" | grep -qF "gsd-local-patches/agents/gsd-ui-auditor.md"' _ "$OUT"
+  bash -c 'grep -qF "gsd-local-patches/agents/gsd-ui-auditor.md" <<<"$1"' _ "$OUT"
 
 # ---- Case (j): PRECISION negative-control — dhx-* agent in the same dir passes ----
 # // INVARIANT: the arm is the gsd- PREFIX, not the agents/ DIRECTORY. User
@@ -242,7 +242,7 @@ run_gate "$HOME/.claude/skills/gsd-capture/SKILL.md" "$BACKUP_META_POPULATED"
 assert "[k] skills/gsd-* w/o marker → exit 2 (block-all)" \
   bash -c '[ "$1" = "2" ]' _ "$EC"
 assert "[k] skills/gsd-* → 'no live fork patch' message (non-member)" \
-  bash -c 'echo "$1" | grep -qF "no live fork patch"' _ "$OUT"
+  bash -c 'grep -qF "no live fork patch" <<<"$1"' _ "$OUT"
 
 # ---- Case (l): BLOCK/non-member on commands/gsd-* (profile-staged surface) ----
 run_gate "$HOME/.claude/commands/gsd-plan.md" "$BACKUP_META_POPULATED"
