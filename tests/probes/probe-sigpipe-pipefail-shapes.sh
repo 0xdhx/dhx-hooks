@@ -107,6 +107,215 @@ if [[ "${1:-}" == "--emit-baseline" ]]; then
   exit 0
 fi
 
+# ── --verify-conversion <base-ref> ──────────────────────────────────────────
+# The CONVERSION VERIFIER for the 2026-09-18 drive to zero. SCAFFOLDING: it is
+# deleted in the same commit that deletes the ratchet branch and the baseline
+# file, and it has no consumer after that.
+#
+# TWO LAYERS, TWO INDEPENDENT DEFINITIONS OF "A SITE" — deliberately:
+#
+#   tooth  every changed line is reconstructed BYTE-EXACTLY from its base-ref
+#          original by exactly one sanctioned transform. Its population comes
+#          from `git diff`, never from hp028_census.
+#   net    hp028_census reports ZERO remaining sites in every touched file.
+#
+# hp028_census is the RATCHET's definition of a site, and --emit-baseline is
+# right to share it: a generator that disagreed with the checker would compare
+# two definitions while reporting green. A VERIFIER inverts that. Its job is to
+# catch mistakes IN the definition, so using the definition as its coverage
+# oracle would certify the definition with itself — a shape the census cannot
+# see is a shape the verifier would agree is absent.
+#
+# The net is not optional decoration. Measured 2026-09-18: the previous run's
+# per-line check ALONE let a REVERTED line through, because an unconverted line
+# reads as `equal` to a differ and is never examined. A hollow net is worse
+# than a hollow tooth (tests/probes/README.md § "A guard has two layers").
+
+_hp028_lcp_len() {
+  local a="$1" b="$2" i=0 n=${#1}
+  [[ ${#b} -lt $n ]] && n=${#b}
+  while [[ $i -lt $n && "${a:i:1}" == "${b:i:1}" ]]; do i=$((i+1)); done
+  printf '%s' "$i"
+}
+
+# hp028_classify_transform OLD NEW
+#   Emits a rule name + returns 0 when NEW is EXACTLY one sanctioned transform
+#   of OLD; emits UNSANCTIONED:<reason> + returns 1 otherwise.
+hp028_classify_transform() {
+  local old="$1" new="$2"
+
+  [[ "$old" =~ ^(.*)\|[[:space:]]*(grep[[:space:]]+-[qm][A-Za-z0-9]*[[:space:]].*)$ ]] \
+    || { printf 'UNSANCTIONED:base-line-carries-no-pipeline-grep-site'; return 1; }
+  local old_left="${BASH_REMATCH[1]}" old_grep="${BASH_REMATCH[2]}"
+
+  [[ "$new" =~ ^(.*[^|])?(grep[[:space:]]+-[qm][A-Za-z0-9]*[[:space:]].*)$ ]] \
+    || { printf 'UNSANCTIONED:converted-line-carries-no-grep-clause'; return 1; }
+  local new_left="${BASH_REMATCH[1]}" new_grep="${BASH_REMATCH[2]}"
+
+  # 1. Everything left of grep is UNCHANGED but for the deleted producer.
+  [[ "$old_left" == "$new_left"* ]] \
+    || { printf 'UNSANCTIONED:text-left-of-grep-changed'; return 1; }
+  local deleted="${old_left:${#new_left}}"
+  [[ "$deleted" =~ ^[[:space:]]*(.*[^[:space:]])[[:space:]]*$ ]] \
+    || { printf 'UNSANCTIONED:no-producer-was-removed'; return 1; }
+  local producer="${BASH_REMATCH[1]}"
+
+  # 2. Which redirect is LICENSED depends on the producer's BYTE output.
+  #    `echo "$V"` and `printf '%s\n' "$V"` both emit "$V\n" — and so does
+  #    `<<<"$V"`. Measured 2026-09-18 by od byte-compare over five inputs
+  #    (empty, plain, embedded newline, trailing newline, whitespace):
+  #    byte-identical 5/5. `printf '%s' "$V"` emits NO trailing newline and is
+  #    byte-identical 0/5 — `printf '%s' "" | grep -q '^$'` returns 1 where the
+  #    here-string returns 0 — so it may NOT become a here-string and takes
+  #    process substitution like any other producer. A transform that changes
+  #    the input bytes cannot be proved correct by comparing the grep clause,
+  #    which is exactly what this verifier does, so the split is load-bearing
+  #    rather than stylistic.
+  local q='^\\?"[^"]*\\?"$' vartok="" redirect="" rule=""
+  case "$producer" in
+    'echo '*)
+      vartok="${producer#echo }"
+      [[ "$vartok" =~ $q ]] && { redirect=" <<<$vartok"; rule="R1-echo-herestring"; }
+      ;;
+    "printf '%s\\n' "*)
+      vartok="${producer#printf \'%s\\n\' }"
+      [[ "$vartok" =~ $q ]] && { redirect=" <<<$vartok"; rule="R2-printf-nl-herestring"; }
+      ;;
+  esac
+  if [[ -z "$rule" ]]; then
+    redirect=" < <($producer)"
+    rule="R3-process-substitution"
+  fi
+
+  # 3. NEW's grep clause must be OLD's with that redirect INSERTED at some
+  #    position — proved by exact reconstruction, not by a prefix/suffix split.
+  #    The split places the boundary ambiguously whenever the redirect opens
+  #    with the same space the arguments already close with (measured: it
+  #    rejected two of five sanctioned transforms). Reconstruction proves
+  #    grep's ARGUMENTS and the TRAILING BRANCH TEXT are byte-identical,
+  #    because anything else fails to rebuild.
+  local k
+  k=$(_hp028_lcp_len "$old_grep" "$new_grep")
+  while [[ $k -ge 0 ]]; do
+    if [[ "${old_grep:0:$k}${redirect}${old_grep:$k}" == "$new_grep" ]]; then
+      printf '%s' "$rule"; return 0
+    fi
+    k=$((k - 1))
+  done
+  printf 'UNSANCTIONED:grep-clause-is-not-the-base-line-plus-its-licensed-redirect'
+  return 1
+}
+
+if [[ "${1:-}" == "--verify-conversion" ]]; then
+  BASE_REF="${2:-HEAD}"
+  cd "$REPO_ROOT" || exit 1
+
+  TOUCHED=$(git diff --name-only "$BASE_REF" -- 'tests/probes/*.sh' 'scripts/*.sh' 2>/dev/null)
+  if [[ -z "$TOUCHED" ]]; then
+    echo "FAIL --verify-conversion: no .sh files differ from $BASE_REF in the ratcheted roots"
+    exit 1
+  fi
+
+  # The NET's census is taken ONCE, over the whole ratcheted roots, using the
+  # same call shape --emit-baseline uses. Handing hp028_census a single file
+  # would leave --include's behaviour on an explicit path deciding the net.
+  V_CENSUS=$(for root in tests/probes scripts; do hp028_census "$REPO_ROOT/$root"; done)
+
+  V_CHANGED=0; V_OK=0; V_BAD=0; V_EXEMPT=0; V_REMAIN=0
+  V_PROBLEMS=()
+  echo "── HP-028 conversion verification vs $BASE_REF ──"
+  echo
+
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    [[ -f "$f" ]] || continue
+    echo "$f"
+
+    # TOOTH — pair changed lines hunk by hunk, straight out of git diff.
+    declare -A RULES=()
+    f_changed=0; f_bad=0
+    OLDS=(); NEWS=()
+    flush_hunk() {
+      local i
+      if [[ "${#OLDS[@]}" -ne "${#NEWS[@]}" ]]; then
+        for i in "${!OLDS[@]}"; do
+          V_PROBLEMS+=("$f: unpaired hunk (${#OLDS[@]} removed, ${#NEWS[@]} added) — needs manual review")
+          f_bad=$((f_bad + 1)); break
+        done
+        [[ "${#OLDS[@]}" -eq 0 && "${#NEWS[@]}" -gt 0 ]] && {
+          V_PROBLEMS+=("$f: ${#NEWS[@]} line(s) added with nothing removed — needs manual review")
+          f_bad=$((f_bad + 1)); }
+      else
+        for i in "${!OLDS[@]}"; do
+          f_changed=$((f_changed + 1))
+          local verdict
+          verdict=$(hp028_classify_transform "${OLDS[$i]}" "${NEWS[$i]}") && {
+            RULES["$verdict"]=$(( ${RULES["$verdict"]:-0} + 1 )); continue; }
+          V_PROBLEMS+=("$f: $verdict")
+          V_PROBLEMS+=("    was: ${OLDS[$i]}")
+          V_PROBLEMS+=("    now: ${NEWS[$i]}")
+          f_bad=$((f_bad + 1))
+        done
+      fi
+      OLDS=(); NEWS=()
+    }
+
+    while IFS= read -r line; do
+      case "$line" in
+        '@@'*)   flush_hunk ;;
+        '---'*|'+++'*) ;;
+        '-'*)    OLDS+=("${line:1}") ;;
+        '+'*)    NEWS+=("${line:1}") ;;
+      esac
+    done < <(git diff --no-color --no-ext-diff --no-textconv -U0 "$BASE_REF" -- "$f")
+    flush_hunk
+
+    for r in "${!RULES[@]}"; do printf '  %-32s %s\n' "$r" "${RULES[$r]}"; done
+    V_CHANGED=$((V_CHANGED + f_changed))
+    V_BAD=$((V_BAD + f_bad))
+    V_OK=$((V_OK + f_changed - f_bad))
+
+    # NET — the census's own definition, run independently of the tooth.
+    remain=$(awk -F'\t' -v f="$f" '$1==f {print $2}' <<<"$V_CENSUS")
+    remain="${remain:-0}"
+    printf '  %-32s %s\n' "remaining HP-028 sites" "$remain"
+    if [[ "$remain" -ne 0 ]]; then
+      V_PROBLEMS+=("$f: $remain HP-028 site(s) still present after conversion")
+      V_REMAIN=$((V_REMAIN + remain))
+    fi
+
+    # EXEMPTION AUDIT — a new HP-028 token silences the lint on that line, so
+    # every one is NAMED. An unexplained exemption is how a sweep "fixes" a
+    # deliberate broken-form fixture and disarms the instrument silently.
+    added_ex=$(git diff --no-color --no-ext-diff --no-textconv -U0 "$BASE_REF" -- "$f" \
+               | grep -c '^+.*HP-028' || true)
+    if [[ "${added_ex:-0}" -ne 0 ]]; then
+      printf '  %-32s %s\n' "NEW HP-028 exemptions" "$added_ex"
+      V_EXEMPT=$((V_EXEMPT + added_ex))
+      while IFS= read -r exline; do
+        V_PROBLEMS+=("$f: NEW exemption — justify or remove: ${exline:1}")
+      done < <(git diff --no-color --no-ext-diff --no-textconv -U0 "$BASE_REF" -- "$f" \
+               | grep '^+.*HP-028' || true)
+    fi
+    unset RULES
+    echo
+  done <<<"$TOUCHED"
+
+  echo "────────────────────────────────────────────────────────────────────"
+  echo "TOOTH  $V_CHANGED changed line(s), $((V_CHANGED - V_BAD)) sanctioned, $V_BAD unsanctioned"
+  echo "NET    $V_REMAIN HP-028 site(s) remain in touched files"
+  echo "EXEMPT $V_EXEMPT new HP-028 exemption line(s)"
+  if [[ "${#V_PROBLEMS[@]}" -gt 0 ]]; then
+    echo
+    echo "PROBLEMS:"
+    for p in "${V_PROBLEMS[@]}"; do echo "  $p"; done
+    exit 1
+  fi
+  echo
+  echo "OK   every changed line is one sanctioned transform, and no site remains"
+  exit 0
+fi
+
 # file:line entries to skip. Empty in the audit-closed state.
 ALLOWLIST=(
   # Example shape — uncomment + customize when an exception is justified:
