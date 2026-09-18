@@ -2236,11 +2236,16 @@ function writeAtomic(targetPath, dataObj) {
 //      Same shape as dhx/dhx-read-dedup.sh's STATS_MAX_BYTES → `.1` rotation.
 //   3. SWEEP — delete logs older than DRIFT_DEBUG_RETENTION_DAYS.
 //
-// WHY A DEDICATED SWEEPER RATHER THAN WIDENING sweepSpoolDir: that helper skips
-// any name not ending `.jsonl` and is only ever pointed at three SUBdirectories
-// (cache-events, quota-snapshots, cache-telemetry). Breadcrumbs sit at the cache
-// BASE, so they escaped retention on both counts and fixing either alone changes
-// nothing. Neither of the obvious widenings is safe: measured 2026-09-17, the
+// WHY A DEDICATED SWEEPER RATHER THAN WIDENING sweepSpoolDir: that helper is
+// only ever pointed at three SUBdirectories (cache-events, quota-snapshots,
+// cache-telemetry) via SPOOL_SWEEP_DIRS, and each of those rows declares a
+// pattern for its own directory's contents. Breadcrumbs sit at the cache BASE,
+// which no row names, so adding a fourth row is the only way to reach them and
+// that row would need its own predicate regardless. (Until 2026-09-18 the helper
+// also carried a single shared `.jsonl` test, which is the form this paragraph
+// originally argued against; the table replaced it, but the base/subdirectory
+// argument below is untouched by that and is the load-bearing half.)
+// Neither of the obvious widenings is safe: measured 2026-09-17, the
 // base holds 3,342 `partial-read-detect-*.jsonl` from an unrelated hook plus
 // statusline-errors.jsonl / read-dedup-stats.jsonl / gemini-review-usage.jsonl,
 // and 17 non-breadcrumb `.log` files (gsd-install-*.log, source-write-flag.log,
@@ -3093,6 +3098,29 @@ const TELEMETRY_RETENTION_DAYS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 400;
 })();
 
+// Retention for the per-session STATE files in cache-telemetry, deliberately
+// SEPARATE from TELEMETRY_RETENTION_DAYS above. That constant is 400 because
+// the two spools became the quota INSTRUMENT (2026-09-16); `state-<sid>.json`
+// is one session's bookkeeping — `lastEventKey` + `lastSweepMs`, whose only
+// reader is recordCacheTelemetry itself — and is dead weight the moment that
+// session ends. Borrowing the instrument's window for a scratch file is what
+// left the directory unbounded. 60 matches DRIFT_DEBUG_RETENTION_DAYS and was
+// chosen on MEASUREMENT, not symmetry: on 2026-09-17 the deepest state file was
+// 33 days old (1,559 files, oldest 2026-08-15), so a 60-day window deletes ZERO
+// files on the day it ships and starts draining ~27 days later.
+//
+// That measurement is also why there is no per-run cap here. The first-sweep
+// cliff that cost the breadcrumb sweeper 348 files / 1.90 GiB needs a window
+// SHORTER than the backlog is deep; at 60 days there is no cliff to arm
+// against. And a cap would not have bounded it anyway — the daily gate below is
+// keyed on the per-session state file, so N concurrent lanes give N sweeps per
+// day and "25 per run" is not 25 per day. What guards the predicate instead is
+// the shape arm in probe-cache-telemetry-spools.js, not a rate limit.
+const TELEMETRY_STATE_RETENTION_DAYS = (() => {
+  const raw = parseInt(process.env.DHX_CACHE_TELEMETRY_STATE_RETENTION_DAYS, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
+})();
+
 function telemetryBaseDir() {
   return process.env.DHX_CACHE_TELEMETRY_DIR || path.join(os.homedir(), '.cache', 'dhx');
 }
@@ -3111,11 +3139,50 @@ function appendSpoolLine(file, row) {
   finally { try { fs.closeSync(fd); } catch { /* nothing */ } }
 }
 
-function sweepSpoolDir(dir, cutoffMs) {
+// Every sweep call site declares the files it owns and how long they live.
+// THE TABLE IS THE CONTRACT: recordCacheTelemetry drives it in a loop and makes
+// no direct sweepSpoolDir call, so a fourth directory cannot be swept without a
+// row here, and probe-cache-telemetry-spools.js derives its coverage FROM this
+// array rather than from a list someone remembered to extend.
+//
+// WHY NOT ONE SHARED PREDICATE — that is the defect this replaces. A single
+// `!n.endsWith('.jsonl')` test governed all three directories while
+// cache-telemetry holds only `state-<uuid>.json`, so that call unlinked nothing
+// from 2026-08-15 (its oldest file) until this landed. Measured 2026-09-17 via
+// `find -maxdepth 1 -type f`: cache-events 1476/1476 reachable,
+// quota-snapshots 100/100, cache-telemetry 0 of 1559. The two working rows keep
+// the exact `.jsonl` test they already had, so their behaviour is unchanged.
+//
+// WHY NOT A WIDENED `.json` — it was measured SAFE and refused anyway. All
+// three directories were single-shape on 2026-09-17, and the foreign-file
+// hazard that forced the drift-debug sweeper's prefix key lives at the cache
+// BASE (3,342 `partial-read-detect-*.jsonl` from an unrelated hook, 17 foreign
+// `.log`), not in these subdirectories — a constraint verified to exist at the
+// base is not verified to apply here, and it does not. It is refused because
+// one predicate over three unrelated directories is the arrangement that hid
+// this for a month, and because a later `state-summary.json` dropped in here
+// would then be claimed silently.
+//
+// Patterns are ANCHORED AT BOTH ENDS where the name shape is known. An
+// unanchored suffix deletes `x.jsonl.bak`; the 2026-09-17 drift-debug row
+// records an unanchored `/\.log/` passing every other assertion in its
+// scenario ([19e2]). A session id that is not uuid-shaped therefore leaves an
+// unreachable state file: deliberate — the failure direction is RETAIN, never
+// delete. No `g` flag on any pattern: `RegExp.prototype.test` is stateful under
+// `g` and would skip every other name.
+const SPOOL_SWEEP_DIRS = [
+  { dir: 'cache-events', match: /\.jsonl$/, days: TELEMETRY_RETENTION_DAYS },
+  { dir: 'quota-snapshots', match: /\.jsonl$/, days: TELEMETRY_RETENTION_DAYS },
+  { dir: 'cache-telemetry',
+    match: /^state-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i,
+    days: TELEMETRY_STATE_RETENTION_DAYS },
+];
+
+function sweepSpoolDir(dir, cutoffMs, match) {
   let names;
   try { names = fs.readdirSync(dir); } catch { return; }
   for (const n of names) {
-    if (!n.endsWith('.jsonl')) continue;
+    if (!match.test(n)) continue;
     const p = path.join(dir, n);
     try { if (fs.statSync(p).mtimeMs < cutoffMs) fs.unlinkSync(p); }
     catch { /* races with a concurrent sweep are fine */ }
@@ -3196,13 +3263,16 @@ function recordCacheTelemetry(data, tail, nowMs) {
     appendSpoolLine(path.join(base, 'quota-snapshots', `${profile}-${day}.jsonl`), snapRow);
   }
 
-  // Opportunistic retention sweep, at most once per day per session.
+  // Opportunistic retention sweep, at most once per day per session. Driven by
+  // SPOOL_SWEEP_DIRS and nothing else — this is the only sweepSpoolDir call in
+  // the file, so no directory is ever swept under a predicate or a window it
+  // did not declare. Each row carries its own cutoff: the two spools are the
+  // quota instrument at 400 days, the state files are scratch at 60.
   let lastSweepMs = Number(state.lastSweepMs) || 0;
   if (now - lastSweepMs > 86400_000) {
-    const cutoff = now - TELEMETRY_RETENTION_DAYS * 86400_000;
-    sweepSpoolDir(path.join(base, 'cache-events'), cutoff);
-    sweepSpoolDir(path.join(base, 'quota-snapshots'), cutoff);
-    sweepSpoolDir(path.join(base, 'cache-telemetry'), cutoff);
+    for (const s of SPOOL_SWEEP_DIRS) {
+      sweepSpoolDir(path.join(base, s.dir), now - s.days * 86400_000, s.match);
+    }
     lastSweepMs = now;
   }
   try {
@@ -3437,6 +3507,15 @@ module.exports = {
   sweepDriftDebugLogs,
   maybeSweepDriftDebugLogs,
   driftDebugPayload,
+  // Spool retention ownership table (2026-09-18) — exported so
+  // probe-cache-telemetry-spools.js DERIVES its retention coverage from the
+  // table and drives the REAL sweeper, rather than enumerating the call sites
+  // its author happened to remember. Enumeration is exactly what let the
+  // cache-telemetry row sit dead under a green probe for a month.
+  SPOOL_SWEEP_DIRS,
+  sweepSpoolDir,
+  TELEMETRY_RETENTION_DAYS,
+  TELEMETRY_STATE_RETENTION_DAYS,
   // Per-lane health scoping (2026-09-15) — exported as PURE functions so
   // probe-health-lane-scoping.sh can assert this consumer derives the same lane
   // id as the producer (dhx-health-check.sh) for the same config dir, rather

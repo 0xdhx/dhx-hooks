@@ -8,6 +8,15 @@
 // P0-b row (docs/decisions.md 2026-09-16): additive event fields
 // input/output/c1h/c5m/stop, snapshot rl_keys/rl_extra, raw float pct, and
 // the 400-day retention default.
+//
+// Since 2026-09-18 also backs the SPOOL_SWEEP_DIRS ownership-table row
+// (docs/decisions.md 2026-09-18): scenario [S] below derives its retention
+// coverage FROM the exported table instead of naming the directories its
+// author remembered. The arms above it did the latter, and that is why the
+// cache-telemetry call site could be dead from 2026-08-15 to 2026-09-18 while
+// this probe stayed green — both its retention assertions used .jsonl fixtures
+// in cache-events, and it even WROTE state-${SID}.json into the unreachable
+// directory without ever asserting that file was reachable.
 // Run: node tests/probes/probe-cache-telemetry-spools.js
 
 // SAFE_FOR_LIVE: yes   (all writes under a mkdtemp dir via DHX_CACHE_TELEMETRY_DIR override; never touches live ~/.cache/dhx)
@@ -44,7 +53,13 @@ const tp = path.join(TMP, 't.jsonl');
 fs.writeFileSync(tp, rec('2026-08-15T10:00:00.000Z', 'r1', 'm1', warm(150000)));
 let tail = parseTranscriptTail(tp);
 
-const SID = 'probe-sess-1234';
+// Session ids are uuid-shaped in production — verified 2026-09-17 by two
+// independent routes over the live cache: 1560/1560 in cache-telemetry
+// (`state-<sid>.json`) and 1477/1477 in cache-events (`<profile>-<sid>.jsonl`).
+// The fixture was `probe-sess-1234` until 2026-09-18; that shape does not occur
+// in production and made [S7] read the sweep as broken when it was the fixture
+// that was wrong.
+const SID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 const RL = { five_hour: { used_percentage: 42, resets_at: 1765000000 }, seven_day: { used_percentage: 12, resets_at: 1765400000 } };
 const data = { session_id: SID, version: '2.1.233', rate_limits: RL };
 
@@ -149,6 +164,167 @@ fs.writeFileSync(stateFile, JSON.stringify(st));
 recordCacheTelemetry(data, tail);
 ok('retention sweep removes >400d spool files', !fs.existsSync(oldFile));
 ok('retention sweep KEEPS a 40-day-old spool file (the old 30-day default would have deleted it)', fs.existsSync(keepFile));
+
+// --- [S] SPOOL_SWEEP_DIRS ownership table (2026-09-18) -----------------------
+// The arms above enumerate; these derive. Adding a fourth row to the table
+// extends [S1] automatically, and a fourth row whose name shape no generator
+// below produces FAILS [S0] rather than being silently skipped.
+// Degrade to a FAIL line, never a throw. A crashed harness emits NO FAIL lines
+// at all, which reads exactly like a clean run — the 2026-09-17 drift-debug row
+// records that shape costing a whole mutant round. So a missing export is an
+// assertion here, not an exception three lines later.
+const SPOOL_SWEEP_DIRS = Array.isArray(wrapper.SPOOL_SWEEP_DIRS) ? wrapper.SPOOL_SWEEP_DIRS : [];
+const sweepSpoolDir = typeof wrapper.sweepSpoolDir === 'function' ? wrapper.sweepSpoolDir : null;
+const { TELEMETRY_RETENTION_DAYS, TELEMETRY_STATE_RETENTION_DAYS } = wrapper;
+ok('[S-pre] wrapper exports a non-empty SPOOL_SWEEP_DIRS table', SPOOL_SWEEP_DIRS.length > 0);
+ok('[S-pre] wrapper exports sweepSpoolDir', sweepSpoolDir !== null);
+
+// [S7] THE load-bearing arm: each row's predicate must ACCEPT the names the
+// WRITER actually produced in that directory. Runs BEFORE anything is seeded,
+// so every name it sees came from the code under test rather than from this
+// file. That ordering is the whole point — [S1] below seeds a fixture chosen by
+// `ownedName`, which picks a name the row's own regex accepts, so [S1] tests the
+// row against itself and a predicate pointed at the wrong directory survives it.
+// Measured 2026-09-17, this is the defect stated as an assertion: the shipped
+// shared `.jsonl` test reached 1476/1476 in cache-events, 100/100 in
+// quota-snapshots and 0 of 1559 in cache-telemetry. An empty directory FAILS
+// rather than passing vacuously.
+for (const row of SPOOL_SWEEP_DIRS) {
+  let produced = [];
+  try { produced = fs.readdirSync(path.join(TMP, row.dir)); } catch { produced = []; }
+  const reach = produced.filter((n) => row.match.test(n));
+  if (produced.length && reach.length !== produced.length) {
+    console.log(`     unreachable: ${produced.filter((n) => !row.match.test(n)).join(', ')}`);
+  }
+  ok(`[S7] ${row.dir}: predicate reaches every file the writer produced `
+     + `(${reach.length} of ${produced.length})`,
+     produced.length > 0 && reach.length === produced.length);
+}
+
+const U_OLD = '11111111-2222-3333-4444-555555555555';
+const U_NEW = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+// Name shapes the live directories actually use. A row matching NONE of these
+// is a row this probe cannot seed — [S0] fails closed on it.
+const NAME_SHAPES = [(u) => `q-${u}.jsonl`, (u) => `state-${u}.json`];
+const ownedName = (row, u) => NAME_SHAPES.map((f) => f(u)).find((n) => row.match.test(n)) || null;
+
+const seeded = [];
+const unnamed = [];
+for (const row of SPOOL_SWEEP_DIRS) {
+  const oldN = ownedName(row, U_OLD), newN = ownedName(row, U_NEW);
+  if (!oldN || !newN) { unnamed.push(row.dir); continue; }
+  const d = path.join(TMP, row.dir);
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  const oldP = path.join(d, oldN), newP = path.join(d, newN);
+  const keepDays = Math.max(1, row.days - 10);
+  fs.writeFileSync(oldP, '{"v":1}\n'); fs.writeFileSync(newP, '{"v":1}\n');
+  const oldT = (Date.now() - (row.days + 40) * 86400_000) / 1000;
+  const newT = (Date.now() - keepDays * 86400_000) / 1000;
+  fs.utimesSync(oldP, oldT, oldT); fs.utimesSync(newP, newT, newT);
+  seeded.push({ dir: row.dir, days: row.days, keepDays, oldP, newP });
+}
+if (unnamed.length) console.log(`     rows with no fixture shape: ${unnamed.join(', ')}`);
+ok('[S0] every SPOOL_SWEEP_DIRS row can be seeded (fail-closed on a new row)', unnamed.length === 0);
+
+// Re-open the daily gate and let the REAL call site drive the REAL table.
+const st2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+st2.lastSweepMs = Date.now() - 2 * 86400_000;
+st2.lastEventKey = 'stale-table';
+fs.writeFileSync(stateFile, JSON.stringify(st2));
+recordCacheTelemetry(data, tail);
+
+for (const s of seeded) {
+  ok(`[S1] ${s.dir}: prunes a file ${s.days + 40}d old (window ${s.days}d)`, !fs.existsSync(s.oldP));
+  ok(`[S1] ${s.dir}: keeps a file ${s.keepDays}d old`, fs.existsSync(s.newP));
+}
+
+// [S6] Every directory the writer actually creates must carry a sweep row.
+// Derived from BEHAVIOUR, not from the table — which is the point. [S1] takes
+// its coverage from the table, so deleting a row deletes that row's coverage
+// along with it and nothing goes red; and a fourth write destination added with
+// no retention at all is invisible to every arm above. This one reds on both.
+const writtenDirs = fs.readdirSync(TMP, { withFileTypes: true })
+  .filter((d) => d.isDirectory()).map((d) => d.name).sort();
+const coveredDirs = new Set(SPOOL_SWEEP_DIRS.map((r) => r.dir));
+const uncoveredDirs = writtenDirs.filter((d) => !coveredDirs.has(d));
+if (uncoveredDirs.length) console.log(`     written but never swept: ${uncoveredDirs.join(', ')}`);
+ok(`[S6] every directory the writer creates has a sweep row (saw ${writtenDirs.join(', ') || 'none'})`,
+   writtenDirs.length > 0 && uncoveredDirs.length === 0);
+
+// [S8] The residual, asserted rather than left in a comment. The
+// cache-telemetry pattern is anchored on a uuid, so a session id of any other
+// shape leaves a state file this sweep can never reach. That is the deliberate
+// trade and its direction is RETAIN: the alternative — matching the writer's
+// own contract, `state-<anything-without-a-separator>.json` — necessarily
+// claims `state-summary.json` too, because `summary` is a valid session id.
+// Both hazards are empty today; only this one fails toward keeping data.
+// Pinning it here means a future loosening reds HERE and has to confront [S3b]
+// in the same breath, instead of trading one silently for the other.
+const oddSid = path.join(TMP, 'cache-telemetry', 'state-not-a-uuid.json');
+fs.writeFileSync(oddSid, '{"v":1}\n');
+const oddT = (Date.now() - 900 * 86400_000) / 1000;
+fs.utimesSync(oddSid, oddT, oddT);
+for (const row of SPOOL_SWEEP_DIRS) {
+  sweepSpoolDir(path.join(TMP, row.dir), Date.now() - row.days * 86400_000, row.match);
+}
+ok('[S8] a non-uuid session id leaves an unreachable state file (fails toward RETAIN)',
+   fs.existsSync(oddSid));
+try { fs.unlinkSync(oddSid); } catch { /* a loosened pattern already swept it — [S8] said so */ }
+
+// [S2] The table is the ONLY driver. Comments stripped, the wrapper must carry
+// exactly one `sweepSpoolDir(` declaration plus one call — a direct call added
+// beside the loop would sweep a directory under a predicate it never declared.
+const wrapperSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'dhx', 'statusline-wrapper.js'), 'utf8');
+const codeOnly = wrapperSrc.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+const callSites = (codeOnly.match(/sweepSpoolDir\(/g) || []).length;
+ok(`[S2] SPOOL_SWEEP_DIRS is the only driver (1 decl + 1 call, saw ${callSites})`, callSites === 2);
+
+// [S3a] End-anchoring, asserted as a PROPERTY over every row rather than a list
+// of file classes. An unanchored suffix deletes `x.jsonl.bak`; the 2026-09-17
+// drift-debug row records an unanchored /\.log/ passing every other assertion
+// in its scenario ([19e2]) because no bystander in its hardcoded list happened
+// to carry a non-terminal `.log`. A property cannot go stale that way.
+let tailLeaks = [];
+for (const row of SPOOL_SWEEP_DIRS) {
+  const base = ownedName(row, U_OLD);
+  if (!base) continue;
+  for (const t of ['.bak', '.1', '.tmp', '~', '.swp']) {
+    if (row.match.test(base + t)) tailLeaks.push(`${row.dir}:${base}${t}`);
+  }
+}
+if (tailLeaks.length) console.log(`     unanchored matches: ${tailLeaks.join(', ')}`);
+ok('[S3a] no row matches an owned name plus a trailing suffix (end-anchored)', tailLeaks.length === 0);
+
+// [S3b] `state-summary.json` is the concrete file class a bare `.json` widening
+// or a loose `state-` prefix would claim. No row may reach it, at any age.
+const summaryClaimers = SPOOL_SWEEP_DIRS.filter((r) => r.match.test('state-summary.json')).map((r) => r.dir);
+if (summaryClaimers.length) console.log(`     state-summary.json claimed by: ${summaryClaimers.join(', ')}`);
+ok('[S3b] no row claims state-summary.json', summaryClaimers.length === 0);
+
+// [S4] Windows are per-row, not one shared cutoff. Behavioural, and derived:
+// age a file owned by the NARROWEST row to the midpoint between the narrowest
+// and widest windows. It must be swept under its own window and would survive
+// if every row inherited the widest one.
+const minRow = SPOOL_SWEEP_DIRS.length
+  ? SPOOL_SWEEP_DIRS.reduce((a, b) => (b.days < a.days ? b : a))
+  : { dir: '.', days: 0, match: /$^/ };
+const maxDays = SPOOL_SWEEP_DIRS.length ? Math.max(...SPOOL_SWEEP_DIRS.map((r) => r.days)) : 0;
+ok('[S4a] at least two distinct retention windows exist across the table', minRow.days < maxDays);
+const midDays = Math.floor((minRow.days + maxDays) / 2);
+const midName = ownedName(minRow, '99999999-8888-7777-6666-555555555555') || 'unseedable';
+const midP = path.join(TMP, minRow.dir, midName);
+fs.writeFileSync(midP, '{"v":1}\n');
+const midT = (Date.now() - midDays * 86400_000) / 1000;
+fs.utimesSync(midP, midT, midT);
+sweepSpoolDir(path.join(TMP, minRow.dir), Date.now() - minRow.days * 86400_000, minRow.match);
+ok(`[S4b] ${minRow.dir}: a ${midDays}d file is swept under its own ${minRow.days}d window `
+   + `(it would survive the ${maxDays}d one)`, !fs.existsSync(midP));
+
+// [S5] The state-file window is a distinct constant, not an alias. Guards the
+// one-line "reuse TELEMETRY_RETENTION_DAYS" regression that [S4] would miss if
+// someone set both constants to the same number.
+ok('[S5] TELEMETRY_STATE_RETENTION_DAYS is separate from the 400-day spool window',
+   TELEMETRY_STATE_RETENTION_DAYS !== TELEMETRY_RETENTION_DAYS && TELEMETRY_STATE_RETENTION_DAYS > 0);
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
