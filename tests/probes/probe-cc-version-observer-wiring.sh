@@ -32,9 +32,18 @@
 #      T1 first-run baseline init is silent, T2 no-change is silent, T3 a change
 #      FIRES and NAMES the keyed brief, T4 the re-run after a notice is silent
 #      (once-per-change, not once-per-session), T5 an empty stamp re-baselines
-#      silently. Skipped (not failed) when cross-repo hasn't provisioned the
+#      silently, T6 a DAEMON-shaped consumer neither emits nor stamps while the
+#      OPERATOR-facing consumer that follows still receives the notice, T7 an
+#      absent/empty attendedness signal fails OPEN, T8 eight concurrent attended
+#      consumers produce exactly one emission, T9 a stale claim is stealable and
+#      a fresh one is respected. Skipped (not failed) when cross-repo hasn't provisioned the
 #      symlink, so the probe stays green in a bare hooks clone — matching the
 #      dispatcher's own [ -e ] graceful no-op.
+#
+# T6 is the cell the 2026-09-17 lane-delivery fix owes: every other cell here passes under
+# BOTH the pre-fix and post-fix implementations, so it is the only one that can adjudicate
+# the fix at all. Measured RED against hooks 8f22ea35 / cross-repo 228ff809c — there the
+# daemon consumer emitted 342 bytes and the operator that followed received zero.
 #
 # T3's naming assertion is the load-bearing one: per the originating brief
 # (cross-repo 2026-08-23-cc-version-bump-has-no-trigger-firing-path), "A notice
@@ -141,10 +150,24 @@ BRIEF
   MANIFEST="$SB/fleet/manifest.json"
   printf '{"repos":[{"path":"%s"}]}\n' "$SB/fleet/repo-x" > "$MANIFEST"
 
-  run_obs() {
-    CC_OBS_STATE_FILE="$STAMP" CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
-      bash "$INSTALLED_OBS" < /dev/null >"$SB/out" 2>"$SB/err"; echo "$?"
+  # $1 = the value CLAUDE_CODE_SESSION_ATTENDED should carry, or "unset" to remove it.
+  # PINNED, never inherited: this probe runs from whatever session invokes it, and a
+  # background session exports CLAUDE_CODE_SESSION_ATTENDED=0. Inheriting it would make
+  # T3/T3b red in a background session and green in an attended one — a suite whose verdict
+  # depends on who ran it. Default "unset" is the fail-open path the observer documents.
+  run_obs_as() {
+    local att="${1:-unset}"
+    if [ "$att" = "unset" ]; then
+      env -u CLAUDE_CODE_SESSION_ATTENDED \
+        CC_OBS_STATE_FILE="$STAMP" CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
+        bash "$INSTALLED_OBS" < /dev/null >"$SB/out" 2>"$SB/err"; echo "$?"
+    else
+      CLAUDE_CODE_SESSION_ATTENDED="$att" \
+        CC_OBS_STATE_FILE="$STAMP" CC_BIN_LINK="$LINK" CC_OBS_MANIFEST="$MANIFEST" \
+        bash "$INSTALLED_OBS" < /dev/null >"$SB/out" 2>"$SB/err"; echo "$?"
+    fi
   }
+  run_obs() { run_obs_as unset; }
 
   # T1: no stamp -> silent baseline init, stamp created at the current version.
   rm -f "$STAMP"; ln -sfn "$SB/versions/2.1.273" "$LINK"
@@ -201,6 +224,93 @@ BRIEF
     && check "[T5] empty stamp -> silent re-baseline (no notice against an empty last-seen)" ok \
     || check "[T5] empty stamp -> silent re-baseline (no notice against an empty last-seen)" "fail" \
              "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
+
+  # ── T6: THE TWO-CONSUMER CELL. The one assertion that cannot be waived. ──────
+  # Every cell above passes under BOTH the pre-2026-09-17 implementation and the fixed one,
+  # so a fix validated only by them is untested by construction. This cell models the
+  # measured defect directly: a DAEMON-shaped consumer runs first, then an OPERATOR-facing
+  # one. The operator must still receive the notice.
+  # RED against the implementation at hooks 8f22ea35 / cross-repo 228ff809c: measured there,
+  # the daemon emitted 342 bytes and advanced the stamp, and the operator that followed got
+  # ZERO bytes — which is exactly the 2026-09-17 production miss, reproduced in a sandbox.
+  printf '2.1.273\n' > "$STAMP"; ln -sfn "$SB/versions/2.1.275" "$LINK"
+  rc_d=$(run_obs_as 0); out_d=$(wc -c < "$SB/out"); stamp_d=$(cat "$STAMP" 2>/dev/null)
+  if [ "$rc_d" = "0" ] && [ "$out_d" -eq 0 ] && [ "$stamp_d" = "2.1.273" ]; then
+    check "[T6a] unattended (daemon) consumer -> silent AND leaves the stamp for the operator" ok
+  else
+    check "[T6a] unattended (daemon) consumer -> silent AND leaves the stamp for the operator" "fail" \
+          "rc=$rc_d outsz=$out_d stamp=$stamp_d (expected rc=0, 0 bytes, stamp still 2.1.273)"
+  fi
+
+  rc_o=$(run_obs_as 1); out_o=$(wc -c < "$SB/out"); stamp_o=$(cat "$STAMP" 2>/dev/null)
+  if [ "$rc_o" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" && [ "$stamp_o" = "2.1.275" ]; then
+    check "[T6b] operator-facing consumer AFTER the daemon -> STILL receives the notice" ok
+  else
+    check "[T6b] operator-facing consumer AFTER the daemon -> STILL receives the notice" "fail" \
+          "rc=$rc_o outsz=$out_o stamp=$stamp_o out=$(head -c 120 "$SB/out")"
+  fi
+
+  # T7: the polarity. Only the literal "0" suppresses; a vanished variable must degrade to
+  # the old behaviour, never to silence. See the observer's POLARITY IS DELIBERATE block.
+  printf '2.1.273\n' > "$STAMP"
+  rc=$(run_obs_as unset)
+  [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
+    && check "[T7] CLAUDE_CODE_SESSION_ATTENDED unset -> fail-OPEN (notice fires; a missing signal can never silence)" ok \
+    || check "[T7] CLAUDE_CODE_SESSION_ATTENDED unset -> fail-OPEN (notice fires; a missing signal can never silence)" "fail" \
+             "rc=$rc out=$(head -c 120 "$SB/out")"
+
+  printf '2.1.273\n' > "$STAMP"
+  rc=$(run_obs_as "")
+  [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
+    && check "[T7b] empty-string attendedness -> fail-OPEN (only the literal 0 suppresses)" ok \
+    || check "[T7b] empty-string attendedness -> fail-OPEN (only the literal 0 suppresses)" "fail" \
+             "rc=$rc out=$(head -c 120 "$SB/out")"
+
+  # T8: concurrent attended consumers. The read-compare-write the observer used through
+  # 228ff809c is not atomic, so N sessions starting together all emit. Measured against that
+  # implementation: 12 of 12 racing consumers emitted, three trials out of three. The mkdir
+  # claim is the atomic test-and-set (same shape as the dispatcher's _dhx_child marker).
+  # A barrier file synchronises the racers past the read; without it they serialise by luck.
+  printf '2.1.273\n' > "$STAMP"
+  BAR="$SB/race-go"; rm -f "$BAR" "$SB"/race.out.*
+  for i in 1 2 3 4 5 6 7 8; do
+    ( while [ ! -e "$BAR" ]; do :; done
+      CLAUDE_CODE_SESSION_ATTENDED=1 CC_OBS_STATE_FILE="$STAMP" CC_BIN_LINK="$LINK" \
+        CC_OBS_MANIFEST="$MANIFEST" bash "$INSTALLED_OBS" < /dev/null \
+        > "$SB/race.out.$i" 2>/dev/null ) &
+  done
+  sleep 0.3; touch "$BAR"; wait
+  emitters=$(grep -l 'cc-version-observer' "$SB"/race.out.* 2>/dev/null | wc -l)
+  claims=$(find "$SB/state" -maxdepth 1 -name 'cc-version-seen.claim.*' 2>/dev/null | wc -l)
+  if [ "$emitters" -eq 1 ] && [ "$claims" -eq 0 ]; then
+    check "[T8] 8 concurrent attended consumers -> EXACTLY one emits, claim released" ok
+  else
+    check "[T8] 8 concurrent attended consumers -> EXACTLY one emits, claim released" "fail" \
+          "emitters=$emitters (expected 1) leaked_claims=$claims (expected 0)"
+  fi
+
+  # T9: a claim abandoned mid-emit must not silence the version forever. CC terminates a
+  # still-running SessionStart hook when the session exits, so this is a real path, not a
+  # theoretical one. A claim older than the 300s staleness bound is stealable.
+  printf '2.1.273\n' > "$STAMP"
+  STALE_CLAIM="$STAMP.claim.2.1.275"
+  mkdir -p "$STALE_CLAIM" 2>/dev/null
+  touch -d '2 hours ago' "$STALE_CLAIM" 2>/dev/null || touch -t 200001010000 "$STALE_CLAIM" 2>/dev/null
+  rc=$(run_obs_as 1)
+  [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
+    && check "[T9] a STALE abandoned claim is stolen (an interrupted emit cannot silence a version forever)" ok \
+    || check "[T9] a STALE abandoned claim is stolen (an interrupted emit cannot silence a version forever)" "fail" \
+             "rc=$rc out=$(head -c 120 "$SB/out")"
+
+  # T9b: the inverse — a FRESH claim is respected, or T8's guarantee is vacuous.
+  printf '2.1.273\n' > "$STAMP"
+  mkdir -p "$STALE_CLAIM" 2>/dev/null
+  rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
+  [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ "$(cat "$STAMP" 2>/dev/null)" = "2.1.273" ] \
+    && check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" ok \
+    || check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" "fail" \
+             "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
+  rmdir "$STALE_CLAIM" 2>/dev/null
 fi
 
 echo "---"
