@@ -100,8 +100,17 @@ unclassified probe, the second reading "SAYS it ignored the latch" — an accura
 misleading reason, since the subject was not a latch probe at all. A red that misnames its cause
 sends the next investigation down the wrong path, which costs more than the silence did.
 
+**The companion failure, and it is the one that caught three of these:** a positive control proves the
+*instrument* works, not that you aimed it at the right condition. Both sessions cleared a live defect
+that way on 2026-09-17 — one ran a genuine `head -c1` SIGPIPE control and concluded a sanitizer gate
+was safe, having fed it the one payload shape that could not fire (it failed open, `0447556f`); the
+other wrote a repro whose failure branch printed a conclusion the test never established, and was
+right by luck. Write-up, with the discriminator table and the retired single-factor stories:
+`~/repos/cross-repo/docs/research/2026-09-17-a-positive-control-proves-the-instrument-not-the-aim.md`
+(`85f5cba68`).
+
 Provenance: `docs/decisions.md` 2026-09-17 (the drift-debug row's `[19e2]` and corrected-mutant-table
-paragraphs) and commits `df2bb624`, `5a507827`, `16ee63f7`. The pattern was found by two sessions
+paragraphs) and commits `df2bb624`, `5a507827`, `16ee63f7`, `0447556f`. The pattern was found by two sessions
 each applying the other's unrelated finding to its own work — worth knowing, because in all three
 cases the author's own suite could not surface it.
 
