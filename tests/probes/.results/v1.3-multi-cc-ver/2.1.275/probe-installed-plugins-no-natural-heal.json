@@ -3,22 +3,22 @@
   "exit_code": 2,
   "exit_code_convention": "exit_0_means_v1_2_work_warranted",
   "cc_version": "2.1.275",
-  "ts": "2026-09-17T23:52:08Z",
-  "run_id": "fbd89c0e-c6ab-4a42-a7f7-1bb62c5ec2ff",
+  "ts": "2026-09-17T23:59:31Z",
+  "run_id": "9b13d3ca-5a74-4a71-b1fd-1fbcedd4eeec",
   "observations": {
-    "pre_size": 0,
+    "pre_size": 6109,
     "post_size_default": 0,
     "post_size_bare": 0,
     "json_validity_default": false,
     "dhx_entry_present_default": false,
     "install_path_resolves_to_expected_cache_layout": false,
-    "cell1_auth_method": "none",
+    "cell1_auth_method": "ANTHROPIC_API_KEY",
     "cell2_auth_method": "ANTHROPIC_API_KEY",
-    "cell1_rc": -1,
-    "cell2_rc": -1,
-    "inode_isolated": false,
-    "cell_outcome": "skipped_no_api_key",
+    "cell1_rc": 127,
+    "cell2_rc": 127,
+    "inode_isolated": true,
+    "cell_outcome": "setup_failure",
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "skipped"
+  "conclusion": "ambiguous"
 }

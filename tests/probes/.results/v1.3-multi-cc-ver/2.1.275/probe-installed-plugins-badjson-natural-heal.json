@@ -5,19 +5,19 @@
   "cc_version": "2.1.275",
   "cc_version_match": true,
   "confidence": "LOW",
-  "ts": "2026-09-17T23:52:08Z",
-  "run_id": "f424ee38-77ee-4850-bbae-b504526243e4",
+  "ts": "2026-09-17T23:59:33Z",
+  "run_id": "aaf4ad02-e451-4915-b1b2-16b2216dc2c8",
   "observations": {
-    "pre_size": 0,
-    "post_size": 0,
+    "pre_size": 20,
+    "post_size": 20,
     "json_validity_post": false,
     "dhx_entry_present_post": false,
     "install_path_resolves_to_expected_cache_layout": false,
-    "cell1_auth_method": "none",
-    "cell1_rc": -1,
-    "inode_isolated": false,
-    "cell_outcome": "skipped_no_api_key",
+    "cell1_auth_method": "ANTHROPIC_API_KEY",
+    "cell1_rc": 127,
+    "inode_isolated": true,
+    "cell_outcome": "setup_failure",
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "skipped"
+  "conclusion": "ambiguous"
 }
