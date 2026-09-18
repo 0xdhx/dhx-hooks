@@ -136,7 +136,7 @@ lint_probe_set_flags() {
     # Gate on FULL staged content (D-07): skip if errexit is present (legitimate
     # save/restore pair). D-10 hardened regex — flag-order-agnostic + `-o errexit`.
     full_content=$(git show ":$file" 2>/dev/null || true)
-    if printf '%s\n' "$full_content" | grep -qE '^[[:space:]]*set[[:space:]]+(-[a-z]*e[a-z]*|-o[[:space:]]+errexit)'; then
+    if grep -qE '^[[:space:]]*set[[:space:]]+(-[a-z]*e[a-z]*|-o[[:space:]]+errexit)' <<<"$full_content"; then
       continue
     fi
 
