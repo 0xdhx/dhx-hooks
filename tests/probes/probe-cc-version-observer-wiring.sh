@@ -472,6 +472,44 @@ SHIMEOF
     || check "[T14] no claim takeable -> BOTH claimless consumers emit (the documented residue: duplicate beats silence)" "fail" \
              "run1 notices=$n1 run2 notices=$n2 (want 1 each) — the fail-open residue was flipped to silence"
   rm -rf "$SHIM"
+
+  # ── T15: a claim whose OWNER DIED must not hold the notice for 300s ─────────
+  # "Fresh" was standing in for "the owner is still working", and the two come apart exactly
+  # where it matters: Claude Code terminates a still-running SessionStart hook when the session
+  # exits, so a hook can create the claim and die before emitting. Every attended session
+  # arriving in the next five minutes then exits against a claim nobody owns -- ZERO lanes told.
+  # Reproduced by the close-gate reviewer with a real process that claimed and exited
+  # (output_bytes=0, stamp unmoved, claim_age_seconds=0). Liveness is now OBSERVED via
+  # /proc/<pid>, which is a READ of a foreign claim and so keeps the no-mutation rule.
+  # RED against cross-repo 0cda8beb9.
+  printf '2.1.273\n' > "$STAMP"
+  DEADC="$STAMP.claim.2.1.275"; rm -rf "$DEADC"
+  # A real short-lived process creates the claim and records its own pid, then exits.
+  bash -c 'mkdir -p "$1"; printf "%s\n" "$$" > "$1/pid"' _ "$DEADC"
+  _dpid=$(cat "$DEADC/pid" 2>/dev/null)
+  _dage=$(( $(date +%s) - $(stat -c %Y "$DEADC" 2>/dev/null || echo 0) ))
+  if [ -r "/proc/$_dpid/stat" ]; then
+    echo "SKIP [T15] dead-owner cell — pid $_dpid was recycled before the check"
+  else
+    rc=$(run_obs_as 1)
+    [ "$rc" = "0" ] && grep -q '2\.1\.273 -> 2\.1\.275' "$SB/out" \
+      && check "[T15] claim whose owner DIED -> announces immediately, no 300s wait (age ${_dage}s)" ok \
+      || check "[T15] claim whose owner DIED -> announces immediately, no 300s wait (age ${_dage}s)" "fail" \
+               "rc=$rc outsz=$(wc -c < "$SB/out") — a dead owner held the notice on freshness alone"
+  fi
+  rm -rf "$DEADC"
+
+  # T15b: the inverse, or T15 would license ignoring every claim. A LIVE owner is still
+  # respected: this shell claims, stays alive across the run, and the observer must stay silent.
+  printf '2.1.273\n' > "$STAMP"
+  LIVEC="$STAMP.claim.2.1.275"; rm -rf "$LIVEC"; mkdir -p "$LIVEC"
+  printf '%s\n' "$$" > "$LIVEC/pid"
+  rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
+  [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ "$(cat "$STAMP" 2>/dev/null)" = "2.1.273" ] \
+    && check "[T15b] claim whose owner is ALIVE -> still respected (T15 did not license ignoring claims)" ok \
+    || check "[T15b] claim whose owner is ALIVE -> still respected (T15 did not license ignoring claims)" "fail" \
+             "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
+  rm -rf "$LIVEC"
 fi
 
 echo "---"
