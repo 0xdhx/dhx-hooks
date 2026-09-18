@@ -18,10 +18,10 @@
 #
 # THE DEFECT GUARDED. The gate is
 #     if grep -qE "(/home/|/Users/|$HOST)" <<<"$OBSERVATIONS"; then refuse; fi
-# and its `echo "$OBSERVATIONS" | grep -qE ...` form FAILS OPEN under the probes'
-# `set -o pipefail`: grep -q exits at the first complete matching line, echo takes
-# SIGPIPE, the pipeline goes non-zero, the `if` reads FALSE, the refusal is SKIPPED
-# and the write proceeds carrying the PII. Precisely inverted — most likely to be
+# and its `echo "$OBSERVATIONS" | grep -qE ...` form (HP-028) FAILS OPEN under the
+# probes' `set -o pipefail`: grep -q exits at the first complete matching line, echo
+# takes SIGPIPE, the pipeline goes non-zero, the `if` reads FALSE, the refusal is
+# SKIPPED and the write proceeds carrying the PII. Inverted — most likely to be
 # bypassed when PII IS present and the payload is large. Two necessary legs, both
 # measured 2026-09-17: SHAPE (the match must COMPLETE on an early line; a match
 # inside one huge line forces a full drain and never fires) and SIZE (onset
