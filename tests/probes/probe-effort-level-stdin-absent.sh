@@ -52,6 +52,13 @@
 # Backs:
 #   - .planning/REQUIREMENTS.md PROBE-01 (historical — the watchdog contract)
 #   - docs/decisions.md 2026-09-18 effort-watchdog-inverted-to-renderability row
+#   - .planning/backlog/2026-09-18-effort-renderability-guard-has-no-firing-trigger.md
+#     — WHAT IS SUPPOSED TO RUN THIS. The live arm above only fires when an
+#     operator hand-creates the arming dir, so nothing in the repo ever executes
+#     it; that brief's trigger_when is keyed on a CC version change so
+#     cc-version-observer.sh names it at SessionStart after a bump and tells a
+#     human to arm and run this probe. Do NOT auto-arm it from a hook or cron —
+#     see the 2026-09-17 hermetic-tier-refuses-live-capture row.
 #
 # Run: bash tests/probes/probe-effort-level-stdin-absent.sh
 set -uo pipefail
