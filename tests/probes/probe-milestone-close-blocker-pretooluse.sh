@@ -108,8 +108,8 @@ run_hook_with_input() {
 assert_block_pretooluse() {
   local label="$1"
   if [ "$EXIT_CAP" -eq 2 ] \
-     && echo "$STDERR_CAP" | grep -qF "MILESTONE-CLOSE BLOCKERS" \
-     && echo "$STDERR_CAP" | grep -qF "/dhx:audit" \
+     && grep -qF "MILESTONE-CLOSE BLOCKERS" <<<"$STDERR_CAP" \
+     && grep -qF "/dhx:audit" <<<"$STDERR_CAP" \
      && [ -z "$STDOUT_CAP" ]; then
     echo "[PASS] $label"
     PASS=$((PASS + 1))
@@ -124,7 +124,7 @@ assert_block_pretooluse() {
 
 assert_stderr_contains() {
   local label="$1" needle="$2"
-  if echo "$STDERR_CAP" | grep -qF "$needle"; then
+  if grep -qF "$needle" <<<"$STDERR_CAP"; then
     echo "[PASS] $label (stderr contains: $needle)"
     PASS=$((PASS + 1))
   else

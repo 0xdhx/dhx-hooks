@@ -156,10 +156,10 @@ pre_input "$SID" "$TMP" "worktree" "gsd-executor" | "$PRE" >/dev/null 2>&1
 track_session_files "$SID"
 echo "leaked" > "$TMP/leaked-file.txt"   # simulate leak
 OUT=$(post_input "$SID" "$TMP" "gsd-executor" | "$POST" 2>/dev/null || true)
-echo "$OUT" | grep -q "LEAK SUSPECTED" && check "[3a] post-hook emits LEAK SUSPECTED" pass || check "[3a] post-hook missing warning" fail
-echo "$OUT" | grep -q "leaked-file.txt" && check "[3b] warning includes filename" pass || check "[3b] warning missing filename" fail
-echo "$OUT" | grep -q "36182" && check "[3c] warning cites upstream issue" pass || check "[3c] warning missing issue ref" fail
-echo "$OUT" | grep -q "gsd-executor" && check "[3d] warning names subagent_type from sidecar" pass || check "[3d] warning missing subagent_type" fail
+grep -q "LEAK SUSPECTED" <<<"$OUT" && check "[3a] post-hook emits LEAK SUSPECTED" pass || check "[3a] post-hook missing warning" fail
+grep -q "leaked-file.txt" <<<"$OUT" && check "[3b] warning includes filename" pass || check "[3b] warning missing filename" fail
+grep -q "36182" <<<"$OUT" && check "[3c] warning cites upstream issue" pass || check "[3c] warning missing issue ref" fail
+grep -q "gsd-executor" <<<"$OUT" && check "[3d] warning names subagent_type from sidecar" pass || check "[3d] warning missing subagent_type" fail
 # [3e]-[3h] — 2026-08-06: the recovery RECIPE was DELETED. `git stash` is
 # prohibited on a shared working tree, and this hook fires only on the shared
 # primary, so the old recipe taught the exact reflex the doctrine removes.
@@ -172,10 +172,10 @@ echo "$OUT" | grep -q "gsd-executor" && check "[3d] warning names subagent_type 
 # pre-2026-08-06 `grep -q stash` goes green on text that recommends nothing —
 # the same vacuity that let the retired `worktree-agent-` namespace regression
 # sit green under a generic grep for an entire release cycle.
-echo "$OUT" | grep -q "doctrine" && check "[3e] warning carries the doctrine pointer" pass || check "[3e] warning missing doctrine pointer" fail
-echo "$OUT" | grep -qE 'git stash push|git merge [^ ]+ --no-ff' && check "[3f] recovery COMMAND reintroduced — deleted 2026-08-06, see D-2/D-7" fail || check "[3f] no recovery command printed (deletion holds)" pass
-echo "$OUT" | grep -q -- "worktree-agent-" && check "[3g] recovery still cites retired worktree-agent- namespace" fail || check "[3g] recovery free of retired worktree-agent- namespace" pass
-echo "$OUT" | grep -q "cross-repo" && check "[3h] warning routes to the cross-repo shared-tree doctrine" pass || check "[3h] warning missing cross-repo route" fail
+grep -q "doctrine" <<<"$OUT" && check "[3e] warning carries the doctrine pointer" pass || check "[3e] warning missing doctrine pointer" fail
+grep -qE 'git stash push|git merge [^ ]+ --no-ff' <<<"$OUT" && check "[3f] recovery COMMAND reintroduced — deleted 2026-08-06, see D-2/D-7" fail || check "[3f] no recovery command printed (deletion holds)" pass
+grep -q -- "worktree-agent-" <<<"$OUT" && check "[3g] recovery still cites retired worktree-agent- namespace" fail || check "[3g] recovery free of retired worktree-agent- namespace" pass
+grep -q "cross-repo" <<<"$OUT" && check "[3h] warning routes to the cross-repo shared-tree doctrine" pass || check "[3h] warning missing cross-repo route" fail
 rm -f "$TMP/leaked-file.txt"
 
 # === [4] Non-worktree isolation → pre-hook silent, no baseline written ===
@@ -202,8 +202,8 @@ ORPHAN_PRE="$CACHE/agent-leak-${SID}-${ORPHAN_TS}.pre"
 : > "$ORPHAN_PRE"  # empty .pre, no .meta.json
 BASELINES+=("$ORPHAN_PRE")
 OUT=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
-echo "$OUT" | grep -q "DETECTION GAP" && check "[5b] D-13: orphan .pre emits DETECTION GAP" pass || check "[5b] D-13: orphan .pre missing detection-gap diagnostic" fail
-echo "$OUT" | grep -q "orphan baseline" && check "[5b-msg] orphan-detection message uses 'orphan baseline' wording" pass || check "[5b-msg] orphan-detection message wording" fail
+grep -q "DETECTION GAP" <<<"$OUT" && check "[5b] D-13: orphan .pre emits DETECTION GAP" pass || check "[5b] D-13: orphan .pre missing detection-gap diagnostic" fail
+grep -q "orphan baseline" <<<"$OUT" && check "[5b-msg] orphan-detection message uses 'orphan baseline' wording" pass || check "[5b-msg] orphan-detection message wording" fail
 
 # === [5c] Nested-worktree CWD via SIDECAR cwd → silent (D-04(e) sidecar-cwd skip) ===
 # Snapshot hook skips at snapshot:38 when dispatching FROM inside a worktree;
@@ -269,10 +269,10 @@ pre_input "$SID" "$TMP" "worktree" "gsd-executor" | "$PRE" >/dev/null 2>&1
 track_session_files "$SID"
 echo "bg-leaked" > "$TMP/bg-leaked-file.txt"  # simulate leak between dispatch and completion
 OUT=$(post_input "$SID" "$TMP" "gsd-executor" | "$POST" 2>/dev/null || true)
-echo "$OUT" | grep -q "LEAK SUSPECTED" && check "[10a] backgrounded-dispatch emits LEAK SUSPECTED" pass || check "[10a] backgrounded-dispatch emits LEAK SUSPECTED" fail
-echo "$OUT" | grep -q "bg-leaked-file.txt" && check "[10b] backgrounded-dispatch warning includes leak filename" pass || check "[10b] backgrounded-dispatch warning includes leak filename" fail
-echo "$OUT" | grep -q "gsd-executor" && check "[10c] backgrounded-dispatch warning names subagent_type from sidecar" pass || check "[10c] backgrounded-dispatch warning names subagent_type from sidecar" fail
-echo "$OUT" | grep -q "isolation=worktree" && check "[10d] backgrounded-dispatch warning names isolation from sidecar" pass || check "[10d] backgrounded-dispatch warning names isolation from sidecar" fail
+grep -q "LEAK SUSPECTED" <<<"$OUT" && check "[10a] backgrounded-dispatch emits LEAK SUSPECTED" pass || check "[10a] backgrounded-dispatch emits LEAK SUSPECTED" fail
+grep -q "bg-leaked-file.txt" <<<"$OUT" && check "[10b] backgrounded-dispatch warning includes leak filename" pass || check "[10b] backgrounded-dispatch warning includes leak filename" fail
+grep -q "gsd-executor" <<<"$OUT" && check "[10c] backgrounded-dispatch warning names subagent_type from sidecar" pass || check "[10c] backgrounded-dispatch warning names subagent_type from sidecar" fail
+grep -q "isolation=worktree" <<<"$OUT" && check "[10d] backgrounded-dispatch warning names isolation from sidecar" pass || check "[10d] backgrounded-dispatch warning names isolation from sidecar" fail
 rm -f "$TMP/bg-leaked-file.txt"
 
 # === [11] parallel-dispatch: 3 snapshots, 3 completions, distinct pairs (D-03/D-08) ===
@@ -347,8 +347,8 @@ META_FILE="${META_FILES[0]:-}"
 echo "not json {" > "$META_FILE"   # corrupt the meta file
 track_session_files "$SID"
 OUT=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
-echo "$OUT" | grep -q "DETECTION GAP" && check "[12a] malformed meta emits DETECTION GAP" pass || check "[12a] malformed meta emits DETECTION GAP" fail
-echo "$OUT" | grep -qE "malformed|unparseable" && check "[12b] malformed-meta message distinct from missing-meta" pass || check "[12b] malformed-meta message distinct from missing-meta" fail
+grep -q "DETECTION GAP" <<<"$OUT" && check "[12a] malformed meta emits DETECTION GAP" pass || check "[12a] malformed meta emits DETECTION GAP" fail
+grep -qE "malformed|unparseable" <<<"$OUT" && check "[12b] malformed-meta message distinct from missing-meta" pass || check "[12b] malformed-meta message distinct from missing-meta" fail
 # Pair preserved on disk for forensics (D-04(d) malformed branch contract):
 [[ -f "$META_FILE" ]] && check "[12c] malformed pair preserved on disk for forensics" pass || check "[12c] malformed pair preserved on disk for forensics" fail
 
@@ -423,15 +423,15 @@ track_session_files "$SID"
 # First SubagentStop consumes pair-A (oldest by dispatched_at). pair-A's baseline
 # was captured BEFORE the mutation → diff against current state surfaces the leak.
 OUT_A=$(post_input "$SID" "$TMP" "exec-A" | "$POST" 2>/dev/null || true)
-echo "$OUT_A" | grep -q "LEAK SUSPECTED" && check "[14a] D-07: first completion (pair-A) detects mutation as leak" pass || check "[14a] D-07: first completion (pair-A) detects mutation as leak" fail
-echo "$OUT_A" | grep -q "fifo-mutation.txt" && check "[14b] D-07: first completion warning names mutation file" pass || check "[14b] D-07: first completion warning names mutation file" fail
-echo "$OUT_A" | grep -q "exec-A" && check "[14c] D-07: leak attributed to pair-A's subagent (FIFO oldest-first)" pass || check "[14c] D-07: leak attributed to pair-A's subagent (FIFO oldest-first)" fail
+grep -q "LEAK SUSPECTED" <<<"$OUT_A" && check "[14a] D-07: first completion (pair-A) detects mutation as leak" pass || check "[14a] D-07: first completion (pair-A) detects mutation as leak" fail
+grep -q "fifo-mutation.txt" <<<"$OUT_A" && check "[14b] D-07: first completion warning names mutation file" pass || check "[14b] D-07: first completion warning names mutation file" fail
+grep -q "exec-A" <<<"$OUT_A" && check "[14c] D-07: leak attributed to pair-A's subagent (FIFO oldest-first)" pass || check "[14c] D-07: leak attributed to pair-A's subagent (FIFO oldest-first)" fail
 
 # Second SubagentStop consumes pair-B. pair-B's baseline was captured AFTER the
 # mutation, so current state matches baseline → no leak. (Demonstrates FIFO
 # correctly partitions state-mutation across multi-baseline accumulator.)
 OUT_B=$(post_input "$SID" "$TMP" "exec-B" | "$POST" 2>/dev/null || true)
-echo "$OUT_B" | grep -q "LEAK SUSPECTED" && check "[14d] D-07: second completion (pair-B) sees clean state (no leak)" fail || check "[14d] D-07: second completion (pair-B) sees clean state (no leak)" pass
+grep -q "LEAK SUSPECTED" <<<"$OUT_B" && check "[14d] D-07: second completion (pair-B) sees clean state (no leak)" fail || check "[14d] D-07: second completion (pair-B) sees clean state (no leak)" pass
 rm -f "$TMP/fifo-mutation.txt"
 
 # === [15] D-10 strict schema validation: missing required field → DETECTION GAP (D-11) ===
@@ -462,13 +462,13 @@ run_schema_subcase() {
   BASELINES+=("$pre_path" "$meta_path")
   local out
   out=$(post_input "$sid" "$TMP" | "$POST" 2>/dev/null || true)
-  echo "$out" | grep -q "DETECTION GAP" \
+  grep -q "DETECTION GAP" <<<"$out" \
     && check "[${subcase}a] missing ${missing_field} emits DETECTION GAP" pass \
     || check "[${subcase}a] missing ${missing_field} emits DETECTION GAP" fail
-  echo "$out" | grep -qE "missing required field" \
+  grep -qE "missing required field" <<<"$out" \
     && check "[${subcase}b] missing-field message uses 'missing required field' wording" pass \
     || check "[${subcase}b] missing-field message uses 'missing required field' wording" fail
-  echo "$out" | grep -q "${missing_field}" \
+  grep -q "${missing_field}" <<<"$out" \
     && check "[${subcase}c] missing-field message names the missing field (${missing_field})" pass \
     || check "[${subcase}c] missing-field message names the missing field (${missing_field})" fail
   # D-04(d) malformed-branch contract: pair preserved on disk for forensics.
@@ -537,12 +537,12 @@ shopt -s nullglob; BL01_BEFORE=("$CACHE/agent-leak-${SID}-"*.meta.json); shopt -
 OUT_BL01_1=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
 
 # Assertion 16b: DETECTION GAP message MUST be emitted (malformed must be reported).
-echo "$OUT_BL01_1" | grep -q "DETECTION GAP" && check "[16b] BL-01 first fire: emits DETECTION GAP for malformed sibling" pass || check "[16b] BL-01 first fire: missing DETECTION GAP for malformed sibling" fail
+grep -q "DETECTION GAP" <<<"$OUT_BL01_1" && check "[16b] BL-01 first fire: emits DETECTION GAP for malformed sibling" pass || check "[16b] BL-01 first fire: missing DETECTION GAP for malformed sibling" fail
 
 # Assertion 16c: DETECTION GAP must name the malformed sidecar's filename
 # (parameter expansion strips directory; check substring match against the
 # basename for portability across DETECTION GAP wording variants).
-echo "$OUT_BL01_1" | grep -q "${T_MAL_NS}.meta.json" && check "[16c] BL-01 first fire: DETECTION GAP names malformed pair filename" pass || check "[16c] BL-01 first fire: DETECTION GAP did not name malformed pair (${T_MAL_NS}.meta.json)" fail
+grep -q "${T_MAL_NS}.meta.json" <<<"$OUT_BL01_1" && check "[16c] BL-01 first fire: DETECTION GAP names malformed pair filename" pass || check "[16c] BL-01 first fire: DETECTION GAP did not name malformed pair (${T_MAL_NS}.meta.json)" fail
 
 # Assertion 16d: V1 (smallest-ns valid pair) was consumed — both .meta.json
 # and .pre half should be GONE from disk.
@@ -557,7 +557,7 @@ echo "$OUT_BL01_1" | grep -q "${T_MAL_NS}.meta.json" && check "[16c] BL-01 first
 # Second SubagentStop fire — V2 should now be the smallest-ns VALID, get consumed.
 OUT_BL01_2=$(post_input "$SID" "$TMP" | "$POST" 2>/dev/null || true)
 [[ ! -f "$V2_META" && ! -f "$V2_PRE" ]] && check "[16g] BL-01 second fire: V2 (remaining valid) pair consumed" pass || check "[16g] BL-01 second fire: V2 pair NOT consumed" fail
-echo "$OUT_BL01_2" | grep -q "DETECTION GAP" && check "[16h] BL-01 second fire: DETECTION GAP still surfaces malformed (preserved across fires)" pass || check "[16h] BL-01 second fire: DETECTION GAP did not re-fire for persistent malformed" fail
+grep -q "DETECTION GAP" <<<"$OUT_BL01_2" && check "[16h] BL-01 second fire: DETECTION GAP still surfaces malformed (preserved across fires)" pass || check "[16h] BL-01 second fire: DETECTION GAP did not re-fire for persistent malformed" fail
 [[ -f "$MAL_META" && -f "$MAL_PRE" ]] && check "[16i] BL-01 second fire: malformed pair STILL preserved on disk" pass || check "[16i] BL-01 second fire: malformed pair was cleaned up (forensics contract violated)" fail
 
 echo ""

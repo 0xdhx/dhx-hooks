@@ -119,7 +119,7 @@ else
 fi
 
 # 4. The surviving bullet is the real deferred item from the <deferred> section.
-if echo "$RESULT" | grep -q "Real deferred item that SHOULD be caught"; then
+if grep -q "Real deferred item that SHOULD be caught" <<<"$RESULT"; then
   check "surviving bullet is the real '## Deferred Ideas' item" 1
 else
   check "real deferred item missing from result: $RESULT" 0
@@ -132,7 +132,7 @@ for needle in \
   "Theme body bullet should not appear" \
   "Another theme body bullet that belongs to decisions" \
   "Yet another theme body bullet not meant for the deferred review"; do
-  if echo "$RESULT" | grep -qF "$needle"; then
+  if grep -qF "$needle" <<<"$RESULT"; then
     check "theme body bullet NOT swept: '$needle'" 0
   else
     check "theme body bullet NOT swept: '${needle:0:40}...'" 1
@@ -144,7 +144,7 @@ done
 # 8. Positive: `## Deferred Ideas` matches the start pattern (fallback still
 #    fires on legitimate h2 headers — the whole point of the fallback path).
 START_PAT=$(echo "$HOOK_SED" | grep -oE "/\^[^/]+/" | head -1 | sed 's|^/||;s|/$||')
-if echo "## Deferred Ideas" | grep -qE "$START_PAT"; then
+if grep -qE "$START_PAT" <<<"## Deferred Ideas"; then
   check "start pattern matches '## Deferred Ideas' (positive case — fallback still fires)" 1
 else
   check "start pattern did NOT match '## Deferred Ideas' — fallback broken" 0
@@ -153,14 +153,14 @@ fi
 # 9. Negative: `### Theme 6: Cat-4 ephemeral signals (deferred)` must NOT match.
 #    This is the exact line from forgefinder Phase 26 CONTEXT.md that triggered
 #    the 19-phantom-items warning before the fix.
-if echo "### Theme 6: Cat-4 ephemeral signals (deferred)" | grep -qE "$START_PAT"; then
+if grep -qE "$START_PAT" <<<"### Theme 6: Cat-4 ephemeral signals (deferred)"; then
   check "start pattern rejects '### ...(deferred)' subheader (the reported bug)" 0
 else
   check "start pattern rejects '### ...(deferred)' subheader (the reported bug)" 1
 fi
 
 # 10. Negative: `#### (deferred)` h4 also rejected (defense in depth — same class).
-if echo "#### Something deferred" | grep -qE "$START_PAT"; then
+if grep -qE "$START_PAT" <<<"#### Something deferred"; then
   check "start pattern rejects '#### ... deferred' h4 subheader" 0
 else
   check "start pattern rejects '#### ... deferred' h4 subheader" 1

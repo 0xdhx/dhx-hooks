@@ -146,10 +146,10 @@ OUT=$(DHX_DIRTY_TREE_ALLOWLIST="$REPO_TOP" DHX_DIRTY_TREE_WHO="$S_WVER" \
       run_hook "$STDIN_JSON")
 check_eq "wrong protocol version first line is the bare count" \
   "$(echo "$OUT" | head -1)" "$BARE"
-if echo "$OUT" | sed -n 2p | grep -q 'protocol mismatch'; then \
+if grep -q 'protocol mismatch' <<<"$(sed -n 2p <<<"$OUT")"; then \
   ok "wrong protocol version emits the mismatch notice"; \
   else bad "protocol-mismatch notice missing/wrong: [$(echo "$OUT" | sed -n 2p)]"; fi
-if echo "$OUT" | sed -n 2p | grep -qF 'dhx-who protocol 2'; then \
+if grep -qF 'dhx-who protocol 2' <<<"$(sed -n 2p <<<"$OUT")"; then \
   ok "mismatch notice reports the OBSERVED protocol string"; \
   else bad "notice omits observed string: [$(echo "$OUT" | sed -n 2p)]"; fi
 check_eq "wrong protocol version emits exactly two lines" \
@@ -167,7 +167,7 @@ check_eq "--version rc!=0 stays silent (transient, no notice)" "$OUT" "$BARE"
 OUT=$(DHX_DIRTY_TREE_ALLOWLIST="$REPO_TOP" DHX_DIRTY_TREE_WHO="$S_EX3" \
       run_hook "$STDIN_JSON")
 check_eq "exit-3 first line is the bare count" "$(echo "$OUT" | head -1)" "$BARE"
-if echo "$OUT" | sed -n 2p | grep -q "canary failed (helper exit 3"; then \
+if grep -q "canary failed (helper exit 3" <<<"$(sed -n 2p <<<"$OUT")"; then \
   ok "exit-3 second line is the factual canary notice"; \
   else bad "exit-3 canary line missing/wrong: [$(echo "$OUT" | sed -n 2p)]"; fi
 check_eq "exit-3 emits exactly two lines" "$(echo "$OUT" | wc -l | tr -d ' ')" "2"
@@ -178,7 +178,7 @@ OUT=$(DHX_DIRTY_TREE_ALLOWLIST="$REPO_TOP" DHX_DIRTY_TREE_WHO="$S_GOOD" \
       run_hook "$STDIN_JSON")
 check_eq "enriched path first line is the payload header" \
   "$(echo "$OUT" | head -1 | cut -c1-19)" "[shared-tree state]"
-if echo "$OUT" | grep -qF "$BARE"; then \
+if grep -qF "$BARE" <<<"$OUT"; then \
   bad "enriched path also emitted the bare line (payload must replace it)"; \
   else ok "enriched path emits payload instead of bare line"; fi
 if grep -qF -- "--repo $REPO_TOP --self probe-uuid-1234" "$CALLLOG"; then \
@@ -195,10 +195,10 @@ OUT=$(DHX_DIRTY_TREE_ALLOWLIST="$REPO_TOP" DHX_DIRTY_TREE_WHO="$S_BIG" \
       run_hook "$STDIN_JSON")
 check_eq "oversize payload first line is the bare count" \
   "$(echo "$OUT" | head -1)" "$BARE"
-if echo "$OUT" | sed -n 2p | grep -qF "$EXPECT_BIG bytes vs 16384 limit"; then \
+if grep -qF "$EXPECT_BIG bytes vs 16384 limit" <<<"$(sed -n 2p <<<"$OUT")"; then \
   ok "over-cap notice reports actual bytes vs the cap ($EXPECT_BIG > 16384)"; \
   else bad "over-cap notice missing/wrong: [$(echo "$OUT" | sed -n 2p)]"; fi
-if echo "$OUT" | sed -n 2p | grep -q 'discarded whole, not truncated'; then \
+if grep -q 'discarded whole, not truncated' <<<"$(sed -n 2p <<<"$OUT")"; then \
   ok "over-cap notice states the payload was discarded, not truncated"; \
   else bad "over-cap notice omits the discard-vs-truncate fact"; fi
 check_eq "oversize payload emits exactly two lines" \

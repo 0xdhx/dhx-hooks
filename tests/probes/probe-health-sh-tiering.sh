@@ -173,7 +173,7 @@ fi
 
 # ── PLANNER DISCRETION CALL #1 — strict refusal on invalid DHX_HEALTH_TIMEOUT
 INVALID_OUT=$(DHX_HEALTH_TIMEOUT=foo bash "$REPO/scripts/health.sh" 2>&1; echo "RC=$?")
-if echo "$INVALID_OUT" | grep -qE 'invalid DHX_HEALTH_TIMEOUT' && echo "$INVALID_OUT" | grep -qE 'RC=1$'; then
+if grep -qE 'invalid DHX_HEALTH_TIMEOUT' <<<"$INVALID_OUT" && grep -qE 'RC=1$' <<<"$INVALID_OUT"; then
   echo "OK   DHX_HEALTH_TIMEOUT=foo refused with diagnostic + exit 1"; pass=$((pass+1))
 else
   echo "FAIL DHX_HEALTH_TIMEOUT=foo did not refuse correctly"
@@ -185,7 +185,7 @@ fi
 # silently fall back to 30 here and the assertion would FAIL. D-32 fix is load-bearing.
 for bad in '' '0' '-1'; do
   BAD_OUT=$(DHX_HEALTH_TIMEOUT="$bad" bash "$REPO/scripts/health.sh" 2>&1; echo "RC=$?")
-  if echo "$BAD_OUT" | grep -qE 'RC=1$' && echo "$BAD_OUT" | grep -qE 'invalid DHX_HEALTH_TIMEOUT'; then
+  if grep -qE 'RC=1$' <<<"$BAD_OUT" && grep -qE 'invalid DHX_HEALTH_TIMEOUT' <<<"$BAD_OUT"; then
     echo "OK   DHX_HEALTH_TIMEOUT='$bad' refused"; pass=$((pass+1))
   else
     echo "FAIL DHX_HEALTH_TIMEOUT='$bad' not refused"
@@ -236,7 +236,7 @@ make_git_shim "$BARE_DYN_TMP/bin" 0
 BARE_OUT=$(env DHX_HEALTH_TIMEOUT=2 PATH="$BARE_DYN_TMP/bin:$PATH" \
                DHX_HEALTH_REPO_ROOT="$BARE_DYN_TMP/fakerepo" \
                bash "$REPO/scripts/health.sh" 2>&1 || true)
-if echo "$BARE_OUT" | grep -qE '\[TIMEOUT 2s\] verify-hooks'; then
+if grep -qE '\[TIMEOUT 2s\] verify-hooks' <<<"$BARE_OUT"; then
   echo "OK   bare output emits [TIMEOUT 2s] under DHX_HEALTH_TIMEOUT=2"; pass=$((pass+1))
 else
   echo "FAIL bare output did not emit [TIMEOUT 2s]"

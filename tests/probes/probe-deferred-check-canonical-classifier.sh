@@ -196,7 +196,7 @@ else
   check "smoke test: $surviving_count bullets survived (expected 1) — output: $RESULT" 0
 fi
 
-if echo "$RESULT" | grep -q "Real unassessed bullet that should survive"; then
+if grep -q "Real unassessed bullet that should survive" <<<"$RESULT"; then
   check "smoke test: surviving bullet is the unmarked one" 1
 else
   check "smoke test: wrong bullet survived — output: $RESULT" 0
@@ -224,7 +224,7 @@ fi
 # 6.1 No `head -1 | grep -q` pipelines (the broken shape) outside comments.
 #     Strip lines whose first non-space character is `#` so the round-2 commit
 #     comment that documents the prior shape doesn't trip the regex.
-if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'head -1[[:space:]]*\|[[:space:]]*grep -q'; then
+if grep -qE 'head -1[[:space:]]*\|[[:space:]]*grep -q' < <(grep -vE '^[[:space:]]*#' "$HOOK"); then
   check "no 'head -1 | grep -q' pipelines remain in hook (HP-028 round-2)" 0
 else
   check "no 'head -1 | grep -q' pipelines remain in hook (HP-028 round-2)" 1
@@ -232,7 +232,7 @@ fi
 
 # 6.2 No `grep -rl … |` pipelines targeting the backlog (the broken shape
 #     for the pre-extraction line 183) outside comments.
-if grep -vE '^[[:space:]]*#' "$HOOK" | grep -qE 'grep -rl .*\.planning/backlog'; then
+if grep -qE 'grep -rl .*\.planning/backlog' < <(grep -vE '^[[:space:]]*#' "$HOOK"); then
   check "no 'grep -rl … .planning/backlog' pipeline remains in hook" 0
 else
   check "no 'grep -rl … .planning/backlog' pipeline remains in hook" 1
@@ -415,7 +415,7 @@ else
   check "6.5 fixture output BELOW the pipe buffer (grep ${_grep_bytes}B, find ${_find_bytes}B vs ${_PIPE_FLOOR}B) — 6.3a/6.4a would be racy; enlarge the fixture" 0
 fi
 
-_broken_grep=$(_pf_sh 'set -o pipefail; grep -rlE "\*\*REQ-PIPE-02\*\*" "'"$_PF_ROOT"'/.planning/backlog/" 2>/dev/null | head -1 | grep -q .; echo $?')
+_broken_grep=$(_pf_sh 'set -o pipefail; grep -rlE "\*\*REQ-PIPE-02\*\*" "'"$_PF_ROOT"'/.planning/backlog/" 2>/dev/null | head -1 | grep -q .; echo $?')  # HP-028 EXEMPT: deliberately the broken form — this IS the 6.5 fixture
 _good_grep=$(_pf_sh 'set -o pipefail; grep -rqE "\*\*REQ-PIPE-02\*\*" "'"$_PF_ROOT"'/.planning/backlog/" 2>/dev/null; echo $?')
 if [[ "$_broken_grep" != "$_good_grep" ]]; then
   check "6.5a fixture is large enough — broken grep pipeline diverges from the short-circuit form (rc $_broken_grep vs $_good_grep)" 1
@@ -437,7 +437,7 @@ else
   check "6.5c SIGPIPE NOT restored (producer rc=$_sig_probe, expected 141) — the shim did not take effect and 6.3a/6.4a cannot see an HP-028 regression" 0
 fi
 
-_broken_find=$(_pf_sh 'set -o pipefail; find "'"$_PF_ROOT"'/.planning/todos" -name "2026-04-20-target-todo.md" 2>/dev/null | head -1 | grep -q .; echo $?')
+_broken_find=$(_pf_sh 'set -o pipefail; find "'"$_PF_ROOT"'/.planning/todos" -name "2026-04-20-target-todo.md" 2>/dev/null | head -1 | grep -q .; echo $?')  # HP-028 EXEMPT: deliberately the broken form — this IS the 6.5 fixture
 _good_find=$(_pf_sh 'set -o pipefail; [ -n "$(find "'"$_PF_ROOT"'/.planning/todos" -name "2026-04-20-target-todo.md" -print -quit 2>/dev/null)" ]; echo $?')
 if [[ "$_broken_find" != "$_good_find" ]]; then
   check "6.5b fixture is large enough — broken find pipeline diverges from -print -quit (rc $_broken_find vs $_good_find)" 1
@@ -524,14 +524,14 @@ else
   fi
 
   # 8b. The one-line pointer replacement is present.
-  if echo "$MSG_BLOCK" | grep -qF 'See /dhx:defer-review or /dhx:capture for marker syntax.'; then
+  if grep -qF 'See /dhx:defer-review or /dhx:capture for marker syntax.' <<<"$MSG_BLOCK"; then
     check "MSG block carries the one-line marker-syntax pointer (replacement landed)" 1
   else
     check "MSG block missing the 'See /dhx:defer-review or /dhx:capture' pointer" 0
   fi
 
   # 8c. HP-009 survives — the uncaptured-items count line is intact.
-  if echo "$MSG_BLOCK" | grep -qF 'DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s)'; then
+  if grep -qF 'DEFERRED ITEM REVIEW — ${COUNT} unassessed item(s)' <<<"$MSG_BLOCK"; then
     check "MSG block retains the uncaptured-items count line (HP-009 listing)" 1
   else
     check "MSG block dropped the count line — HP-009 uncaptured listing lost" 0
@@ -774,8 +774,8 @@ HF_BODY=$(awk '/^check_header_fallback\(\) \{/{f=1} f{print} f && /^\}$/{f=0; ex
 if [[ -z "$HF_BODY" ]]; then
   check "could not extract check_header_fallback body — assertion shape changed" 0
 else
-  if echo "$HF_BODY" | grep -q 'classify_deferred_lines' \
-     && echo "$HF_BODY" | grep -qE 'auto_silence_deferred_lines[[:space:]]+"\$file"'; then
+  if grep -q 'classify_deferred_lines' <<<"$HF_BODY" \
+     && grep -qE 'auto_silence_deferred_lines[[:space:]]+"\$file"' <<<"$HF_BODY"; then
     check "check_header_fallback pipelines through both stages (classify_deferred_lines + auto_silence_deferred_lines \"\$file\")" 1
   else
     check "check_header_fallback missing two-stage pipeline — Stage 2 not wired" 0
@@ -827,7 +827,7 @@ HF_RESULT=$(bash -c '
 ')
 
 survived_hf=$(printf '%s\n' "$HF_RESULT" | grep -c '^- ' || true)
-if [[ "$survived_hf" == "1" ]] && printf '%s\n' "$HF_RESULT" | grep -q "Real unassessed bullet"; then
+if [[ "$survived_hf" == "1" ]] && grep -q "Real unassessed bullet" <<<"$HF_RESULT"; then
   check "header-fallback two-stage: Stage-2-only items silenced (REQ-ID + dated filename); 1 unmarked bullet survives" 1
 else
   check "header-fallback two-stage failure — $survived_hf bullet(s) survived (expected 1: only the unmarked bullet). Output: $HF_RESULT" 0

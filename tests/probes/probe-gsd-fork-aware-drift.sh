@@ -175,8 +175,8 @@ got=$(node -e "
   const r = m.collectGsdDriftDivergingFiles({gsd_mtime: $SNAP}, '$TMPDIR/c11/live', '$TMPDIR/c11/fork');
   process.stdout.write(JSON.stringify(r));
 " 2>/dev/null || echo "<error>")
-if echo "$got" | grep -q '"workflows/execute-phase.md","kind":"mismatch"' && \
-   echo "$got" | grep -q '"workflows/upstream-only.md","kind":"no-canonical"' && \
+if grep -q '"workflows/execute-phase.md","kind":"mismatch"' <<<"$got" && \
+   grep -q '"workflows/upstream-only.md","kind":"no-canonical"' <<<"$got" && \
    [ "$(echo "$got" | jq 'length' 2>/dev/null)" = "2" ]; then
   echo "OK   [11] mixed: both divergent files reported"
   PASS=$((PASS + 1))

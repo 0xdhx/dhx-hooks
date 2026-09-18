@@ -106,7 +106,7 @@ ADVISORY_BLOCK=$(extract_const_block ADVISORY_HANDLERS "$JS")
 for k in $critical_json; do
   # Match `<field>:` followed by a quoted string literal (single or double quote)
   # within the extracted CRITICAL_PREFIX brace block
-  if echo "$CRITICAL_BLOCK" | grep -qE "^[[:space:]]*${k}:[[:space:]]*['\"]"; then
+  if grep -qE "^[[:space:]]*${k}:[[:space:]]*['\"]" <<<"$CRITICAL_BLOCK"; then
     echo "OK   CRITICAL_PREFIX has ${k}"
     pass=$((pass+1))
   else
@@ -120,7 +120,7 @@ done
 for k in $advisory_json; do
   # Match `<field>:` followed by `(v)` (arrow-function handler signature)
   # within the extracted ADVISORY_HANDLERS brace block
-  if echo "$ADVISORY_BLOCK" | grep -qE "^[[:space:]]*${k}:[[:space:]]*\(v\)"; then
+  if grep -qE "^[[:space:]]*${k}:[[:space:]]*\(v\)" <<<"$ADVISORY_BLOCK"; then
     echo "OK   ADVISORY_HANDLERS has ${k}"
     pass=$((pass+1))
   else

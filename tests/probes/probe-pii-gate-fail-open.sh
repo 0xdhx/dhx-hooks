@@ -147,10 +147,13 @@ for f in "${ROUTE_A[@]}"; do
   # a green-looking cell asserting nothing. Hence the substitution-took check
   # below, which is why a failure to construct the control is reported as such
   # instead of being misattributed to the payload.
-  sed -E 's|^if grep -qE "([^"]*)" <<< *"\$OBSERVATIONS"; then$|if echo "$OBSERVATIONS" \| grep -qE "\1"; then|' \
-      "$WORK/region.txt" > "$WORK/region-piped.txt"
+  # HP-028 EXEMPT — this replacement deliberately CONSTRUCTS the pipeline form that
+  # HP-028 forbids, because re-pipelining the live guard IS this probe's instrument
+  # control. A sweep that "fixes" it disarms the control silently. Do not convert.
+  RE_PIPE='s|^if grep -qE "([^"]*)" <<< *"\$OBSERVATIONS"; then$|if echo "$OBSERVATIONS" \| grep -qE "\1"; then|'  # HP-028
+  sed -E "$RE_PIPE" "$WORK/region.txt" > "$WORK/region-piped.txt"
   if cmp -s "$WORK/region.txt" "$WORK/region-piped.txt"; then
-    if grep -qF '| grep -qE' "$WORK/region.txt"; then
+    if grep -qF '| grep -qE' "$WORK/region.txt"; then  # HP-028 (pattern names the forbidden shape)
       ok "$rel — already the pipeline form; it IS the control (cell 2 below is the verdict)"
     else
       bad "$rel — could NOT construct the instrument control: the guard is neither the herestring form this probe can re-pipeline nor the pipeline form itself. Cells below assert nothing for this file. Re-spelled guard — extend the substitution, do not read the greens."

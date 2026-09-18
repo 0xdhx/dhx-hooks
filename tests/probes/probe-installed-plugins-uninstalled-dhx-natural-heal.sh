@@ -285,7 +285,7 @@ EOF
       dhx_entry_present_post=true
       # Boolean check only — no path leakage to outcome JSON (D-08 sanitization)
       installPath=$(jq -r '.plugins["dhx@dhx-local"].installPath // empty' "$SANDBOX_IP" 2>/dev/null)
-      if [[ -n "$installPath" ]] && echo "$installPath" | grep -q "plugins/cache/dhx-local/dhx"; then
+      if [[ -n "$installPath" ]] && grep -q "plugins/cache/dhx-local/dhx" <<<"$installPath"; then
         install_path_resolves_to_expected_cache_layout=true
       fi
     fi
@@ -311,7 +311,7 @@ fi
 # ----------------------------------------------------------------------------
 classify_failure() {
   local rc="$1" stderr="$2"
-  if [[ "$rc" -eq 124 ]] || echo "$stderr" | grep -qiE 'timeout|deadline'; then
+  if [[ "$rc" -eq 124 ]] || grep -qiE 'timeout|deadline' <<<"$stderr"; then
     echo "timeout_124"; return
   fi
   # Auth-failure regex broadened 2026-05-24 to mirror the read-guard tripwire's
@@ -319,10 +319,10 @@ classify_failure() {
   # authentication') missed "Not logged in", "Failed to authenticate", credit
   # exhaustion, OAuth expiry, and "invalid x-api-key", any of which (on an exit-0
   # subprocess) could slip past to a false v1_2_work_warranted. False-PASS guard.
-  if echo "$stderr" | grep -qiE '401|403|unauthorized|not logged in|please run /login|invalid (x-)?api[- ]?key|authentication|failed to authenticate|credit balance is too low|oauth token has expired'; then
+  if grep -qiE '401|403|unauthorized|not logged in|please run /login|invalid (x-)?api[- ]?key|authentication|failed to authenticate|credit balance is too low|oauth token has expired' <<<"$stderr"; then
     echo "auth_failure"; return
   fi
-  if echo "$stderr" | grep -qiE 'network|connection|ENETUNREACH|ECONNREFUSED|EAI_'; then
+  if grep -qiE 'network|connection|ENETUNREACH|ECONNREFUSED|EAI_' <<<"$stderr"; then
     echo "network_failure"; return
   fi
   if [[ "$rc" -ne 0 ]]; then
