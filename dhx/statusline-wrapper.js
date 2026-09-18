@@ -2315,12 +2315,24 @@ function writeDriftDebugBreadcrumb(cacheDir, sessionId, row) {
     const file = path.join(cacheDir, `drift-debug-${sessionId}.log`);
     fs.mkdirSync(cacheDir, { recursive: true });
     if (driftDebugLastPayload(file) === payload) return 'duplicate';
+    const line = `{"ts":"${new Date().toISOString()}",${payload.slice(1)}\n`;
     try {
-      if (fs.statSync(file).size >= DRIFT_DEBUG_MAX_BYTES) {
+      // Rotate PRE-EMPTIVELY: when this line would carry the file past the
+      // ceiling, not merely when the file is already past it. A bare
+      // `size >= max` lets a file sitting just under the ceiling exceed it by
+      // one whole line — ~25 KB for a typical gsd payload and unbounded for a
+      // pathological one — so it bounds the file only to `max + one line`.
+      // Buffer.byteLength, not String.length: a diverging path may be
+      // non-ASCII. The one case this cannot bound is a SINGLE line larger than
+      // the ceiling on an empty file: it is written whole, deliberately,
+      // because truncating a line is refused (see the block comment above —
+      // truncation is what cost a sibling breadcrumb 289 of 614 rows).
+      const size = fs.statSync(file).size;
+      if (size > 0 && size + Buffer.byteLength(line) > DRIFT_DEBUG_MAX_BYTES) {
         fs.renameSync(file, file + '.1');   // one generation; never truncate a line
       }
     } catch { /* absent file — nothing to rotate */ }
-    fs.appendFileSync(file, `{"ts":"${new Date().toISOString()}",${payload.slice(1)}\n`);
+    fs.appendFileSync(file, line);
     return 'written';
   } catch {
     return 'skipped';   // breadcrumb failure must not affect drift detection

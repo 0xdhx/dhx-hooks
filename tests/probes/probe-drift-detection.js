@@ -1180,6 +1180,9 @@ const baseSnap = snap();
 //     `.log`; no line is ever truncated (docs/decisions.md 2026-09-03 records
 //     a sibling breadcrumb's per-line cap silently dropping 289 of 614 rows,
 //     longest first).
+//     [19g2] additionally pins that the rotation is PRE-EMPTIVE — the .log does
+//     not exceed the ceiling by one whole line, which is what a bare
+//     `size >= max` pre-append test allows (close-review finding, 2026-09-17).
 //  h) The per-run deletion cap holds, and drains OLDEST first. Introducing
 //     retention to a never-swept store makes the first run delete the entire
 //     backlog: on 2026-09-17 that cost 348 files / 1.90 GiB about one second
@@ -1305,6 +1308,35 @@ const baseSnap = snap();
     postLines.length === 1 &&
     JSON.parse(postLines[0]).max_path === '/after/rotation');
 
+  // [19g2] The bound is the CEILING, not ceiling-plus-one-line. A close review
+  // (reports/2026-09-17-close-review-drift-debug-retention-evidence/round-1.md)
+  // found the first implementation tested `size >= max` BEFORE appending, which
+  // bounds the file only to max + one whole line — ~25 KB for a typical gsd
+  // payload. Seed to just under the ceiling, write a line that would cross it,
+  // and require the .log to come out at or under the ceiling.
+  const preDir = path.join(TMP, 'bc-pre');
+  fs.mkdirSync(preDir, { recursive: true });
+  const preSid = `${sid}-pre`;
+  const preFile = path.join(preDir, `drift-debug-${preSid}.log`);
+  const bigRow = { trigger: 'gsd', diverging: [{ path: 'z'.repeat(2000), kind: 'mismatch' }] };
+  const bigLineBytes = Buffer.byteLength(`{"ts":"2020-01-01T00:00:00.000Z",${JSON.stringify(bigRow).slice(1)}\n`);
+  // Land the seed inside (ceiling - bigLine, ceiling) so the file is UNDER the
+  // ceiling — a `size >= max` check would not rotate — yet one more line crosses
+  // it. Sized EXACTLY: appending whole `filler` lines in a while-loop overshoots
+  // by up to one filler (~4 KB) and can land the seed ABOVE the ceiling, which
+  // made the first version of this arm red on its own fixture.
+  const seedTarget = ceiling - Math.floor(bigLineBytes / 2);
+  fs.writeFileSync(preFile, 'x'.repeat(seedTarget - 1) + '\n');
+  const sizeBefore = fs.statSync(preFile).size;
+  writeDriftDebugBreadcrumb(preDir, preSid, bigRow);
+  const sizeAfter = fs.statSync(preFile).size;
+  assert('[19g2] rotation is pre-emptive — the .log never exceeds the ceiling by a whole line',
+    sizeBefore < ceiling &&                          // a `size >= max` check would NOT have rotated
+    sizeBefore + bigLineBytes > ceiling &&           // ...yet this line crosses it
+    fs.existsSync(preFile + '.1') &&                 // so it rotated
+    sizeAfter <= ceiling &&                          // and the live log is within bounds
+    lines(preFile).length === 1);
+
   // --- (h) per-run deletion cap, oldest first -------------------------------
   const capDir = path.join(TMP, 'bc-cap');
   fs.mkdirSync(capDir, { recursive: true });
@@ -1341,7 +1373,8 @@ const baseSnap = snap();
   assert('[19] breadcrumb bounds hold (dedupe, ts-blind, retention reaches, scope-safe, rotation, cap, daily gate)',
     r1 === 'written' && r2 === 'duplicate' && r3 === 'written' && r4 === 'duplicate' &&
     removed === victims.length && bystandersKept && freshRemoved === 0 &&
-    fs.existsSync(rotated) && capRemoved === 3 && secondRun === -1);
+    fs.existsSync(rotated) && fs.existsSync(preFile + '.1') &&
+    capRemoved === 3 && secondRun === -1);
 }
 
 // --- Cleanup + summary ---
