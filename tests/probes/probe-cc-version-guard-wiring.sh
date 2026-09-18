@@ -64,12 +64,12 @@ grep -qE 'bash ~/\.claude/dhx-tools/cc-version-guard\.sh' "$DISPATCHER" \
   || check "guard invoked via ~/.claude/dhx-tools/ (dhx-tools indirection, like dhx-watch-health.cjs)" "fail"
 
 # Filesystem-only: stdin closed with < /dev/null on the guard invocation line.
-printf '%s\n' "$GUARD_LINE" | grep -qE '< */dev/null' \
+grep -qE '< */dev/null' <<<"$GUARD_LINE" \
   && check "guard invoked with < /dev/null (no stdin dependency)" ok \
   || check "guard invoked with < /dev/null (no stdin dependency)" "fail"
 
 # Fail-open: trailing || true on the guard invocation line.
-printf '%s\n' "$GUARD_LINE" | grep -qE '\|\| *true *$' \
+grep -qE '\|\| *true *$' <<<"$GUARD_LINE" \
   && check "guard invocation is fail-open (trailing || true)" ok \
   || check "guard invocation is fail-open (trailing || true)" "fail"
 

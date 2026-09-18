@@ -20,5 +20,7 @@
     "cell_outcome": "setup_failure",
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "ambiguous"
+  "conclusion": "ambiguous",
+  "binary_attribution": "no_producing_binary",
+  "binary_attribution_note": "cell1_rc=127: bare `claude` resolved to claude-capped.sh, which re-resolves the real binary through $HOME while this probe swaps $HOME. No Claude Code process ran, so the release label names a binary that produced nothing. The recorded setup_failure is accurate; the LABEL is what is unverified."
 }

@@ -226,7 +226,7 @@ assert "$(grep -qE '^# Patterns: HP-' "$SHIM" && echo 1)" "shim declares a # Pat
 # Source-level guard: neither hook may contain a close command in ANY emitted string.
 # Comment lines legitimately NAME the forbidden commands (the INVARIANT block explains
 # why they are banned), so scope this to executable lines only.
-code_has_close(){ grep -vE '^[[:space:]]*#' "$1" | grep -qE 'git (mv|-C)'; }
+code_has_close(){ grep -qE 'git (mv|-C)' < <(grep -vE '^[[:space:]]*#' "$1"); }
 assert "$(code_has_close "$WORKER" || echo 1)" "worker EXECUTABLE lines contain no 'git mv' / 'git -C'"
 assert "$(code_has_close "$SHIM"   || echo 1)" "shim EXECUTABLE lines contain no 'git mv' / 'git -C'"
 

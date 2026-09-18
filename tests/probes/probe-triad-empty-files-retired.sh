@@ -63,9 +63,9 @@ A=$(run_triad "$EMPTY")
 assert "[A1] empty files[] exits 0" \
   bash -c '[ "$(printf "%s" "$1" | sed -n "1s/exit=//p")" = "0" ]' _ "$A"
 assert "[A2] empty files[] emits NO 'ERROR'" \
-  bash -c '! printf "%s" "$1" | grep -qF "ERROR"' _ "$A"
+  bash -c '! grep -qF "ERROR" < <(printf "%s" "$1")' _ "$A"
 assert "[A3] empty files[] emits the retired/nothing-to-triage notice" \
-  bash -c 'printf "%s" "$1" | grep -qiF "nothing to triage"' _ "$A"
+  bash -c 'grep -qiF "nothing to triage" < <(printf "%s" "$1")' _ "$A"
 
 # ---- Case B: unparseable JSON → ERROR, exit 1 ----
 CORRUPT="$TMPDIR/corrupt.json"
@@ -74,7 +74,7 @@ B=$(run_triad "$CORRUPT")
 assert "[B1] corrupt meta exits 1" \
   bash -c '[ "$(printf "%s" "$1" | sed -n "1s/exit=//p")" = "1" ]' _ "$B"
 assert "[B2] corrupt meta emits ERROR" \
-  bash -c 'printf "%s" "$1" | grep -qF "ERROR"' _ "$B"
+  bash -c 'grep -qF "ERROR" < <(printf "%s" "$1")' _ "$B"
 
 # ---- Case C: missing .files key → ERROR, exit 1 (not an array) ----
 NOKEY="$TMPDIR/nokey.json"
@@ -83,7 +83,7 @@ C=$(run_triad "$NOKEY")
 assert "[C1] missing files key exits 1" \
   bash -c '[ "$(printf "%s" "$1" | sed -n "1s/exit=//p")" = "1" ]' _ "$C"
 assert "[C2] missing files key emits ERROR" \
-  bash -c 'printf "%s" "$1" | grep -qF "ERROR"' _ "$C"
+  bash -c 'grep -qF "ERROR" < <(printf "%s" "$1")' _ "$C"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

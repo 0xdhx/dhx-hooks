@@ -2,14 +2,14 @@
   "probe_id": "probe-installed-plugins-uninstalled-dhx-natural-heal",
   "exit_code": 1,
   "exit_code_convention": "exit_0_means_v1_2_work_warranted",
-  "cc_version": "2.1.150",
+  "cc_version": "2.1.276",
   "cc_version_match": true,
   "confidence": "HIGH",
-  "ts": "2026-05-26T06:28:23Z",
-  "run_id": "f7c0d0cc-f628-4052-99c7-608b00fe94cc",
+  "ts": "2026-09-18T08:43:33Z",
+  "run_id": "dee89b24-cbe7-4e4e-89aa-f0d768594a3b",
   "observations": {
     "pre_size": 394,
-    "post_size": 2949,
+    "post_size": 2605,
     "json_validity_post": true,
     "dhx_entry_present_post": true,
     "post_fake_a_present": true,
@@ -21,7 +21,5 @@
     "cell_outcome": "uninstalled_hn_heals",
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "supersession_found_drop_heal",
-  "binary_attribution": "unverified_resolve_twice",
-  "binary_attribution_note": "Produced before the fix: the measurement and the release label each resolved `claude` from PATH independently, so an auto-update inside that window would have filed this observation under a release that did not produce it. No such update is known to have occurred and it is not recoverable after the fact. The OBSERVATION and conclusion stand as recorded; only the release attribution is unverified."
+  "conclusion": "supersession_found_drop_heal"
 }

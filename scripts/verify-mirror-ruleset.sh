@@ -102,7 +102,7 @@ echo "[ruleset] in force on ${MIRROR_BRANCH}: $(printf '%s' "${ACTUAL:-<none>}" 
 
 MISSING=""
 for want in $MIRROR_EXPECT_RULES; do
-  printf '%s\n' "$ACTUAL" | grep -qx -- "$want" || MISSING="${MISSING} ${want}"
+  grep -qx -- "$want" <<<"$ACTUAL" || MISSING="${MISSING} ${want}"
 done
 
 if [ -n "$MISSING" ]; then

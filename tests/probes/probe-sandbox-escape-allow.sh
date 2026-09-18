@@ -66,7 +66,7 @@ silent '{"tool_input":{"command":"ssh n95 echo ok","dangerouslyDisableSandbox":f
 
 # --- behavioral: malformed input fails open to the prompt (no allow emitted) ---
 out=$(printf 'not json' | bash "$HOOK" 2>/dev/null; true)
-if printf '%s' "$out" | grep -q '"permissionDecision"'; then
+if grep -q '"permissionDecision"' < <(printf '%s' "$out"); then
   bad "malformed JSON -> no allow emitted"
 else
   ok "malformed JSON -> no allow emitted"
@@ -79,7 +79,7 @@ grep -q '^# Patterns: HP-041, HP-050' "$HOOK" \
   && ok "hook is executable" || bad "hook is executable"
 grep -q 'dhx-sandbox-escape-allow.sh' "$PLUGIN_HOOKS" \
   && ok "registered in plugin hooks.json" || bad "registered in plugin hooks.json"
-tail -1 "$HOOK" | grep -q '^exit 0' \
+grep -q '^exit 0' < <(tail -1 "$HOOK") \
   && ok "final line is bare fall-through exit 0 (no default allow)" || bad "final line is bare fall-through exit 0 (no default allow)"
 
 echo "---"

@@ -52,6 +52,22 @@
 # Both guards that changed had the SAME defect: an `||` fusing a transient
 # cause with a permanent one, so the permanent one inherited the silence.
 #
+# OUTCOME LOG (2026-09-18) — the silent degrades are silent to the SESSION, not
+# to the operator. Every allowlisted run appends one TSV line to
+# ${XDG_STATE_HOME:-~/.local/state}/dhx/dirty-tree-who.tsv:
+#   utc  toplevel  outcome  elapsed_ms  payload_bytes  session_id
+# outcome ∈ ok | timeout | canary | exit-N | empty | over-cap | malformed |
+#           protocol-mismatch | version-timeout | version-fail | helper-absent
+# Successes are logged too — a degrade RATE needs its denominator. Why: a timeout
+# was the one degrade nobody could count, so "are SessionStart maps going
+# missing?" had no answer but a hunch (skills DEC-2026-09-17-dhx-who-attribution-
+# by-recorded-change-sets-stage-1, Amendment 1 cost). The log is not a voice:
+# stdout stays byte-identical and the DEGRADE VOICE set above is untouched. It is
+# fail-open (an unwritable log costs the line, never the output) and rotates to
+# .1 past 1 MiB (~10k runs). Hermetic like dhx-who's codex seam: OFF whenever
+# DHX_DIRTY_TREE_WHO or _ALLOWLIST is set without DHX_DIRTY_TREE_LOG, so no probe
+# writes the real log.
+#
 # PAYLOAD CEILING — 16384 bytes, and a CROSS-REPO CONSTANT duplicated in two
 # repos: here, and `dhx-who.sh`'s own `PAYLOAD_CEILING` (skills). Changing one
 # without the other desynchronizes them silently.
@@ -105,6 +121,8 @@
 #   DHX_DIRTY_TREE_WHO          helper path
 #                               (default: ~/.claude/dhx-tools/dhx-history/dhx-who.sh)
 #   DHX_DIRTY_TREE_WHO_TIMEOUT  seconds (default: 8)
+#   DHX_DIRTY_TREE_LOG          outcome-log path; set-but-empty = off
+#                               (default: see OUTCOME LOG — off under any seam)
 
 set -uo pipefail
 
@@ -151,9 +169,36 @@ if [ "$IN_ALLOWLIST" != "1" ]; then
   exit 0
 fi
 
+# ---- outcome log (see OUTCOME LOG in the header) --------------------------
+if [ -n "${DHX_DIRTY_TREE_LOG+x}" ]; then
+  LOG="$DHX_DIRTY_TREE_LOG"
+elif [ -n "${DHX_DIRTY_TREE_WHO:-}${DHX_DIRTY_TREE_ALLOWLIST:-}" ]; then
+  LOG=""
+else
+  LOG="${XDG_STATE_HOME:-$HOME/.local/state}/dhx/dirty-tree-who.tsv"
+fi
+now_us() { local t="${EPOCHREALTIME:-}"; if [ -n "$t" ]; then echo "${t//[.,]/}"; else date +%s%6N; fi; }
+T0=$(now_us)
+# HP-015: session_id is on SessionStart stdin; own files label "this session"
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+log_outcome() { # outcome, payload-bytes — fail-open: never touches stdout or rc
+  [ -n "$LOG" ] || return 0
+  {
+    local ms=$(( ($(now_us) - T0) / 1000 ))
+    mkdir -p "$(dirname "$LOG")" || return 0
+    if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+      mv -f "$LOG" "$LOG.1"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TOPLEVEL" \
+      "$1" "$ms" "${2:-0}" "$SESSION_ID" >> "$LOG"
+  } >/dev/null 2>&1
+  return 0
+}
+
 WHO="${DHX_DIRTY_TREE_WHO:-$HOME/.claude/dhx-tools/dhx-history/dhx-who.sh}"
 TIMEOUT_S="${DHX_DIRTY_TREE_WHO_TIMEOUT:-8}"
 if [ ! -e "$WHO" ]; then
+  log_outcome helper-absent
   echo "$BARE"
   exit 0
 fi
@@ -173,8 +218,9 @@ CEILING=16384
 timeout "$TIMEOUT_S" bash "$WHO" --version > "$TMPOUT" 2>/dev/null
 RC=$?
 # TRANSIENT: the probe itself failed — timeout, non-executable, mid-install tree
-# state. Silent (DEGRADE VOICE above).
+# state. Silent (DEGRADE VOICE above). `timeout` exits 124 when it fired.
 if [ "$RC" -ne 0 ]; then
+  if [ "$RC" -eq 124 ]; then log_outcome version-timeout; else log_outcome version-fail; fi
   echo "$BARE"
   exit 0
 fi
@@ -183,13 +229,12 @@ fi
 # lands in every session's SessionStart context; head -c bounds the length.
 VERSTR=$(head -c 64 "$TMPOUT" | tr -cd '[:print:]')
 if [ "$VERSTR" != "$WANT_PROTO" ]; then
+  log_outcome protocol-mismatch
   echo "$BARE"
   echo "dhx-who attribution protocol mismatch (helper reports \"$VERSTR\", this hook speaks \"$WANT_PROTO\"); showing bare count until the hook's expected protocol string is updated"
   exit 0
 fi
 
-# HP-015: session_id is on SessionStart stdin; own files label "this session"
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 SELF_ARGS=()
 if [ -n "$SESSION_ID" ]; then SELF_ARGS=(--self "$SESSION_ID"); fi
 
@@ -199,11 +244,13 @@ RC=$?
 
 if [ "$RC" -eq 3 ]; then
   # dhx-who's serialization canary — the one loud degrade (see header)
+  log_outcome canary
   echo "$BARE"
   echo "dhx-who attribution canary failed (helper exit 3: tool-input serialization drift); showing bare count until dhx-who's key form is updated"
   exit 0
 fi
 if [ "$RC" -ne 0 ]; then
+  if [ "$RC" -eq 124 ]; then log_outcome timeout; else log_outcome "exit-$RC"; fi
   echo "$BARE"
   exit 0
 fi
@@ -211,19 +258,21 @@ fi
 SIZE=$(stat -c %s "$TMPOUT" 2>/dev/null || echo 0)
 # TRANSIENT: nothing, or a partial write under the F3 two-file skew. Silent.
 if [ "$SIZE" -eq 0 ]; then
+  log_outcome empty
   echo "$BARE"
   exit 0
 fi
 # PERMANENT: a whole payload this hook refuses to relay. Persists while the tree
 # stays this dirty, and what it drops is the non-re-derivable owner map.
 if [ "$SIZE" -gt "$CEILING" ]; then
+  log_outcome over-cap "$SIZE"
   echo "$BARE"
   echo "dhx-who attribution payload over cap ($SIZE bytes vs $CEILING limit; discarded whole, not truncated); showing bare count"
   exit 0
 fi
 
 case "$(head -c 19 "$TMPOUT")" in
-  "[shared-tree state]") cat "$TMPOUT" ;;
-  *) echo "$BARE" ;;
+  "[shared-tree state]") log_outcome ok "$SIZE"; cat "$TMPOUT" ;;
+  *) log_outcome malformed "$SIZE"; echo "$BARE" ;;
 esac
 exit 0

@@ -131,7 +131,7 @@ OUT1=$( (cd "$WORK" && timeout 240 claude -p --permission-mode bypassPermissions
   --model haiku "$PROMPT1" 2>&1) )
 RC1=$?
 
-if [ $RC1 -ne 0 ] || printf '%s' "$OUT1" | grep -qE "$AUTH_FAIL_RE"; then
+if [ $RC1 -ne 0 ] || grep -qE "$AUTH_FAIL_RE" < <(printf '%s' "$OUT1"); then
   echo "SKIP child 1 did not complete (rc=$RC1 / auth failure) — inconclusive"
   skipped=$((skipped + 1))
   echo "--- child 1 output ---"; printf '%s\n' "$OUT1" | tail -20
@@ -161,7 +161,7 @@ if [ "$fm_name" != "$AGENT" ]; then
 fi
 
 # Control 1: dispatch worked at all in child 1.
-if printf '%s' "$OUT1" | grep -q "$CONTROL_TOKEN"; then
+if grep -q "$CONTROL_TOKEN" < <(printf '%s' "$OUT1"); then
   ck 0 "control 1: a session-start-registered agent dispatches in child 1"
 else
   echo "SKIP control 1 did not resolve — child 1's dispatch path is untrustworthy, inconclusive"
@@ -172,10 +172,10 @@ else
 fi
 
 # Test leg: the mid-session write must NOT be dispatchable.
-if printf '%s' "$OUT1" | grep -q "$TEST_TOKEN"; then
+if grep -q "$TEST_TOKEN" < <(printf '%s' "$OUT1"); then
   ck 1 "test: mid-session agent file is NOT dispatchable (it RESOLVED — registry now hot-reloads)"
   registry_hot_reloaded=1
-elif printf '%s' "$OUT1" | grep -qE "not found|Agent type"; then
+elif grep -qE "not found|Agent type" < <(printf '%s' "$OUT1"); then
   ck 0 "test: mid-session agent file is NOT dispatchable (refused as unknown agent type)"
   registry_hot_reloaded=0
 else
@@ -194,10 +194,10 @@ OUT2=$( (cd "$WORK" && timeout 240 claude -p --permission-mode bypassPermissions
   --model haiku "Use the Agent tool with subagent_type=\"$AGENT\" and prompt=\"Reply with exactly $TEST_TOKEN and nothing else.\" Then print the returned token, or the first line of the error verbatim. Be terse." 2>&1) )
 RC2=$?
 
-if [ $RC2 -ne 0 ] || printf '%s' "$OUT2" | grep -qE "$AUTH_FAIL_RE"; then
+if [ $RC2 -ne 0 ] || grep -qE "$AUTH_FAIL_RE" < <(printf '%s' "$OUT2"); then
   echo "SKIP child 2 did not complete (rc=$RC2 / auth failure) — the negative above is UNCONFIRMED"
   skipped=$((skipped + 1))
-elif printf '%s' "$OUT2" | grep -q "$TEST_TOKEN"; then
+elif grep -q "$TEST_TOKEN" < <(printf '%s' "$OUT2"); then
   ck 0 "control 2: the same fixture resolves in a session that started after it was written"
 else
   echo "SKIP control 2 did not resolve the fixture — the fixture may be malformed, so child 1's"

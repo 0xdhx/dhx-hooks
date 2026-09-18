@@ -97,22 +97,22 @@ grep -qE 'bash ~/\.claude/dhx-tools/cc-version-observer\.sh' "$DISPATCHER" \
   && check "observer invoked via ~/.claude/dhx-tools/ (dhx-tools indirection, like the sibling guard)" ok \
   || check "observer invoked via ~/.claude/dhx-tools/ (dhx-tools indirection, like the sibling guard)" "fail"
 
-printf '%s\n' "$OBS_LINE" | grep -qE '< */dev/null' \
+grep -qE '< */dev/null' <<<"$OBS_LINE" \
   && check "observer invoked with < /dev/null (no stdin dependency)" ok \
   || check "observer invoked with < /dev/null (no stdin dependency)" "fail"
 
-printf '%s\n' "$OBS_LINE" | grep -qE '\|\| *true *$' \
+grep -qE '\|\| *true *$' <<<"$OBS_LINE" \
   && check "observer invocation is fail-open (trailing || true)" ok \
   || check "observer invocation is fail-open (trailing || true)" "fail"
 
 # Failure-surfacing wrapper: the repo convention since e8fb4189 (2026-09-14).
-printf '%s\n' "$OBS_LINE" | grep -qE '_dhx_child +cc-version-observer ' \
+grep -qE '_dhx_child +cc-version-observer ' <<<"$OBS_LINE" \
   && check "observer runs under _dhx_child (child-failure first-sight surface)" ok \
   || check "observer runs under _dhx_child (child-failure first-sight surface)" "fail"
 
 # INVARIANT (see header): stdout is the deliverable. Any stdout redirect on this
 # line deletes the feature silently. stderr redirects are _dhx_child's business.
-if printf '%s\n' "$OBS_LINE" | grep -qE '(^|[^2])> */dev/null|&> */dev/null'; then
+if grep -qE '(^|[^2])> */dev/null|&> */dev/null' <<<"$OBS_LINE"; then
   check "observer stdout is NOT redirected (the notice is the deliverable)" "fail" \
     "found a stdout redirect on the invocation line"
 else
@@ -317,15 +317,19 @@ BRIEF
     || check "[T9] a STALE abandoned claim does not block, and is NOT mutated (same inode after)" "fail" \
              "rc=$rc inode $_pre_inode -> $_post_inode out=$(head -c 100 "$SB/out")"
 
-  # T9b: the inverse — a FRESH claim is respected, or T8's guarantee is vacuous.
+  # T9b: the owner-UNKNOWABLE branch. A claim carrying NO pid cannot be judged by /proc, so the
+  # observer falls back to age alone and a FRESH one is respected. This is ALSO the inverse of
+  # T8 — without it T8's guarantee is vacuous. It is NOT the owner-ALIVE cell: that is T15b,
+  # which records a real pid. Mislabelling the two is what put a false branch mapping into the
+  # round-7/8 close payloads.
   printf '2.1.273\n' > "$STAMP"
   # Build a FRESH claim deliberately: T9 leaves its stale one in place now, and `mkdir -p` on an
   # existing directory does NOT refresh the mtime the age test reads.
   rmdir "$STALE_CLAIM" 2>/dev/null; mkdir -p "$STALE_CLAIM" 2>/dev/null; touch "$STALE_CLAIM" 2>/dev/null
   rc=$(run_obs_as 1); outsz=$(wc -c < "$SB/out")
   [ "$rc" = "0" ] && [ "$outsz" -eq 0 ] && [ "$(cat "$STAMP" 2>/dev/null)" = "2.1.273" ] \
-    && check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" ok \
-    || check "[T9b] a FRESH claim is respected -> silent, stamp untouched (T8's guarantee is not vacuous)" "fail" \
+    && check "[T9b] claim present, owner UNKNOWABLE (no pid) + fresh -> silent, stamp untouched (T8 not vacuous)" ok \
+    || check "[T9b] claim present, owner UNKNOWABLE (no pid) + fresh -> silent, stamp untouched (T8 not vacuous)" "fail" \
              "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
   rmdir "$STALE_CLAIM" 2>/dev/null
 

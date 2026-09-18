@@ -161,7 +161,7 @@ emit_stderr() { node "$REGEN_CJS" --emit "$FIX" 2>&1 >/dev/null; }
 # positive arm silently.
 
 set_state ""
-if emit_stderr | grep -q "unknown urgency \"${CANONICAL_TOKEN}\""; then
+if grep -q "unknown urgency \"${CANONICAL_TOKEN}\"" < <(emit_stderr); then
   check "Section 2 (D2): '${CANONICAL_TOKEN}' is accepted as canonical urgency" 0
   echo "      Drift mode D2: regen no longer recognises the token the hook keys on" >&2
 else
@@ -171,14 +171,14 @@ fi
 # Negative arm — the diagnostic must fire for a token that really is unknown.
 write_brief 2026-08-27-mc.md "Milestone close fixture" next "urgency: definitely-not-canonical"
 set_state ""
-if emit_stderr | grep -q 'unknown urgency "definitely-not-canonical"'; then
+if grep -q 'unknown urgency "definitely-not-canonical"' < <(emit_stderr); then
   check "Section 2 negative control: an unknown urgency IS diagnosed (the check is live)" 1
 else
   check "Section 2 negative control FAILED: no diagnostic for a bogus urgency — the positive arm above is vacuous" 0
 fi
 
 # And a non-canonical token must NOT group under Milestone Close.
-if emit_stdout | grep -qE '^## Milestone Close'; then
+if grep -qE '^## Milestone Close' < <(emit_stdout); then
   check "Section 2 negative control: a non-canonical urgency does NOT create a Milestone Close group" 0
 else
   check "Section 2 negative control: a non-canonical urgency does NOT create a Milestone Close group" 1
@@ -225,7 +225,7 @@ assert_form() { # assert_form <label> <state-line> <expected-header-regex>
   # The rendered header must be the SHAPE this form is supposed to produce. Without
   # this the bare and em-dash cells would be indistinguishable and D4 would only ever
   # prove that *some* header rendered.
-  if printf '%s' "$header" | grep -qE "$expect"; then
+  if grep -qE "$expect" < <(printf '%s' "$header"); then
     check "D4 $label: rendered header matches the expected $label shape" 1
   else
     check "D4 $label: rendered header '$header' is not the expected $label shape" 0

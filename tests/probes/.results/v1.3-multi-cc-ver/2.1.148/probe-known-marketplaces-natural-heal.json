@@ -19,5 +19,7 @@
     "cell_outcome": "km_no_heal",
     "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
   },
-  "conclusion": "ambiguous"
+  "conclusion": "ambiguous",
+  "binary_attribution": "unverified_resolve_twice",
+  "binary_attribution_note": "Produced before the 2026-09-15 rewrite of this probe, which then resolved `claude` from PATH independently for the measurement and for the release label (verified at 55d1f0c7 — the identical three-site defect later fixed in the probe-installed-plugins-* siblings on 2026-09-18). An auto-update inside that window would have filed this observation under a release that did not produce it; no such update is known to have occurred and it is not recoverable after the fact. The OBSERVATION and conclusion stand as recorded; only the release attribution is unverified."
 }

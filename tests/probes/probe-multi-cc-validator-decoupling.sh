@@ -93,15 +93,15 @@ OUT_A=$(cd "$TA" && bash scripts/run-probes.sh --filter SAFE_FOR_LIVE=yes --filt
 assert "A: green tier + invalid corpus cell -> run-probes exits 0" \
   "$([[ "$RC_A" -eq 0 ]] && echo true || echo false)"
 assert "A: summary reports 0 failed" \
-  "$(printf '%s' "$OUT_A" | grep -qE '^Probes: [0-9]+ passed, 0 failed' && echo true || echo false)"
+  "$(grep -qE '^Probes: [0-9]+ passed, 0 failed' < <(printf '%s' "$OUT_A") && echo true || echo false)"
 assert "A: no \`red:\` roster line (nothing red to name)" \
-  "$(printf '%s' "$OUT_A" | grep -q '^  red:' && echo false || echo true)"
+  "$(grep -q '^  red:' < <(printf '%s' "$OUT_A") && echo false || echo true)"
 assert "A: an advisory NOTE is printed" \
-  "$(printf '%s' "$OUT_A" | grep -q 'NOTE: multi-cc corpus validator' && echo true || echo false)"
+  "$(grep -q 'NOTE: multi-cc corpus validator' < <(printf '%s' "$OUT_A") && echo true || echo false)"
 assert "A: the NOTE names the offending cell file" \
-  "$(printf '%s' "$OUT_A" | grep -q 'probe-known-marketplaces-natural-heal.json' && echo true || echo false)"
+  "$(grep -q 'probe-known-marketplaces-natural-heal.json' < <(printf '%s' "$OUT_A") && echo true || echo false)"
 assert "A: the NOTE states the probe tier itself PASSED" \
-  "$(printf '%s' "$OUT_A" | grep -qi 'tier .*passed\|passed.*tier' && echo true || echo false)"
+  "$(grep -qi 'tier .*passed\|passed.*tier' < <(printf '%s' "$OUT_A") && echo true || echo false)"
 
 # ---- CASE B: --stamp accounting agrees with the exit status -----------------
 TB=$(build_runner_sandbox 0 banana)
@@ -121,7 +121,7 @@ assert "C: red tier exits 1" "$([[ "$RC_C" -eq 1 ]] && echo true || echo false)"
 assert "C: summary FAIL count is 1 — the validator did not inflate it" \
   "$([[ "${SUMFAIL_C:-0}" -eq 1 ]] && echo true || echo false)"
 assert "C: roster names the red probe" \
-  "$(printf '%s' "$OUT_C" | grep -q '^  red: probe-fixture-decoupling.sh' && echo true || echo false)"
+  "$(grep -q '^  red: probe-fixture-decoupling.sh' < <(printf '%s' "$OUT_C") && echo true || echo false)"
 
 echo
 echo "=== D/E: corpus blocking authority lives at STAGING a cell, and reads the INDEX ==="
@@ -167,9 +167,9 @@ OUT_D=$(cd "$TD" && bash scripts/verify-hook-patterns.sh 2>&1); RC_D=$?
 assert "D: staging an invalid corpus cell BLOCKS the commit" \
   "$([[ "$RC_D" -ne 0 ]] && echo true || echo false)"
 assert "D: it blocks on the CORPUS gate specifically, not some other check" \
-  "$(printf '%s' "$OUT_D" | grep -q 'BLOCKED: a multi-cc corpus cell staged in this commit' && echo true || echo false)"
+  "$(grep -q 'BLOCKED: a multi-cc corpus cell staged in this commit' < <(printf '%s' "$OUT_D") && echo true || echo false)"
 assert "D: the block message names the offending cell" \
-  "$(printf '%s' "$OUT_D" | grep -q 'probe-known-marketplaces-natural-heal.json' && echo true || echo false)"
+  "$(grep -q 'probe-known-marketplaces-natural-heal.json' < <(printf '%s' "$OUT_D") && echo true || echo false)"
 
 # ---- CASE E: a VALID staged cell + an INVALID UNSTAGED orphan does NOT block -
 # This is the regression that cost the repo two incidents: the orphan is
@@ -183,12 +183,12 @@ OUT_E=$(cd "$TE" && bash scripts/verify-hook-patterns.sh 2>&1); RC_E=$?
 assert "E: a valid staged cell commits despite an invalid UNSTAGED orphan" \
   "$([[ "$RC_E" -eq 0 ]] && echo true || echo false)"
 assert "E: nothing BLOCKED at all" \
-  "$(printf '%s' "$OUT_E" | grep -q 'BLOCKED' && echo false || echo true)"
+  "$(grep -q 'BLOCKED' < <(printf '%s' "$OUT_E") && echo false || echo true)"
 # The orphan IS still surfaced — as an ADVISORY NOTE from the worktree-scoped
 # validator inside check #8a's tier run. That is the design: visible, never
 # blocking. Asserting it is never mentioned would contradict the NOTE.
 assert "E: the orphan surfaces as an advisory NOTE, not as a blocker" \
-  "$(printf '%s' "$OUT_E" | grep -q 'NOTE: multi-cc corpus validator' && echo true || echo false)"
+  "$(grep -q 'NOTE: multi-cc corpus validator' < <(printf '%s' "$OUT_E") && echo true || echo false)"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

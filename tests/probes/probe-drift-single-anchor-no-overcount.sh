@@ -60,7 +60,7 @@ assert "exactly 1 file entry (no over-reporting)" \
 
 # Header reports N=1 (D-05 phrasing keeps the parenthesized plural marker `file(s)`).
 assert "header reports 1 file(s) diverged" \
-  bash -c 'echo "$1" | grep -qF "1 file(s) diverged"' _ "$OUTPUT"
+  bash -c 'grep -qF "1 file(s) diverged" <<<"$1"' _ "$OUTPUT"
 
 # Exactly 1 cp line — one per rendered file line.
 CP_COUNT=$(echo "$OUTPUT" | grep -cE '^  cp .*gsd-core/workflows/')
@@ -69,17 +69,17 @@ assert "exactly 1 cp line emitted" \
 
 # The single rendered path is the one in the fixture (no phantom path).
 assert "rendered path matches fixture (execute-phase.md)" \
-  bash -c 'echo "$1" | grep -qF "workflows/execute-phase.md"' _ "$OUTPUT"
+  bash -c 'grep -qF "workflows/execute-phase.md" <<<"$1"' _ "$OUTPUT"
 
 # No truncation footer should appear for a single-entry cache.
 assert "no truncation footer for single anchor" \
-  bash -c '! echo "$1" | grep -qF "+0 more"' _ "$OUTPUT"
+  bash -c '! grep -qF "+0 more" <<<"$1"' _ "$OUTPUT"
 
 # ---- Cache-survival sub-test: re-invoke after a (no-op) session-snapshot delete ----
 rm -f "$TMPDIR/per-session-snapshot.json" 2>/dev/null || true
 OUTPUT2=$(printf '%s' "$ENV" | DHX_DRIFT_CACHE="$CACHE" bash "$EMITTER" 2>&1)
 assert "cache survives simulated session restart" \
-  bash -c 'echo "$1" | grep -qF "2026-05-15"' _ "$OUTPUT2"
+  bash -c 'grep -qF "2026-05-15" <<<"$1"' _ "$OUTPUT2"
 FILE_LINE_COUNT2=$(echo "$OUTPUT2" | grep -cE 'first seen [0-9]{4}-[0-9]{2}-[0-9]{2}')
 assert "still exactly 1 file entry after restart" \
   bash -c '[ "$1" -eq 1 ]' _ "$FILE_LINE_COUNT2"

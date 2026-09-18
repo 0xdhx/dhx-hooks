@@ -88,36 +88,36 @@ echo "=== Part 1: runner Convention-A routing ==="
 
 route_token supersession_found_drop_heal
 assert "supersession_found_* -> SUPERSESSION, exit 0" \
-  "$([[ "$R_RC" -eq 0 ]] && printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo true || echo false)"
+  "$([[ "$R_RC" -eq 0 ]] && grep -q '\[SUPERSESSION OBSERVED\]' < <(printf '%s' "$R_OUT") && echo true || echo false)"
 
 route_token skipped
 assert "skipped -> NOT counted as a supersession" \
-  "$(printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo false || echo true)"
+  "$(grep -q '\[SUPERSESSION OBSERVED\]' < <(printf '%s' "$R_OUT") && echo false || echo true)"
 assert "skipped -> NOT counted as a failure (exit 0)" \
   "$([[ "$R_RC" -eq 0 ]] && echo true || echo false)"
 assert "skipped -> announced as a self-skip" \
-  "$(printf '%s' "$R_OUT" | grep -q '\[SELF-SKIPPED\]' && echo true || echo false)"
+  "$(grep -q '\[SELF-SKIPPED\]' < <(printf '%s' "$R_OUT") && echo true || echo false)"
 
 route_token ambiguous
 assert "ambiguous -> FAIL" \
-  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[FAIL\]' && echo true || echo false)"
+  "$([[ "$R_RC" -ne 0 ]] && grep -q '\[FAIL\]' < <(printf '%s' "$R_OUT") && echo true || echo false)"
 
 route_token ambiguous_pre_state_abnormal
 assert "ambiguous_pre_state_abnormal -> FAIL (anchored 'ambiguous' never covered it)" \
-  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[FAIL\]' && echo true || echo false)"
+  "$([[ "$R_RC" -ne 0 ]] && grep -q '\[FAIL\]' < <(printf '%s' "$R_OUT") && echo true || echo false)"
 
 route_token error
 assert "error -> FAIL" \
-  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[FAIL\]' && echo true || echo false)"
+  "$([[ "$R_RC" -ne 0 ]] && grep -q '\[FAIL\]' < <(printf '%s' "$R_OUT") && echo true || echo false)"
 
 route_token regression_found_effort_level_unrenderable
 assert "regression_found_* -> FAIL, never SUPERSESSION (a broken dependency must reach a human)" \
-  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo false || \
+  "$([[ "$R_RC" -ne 0 ]] && grep -q '\[SUPERSESSION OBSERVED\]' < <(printf '%s' "$R_OUT") && echo false || \
      { [[ "$R_RC" -ne 0 ]] && echo true || echo false; })"
 
 route_token totally_unknown_token
 assert "an UNKNOWN token -> FAIL, never SUPERSESSION (fail SAFE)" \
-  "$([[ "$R_RC" -ne 0 ]] && printf '%s' "$R_OUT" | grep -q '\[SUPERSESSION OBSERVED\]' && echo false || \
+  "$([[ "$R_RC" -ne 0 ]] && grep -q '\[SUPERSESSION OBSERVED\]' < <(printf '%s' "$R_OUT") && echo false || \
      { [[ "$R_RC" -ne 0 ]] && echo true || echo false; })"
 
 # ============================================================================

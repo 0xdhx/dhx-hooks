@@ -122,7 +122,7 @@ done <<< "$FIX_OUT"
 [ "$i" -eq 9 ]; ck $? "fixture ran all 9 vectors"
 
 # INVARIANT (the ARM 2 falsification): the rg marker cell must show `.` SURVIVING the marker.
-printf '%s\n' "$FIX_OUT" | awk -F'\t' '$1==1' | grep -q '"\."\]$'
+grep -q '"\."\]$' < <(printf '%s\n' "$FIX_OUT" | awk -F'\t' '$1==1')
 ck $? "fixture: \`--\` after the pattern never suppresses rg's \`.\` default (ARM 2 falsified)"
 
 echo "--- 2. LIVE drift extractor (newest installed build, structural anchors) ---"
@@ -257,9 +257,9 @@ EOF
       # hook was built and claimed to work. What must still hold live is the default itself:
       printf '%s\n' "$LIVE_OUT" | awk -F'\t' '$1==0 && $3=="[\".\"]" {f=1} END{exit !f}'
       ck $? "live: (a) a pipeline rg with no operand still extracts [\".\"] — the default-operand mechanism is present"
-      printf '%s\n' "$LIVE_OUT" | awk -F'\t' '$1==2' | grep -q $'\t\[\]$'
+      grep -q $'\t\[\]$' < <(printf '%s\n' "$LIVE_OUT" | awk -F'\t' '$1==2')
       ck $? "live: (b) non-recursive grep with no operand extracts [] — nothing for ARM 2 to suppress"
-      printf '%s\n' "$LIVE_OUT" | awk -F'\t' '$1==5' | grep -q '"-A12"'
+      grep -q '"-A12"' < <(printf '%s\n' "$LIVE_OUT" | awk -F'\t' '$1==5')
       ck $? "live: (c) post-pattern -A12 is still read as a path operand (upstream shape, hook-unfixable)"
     else
       bad "live extractor could not be evaluated from $LIVE (rc=$rc) — anchors need re-deriving; NOT a clean result"
