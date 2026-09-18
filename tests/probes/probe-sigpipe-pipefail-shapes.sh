@@ -31,6 +31,17 @@
 # evidence (rounds 1 + 2, commits c5e09f3 + 459df4c).
 #
 # SCAN ROOTS — all three, zero tolerance, as of 2026-09-18.
+#
+# 2026-09-18 (later the same day): the root was WIDENED from `tests/probes` to
+# `tests`. `tests/lib.sh` and `tests/test-sed-extraction.sh` sit one level above
+# the old root and held FOUR live sites the ratchet had never seen — and one of
+# them fired: `assert_contains`'s `echo "$actual" | grep -qF "$expected"` took
+# SIGPIPE under the suite's `set -euo pipefail`, reporting FAIL on a string that
+# was PRESENT (its own diagnostic printed the expected text inside the actual
+# output), which blocked a commit at the pre-commit gate. Intermittent — the
+# suite passes 5/5 standalone — which is why a green run never surfaced it.
+# The root list was a SPELLING of "where this shape lives", and `tests/probes`
+# is not the same set as `tests`.
 # From April 2026 this lint scanned `dhx/` ALONE, so it reported "audit closed,
 # allowlist expected empty" while 191 sites accumulated one directory over. The
 # roots widened on 2026-09-18 and the two new ones were RATCHETED against a
@@ -77,7 +88,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # never occurred in dhx/, which is why the imprecision survived since April.
 HP028_SHAPE='[^|]\| *grep -[qm]'  # HP-028 (this line DEFINES the shape)
 
-SCAN_ROOTS=(dhx tests/probes scripts)
+SCAN_ROOTS=(dhx tests scripts)
 
 # file:line entries to skip. Empty, and expected to stay that way: a deliberate
 # construction is exempted by an HP-028 token ON the line, where the next reader
@@ -121,7 +132,7 @@ done < <(grep -rnE "$HP028_SHAPE" "${SCAN_PATHS[@]}" --include='*.sh' \
            2>/dev/null || true)
 
 if [[ "${#VIOLATIONS[@]}" -eq 0 ]]; then
-  echo "OK   no SIGPIPE+pipefail-prone shapes in dhx/, tests/probes/ or scripts/ (HP-028 invariant holds)"
+  echo "OK   no SIGPIPE+pipefail-prone shapes in dhx/, tests/ or scripts/ (HP-028 invariant holds)"
   PASS=1
 else
   for v in "${VIOLATIONS[@]}"; do

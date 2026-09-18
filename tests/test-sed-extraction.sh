@@ -109,7 +109,7 @@ test_04_backtick_collision() {
   # Verify the extraction starts at the actual <deferred> tag line
   local first_content_line
   first_content_line=$(echo "$out" | head -1)
-  if echo "$first_content_line" | grep -qE '^[[:space:]]*<deferred>[[:space:]]*$'; then
+  if grep -qE '^[[:space:]]*<deferred>[[:space:]]*$' <<<"$first_content_line"; then
     PASS=$((PASS + 1))
     echo "  PASS: 4d: extraction starts at actual <deferred> tag line"
   else
@@ -322,7 +322,7 @@ test_13_comment_tag() {
   # Verify extraction starts at the actual <deferred> tag, not the comment
   local first_line
   first_line=$(echo "$out" | head -1)
-  if echo "$first_line" | grep -qE '^[[:space:]]*<deferred>[[:space:]]*$'; then
+  if grep -qE '^[[:space:]]*<deferred>[[:space:]]*$' <<<"$first_line"; then
     PASS=$((PASS + 1))
     echo "  PASS: 13c: extraction starts at actual <deferred> tag line"
   else

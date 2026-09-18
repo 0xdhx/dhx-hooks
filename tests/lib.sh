@@ -59,7 +59,7 @@ header_fallback_filtered() {
 
 assert_contains() {
   local test_name="$1" actual="$2" expected="$3"
-  if echo "$actual" | grep -qF "$expected"; then
+  if grep -qF "$expected" <<<"$actual"; then
     PASS=$((PASS + 1))
     echo "  PASS: $test_name"
   else
@@ -86,7 +86,7 @@ assert_empty() {
 
 assert_not_contains() {
   local test_name="$1" actual="$2" forbidden="$3"
-  if echo "$actual" | grep -qF "$forbidden"; then
+  if grep -qF "$forbidden" <<<"$actual"; then
     FAIL=$((FAIL + 1))
     echo "  FAIL: $test_name"
     echo "        Expected NOT to contain: $forbidden"
