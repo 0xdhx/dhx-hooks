@@ -35,11 +35,11 @@
 #      silently, T6 a DAEMON-shaped consumer neither emits nor stamps while the
 #      OPERATOR-facing consumer that follows still receives the notice, T7 an
 #      absent/empty attendedness signal fails OPEN, T8 eight concurrent attended
-#      consumers produce exactly one emission, T9 a stale claim is stealable and
-#      a fresh one is respected, T10 an unwritable state dir still EMITS (the claim
+#      consumers produce exactly one emission, T9 a stale claim is no obstacle and is
+#      NOT mutated while a fresh one is respected, T10 an unwritable state dir still EMITS (the claim
 #      must never be able to silence the operator) and the failed stamp re-announces,
 #      T11/T12 the two claim RACES scheduled deterministically with a `mkdir` shim —
-#      a peer finishing mid-claim, and losing a stale-claim steal — neither of which
+#      a peer finishing mid-claim, and a non-owner never mutating the claim — neither of which
 #      T8's barrier can schedule and both of which it stayed green against, and
 #      T13/T14 the remaining two rows of the observer's claim-outcome table: a stale
 #      claim that cannot be REMOVED must still emit (a dead owner silencing the
@@ -299,7 +299,9 @@ BRIEF
 
   # T9: a claim abandoned mid-emit must not silence the version forever. CC terminates a
   # still-running SessionStart hook when the session exits, so this is a real path, not a
-  # theoretical one. A claim older than the 300s staleness bound is stealable.
+  # theoretical one. A claim older than the 300s staleness bound stops being an obstacle -- it is
+  # ignored and the stamp decides. It is NEVER stolen: the steal was deleted at 0cda8beb9, and
+  # this cell's own assertion below requires the claim's inode to be unchanged afterwards.
   printf '2.1.273\n' > "$STAMP"
   STALE_CLAIM="$STAMP.claim.2.1.275"
   mkdir -p "$STALE_CLAIM" 2>/dev/null
@@ -514,6 +516,38 @@ SHIMEOF
     || check "[T15b] claim whose owner is ALIVE -> still respected (T15 did not license ignoring claims)" "fail" \
              "rc=$rc outsz=$outsz stamp=$(cat "$STAMP" 2>/dev/null)"
   rm -rf "$LIVEC"
+
+  # ── T16: the THIRD residue window — a FRESH claim whose owner is DEAD ───────
+  # Found by close-gate round 9, and created by this observer's own repair: once a dead owner
+  # frees its claim IMMEDIATELY (T15), a fresh dead-owner claim stops blocking, so two attended
+  # sessions can both fall through to the stamp re-read and both emit. The residue statement
+  # named only two windows — "both find a stale claim" and "both find no claim they can create"
+  # — and this is neither: the claim is present and its age is 0.
+  # The fall-through set is exactly three, derived from the branches above rather than collected:
+  # (1) nothing creatable, (2) an ancient claim, (3) a fresh claim with a numerically dead owner.
+  # T14 pins (1), this cell pins (3). Same policy, same reason: a duplicate beats silence.
+  # RED against cross-repo 0cda8beb9, where a fresh dead-owner claim still blocked on age.
+  printf '2.1.273\n' > "$STAMP"
+  DEADC2="$STAMP.claim.2.1.275"; rm -rf "$DEADC2"
+  bash -c 'mkdir -p "$1"; printf "%s\n" "$$" > "$1/pid"' _ "$DEADC2"
+  _d2pid=$(cat "$DEADC2/pid" 2>/dev/null)
+  _d2age=$(( $(date +%s) - $(stat -c %Y "$DEADC2" 2>/dev/null || echo 0) ))
+  if [ -r "/proc/$_d2pid/stat" ]; then
+    echo "SKIP [T16] fresh dead-owner residue — pid $_d2pid was recycled before the check"
+  else
+    # Both consumers read the OLD stamp before either records delivery: reset it between runs,
+    # exactly as T14 does. The claim itself is left alone — no cell may mutate a foreign claim.
+    printf '2.1.273\n' > "$STAMP"
+    rc=$(run_obs_as 1); cp "$SB/out" "$SB/t16a" 2>/dev/null
+    printf '2.1.273\n' > "$STAMP"
+    rc=$(run_obs_as 1); cp "$SB/out" "$SB/t16b" 2>/dev/null
+    n1=$(grep -c '2\.1\.273 -> 2\.1\.275' "$SB/t16a"); n2=$(grep -c '2\.1\.273 -> 2\.1\.275' "$SB/t16b")
+    [ "$n1" -eq 1 ] && [ "$n2" -eq 1 ] \
+      && check "[T16] FRESH claim, owner DEAD (age ${_d2age}s) -> BOTH consumers emit (third residue window)" ok \
+      || check "[T16] FRESH claim, owner DEAD (age ${_d2age}s) -> BOTH consumers emit (third residue window)" "fail" \
+               "run1 notices=$n1 run2 notices=$n2 (want 1 each) — window 3 was flipped to silence"
+  fi
+  rm -rf "$DEADC2"
 fi
 
 echo "---"
