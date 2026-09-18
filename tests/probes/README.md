@@ -45,6 +45,66 @@ Both were confirmed by replacing the producer with `/bin/true`: of twenty-one as
 - **A sentinel like `ABSENT` is a value, not an error.** Any helper that substitutes one for a missing file has made its callers' equality checks vacuous by default; guard at each call site, or return a distinguishable rc.
 - **Negative controls are the test of the test.** An assertion that stays green when the surface it covers is broken is decoration. Run each new assertion against a deliberately broken subject and record which one reddened — that recording is the artifact, and it has caught an assertion authored so that both sides read the same value and it passed its own control.
 
+## A guard has two layers, and either can be a spelling
+
+The section above says run a negative control. This one is the gap *past* it: on **2026-09-17 three
+guard assertions in this repo were found hollow on the same day, every one of them green, every one
+with a passing positive control, and not one caught by its own author.** They failed in two distinct
+places, and the negative control each author had actually run could not reach either.
+
+**The tooth** is the assertion that fires when the guarded thing is wrong. **The net** is whatever
+decides which things the tooth is applied to. Both are code, both can be an enumeration or a
+spelling, and a hollow net is worse than a hollow tooth — an unguarded case does not fail, it is
+never looked at.
+
+The three measured cases:
+
+| | layer | what was asserted | what slipped through |
+|---|---|---|---|
+| `probe-hermetic-tier-no-tree-writes.sh` | tooth | the discriminator *mentions* `DHX_PROBE_HERMETIC` | an **inverted** guard (`== "0"`) — the token is still on the line, so the grep still matched |
+| `probe-drift-detection.js` [19e] | tooth | a hardcoded list of bystander filenames survives the sweep | an unanchored `/\.log/` instead of `/\.log(\.1)?$/` — no name in the list carried both the `drift-debug-` prefix and a non-terminal `.log`, so it passed **all ten** arms |
+| `probe-hermetic-tier-no-tree-writes.sh` | net | discovery via `grep -l 'PROBE_DIR="${XDG_RUNTIME_DIR'` | the brace-free `$XDG_RUNTIME_DIR` form — an ordinary way to write it, and the probe was **invisible**, not uncaught |
+
+**Rule — three checkable questions, asked of the assertion, not of the subject:**
+
+- **Would an INVERTED guard pass this, not just a deleted one?** Deletion is the mutation everyone
+  reaches for and the easiest to catch. Inversion keeps every token, symbol and structure in place
+  and changes only the sense. If the assertion greps for a name, inversion beats it by construction.
+  Assert the **behaviour the guard produces** — that the subject *says* it ignored the latch, that
+  the predicate *deleted exactly this set* — never that the guard's vocabulary is present.
+- **What decides the set this is applied to, and is that a mechanism or a spelling?** Net on the
+  thing that cannot be avoided (you cannot build the latch without referencing `XDG_RUNTIME_DIR`;
+  you cannot match a filename without a prefix and a suffix), then require each candidate to
+  classify itself. **Fail closed:** a candidate with no discriminator is a red for a human to
+  triage, never a silent pass. Going fail-closed cost almost nothing in both repairs — the
+  populations were four probes and two predicate dimensions.
+- **If a new instance were added tomorrow, spelled differently, would it be RED or INVISIBLE?** A
+  `COUNT >= 1` check on a discovery net only catches *total* discovery failure; two of three
+  matching leaves the third unguarded and green. Prefer a generated set (cross-product the
+  dimensions) or an asserted count over a list someone must remember to extend.
+
+**Two disciplines for the mutation run itself**, both of which caught something the same day:
+
+- **Assert each mutant differs from the base by exactly one hunk** before reading any result. A
+  table built from mutants generated at different times silently attributed one arm's catch to
+  seven mutations it had nothing to do with; the tell was an impossible pattern (a sweeper-predicate
+  mutation appearing to break rotation). `diff` the mutant against a pristine base and check the
+  count — do not trust your memory of the commands you ran.
+- **Run the NULL mutant first.** An unmutated copy must come back fully green. A harness that
+  *crashes* emits **no FAIL lines at all**, which reads identically to "every mutant survived" — a
+  nine-row table of `*** SURVIVED ***` was printed from a harness with a JavaScript identifier
+  collision, and only the NULL run distinguished the two.
+
+**A red must describe itself correctly.** One repair initially emitted two failures for an
+unclassified probe, the second reading "SAYS it ignored the latch" — an accurate outcome with a
+misleading reason, since the subject was not a latch probe at all. A red that misnames its cause
+sends the next investigation down the wrong path, which costs more than the silence did.
+
+Provenance: `docs/decisions.md` 2026-09-17 (the drift-debug row's `[19e2]` and corrected-mutant-table
+paragraphs) and commits `df2bb624`, `5a507827`, `16ee63f7`. The pattern was found by two sessions
+each applying the other's unrelated finding to its own work — worth knowing, because in all three
+cases the author's own suite could not surface it.
+
 ## Integration probes
 
 A probe is an **integration probe** when it exercises the composition of multiple code paths that are architecturally independent but share a runtime invariant. These surface UX/timing issues that per-chunk probes can't.
