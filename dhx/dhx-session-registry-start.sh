@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
-# dhx-session-registry-start.sh — SessionStart hook
+# ============================================================================
+# RETIRED FROM MANIFEST (2026-06-09). The SessionStart entry that ran this hook
+# was removed from dhx-plugin/plugins/dhx/hooks/hooks.json — birth capture was
+# falsified in production (one logical CC session wears many transcript uuids,
+# and the uuid SessionStart registered was routinely NOT the uuid held on exit).
+# The live start-row producer is dhx/dhx-session-registry-prompt.sh, a
+# UserPromptSubmit self-backfill writing this SAME 9-field row, idempotent per
+# uuid. See docs/decisions.md 2026-06-09 row.
+#
+# DO NOT DELETE. This file is kept deliberately on two counts: it is the
+# archived row-shape source that tests/probes/probe-session-registry.sh loads
+# ($S, line ~59), and its header below is the canonical statement of the
+# LITERAL-$HOME/.claude rationale that dhx-session-registry-end.sh points at by
+# name. Removing it reds the probe and orphans that cross-reference.
+#
+# NOTHING BELOW THIS BANNER DESCRIBES A REGISTERED HOOK. Read the body as the
+# archived row schema, never as live behaviour — on 2026-09-18 a session read
+# the old "SessionStart hook" header as current, concluded from its
+# `startup|resume|clear|compact` matcher that a resume must write a start row,
+# and landed a wrong paragraph in docs/decisions.md on that basis. That is the
+# failure this banner exists to prevent.
+# ============================================================================
+# dhx-session-registry-start.sh — SessionStart hook (RETIRED — see banner above)
 # Patterns: HP-015 (SessionStart provides session_id/transcript_path/cwd/source), HP-017 (plugin manifest)
 #
 # Appends one `start` row to the shared session registry at session birth, so
