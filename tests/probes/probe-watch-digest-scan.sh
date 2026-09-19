@@ -13,7 +13,10 @@
 # drift from what the old loop rendered: exact stdout bytes for every row class, the
 # `digest_corrupt` count, the pointer write, and the boundary cases the exact digit-string
 # pointer compare must get right (equality, adjacency, leading zeros, int64 max, 20-digit
-# ids, a trailing-newline id, unterminated final lines, pointer 0).
+# ids, a trailing-newline id, unterminated final lines, pointer 0), and — since 2026-09-19 —
+# the pointer-ahead resync (S7): a pointer above every digest id (20 digits, 19 digits above
+# int64 max, or a 19-digit future value) moves BACK to the digest max, renders nothing, and
+# says so once via `[!] digest_pointer`; a 20-digit id advances the pointer and goes quiet.
 #
 # The emitted-line SHAPE is a cross-repo contract (see the surfacer header's INVARIANT block);
 # the cross-repo consumer probe asserts lead tokens by `grep -F`. This probe asserts the full
@@ -219,6 +222,48 @@ row '"5"' m u/5 x "missing pointer = 0" null > "$S6/digest.jsonl"
 OUT=$(run_surfacer "$S6")
 assert_eq S6.e "missing pointer treated as 0: row surfaces" "$(lines '    m · #5 · x' '    "missing pointer = 0" ')" "$OUT"
 assert_eq S6.f "pointer created at 5" 5 "$(cat "$S6/pointer.txt")"
+
+# ── S7: pointer AHEAD of every digest id → resync to the digest max, once, no render ──
+# decisions.md 2026-09-19 watch-digest residuals row. Measured before choosing this over
+# "coerce to 0": pointer 0 on the live digest = 34 s + 217 KB into context; 676 s at 20k lines.
+# The three pointer shapes below were all silent-forever on the 2026-09-14 script (jq dropped
+# every row; the bash `-le` never ran; the pointer never moved) and a re-render storm on the
+# script before it (bash `[` errored twice per row). Now every compare is jq's digit-string one.
+s7_fixture() {  # <dir> <pointer> — three rows, out of file order, ids ...0001 ...0003 ...0002
+  printf '%s' "$2" > "$1/pointer.txt"
+  { row '"1789794047266000001"' a u/1 x one   null
+    row '"1789794047266000003"' c u/3 x three null
+    row '"1789794047266000002"' b u/2 x two   null; } > "$1/digest.jsonl"
+}
+S7=$(mktemp_state); s7_fixture "$S7" 99999999999999999999
+OUT=$(run_surfacer "$S7")
+assert_eq S7.a "20-digit pointer: one [!] digest_pointer line, length-bounded quote, nothing rendered" \
+  '[!] digest_pointer · pointer.txt (20 digits, 9999…9999) was ahead of every digest id; resynced to 1789794047266000003' "$OUT"
+assert_eq S7.b "pointer resynced to the digest max (…0003, not the last row …0002)" 1789794047266000003 "$(cat "$S7/pointer.txt")"
+assert_eq S7.c "rc 0 on the resync (a repaired state is not a failed child)" 0 "$RC"
+OUT=$(run_surfacer "$S7")
+assert_eq S7.d "second run after the resync: silent, pointer unchanged" "|1789794047266000003" "$OUT|$(cat "$S7/pointer.txt")"
+S7b=$(mktemp_state); s7_fixture "$S7b" 9223372036854775808   # 19 digits, one above int64 max: a length check misses it
+OUT=$(run_surfacer "$S7b")
+assert_eq S7.e "19 digits above int64 max: resynced (the case a length test misses)" \
+  '[!] digest_pointer · pointer.txt (19 digits, 9223…5808) was ahead of every digest id; resynced to 1789794047266000003' "$OUT"
+S7c=$(mktemp_state); s7_fixture "$S7c" 1789794047266009999     # a plausible 19-digit FUTURE pointer (hand edit)
+OUT=$(run_surfacer "$S7c")
+assert_eq S7.f "19-digit future pointer: resynced (bash could compare it; the fault is 'ahead', not 'uncomparable')" \
+  '[!] digest_pointer · pointer.txt (19 digits, 1789…9999) was ahead of every digest id; resynced to 1789794047266000003' "$OUT"
+S7d=$(mktemp_state); s7_fixture "$S7d" 1789794047266000003     # pointer == max: eq, no notice, no write
+OUT=$(run_surfacer "$S7d")
+assert_eq S7.g "pointer == digest max: silent, no rewrite" "|1789794047266000003" "$OUT|$(cat "$S7d/pointer.txt")"
+S7e=$(mktemp_state); printf '100' > "$S7e/pointer.txt"          # a 20-digit ID: surfaced, becomes the pointer, then quiet
+{ row '"101"' a u/101 x "one-oh-one" null; row '"12345678901234567890"' big u/big x "twenty digits" null; } > "$S7e/digest.jsonl"
+OUT=$(run_surfacer "$S7e")
+assert_eq S7.h "20-digit id: surfaced like any other row" "$(lines '    a · #101 · x' '    "one-oh-one" ' '    big · #big · x' '    "twenty digits" ')" "$OUT"
+assert_eq S7.i "20-digit id becomes the pointer (old: bash -gt errored, pointer stuck at 101, storm every session)" 12345678901234567890 "$(cat "$S7e/pointer.txt")"
+OUT=$(run_surfacer "$S7e")
+assert_eq S7.j "next run under the 20-digit pointer: silent (eq)" "" "$OUT"
+S7f=$(mktemp_state); printf '5' > "$S7f/pointer.txt"; : > "$S7f/digest.jsonl"   # no digit-string id at all: no trailer, no write
+OUT=$(run_surfacer "$S7f")
+assert_eq S7.k "empty digest under a pointer: no trailer, pointer left alone" "|5" "$OUT|$(cat "$S7f/pointer.txt")"
 
 # ── T1: system signal — a broken jq must stay LOUD (every line counted corrupt), never silent ──
 T1=$(mktemp_state)

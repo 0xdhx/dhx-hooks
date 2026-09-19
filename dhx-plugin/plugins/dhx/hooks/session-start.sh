@@ -152,12 +152,91 @@ _SCH_CTX_OUT=$(printf '%s' "$INPUT" | DHX_SCHEDULE_EVENT_HASH="$_SCH_EV_KEY" DHX
 # dhx-watch-health.cjs (explicitly silenced, by design). Probe: tests/probes/
 # probe-session-start-child-failure-surface.sh.
 _DHX_CF_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start-child-failures"
+# --- child wall-time samples + the slow-child median surface (2026-09-19) ------------------
+# Nothing recorded any child's wall time, so the 2026-09-14 watch-digest regression (a
+# growth-driven 9-12 s, the whole SessionStart budget) sat for months looking exactly like
+# the day before; a commit-time probe cannot see a curve the data walks up. _dhx_child now
+# appends one `<epoch> <ms>` sample per run to `<label>.log` here (bounded: trimmed to the
+# last 20 when it passes 40), and _dhx_child_slow_check, run once after the last child,
+# judges each BUDGETED label on the MEDIAN of its last 10 samples -- a single loaded
+# session cannot move a median (measured 2026-09-19: load 36-38 on this 32-core host doubles
+# every child's wall time), while a real drift shows up in it. Crossing the budget claims a
+# `<label>.slow` marker (mkdir, the same first-sight shape as the failure surface above) and
+# prints the two lines below once; the marker is removed the moment the median is back under
+# budget, so the surface re-arms after a fix -- the one property a never-cleared high-water
+# mark lacks (its first observation claims one bucket, a later lower one reads as "new").
+# Budgets are declared per label in _dhx_child_budget_ms, and only watch-digest carries one
+# today (1000 ms: its AC-1, measured 0.05 s at 1,987 lines, 1 s at ~65k lines / ~5 years at
+# 35 lines/day); the other children collect baselines first -- see the 2026-09-19 backlog
+# brief that sets theirs from these logs. A budget is an absolute number on purpose: a
+# rolling percentile would normalise the slow linear drift this exists to catch. Fewer than
+# 10 samples: no verdict. Fail-open everywhere: unwritable cache / no $EPOCHREALTIME /
+# a probe that sourced _dhx_child alone (the sampler undefined) -> the child still ran.
+# Probe: tests/probes/probe-session-start-child-timing.sh.
+_DHX_TM_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start-timing"
+_DHX_TM_WINDOW=10
+_dhx_child_budget_ms() {
+  case "$1" in
+    watch-digest) printf '1000' ;;
+    *) printf '' ;;
+  esac
+}
+_dhx_child_sample() {  # <label> <t0> <t1>  (t = $EPOCHREALTIME; the decimal mark may be , under some locales)
+  local label=$1 t0=$2 t1=$3 s0 s1 u0 u1 ms
+  local -a n
+  [ -n "$label" ] && [ -n "$t0" ] && [ -n "$t1" ] || return 0
+  s0=${t0%%[.,]*}; u0=${t0#*[.,]}; s1=${t1%%[.,]*}; u1=${t1#*[.,]}
+  case "$s0$u0$s1$u1" in *[!0-9]*|'') return 0 ;; esac
+  ms=$(( (10#$s1 - 10#$s0) * 1000 + (10#${u1:0:6} - 10#${u0:0:6}) / 1000 ))
+  [ "$ms" -ge 0 ] || return 0
+  [ -d "$_DHX_TM_DIR" ] || mkdir -p "$_DHX_TM_DIR" 2>/dev/null || return 0
+  printf '%s %s\n' "$s1" "$ms" >> "$_DHX_TM_DIR/$label.log" 2>/dev/null || return 0
+  # Builtins only for the bound (no wc/tail spawn): 17 children x 2 spawns was +50 ms per
+  # SessionStart; this shape measured +7 ms over the unsampled wrapper (2026-09-19).
+  mapfile -t n < "$_DHX_TM_DIR/$label.log" 2>/dev/null || return 0
+  if [ "${#n[@]}" -gt 40 ]; then
+    printf '%s\n' "${n[@]: -20}" > "$_DHX_TM_DIR/$label.log.tmp" 2>/dev/null \
+      && mv -f "$_DHX_TM_DIR/$label.log.tmp" "$_DHX_TM_DIR/$label.log" 2>/dev/null
+  fi
+  return 0
+}
+_dhx_child_slow_check() {  # once, after the last child: median of the last N vs the label's budget
+  local f label budget med n
+  [ -d "$_DHX_TM_DIR" ] || return 0
+  for f in "$_DHX_TM_DIR"/*.log; do
+    [ -f "$f" ] || continue
+    label=${f##*/}; label=${label%.log}
+    budget=$(_dhx_child_budget_ms "$label")
+    [ -n "$budget" ] || continue
+    n=$(wc -l < "$f" 2>/dev/null) || continue
+    [ "${n:-0}" -ge "$_DHX_TM_WINDOW" ] || continue
+    # upper median of the last N samples: sort the ms column, take entry N/2+1
+    med=$(tail -n "$_DHX_TM_WINDOW" "$f" 2>/dev/null | awk '{print $2}' | sort -n | sed -n "$((_DHX_TM_WINDOW / 2 + 1))p")
+    case "$med" in ''|*[!0-9]*) continue ;; esac
+    if [ "$med" -ge "$budget" ]; then
+      if mkdir "$_DHX_TM_DIR/$label.slow" 2>/dev/null; then
+        printf '⚠ session-start child %s slow: median %d.%d s over the last %d sessions, budget %d.%d s\n' \
+          "$label" $((med / 1000)) $((med % 1000 / 100)) "$_DHX_TM_WINDOW" $((budget / 1000)) $((budget % 1000 / 100))
+        printf '  › stays silent until the median drops back under budget; samples in %s\n' "$f"
+      fi
+    else
+      rmdir "$_DHX_TM_DIR/$label.slow" 2>/dev/null
+    fi
+  done
+  return 0
+}
 _dhx_child() {
   local label=$1; shift
-  local errf rc first sig
+  local errf rc first sig t0 t1
   errf=$(mktemp "${TMPDIR:-/tmp}/dhx-child-err.XXXXXX" 2>/dev/null) || { "$@" || true; return 0; }
+  t0=${EPOCHREALTIME:-}
   "$@" 2>"$errf"
   rc=$?
+  t1=${EPOCHREALTIME:-}
+  # Fail-open sampling: a probe that sourced _dhx_child alone has no sampler, and that is fine.
+  if declare -F _dhx_child_sample >/dev/null 2>&1 && [ -n "${_DHX_TM_DIR:-}" ]; then
+    _dhx_child_sample "$label" "$t0" "$t1"
+  fi
   [ -s "$errf" ] && cat "$errf" >&2
   if [ "$rc" -ne 0 ]; then
     first=$(head -n1 "$errf" 2>/dev/null | cut -c1-160)
@@ -314,5 +393,8 @@ _dhx_child cc-check-update node /home/dhx/.claude/hooks/cc-check-update.js < /de
 _dhx_child key-coverage bash /home/dhx/.claude/hooks/dhx-key-coverage-audit.sh < /dev/null
 # Phase 14 (DETECT-01): warn when cross-repo PRIMARY is off main.
 printf '%s' "$INPUT" | _dhx_child off-main-detector bash /home/dhx/.claude/hooks/dhx-off-main-detector.sh
+
+# Last: the slow-child median surface over the samples every _dhx_child above just wrote.
+_dhx_child_slow_check
 
 exit 0

@@ -113,7 +113,8 @@ bash_patterns() {
 #   DATA       a rendered data row — including a hook's explanatory hint line
 #              printed beneath its own ⚠ line (session-start.sh's dedup note,
 #              2026-09-14: not a command, not a pointer; it explains why the
-#              ⚠ line above it will not repeat).
+#              ⚠ line above it will not repeat; likewise its slow-child hint,
+#              2026-09-19, which names the samples log — a file, not a command).
 #   SLASH      a Claude slash command, not a shell command.
 #   JSON       a JSON payload line.
 #
@@ -143,6 +144,7 @@ dhx-gsd-drift-surface.sh|SLASH|run /dhx:statusline triad
 dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/
 dhx-key-coverage-audit.sh|DATA|deny edits land in BOTH
 session-start.sh|DATA|repeats of this exact failure stay silent
+session-start.sh|DATA|stays silent until the median drops back under budget
 dhx-ui-vision-guard.sh|JSON|"hookSpecificOutput"
 dhx-ui-vision-guard.sh|JSON|}
 INV

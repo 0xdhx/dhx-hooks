@@ -2,7 +2,8 @@
 # dhx-watch-digest.sh — Phase 6.1 (REQ-CROSS-06) SessionStart surfacer.
 # Patterns: HP-009, HP-015
 # Reads pointer.txt + scans digest.jsonl + emits unsurfaced events to stdout.
-# Atomic-rewrites pointer.txt to highest surfaced entry_id.
+# Atomic-rewrites pointer.txt to the digest's highest entry_id (forward after a surface;
+# BACK to the tail when a corrupt/hand-edited pointer sits ahead of every id, 2026-09-19).
 # Silent if pointer is current (no output -> no SessionStart noise).
 # Load-bearing silent-on-no-deltas property per BACKLOG-INTEGRATION section AI triage layer.
 #
@@ -47,6 +48,7 @@
 #   ⚠ Action required (N): …       awaiting_us inbox      (watchlist.json)
 #   ⚠ N item(s) closed upstream …  upstream-closed drift  (watchlist.json)
 #   [!] digest_corrupt · …         corrupt digest lines
+#   [!] digest_pointer · …         pointer.txt ahead of every digest id (resynced; once)
 #   [M]/[S]/[!]/blank  TAG · #REF · TYPE  + "summary" (rel)  per-event digest delta (2 lines)
 #
 # Suppression: DHX_SKIP_WATCH_DIGEST=1
@@ -82,8 +84,10 @@ case "$PTR" in
 esac
 
 # Spec section Surfacer logic steps 2-4: scan, render, atomic-write pointer.
-# One jq pass over the digest; we capture the max entry_id surfaced for the atomic-rewrite step.
-MAX_SURFACED="$PTR"
+# One jq pass over the digest; its `M` trailer carries the digest's max entry_id and whether the
+# pointer is below / at / above it (DIGEST_REL lt|eq|gt) for the atomic-rewrite step.
+DIGEST_MAX=""
+DIGEST_REL=""
 ANY_SURFACED=0
 CORRUPT_LINES=0
 
@@ -107,39 +111,65 @@ if [ -f "$DIGEST" ]; then
 #   C                        jq parse failure                        -> CORRUPT_LINES++
 #   B                        valid JSON, id present but not ^[0-9]+\z -> CORRUPT_LINES++
 #   <id><TAB><compact row>   digit-string id ABOVE the pointer         -> surfaced branch
+# then, LAST, one trailer when the digest holds at least one digit-string id:
+#   M<TAB><max id><TAB>lt|eq|gt   the digest's max id (raw, as written) and how it stands
+#                                 to the pointer -> the atomic pointer write below
 # and drops (never emits) blank lines, non-object JSON, null/absent ids, and ids <= pointer --
 # exactly the lines the old loop `continue`d over without side effects. Sentinels cannot
-# collide with a data line: a data line always carries a TAB, a sentinel never does, and a
-# compact JSON row never contains a raw TAB or newline (JSON escapes both). `\z` (absolute
-# end), NOT `$`: Oniguruma's `$` matches before a trailing newline, so `"123\n"` would pass
-# `$` and split the tab protocol across two physical lines.
+# collide with a data line: a data line starts with its digit-string id, a sentinel starts
+# with a letter, and a compact JSON row never contains a raw TAB or newline (JSON escapes
+# both). `\z` (absolute end), NOT `$`: Oniguruma's `$` matches before a trailing newline, so
+# `"123\n"` would pass `$` and split the tab protocol across two physical lines.
 #
 # entry_id is a JSON STRING of digits in the live digest (the producer allocates BigInt ids,
 # D-40, and serialises .toString(); 19 digits today), so the id is handled as TEXT throughout:
-# `tostring` reproduces what `jq -r` printed for the old `*[!0-9]*` test, and the pointer
-# compare is an exact digit-string compare (strip leading zeros, longer wins, else
-# lexicographic) -- never a numeric compare. Invariant it relies on: $PTR is a non-empty digit
-# string (coerced above) that bash can compare (<= 19 digits); the jq compare only keeps
-# already-seen rows off the pipe (measured 2026-09-14: 0.04 s vs 0.20 s with 1,403 seen rows),
-# and the bash `-le` below still runs on every row that arrives. `tojson` here is
-# byte-identical to the `jq -c '.'` the old loop handed the render branch.
+# `tostring` reproduces what `jq -r` printed for the old `*[!0-9]*` test, and EVERY compare --
+# row against pointer, digest max against pointer -- is this pass's exact digit-string compare
+# (strip leading zeros, longer wins, else lexicographic), never a numeric one. Bash performs
+# no integer comparison on an id or the pointer anywhere below (2026-09-19; the `-le` "belt"
+# the 2026-09-14 rewrite kept was the one place representation still mattered: a 20-digit
+# id or pointer made `[` error on every row -- a permanent re-render storm on the old loop,
+# permanent silence on the new one). The `M` trailer is what makes the pointer write
+# representation-free: `gt` = something surfaced, pointer advances to the max; `eq` = current,
+# no write; `lt` = the pointer is AHEAD of every id in the file (a corrupt or hand-edited
+# pointer.txt, or a digest restored from an older copy) -- resync it to the file's max, render
+# nothing, and say so once via `[!] digest_pointer` (the rows in that gap are unrecoverable
+# under any rule; the level-triggered inbox sections below do not depend on the pointer).
+# Measured 2026-09-19 before choosing resync over the "coerce to 0, re-surface everything
+# once" alternative: pointer 0 on a copy of the live digest cost 34 s and 217 KB of stdout
+# into model context (1,536 rows), 94 s at 5k lines, 676 s at 20k -- past CC's 600 s hook
+# timeout, i.e. killed before its own pointer write and therefore never healing at all.
+# `tojson` here is byte-identical to the `jq -c '.'` the old loop handed the render branch.
 if SCAN=$(jq -Rs -r --arg p "$PTR" '
   def norm: sub("^0+(?=[0-9])"; "");
+  def below($a; $b): ($a | length) < ($b | length) or (($a | length) == ($b | length) and $a < $b);
   ($p | norm) as $pn
-  | split("\n")[:-1][]
-  | if . == "" then empty else
-    (try (fromjson | [1, .]) catch [0]) as $e
-    | if $e[0] == 0 then "C" else
-        ($e[1] | (try .entry_id catch null) // empty | tostring) as $id
-        | if $id == "" then empty
-          elif ($id | test("^[0-9]+\\z") | not) then "B"
-          else ($id | norm) as $n
-            | if ($n | length) < ($pn | length)
-                 or (($n | length) == ($pn | length) and $n <= $pn) then empty
-              else $id + "\t" + ($e[1] | tojson) end
-          end
-      end
-    end' "$DIGEST" 2>/dev/null); then
+  # foreach, not a collected array: state is one row plus the running max, so memory stays
+  # ~2x the file (an array of parsed rows measured 2.6x, 379 MB at 100k lines). The null
+  # sentinel appended to the line stream is where the M trailer is emitted from the state.
+  | foreach ((split("\n")[:-1][] | select(. != "")), null) as $line
+      ({raw: null, n: null, out: null};
+       if $line == null then
+         .out = (if .raw == null then null else
+                   "M\t" + .raw + "\t"
+                   + (if below(.n; $pn) then "lt" elif .n == $pn then "eq" else "gt" end) end)
+       else
+         ($line | (try (fromjson | [1, .]) catch [0])) as $e
+         | if $e[0] == 0 then .out = "C" else
+             ($e[1] | (try .entry_id catch null)) as $idv
+             | if ($idv == null or $idv == false) then .out = null
+               else ($idv | tostring) as $id
+               | if $id == "" then .out = null
+                 elif ($id | test("^[0-9]+\\z") | not) then .out = "B"
+                 else ($id | norm) as $n
+                   | (if .n == null or below(.n; $n) then .raw = $id | .n = $n else . end)
+                   | .out = (if below($n; $pn) or $n == $pn then null
+                             else $id + "\t" + ($e[1] | tojson) end)
+                 end
+               end
+           end
+       end;
+       .out // empty)' "$DIGEST" 2>/dev/null); then
   :
 else
   # jq itself failed (missing/broken binary, unreadable digest): the old per-line loop counted
@@ -161,6 +191,10 @@ while IFS= read -r LINE; do
   case "$LINE" in
     '')  continue ;;   # the empty-$SCAN herestring yields one blank iteration
     C|B) CORRUPT_LINES=$((CORRUPT_LINES + 1)); continue ;;
+    M$'\t'*)  # the trailer: digest max + its standing to the pointer (see the jq comment)
+      DIGEST_MAX=${LINE#M$'\t'}; DIGEST_REL=${DIGEST_MAX#*$'\t'}; DIGEST_MAX=${DIGEST_MAX%%$'\t'*}
+      case "$DIGEST_REL" in lt|eq|gt) ;; *) DIGEST_MAX=""; DIGEST_REL="" ;; esac
+      continue ;;
   esac
   # Narrowed corrupt predicate (surfacing-fidelity brief 2026-06-13): a valid-JSON line whose
   # entry_id is null/absent is an INTENTIONAL audit non-delta -- the driver (dhx-watch-driver.cjs)
@@ -171,15 +205,10 @@ while IFS= read -r LINE; do
   # (B, non-numeric), which stay loud (AC-B2: narrow the predicate, do not blind it).
   EID=${LINE%%$'\t'*}
   PARSED=${LINE#*$'\t'}
-  # Skip if entry_id <= pointer (already surfaced; bash arithmetic is fine for large ints).
-  # The jq pass already dropped these; this stays as the documented predicate + belt.
-  if [ "$EID" -le "$PTR" ]; then
-    continue
-  fi
+  # Every row that arrives is above the pointer: the jq pass is the sole predicate, and the
+  # pointer's next value is the `M` trailer's max, so no `[ -le ]`/`[ -gt ]` runs here (a
+  # bash integer test on a 20-digit id errors; see the jq comment, 2026-09-19).
   ANY_SURFACED=1
-  if [ "$EID" -gt "$MAX_SURFACED" ]; then
-    MAX_SURFACED="$EID"
-  fi
   # Extract render fields
   TAG=$(printf '%s' "$PARSED" | jq -r '.tag // "unknown"' 2>/dev/null)
   URL=$(printf '%s' "$PARSED" | jq -r '.url // ""' 2>/dev/null)
@@ -287,6 +316,17 @@ fi
 CORRUPT_WARNING=""
 if [ "$CORRUPT_LINES" -gt 0 ]; then
   CORRUPT_WARNING="[!] digest_corrupt · skipped ${CORRUPT_LINES} unparseable line(s)
+"
+fi
+# Pointer-ahead notice (2026-09-19) -- once, in the session that resyncs it (the write is
+# below, after the printf). Sibling of digest_corrupt: an integrity fault in the state, not
+# a per-event line. The pointer is quoted length-bounded (a corrupt pointer.txt can be
+# arbitrarily long, and this line must stay one line): 12 digits or fewer print whole,
+# longer ones as `<len> digits, <first4>…<last4>`.
+POINTER_WARNING=""
+if [ "$DIGEST_REL" = "lt" ]; then
+  if [ "${#PTR}" -le 12 ]; then PTR_SHOWN="$PTR"; else PTR_SHOWN="${#PTR} digits, ${PTR:0:4}…${PTR: -4}"; fi
+  POINTER_WARNING="[!] digest_pointer · pointer.txt (${PTR_SHOWN}) was ahead of every digest id; resynced to ${DIGEST_MAX}
 "
 fi
 
@@ -511,7 +551,10 @@ fi
 # section is swallowed before the printf below.
 if [ "$ANY_SURFACED" -eq 0 ] \
   && [ -z "$TIMER_STALE_LINE" ] && [ -z "$POLLS_DEGRADED_LINE" ] && [ -z "$FAILING_ITEMS_LINE" ] \
-  && [ -z "$ACTION_BLOCK" ] && [ -z "$PR_READY_BLOCK" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ]; then
+  && [ -z "$ACTION_BLOCK" ] && [ -z "$PR_READY_BLOCK" ] && [ -z "$DRIFT_LINE" ] && [ -z "$CORRUPT_WARNING" ] \
+  && [ -z "$POINTER_WARNING" ]; then
+  # A pointer that is merely ahead (DIGEST_REL=lt) never reaches here: POINTER_WARNING is
+  # non-empty, so the notice prints and the resync below runs.
   exit 0
 fi
 
@@ -526,14 +569,17 @@ fi
 # both outrank the informational drift line, but answering a maintainer who is waiting outranks
 # starting work nobody is blocked on. The two are mutually exclusive by construction (see the
 # partition note on the PR-ready block), so the ordering never splits one item across both.
-printf '%s%s%s%s%s%s%s%s' \
+printf '%s%s%s%s%s%s%s%s%s' \
   "$TIMER_STALE_LINE" "$POLLS_DEGRADED_LINE" "$FAILING_ITEMS_LINE" \
-  "$ACTION_BLOCK" "$PR_READY_BLOCK" "$DRIFT_LINE" "$CORRUPT_WARNING" "$RENDER_OUT"
+  "$ACTION_BLOCK" "$PR_READY_BLOCK" "$DRIFT_LINE" "$CORRUPT_WARNING" "$POINTER_WARNING" "$RENDER_OUT"
 
-# Spec section Surfacer logic step 4: atomic-write new pointer.
-if [ "$MAX_SURFACED" != "$PTR" ]; then
+# Spec section Surfacer logic step 4: atomic-write new pointer. The next pointer is always
+# the digest's max id (the `M` trailer): `gt` -- rows surfaced, advance; `lt` -- the pointer
+# was ahead of the file, move it BACK to the tail (the resync the notice above announced);
+# `eq` or no trailer (empty digest, no digit-string id, a failed jq) -- leave it alone.
+if [ -n "$DIGEST_MAX" ] && [ "$DIGEST_REL" != "eq" ]; then
   PTR_TMP="$POINTER.tmp"
-  printf '%s' "$MAX_SURFACED" > "$PTR_TMP"
+  printf '%s' "$DIGEST_MAX" > "$PTR_TMP"
   mv "$PTR_TMP" "$POINTER"
 fi
 
