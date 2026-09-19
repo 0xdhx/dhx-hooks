@@ -56,6 +56,11 @@
             "type": "command",
             "command": "bash \"$HOME/.claude/hooks/dhx-schedule-prompt.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-duplicate-launch.sh\"",
+            "timeout": 5
           }
         ]
       }
