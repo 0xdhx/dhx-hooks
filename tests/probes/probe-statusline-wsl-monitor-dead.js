@@ -31,7 +31,12 @@
 //                                          suppressed like warming. Stamp past the allowance
 //                                          but alive, ONE log stale + sibling fresh →
 //                                          `wsl:pressure-unfinished` / `wsl:census-unfinished`
-//                                          (the producer, not the timer). Both stale → monitor.
+//                                          (the producer, not the timer). BOTH stale beside an
+//                                          alive stamp → `wsl:monitor-unfinished` (round 2,
+//                                          2026-09-19: the service is ONE process, so a hang
+//                                          most plausibly hangs whole — neither log written).
+//                                          Plain `wsl:monitor-dead` is now reachable ONLY with
+//                                          a dead / absent / previous-boot stamp.
 //   - boot grace                         → logs hours old but uptime < 8min → SILENT. This is
 //                                          the measured post-boot false positive: WSL2 booted
 //                                          2026-08-13 07:40:57, first pressure.log line landed
@@ -264,17 +269,28 @@ function check(name, ok, detail) {
     k5(STALE, STALE2, 490 * S, true, 359 * S) === 'inflight -', `got ${k5(STALE, STALE2, 490 * S, true, 359 * S)}`);
   check('classify5: … mirror order → inflight',
     k5(STALE2, STALE, 490 * S, true, 359 * S) === 'inflight -', `got ${k5(STALE2, STALE, 490 * S, true, 359 * S)}`);
-  check('classify5: stamp age 360 s (= allowance) → monitor 5760 (the failure verdict; both stale is NOT unfinished)',
-    k5(STALE, STALE2, 490 * S, true, ALLOW_MS) === 'monitor 5760', `got ${k5(STALE, STALE2, 490 * S, true, ALLOW_MS)}`);
-  check('classify5: … mirror order → monitor 5760 (coverage age = the NEWER log, either position)',
-    k5(STALE2, STALE, 490 * S, true, ALLOW_MS) === 'monitor 5760', `got ${k5(STALE2, STALE, 490 * S, true, ALLOW_MS)}`);
+  check('classify5: stamp age 360 s (= allowance) → monitor-unfinished 5760 (the failure verdict: the run had its time and neither log moved)',
+    k5(STALE, STALE2, 490 * S, true, ALLOW_MS) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE2, 490 * S, true, ALLOW_MS)}`);
+  check('classify5: … mirror order → monitor-unfinished 5760 (coverage age = the NEWER log, either position)',
+    k5(STALE2, STALE, 490 * S, true, ALLOW_MS) === 'monitor-unfinished 5760', `got ${k5(STALE2, STALE, 490 * S, true, ALLOW_MS)}`);
   // --- unfinished arms: stamp alive (< DEAD) and past the allowance, ONE stale + ONE fresh ---
   check('classify5: stamp 600 s + pressure stale 5760 + census fresh 60 → pressure-unfinished 5760',
     k5(STALE, FRESH, UP, true, 600 * S) === 'pressure-unfinished 5760', `got ${k5(STALE, FRESH, UP, true, 600 * S)}`);
   check('classify5: stamp 600 s + pressure fresh 60 + census stale 5760 → census-unfinished 5760',
     k5(FRESH, STALE, UP, true, 600 * S) === 'census-unfinished 5760', `got ${k5(FRESH, STALE, UP, true, 600 * S)}`);
-  check('classify5: stamp 600 s + BOTH stale → monitor (the timer really is the story)',
-    k5(STALE, STALE, UP, true, 600 * S) === 'monitor 5760', `got ${k5(STALE, STALE, UP, true, 600 * S)}`);
+  // --- monitor-unfinished (round 2, 2026-09-19): stamp alive + past the allowance + BOTH stale.
+  // --- The reviewer's counterexample: a fresh stamp proves the scheduler is fine, so sending
+  // --- the operator to restart the timer was wrong. Age = the NEWER log, as 'monitor' does.
+  check('classify5: stamp 600 s + BOTH stale → monitor-unfinished 5760 (the producer hung whole; the timer is fine)',
+    k5(STALE, STALE, UP, true, 600 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE, UP, true, 600 * S)}`);
+  check('classify5: … asymmetric (5760/17100) → monitor-unfinished 5760 (age = the NEWER log)',
+    k5(STALE, STALE2, UP, true, 600 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE2, UP, true, 600 * S)}`);
+  check('classify5: stamp 6000 s (DEAD) + BOTH stale → monitor 5760 (monitor-dead stays reachable: the timer itself has not fired)',
+    k5(STALE, STALE, UP, true, 6000 * S) === 'monitor 5760', `got ${k5(STALE, STALE, UP, true, 6000 * S)}`);
+  check('classify5: stamp 5699 s (dead − 1) + BOTH stale → monitor-unfinished 5760 (boundary: stamp still alive)',
+    k5(STALE, STALE, UP, true, 5699 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE, UP, true, 5699 * S)}`);
+  check('classify5: stamp 5700 s (= dead) + BOTH stale → monitor 5760 (boundary: stamp dead, the timer is the story)',
+    k5(STALE, STALE, UP, true, 5700 * S) === 'monitor 5760', `got ${k5(STALE, STALE, UP, true, 5700 * S)}`);
   check('classify5: stamp 6000 s (stamp itself stale) + pressure stale + census fresh → pressure (today\'s verdict)',
     k5(STALE, FRESH, UP, true, 6000 * S) === 'pressure 5760', `got ${k5(STALE, FRESH, UP, true, 6000 * S)}`);
   // --- contract edges the brief fixes ---
@@ -325,6 +341,8 @@ function check(name, ok, detail) {
     JSON.stringify(composeWslFront({ trip: 'TRIP', monitor: { token: '', kind: 'inflight' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify(['TRIP']));
   check('arbitrate: monitor-missing → both suppressed (both producers implicated)',
     JSON.stringify(c('monitor-missing')) === JSON.stringify(['TRIP', 'DEAD']));
+  check('arbitrate: monitor-unfinished → both suppressed (both producers implicated — the one process hung whole)',
+    JSON.stringify(c('monitor-unfinished')) === JSON.stringify(['TRIP', 'DEAD']));
   check('arbitrate: pressure-missing → probe-broken suppressed, cap-bypass KEPT',
     JSON.stringify(c('pressure-missing')) === JSON.stringify(['TRIP', 'DEAD', 'BYPASS']));
   check('arbitrate: pressure-unfinished → probe-broken suppressed, cap-bypass KEPT',
@@ -435,10 +453,13 @@ function check(name, ok, detail) {
   // count. 7min, not 1min (re-pinned 2026-09-19): a 1-min-old stamp is INSIDE the 6-min
   // run-completion allowance and now classifies `inflight` (that fixture lives in the inflight
   // render block below); the assertion here is "stamp fired ends the grace", which needs the
-  // stamp past the allowance but still younger than uptime.
+  // stamp past the allowance but still younger than uptime. The verdict that renders is
+  // `wsl:monitor-unfinished` (round 2): an alive stamp beside two stale logs is the producer
+  // that hung whole, not a dead timer — `wsl:monitor-dead` needs a stamp that itself is dead,
+  // which a stamp fired inside a 490 s uptime cannot be.
   const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(490 * 1000), stampMin: 7 });
-  check('stamp fired this boot + stale logs → ⚠ wsl:monitor-dead renders (grace ended early)',
-    livenessToken(out).startsWith('wsl:monitor-dead'),
+  check('stamp fired this boot + stale logs → ⚠ wsl:monitor-unfinished renders (grace ended early; alive stamp → not monitor-dead)',
+    livenessToken(out).startsWith('wsl:monitor-unfinished'),
     `got ${JSON.stringify(livenessToken(out))}`);
 }
 {
@@ -514,20 +535,21 @@ function check(name, ok, detail) {
 }
 
 // --- NEGATIVE ARM (a): the same fixture with a stamp newer than boot. The grace ends, the
-// --- stale logs become real evidence, and today's behaviour returns: the RED liveness token
-// --- renders. Without this, "no liveness token" above is satisfied by a wrapper that never
-// --- renders one at all. Re-pinned 2026-09-19 from (5 min uptime, 1 min stamp) to (8 min
-// --- uptime, 7 min stamp): the stamp must be past the 6-min run-completion allowance to
-// --- assert a verdict, and still younger than uptime to count as fired this boot; 8 min is
-// --- still inside the 12-min grace ceiling, so the stamp is what ends the grace.
+// --- stale logs become real evidence, and a RED liveness verdict renders. Without this, "no
+// --- liveness token" above is satisfied by a wrapper that never renders one at all. Re-pinned
+// --- 2026-09-19 from (5 min uptime, 1 min stamp) to (8 min uptime, 7 min stamp): the stamp
+// --- must be past the 6-min run-completion allowance to assert a verdict, and still younger
+// --- than uptime to count as fired this boot; 8 min is still inside the 12-min grace ceiling,
+// --- so the stamp is what ends the grace. The verdict is `wsl:monitor-unfinished` (round 2):
+// --- a 7-min stamp is alive, so two stale logs are the run that hung, not a dead timer.
 {
   const out = runWith({
     pressureMin: 540, censusMin: 540, uptimeMs: String(8 * 60 * 1000), stampMin: 7,
     trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
   });
   const ok = out.includes(TRIP_TOKEN(447))
-    && livenessToken(out).startsWith('wsl:monitor-dead') && !out.includes(MONITOR_SIGIL);
-  check('warming NEGATIVE ARM: stamp newer than boot + stale logs → grace over, ⚠ wsl:monitor-dead renders', ok,
+    && livenessToken(out).startsWith('wsl:monitor-unfinished') && !out.includes(MONITOR_SIGIL);
+  check('warming NEGATIVE ARM: stamp newer than boot + stale logs → grace over, ⚠ wsl:monitor-unfinished renders', ok,
     ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
 }
 
@@ -585,6 +607,42 @@ function check(name, ok, detail) {
     && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && out.includes(BYPASS_TOKEN)
     && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
   check('render: stamp 10 min + pressure stale + census fresh → ⚠ wsl:pressure-unfinished 1h36m; broken suppressed, bypass CURRENT, trip renders', ok,
+    ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
+}
+
+// --- monitor-unfinished (round 2, 2026-09-19): stamp fired 10 min ago (alive, past the
+// --- allowance), BOTH logs 96 min stale, all three flags. The reviewer's counterexample —
+// --- against the round-1 wrapper this rendered `wsl:monitor-dead 1h36m` and the pull twin sent
+// --- the operator to restart a timer that had demonstrably just fired. Token carries the NEWER
+// --- log age exactly as monitor-dead does; broken AND bypass SUPPRESSED (both producers
+// --- implicated: one process, hung whole); trip renders.
+{
+  const out = runWith({
+    pressureMin: 96, censusMin: 96, stampMin: 10,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const tok = livenessToken(out);
+  const ok = tok === 'wsl:monitor-unfinished 1h36m'
+    && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('render: stamp 10 min + BOTH stale → ⚠ wsl:monitor-unfinished 1h36m; broken AND bypass suppressed, trip renders', ok,
+    ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
+}
+
+// --- monitor-dead CONTROL: the same fixture with the stamp itself DEAD (100 min = 6000 s ≥ the
+// --- 95-min threshold, still younger than the 72 h uptime so it counts as fired this boot).
+// --- `wsl:monitor-dead` must stay reachable — this is the timer's story, and the reviewer must
+// --- be able to see the round-2 arm did not swallow it. Same suppression, same NEWER-log age.
+{
+  const out = runWith({
+    pressureMin: 96, censusMin: 96, stampMin: 100,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const tok = livenessToken(out);
+  const ok = tok === 'wsl:monitor-dead 1h36m'
+    && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('render (control): stamp 100 min (DEAD) + BOTH stale → ⚠ wsl:monitor-dead 1h36m still renders; both flags suppressed, trip renders', ok,
     ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
 }
 

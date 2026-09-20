@@ -1456,8 +1456,9 @@ const WSL_MONITOR_BOOT_GRACE_MS = 12 * 60 * 1000;
 // more expressive than either alone, and since 2026-09-19 the classifier draws on it twice:
 // the stamp's AGE under WSL_MONITOR_RUN_ALLOWANCE_MS with a non-fresh log is 'inflight' (the
 // run has not had time to finish — no verdict), and a stamp older than the allowance but
-// younger than the dead threshold beside ONE stale log is that producer's `*-unfinished`
-// (the timer is fine; the producer ran and did not complete).
+// younger than the dead threshold beside a stale log is an `*-unfinished` verdict — that
+// producer's when the sibling is fresh, `monitor-unfinished` when BOTH are stale (the timer is
+// fine; the run started and never reached its writes).
 //
 // Bonus the /proc/uptime anchor could never have: this path is under $HOME, so makeFakeHome()
 // fixtures drive it directly — the exact limitation readUptimeMs() documents below.
@@ -1521,17 +1522,28 @@ function wslLogAgeMs(file, now) {
 //     sibling FRESH         → 'pressure-missing' / 'census-missing' (the fresh sibling IS
 //                                          the install evidence; no age — none exists)
 //   5 stamp age < dead,
+//     both stale            → 'monitor-unfinished' (the timer is fine — the ONE process that
+//                                          is wsl-pressure.service started and hung whole,
+//                                          so neither log moved; coverage age = the NEWER
+//                                          log, as for 'monitor')
 //     one stale, one fresh  → 'pressure-unfinished' / 'census-unfinished' (the timer is
 //                                          fine — the producer ran and did not complete;
 //                                          carries that producer's own log age)
-//   6 today's verdicts      → 'monitor'   (both stale — coverage age = the NEWER log)
+//   6 today's verdicts      → 'monitor'   (both stale AND the stamp is dead / absent /
+//                                          from a previous boot — the timer itself has not
+//                                          fired within the dead threshold, so it genuinely
+//                                          IS the timer's story; coverage age = the NEWER log)
 //                             'pressure'  (trip + probe-broken flags unvouched)
 //                             'census'    (claude-cap-bypass flag unvouched)
 //                             null        (silent)
 // Consequences that are deliberate, not gaps: one log missing beside a STALE sibling falls
-// through to step 6 (the stale sibling's verdict); both logs stale beside an alive stamp is
-// 'monitor', never `*-unfinished` (the timer really is the story); a stamp from a PREVIOUS
-// boot is not install evidence.
+// through to step 6 (the stale sibling's verdict); a stamp from a PREVIOUS boot is not
+// install evidence. Round 2 (2026-09-19): the first cut sent both-stale + alive-stamp to
+// 'monitor' on the theory that "the timer really is the story" — refuted at close review,
+// because a 600 s stamp proves the scheduler fired and the pull surface still told the
+// operator to restart it. `wsl-pressure-check.sh` runs `claude-cap-census.sh` as a CHILD, so
+// a producer that hangs most plausibly hangs whole and writes neither log: that is
+// 'monitor-unfinished', and 'monitor' is now reachable only without an alive stamp.
 // Has wsl-pressure.timer fired since THIS boot? Compares the systemd stamp's mtime against
 // boot wall-time (now - uptime). Own try/catch → false, and false means "grace still applies",
 // which is safe precisely because the grace is now ceiling-bounded: an absent stamp (timer
@@ -1615,14 +1627,21 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   if (P === 'missing' && C === 'fresh') return { kind: 'pressure-missing', ageMs: null };
   if (C === 'missing' && P === 'fresh') return { kind: 'census-missing', ageMs: null };
   // Step 5 — ran but did not finish: the stamp is alive (younger than the dead threshold) and
-  // past the allowance, and exactly ONE producer's log is stale while the other is fresh. The
-  // timer is fine; the named producer ran and never reached its write. Carries that
-  // producer's own log age. Both stale beside an alive stamp is NOT this — it is 'monitor'
-  // below, because then the timer really is the story.
+  // past the allowance, and at least one producer's log is stale. The timer is fine — it
+  // fired within the threshold — so whatever is stale is the RUN's failure, not the scheduler's.
+  // Both stale → 'monitor-unfinished': wsl-pressure.service is one process (the census runs as
+  // the pressure script's child), so a hang most plausibly takes both writes with it; the age
+  // is the NEWER log, the same coverage-age rule and reason as 'monitor' below. One stale
+  // beside a fresh sibling → that producer's own `*-unfinished`, carrying its own log age.
+  // The three predicates are disjoint; the both-stale arm is first only for readability.
   const stampAlive = stampAge !== null && stampAge < WSL_MONITOR_DEAD_MS;
+  if (stampAlive && P === 'stale' && C === 'stale') return { kind: 'monitor-unfinished', ageMs: Math.min(pressureAgeMs, censusAgeMs) };
   if (stampAlive && P === 'stale' && C === 'fresh') return { kind: 'pressure-unfinished', ageMs: pressureAgeMs };
   if (stampAlive && C === 'stale' && P === 'fresh') return { kind: 'census-unfinished', ageMs: censusAgeMs };
-  // Step 6 — today's verdicts.
+  // Step 6 — today's verdicts. 'monitor' is reachable here only with a stamp that is dead,
+  // absent, or from a previous boot (an alive stamp beside two stale logs left at step 5), so
+  // it now means exactly what its token says: both producers dark AND the timer itself has
+  // not fired within the dead threshold.
   const p = P === 'stale';
   const c = C === 'stale';
   // NEWER of the two, not older. The token renders `wsl:monitor-dead <age>`, and the pull
@@ -1658,6 +1677,7 @@ const WSL_MONITOR_LABELS = {
   'monitor-missing':     'wsl:monitor-logs-missing',
   'pressure-unfinished': 'wsl:pressure-unfinished',
   'census-unfinished':   'wsl:census-unfinished',
+  'monitor-unfinished':  'wsl:monitor-unfinished',
 };
 
 // Producer-liveness reader. RED — same imminent-OOM severity class as the trip and
@@ -1722,11 +1742,11 @@ function readWslMonitorState() {
 //     → suppress BOTH, for the same reason as warming: the run that would re-vouch the flags
 //     is still in progress. No token of its own either.
 //   - `*-missing` / `*-unfinished` → suppress by PRODUCER exactly like the three `-dead`
-//     kinds: the pressure family (monitor, monitor-missing, pressure, pressure-missing,
-//     pressure-unfinished) un-vouches probe-broken; the census family (monitor,
-//     monitor-missing, census, census-missing, census-unfinished) un-vouches cap-bypass. The
-//     table is keyed on `kind`, never on per-producer status — same as the bash twin's
-//     wml_producer_stale / wml_stale_marker.
+//     kinds: the pressure family (monitor, monitor-missing, monitor-unfinished, pressure,
+//     pressure-missing, pressure-unfinished) un-vouches probe-broken; the census family
+//     (monitor, monitor-missing, monitor-unfinished, census, census-missing,
+//     census-unfinished) un-vouches cap-bypass. The table is keyed on `kind`, never on
+//     per-producer status — same as the bash twin's wml_producer_stale / wml_stale_marker.
 // The suppressed detail is not lost — the /dhx:infra pull surface reports it as "last known,
 // stale" (or "awaiting" for warming / inflight). Push shows the actionable now-state; pull
 // carries the forensics.
@@ -1740,8 +1760,9 @@ function composeWslFront({ trip, monitor, broken, bypass }) {
   const kind = monitor && monitor.kind;
   // 'warming' and 'inflight' suppress BOTH — unvouched-because-nothing-has-run-yet (or the run
   // is still going), not unvouched-because-the-producer-is-dead. Same suppression, earlier
-  // cause. 'monitor' / 'monitor-missing' suppress both because both producers are implicated.
-  const both = kind === 'warming' || kind === 'inflight' || kind === 'monitor' || kind === 'monitor-missing';
+  // cause. 'monitor' / 'monitor-missing' / 'monitor-unfinished' suppress both because both
+  // producers are implicated (unfinished: the one process hung whole, neither log written).
+  const both = kind === 'warming' || kind === 'inflight' || kind === 'monitor' || kind === 'monitor-missing' || kind === 'monitor-unfinished';
   const pressureStale = both || kind === 'pressure' || kind === 'pressure-missing' || kind === 'pressure-unfinished';
   const censusStale   = both || kind === 'census'   || kind === 'census-missing'   || kind === 'census-unfinished';
   if (broken && !pressureStale) out.push(broken);
