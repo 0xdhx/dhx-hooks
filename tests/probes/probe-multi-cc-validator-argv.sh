@@ -19,9 +19,11 @@
 # without its rc. Both shapes are asserted here so neither reading can regress.
 #
 # Shapes (all against a fixture tree holding one valid 9.9.9 cell):
-#   accepted : `9.9.9` -> 0            `--all` -> 0          `-h` -> 0
+#   accepted : `9.9.9` -> 0            `--all` -> 0          `-h` / `--help` -> 0
 #   refused  : `--verbose` -> 2        `-v` -> 2             `abc` -> 2
 #              `--all --verbose` -> 2  `9.9.9 --verbose` -> 2
+#              `1.2` -> 2  `1.2.3.4` -> 2  (exactly three components — the
+#              close-gate reviewer's round-1 counterexamples, 2026-09-19)
 #              `1.2.3` (absent dir) -> 2 (D-24, pre-existing)
 #   each refusal prints a `usage:` line on stderr.
 #
@@ -69,6 +71,7 @@ echo "=== accepted shapes ==="
 run "$VER";  assert "explicit version with a valid cell -> 0"        "$([[ $RC -eq 0 ]] && echo true || echo false)"
 run --all;   assert "--all -> 0"                                     "$([[ $RC -eq 0 ]] && echo true || echo false)"
 run -h;      assert "-h -> 0"                                        "$([[ $RC -eq 0 ]] && echo true || echo false)"
+run --help;  assert "--help -> 0 (the long alias, accepted since D-24)" "$([[ $RC -eq 0 ]] && echo true || echo false)"
 
 echo "=== refused shapes (each: rc 2 + usage line) ==="
 refused() {
@@ -83,6 +86,8 @@ refused "non-version positional 'abc'"    abc
 refused "--all --verbose (trailing flag)" --all --verbose
 refused "$VER --verbose (trailing flag)"  "$VER" --verbose
 refused "three args"                      "$VER" "$VER" "$VER"
+refused "two-component '1.2'"             1.2
+refused "four-component '1.2.3.4'"        1.2.3.4
 
 # The one pre-existing exit-2 path: a well-formed version with no dir. Kept
 # distinct from the usage class — its message names the dir, not the usage.
@@ -97,6 +102,21 @@ sed '/^if (( \$# > 1 )); then$/,/^fi$/d' "$T/scripts/verify-multi-cc-results.sh"
 PRE_RC=$(bash "$T/scripts/pre-fix.sh" --all --verbose >/dev/null 2>&1; echo $?)
 assert "negative control: without the argc guard, --all --verbose -> 0 (the pre-fix false clean)" \
   "$([[ $PRE_RC -eq 0 ]] && echo true || echo false)"
+
+# Negative control for the component-count class: a copy carrying the round-1
+# regex (`^[0-9]+(\.[0-9]+)+$`) must ACCEPT `1.2.3.4` against a valid fixture
+# dir of that name — the shape the close-gate reviewer produced.
+mkdir -p "$T/tests/probes/.results/v1.3-multi-cc-ver/1.2.3.4"
+sed "s/\"cc_version\":\"$VER\"/\"cc_version\":\"1.2.3.4\"/" \
+  "$T/tests/probes/.results/v1.3-multi-cc-ver/$VER/probe-known-marketplaces-natural-heal.json" \
+  > "$T/tests/probes/.results/v1.3-multi-cc-ver/1.2.3.4/probe-known-marketplaces-natural-heal.json"
+sed 's/\^\[0-9\]+\\\.\[0-9\]+\\\.\[0-9\]+\$/^[0-9]+(\\.[0-9]+)+$/' "$T/scripts/verify-multi-cc-results.sh" > "$T/scripts/pre-fix-regex.sh"
+grep -q '(\\.\[0-9\]+)+\$' "$T/scripts/pre-fix-regex.sh" || echo "WARN: regex mutation did not apply"
+PRE2_RC=$(bash "$T/scripts/pre-fix-regex.sh" 1.2.3.4 >/dev/null 2>&1; echo $?)
+assert "negative control: with the round-1 regex, 1.2.3.4 -> 0 (the reviewer's counterexample)" \
+  "$([[ $PRE2_RC -eq 0 ]] && echo true || echo false)"
+run 1.2.3.4
+assert "  ...and the fixed script refuses the same dir -> 2" "$([[ $RC -eq 2 ]] && echo true || echo false)"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

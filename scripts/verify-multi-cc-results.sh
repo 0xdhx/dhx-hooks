@@ -30,9 +30,11 @@
 #   bash scripts/verify-multi-cc-results.sh 2.1.140     # explicit version
 #   bash scripts/verify-multi-cc-results.sh --all       # every <cc-ver>/ dir
 #
-# Argv discipline (2026-09-19): the version positional must look like a
-# version (`^[0-9]+(\.[0-9]+)+$`); any other `-`-prefixed token is an unknown
-# option; a second argument is an error. All three exit 2 with a usage line.
+# Argv discipline (2026-09-19): the version positional must be exactly three
+# numeric components (`^[0-9]+\.[0-9]+\.[0-9]+$` — the same shape
+# resolve_active_cc extracts, and the only shape a corpus dir has); any
+# `-`-prefixed token other than --all / -h / --help is an unknown option; a
+# second argument is an error. All three exit 2 with a usage line.
 # Before this, `--all --verbose` and `2.1.278 --verbose` silently DROPPED the
 # trailing token and exited 0 — a flag-as-positional false clean on the one
 # command an adoption run reads as "corpus valid" (cross-repo 2.1.278 adoption
@@ -292,8 +294,8 @@ case "${1:-}" in
     usage_error "unknown option: $1"
     ;;
   *)
-    if [[ ! "$1" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
-      usage_error "version positional must look like N.N.N, got: $1"
+    if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      usage_error "version positional must be exactly N.N.N, got: $1"
     fi
     MODE="explicit"
     TARGET_VERSION="$1"
