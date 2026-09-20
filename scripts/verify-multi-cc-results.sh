@@ -189,6 +189,19 @@ validate_dir() {
       fails=$((fails+1))
     fi
 
+    # NOTE, not an assertion (ruling 2026-09-19, docs/decisions.md): a cell whose
+    # cell_outcome is setup_failure is one whose producer could not launch the
+    # binary at all (2.1.275: cell1_rc=127, every installed-plugins cell, see
+    # binary_attribution=no_producing_binary). It stays under `ambiguous` — the
+    # two provenance fields already say "not measured, and why" — and it is
+    # PRINTED, never refused: the cell is the audit trail that a run happened
+    # and could not launch, which a refusal would only push someone to delete.
+    # Assertion 5 already stops it being cited as stable. Deliberately not the
+    # "(in <file>)" suffix, which run-probes.sh parses as a finding.
+    if [[ "$(jq -r '.observations.cell_outcome // .cell_outcome // empty' "$f" 2>/dev/null)" == "setup_failure" ]]; then
+      echo "verify-multi-cc-results: NOTE $cc cell $(basename "$f" .json) is setup_failure — no producing binary; not a measurement, not a failure: $f" >&2
+    fi
+
     # Assertion 2 (LOOSENED 2026-05-26 — allow-list RETIRED): cc_version_match is now
     # an INFORMATIONAL corpus-membership signal, NOT a stale-anchor gate. A NEW corpus
     # cell with a decisive (non-ambiguous) conclusion legitimately carries
