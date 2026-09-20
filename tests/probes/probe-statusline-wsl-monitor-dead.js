@@ -20,8 +20,18 @@
 //   - pressure log stale only            → RED `⚠ wsl:pressure-dead <age>`
 //   - census log stale only              → RED `⚠ wsl:census-dead <age>`
 //   - both logs fresh                    → SILENT
-//   - both logs ABSENT                   → SILENT (absent is indistinguishable from
-//                                          never-installed; documented coverage hole)
+//   - both logs ABSENT, no stamp         → SILENT (no install evidence = never-installed)
+//   - MISSING with install evidence      → (2026-09-19) a missing log beside a FRESH sibling,
+//                                          or both missing with a stamp fired THIS boot,
+//                                          renders RED `wsl:pressure-log-missing` /
+//                                          `wsl:census-log-missing` / `wsl:monitor-logs-missing`
+//                                          with NO age — never an invented duration
+//   - RUN-COMPLETION ALLOWANCE           → (2026-09-19) stamp age < 360 s + a non-fresh log
+//                                          → `inflight`: no token, both self-clearing flags
+//                                          suppressed like warming. Stamp past the allowance
+//                                          but alive, ONE log stale + sibling fresh →
+//                                          `wsl:pressure-unfinished` / `wsl:census-unfinished`
+//                                          (the producer, not the timer). Both stale → monitor.
 //   - boot grace                         → logs hours old but uptime < 8min → SILENT. This is
 //                                          the measured post-boot false positive: WSL2 booted
 //                                          2026-08-13 07:40:57, first pressure.log line landed
@@ -48,7 +58,8 @@
 //
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-08-15 wsl-stack producer-liveness row.
+// Backs docs/decisions.md 2026-08-15 wsl-stack producer-liveness row, the 2026-09-19 warming
+// row, and the 2026-09-19 run-completion-allowance / missing-arms row.
 // Structural sibling of probe-statusline-wsl-pressure.js / probe-statusline-wsl-probe-broken.js
 // / probe-statusline-claude-cap-bypass.js.
 // Run: node tests/probes/probe-statusline-wsl-monitor-dead.js
@@ -78,6 +89,10 @@ const DEAD_MS = 95 * 60 * 1000;
 // read from the systemd stamp. 12min (was 8) clears the measured worst-case first run of
 // 489.976s (boot -6, 2026-08-07) which the old 480s constant did NOT, by ~10s.
 const GRACE_MS = 12 * 60 * 1000;
+// Run-completion allowance (2026-09-19): 240 s structural bound (census seam probe 30 s + two
+// `timeout 10 systemctl` + swap capture `timeout -k 10 180`) × 1.5, the grace ceiling's own
+// ratio. Under it a fresh stamp beside a stale log is `inflight`, not dead.
+const ALLOW_MS = 6 * 60 * 1000;
 
 // Long-past uptime: well beyond the boot grace, so the grace never masks a render case.
 const UP_OLD = String(72 * 3600 * 1000);
@@ -89,11 +104,16 @@ const TRIP_TOKEN = (n) => `${RED}⚠ wsl:bash=${n}${RESET}`;
 const BYPASS_SEAM_BROKEN = 'capped=0 uncapped=4 seam_ok=0';
 const BYPASS_TOKEN = `${RED}⚠ claude:seam-broken uncapped=4${RESET}`;
 
-// Extract the liveness token's label+age from a render, or '' when absent.
+// Extract the liveness token's label+age from a render, or '' when absent. Matches every
+// Position-2 label family — `-dead`, `-log-missing` / `-logs-missing`, `-unfinished` — and
+// nothing else in the front (`wsl:bash=` is the trip, `wsl:probe-broken` has no family prefix).
 function livenessToken(out) {
-  const m = out.match(/\x1b\[31m⚠ (wsl:(?:monitor|pressure|census)-dead[^\x1b]*)\x1b\[0m/);
+  const m = out.match(/\x1b\[31m⚠ (wsl:(?:monitor|pressure|census)-[^\x1b]*)\x1b\[0m/);
   return m ? m[1] : '';
 }
+// A render must never carry a JS hole. `*-missing` kinds have ageMs null and no label lookup
+// may miss — either would interpolate into the token as literal text.
+const NO_HOLES = (out) => !out.includes('undefined') && !out.includes('NaN');
 
 // Plant logs aged by `ageMin` minutes (null → do not create the log at all), plus optional
 // flags, then spawn the real wrapper under an isolated $HOME.
@@ -206,6 +226,73 @@ function check(name, ok, detail) {
 }
 
 // =========================================================================
+// RUN-COMPLETION ALLOWANCE + MISSING / UNFINISHED ARMS (2026-09-19) — pure classifier, 5 args.
+// Required rows from the shared design brief (cross-repo briefs
+// 2026-08-15-wsl-monitor-{absent-vs-never-installed,stamp-leads-producer-writes,
+// stamp-vs-log-ran-but-did-not-finish}); the cross-repo coupling probe re-pins the same rows
+// against the bash twin. Fixture ages in SECONDS as the brief states them: stale = DEAD+60 =
+// 5760, fresh = 60; uptime far past the grace unless stated; stamp fired this boot unless
+// stated. `k5` returns `kind age` as the coupling tuple does ('-' for a null age).
+// =========================================================================
+{
+  const S = 1000;
+  const FRESH = 60 * S, STALE = 5760 * S, STALE2 = 17100 * S;
+  const UP = 1e9;
+  const k5 = (p, c, u, fired, st) => {
+    const s = classifyWslMonitorState(p, c, u, fired, st);
+    if (s === null) return '-';
+    return `${s.kind} ${s.ageMs === null ? '-' : s.ageMs / S}`;
+  };
+  // --- missing arms: install evidence is a FRESH sibling or a stamp fired THIS boot ---
+  check('classify5: pressure fresh + census ABSENT + stamp fired 3600 s ago → census-missing, NO age',
+    k5(FRESH, null, UP, true, 3600 * S) === 'census-missing -', `got ${k5(FRESH, null, UP, true, 3600 * S)}`);
+  check('classify5: pressure ABSENT + census fresh + stamp fired 3600 s ago → pressure-missing, NO age',
+    k5(null, FRESH, UP, true, 3600 * S) === 'pressure-missing -', `got ${k5(null, FRESH, UP, true, 3600 * S)}`);
+  check('classify5: both absent + NO stamp → silent (never-installed)',
+    k5(null, null, UP, false, undefined) === '-', `got ${k5(null, null, UP, false, undefined)}`);
+  check('classify5: both absent + stamp from a PREVIOUS boot → silent (not install evidence)',
+    k5(null, null, UP, false, 7200 * S) === '-', `got ${k5(null, null, UP, false, 7200 * S)}`);
+  check('classify5: both absent + stamp fired THIS boot 3600 s ago → monitor-missing, NO age',
+    k5(null, null, UP, true, 3600 * S) === 'monitor-missing -', `got ${k5(null, null, UP, true, 3600 * S)}`);
+  // --- allowance boundary: 490 s uptime (past the boot -6 worst case), stamp fired, stale
+  // --- asymmetric logs 5760 / 17100, BOTH producer orders ---
+  check('classify5: uptime 490 s + stamp age 0 + stale logs (5760/17100) → inflight',
+    k5(STALE, STALE2, 490 * S, true, 0) === 'inflight -', `got ${k5(STALE, STALE2, 490 * S, true, 0)}`);
+  check('classify5: … mirror order (17100/5760) → inflight',
+    k5(STALE2, STALE, 490 * S, true, 0) === 'inflight -', `got ${k5(STALE2, STALE, 490 * S, true, 0)}`);
+  check('classify5: stamp age 359 s (allowance − 1) → inflight',
+    k5(STALE, STALE2, 490 * S, true, 359 * S) === 'inflight -', `got ${k5(STALE, STALE2, 490 * S, true, 359 * S)}`);
+  check('classify5: … mirror order → inflight',
+    k5(STALE2, STALE, 490 * S, true, 359 * S) === 'inflight -', `got ${k5(STALE2, STALE, 490 * S, true, 359 * S)}`);
+  check('classify5: stamp age 360 s (= allowance) → monitor 5760 (the failure verdict; both stale is NOT unfinished)',
+    k5(STALE, STALE2, 490 * S, true, ALLOW_MS) === 'monitor 5760', `got ${k5(STALE, STALE2, 490 * S, true, ALLOW_MS)}`);
+  check('classify5: … mirror order → monitor 5760 (coverage age = the NEWER log, either position)',
+    k5(STALE2, STALE, 490 * S, true, ALLOW_MS) === 'monitor 5760', `got ${k5(STALE2, STALE, 490 * S, true, ALLOW_MS)}`);
+  // --- unfinished arms: stamp alive (< DEAD) and past the allowance, ONE stale + ONE fresh ---
+  check('classify5: stamp 600 s + pressure stale 5760 + census fresh 60 → pressure-unfinished 5760',
+    k5(STALE, FRESH, UP, true, 600 * S) === 'pressure-unfinished 5760', `got ${k5(STALE, FRESH, UP, true, 600 * S)}`);
+  check('classify5: stamp 600 s + pressure fresh 60 + census stale 5760 → census-unfinished 5760',
+    k5(FRESH, STALE, UP, true, 600 * S) === 'census-unfinished 5760', `got ${k5(FRESH, STALE, UP, true, 600 * S)}`);
+  check('classify5: stamp 600 s + BOTH stale → monitor (the timer really is the story)',
+    k5(STALE, STALE, UP, true, 600 * S) === 'monitor 5760', `got ${k5(STALE, STALE, UP, true, 600 * S)}`);
+  check('classify5: stamp 6000 s (stamp itself stale) + pressure stale + census fresh → pressure (today\'s verdict)',
+    k5(STALE, FRESH, UP, true, 6000 * S) === 'pressure 5760', `got ${k5(STALE, FRESH, UP, true, 6000 * S)}`);
+  // --- contract edges the brief fixes ---
+  check('classify5: inflight carries NO age and NO token (same shape as warming)',
+    (() => { const st = classifyWslMonitorState(STALE, STALE2, 490 * S, true, 0);
+             return !!st && st.kind === 'inflight' && st.ageMs === null && st.token === ''; })());
+  check('classify5: two FRESH logs under the allowance are NOT inflight (nothing to wait for) → silent',
+    k5(FRESH, FRESH, UP, true, 0) === '-', `got ${k5(FRESH, FRESH, UP, true, 0)}`);
+  check('classify5: missing beside a STALE sibling falls through to the sibling\'s verdict (not *-missing)',
+    k5(null, STALE, UP, true, 3600 * S) === 'census 5760', `got ${k5(null, STALE, UP, true, 3600 * S)}`);
+  check('classify5: the grace still wins over the allowance (step 1 before step 2)',
+    k5(STALE, STALE, 100 * S, false, 0) === 'warming -', `got ${k5(STALE, STALE, 100 * S, false, 0)}`);
+  check('classify5: 4-arg legacy call (stampAgeMs undefined) behaves exactly as null — never inflight / unfinished',
+    k5(STALE, FRESH, UP, true, undefined) === 'pressure 5760' && k5(STALE, FRESH, UP, true, null) === 'pressure 5760',
+    `got ${k5(STALE, FRESH, UP, true, undefined)} / ${k5(STALE, FRESH, UP, true, null)}`);
+}
+
+// =========================================================================
 // Pure-function arbitration — which stale flags get suppressed
 // `bypass` is the readClaudeCapBypass() OBJECT ({ token, fault }) since 2026-09-18, like
 // `monitor`: composeWslFront renders its `.token`; the meta-glyph reads its `.fault`.
@@ -232,6 +319,20 @@ function check(name, ok, detail) {
     JSON.stringify(composeWslFront({ trip: 'TRIP', monitor: { token: '', kind: 'warming' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify(['TRIP']));
   check('arbitrate: warming renders NO liveness token even if one were somehow handed in',
     JSON.stringify(composeWslFront({ trip: '', monitor: { token: '', kind: 'warming' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify([]));
+  // SUPPRESSION TABLE for the 2026-09-19 kinds (brief § 4). Keyed on `kind`, never on
+  // per-producer status. inflight is built explicitly like warming (empty token).
+  check('arbitrate: inflight → BOTH self-clearing flags suppressed, trip alone remains, no token',
+    JSON.stringify(composeWslFront({ trip: 'TRIP', monitor: { token: '', kind: 'inflight' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify(['TRIP']));
+  check('arbitrate: monitor-missing → both suppressed (both producers implicated)',
+    JSON.stringify(c('monitor-missing')) === JSON.stringify(['TRIP', 'DEAD']));
+  check('arbitrate: pressure-missing → probe-broken suppressed, cap-bypass KEPT',
+    JSON.stringify(c('pressure-missing')) === JSON.stringify(['TRIP', 'DEAD', 'BYPASS']));
+  check('arbitrate: pressure-unfinished → probe-broken suppressed, cap-bypass KEPT',
+    JSON.stringify(c('pressure-unfinished')) === JSON.stringify(['TRIP', 'DEAD', 'BYPASS']));
+  check('arbitrate: census-missing → cap-bypass suppressed, probe-broken KEPT',
+    JSON.stringify(c('census-missing')) === JSON.stringify(['TRIP', 'DEAD', 'BROKEN']));
+  check('arbitrate: census-unfinished → cap-bypass suppressed, probe-broken KEPT',
+    JSON.stringify(c('census-unfinished')) === JSON.stringify(['TRIP', 'DEAD', 'BROKEN']));
   check('arbitrate: trip ALWAYS survives (durable by decision, never suppressed)',
     composeWslFront({ trip: 'TRIP', monitor: { token: 'DEAD', kind: 'monitor' }, broken: '', bypass: { token: '', fault: '' } })[0] === 'TRIP');
   check('arbitrate: ordering is trip → liveness → broken → bypass',
@@ -330,8 +431,12 @@ function check(name, ok, detail) {
     `output: ${JSON.stringify(out)}`);
 }
 {
-  // Stamp aged 1min against 490s uptime → fired THIS boot → grace ends, stale logs count.
-  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(490 * 1000), stampMin: 1 });
+  // Stamp aged 7min against 490s (8.17min) uptime → fired THIS boot → grace ends, stale logs
+  // count. 7min, not 1min (re-pinned 2026-09-19): a 1-min-old stamp is INSIDE the 6-min
+  // run-completion allowance and now classifies `inflight` (that fixture lives in the inflight
+  // render block below); the assertion here is "stamp fired ends the grace", which needs the
+  // stamp past the allowance but still younger than uptime.
+  const out = runWith({ pressureMin: 540, censusMin: 540, uptimeMs: String(490 * 1000), stampMin: 7 });
   check('stamp fired this boot + stale logs → ⚠ wsl:monitor-dead renders (grace ended early)',
     livenessToken(out).startsWith('wsl:monitor-dead'),
     `got ${JSON.stringify(livenessToken(out))}`);
@@ -411,10 +516,13 @@ function check(name, ok, detail) {
 // --- NEGATIVE ARM (a): the same fixture with a stamp newer than boot. The grace ends, the
 // --- stale logs become real evidence, and today's behaviour returns: the RED liveness token
 // --- renders. Without this, "no liveness token" above is satisfied by a wrapper that never
-// --- renders one at all.
+// --- renders one at all. Re-pinned 2026-09-19 from (5 min uptime, 1 min stamp) to (8 min
+// --- uptime, 7 min stamp): the stamp must be past the 6-min run-completion allowance to
+// --- assert a verdict, and still younger than uptime to count as fired this boot; 8 min is
+// --- still inside the 12-min grace ceiling, so the stamp is what ends the grace.
 {
   const out = runWith({
-    pressureMin: 540, censusMin: 540, uptimeMs: String(5 * 60 * 1000), stampMin: 1,
+    pressureMin: 540, censusMin: 540, uptimeMs: String(8 * 60 * 1000), stampMin: 7,
     trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
   });
   const ok = out.includes(TRIP_TOKEN(447))
@@ -437,6 +545,75 @@ function check(name, ok, detail) {
     && livenessToken(out) === '' && !out.includes(MONITOR_SIGIL);
   check('warming NEGATIVE ARM: stamp fired + fresh logs → all three flag tokens render (suppression is not blanket)', ok,
     ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
+}
+
+// =========================================================================
+// RUN-COMPLETION ALLOWANCE + MISSING / UNFINISHED ARMS — RENDER PATH (2026-09-19)
+// Real wrapper spawn under _make-fake-home: proves readWslMonitorState reads the stamp's AGE,
+// propagates the new kinds into the token + composeWslFront, and never interpolates a hole
+// (`undefined` / `NaN`) or an invented age for a missing log. Each fixture plants all three
+// flags so the suppression table (brief § 4) is observed, not inferred.
+// =========================================================================
+
+// --- census-missing: pressure fresh, census log ABSENT, stamp fired 60 min ago. The fresh
+// --- sibling is the install evidence. Token has NO age; probe-broken stays CURRENT (pressure
+// --- is fine), cap-bypass is SUPPRESSED (census un-vouched), trip renders.
+{
+  const out = runWith({
+    pressureMin: 1, censusMin: null, stampMin: 60,
+    trip: TRIP(447), broken: 'fresh break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const tok = livenessToken(out);
+  const ok = tok === 'wsl:census-log-missing'
+    && out.includes(TRIP_TOKEN(447)) && out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('render: census log MISSING + pressure fresh → ⚠ wsl:census-log-missing with NO age; bypass suppressed, broken CURRENT, trip renders, no holes', ok,
+    ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} holes=${!NO_HOLES(out)}; output: ${JSON.stringify(out)}`);
+}
+
+// --- pressure-unfinished: stamp fired 10 min ago (past the 6-min allowance, well under the
+// --- 95-min dead threshold), pressure log 96 min stale, census fresh. The timer is fine; the
+// --- pressure producer ran and did not finish. Token carries the PRESSURE log's own age
+// --- (96 min → 1h36m); probe-broken SUPPRESSED, cap-bypass CURRENT, trip renders.
+{
+  const out = runWith({
+    pressureMin: 96, censusMin: 1, stampMin: 10,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const tok = livenessToken(out);
+  const ok = tok === 'wsl:pressure-unfinished 1h36m'
+    && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && out.includes(BYPASS_TOKEN)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('render: stamp 10 min + pressure stale + census fresh → ⚠ wsl:pressure-unfinished 1h36m; broken suppressed, bypass CURRENT, trip renders', ok,
+    ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
+}
+
+// --- inflight: 490 s uptime, stamp fired 1 min ago (inside the allowance), stale asymmetric
+// --- logs, all three flags. This is the fixture that used to render `wsl:monitor-dead` the
+// --- instant the stamp landed — before the producers could possibly have written. Now: trip
+// --- renders, broken + bypass SUPPRESSED (awaiting the in-flight run), NO liveness token.
+{
+  const out = runWith({
+    pressureMin: 96, censusMin: 285, uptimeMs: String(490 * 1000), stampMin: 1,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const ok = out.includes(TRIP_TOKEN(447))
+    && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && livenessToken(out) === '' && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('inflight (live): stamp 1 min + stale logs + all three flags → trip renders, broken + bypass SUPPRESSED, no liveness token', ok,
+    ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
+}
+
+// --- inflight, FLAGS ABSENT (control): same fixture with no flags at all. The push surface is
+// --- silent — no liveness token, no wsl:/claude: token of any kind, no sigil. Against the
+// --- pre-change wrapper this renders `wsl:monitor-dead`, which is what makes the case
+// --- non-vacuous; the pull surface's "IN FLIGHT" informational line is the bash twin's job.
+{
+  const out = runWith({ pressureMin: 96, censusMin: 285, uptimeMs: String(490 * 1000), stampMin: 1 });
+  const ok = livenessToken(out) === '' && !out.includes(WSL_LABEL) && !out.includes(CLAUDE_LABEL)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('inflight (live, flags absent): stamp 1 min + stale logs, no flags → push silent (no token, no sigil)', ok,
+    ok ? '' : `liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
 }
 
 // --- fresh logs must not disturb the existing readers (no-regression guard) ---

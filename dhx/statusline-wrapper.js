@@ -1391,6 +1391,26 @@ const WSL_CENSUS_LOG   = path.join(os.homedir(), '.local', 'state', 'wsl-stack',
 // beside it.
 const WSL_MONITOR_DEAD_MS = 95 * 60 * 1000;
 
+// 6min RUN-COMPLETION ALLOWANCE. DERIVED, not guessed (measured 2026-09-19). The systemd stamp
+// (WSL_PRESSURE_TIMER_STAMP below) leads its producers' log writes, so a stamp newer than a
+// stale log is not evidence the producer is dead until the run has had time to FINISH — before
+// that it is in flight. How long a run takes: 374 wsl-pressure.service runs across both
+// journaled boots (2026-09-12 → 09-19), Starting→Finished: p50 0.64s, p90 1.40s, p99 3.41s,
+// max 8.12s; first-after-boot runs 0.76s and 0.19s; stamp → first log write ≈ 1.1s live. But
+// the observed number is not the bound. Both consumers read log MTIME, and pressure.log sits
+// at its 2000-line cap, so every run rewrites it via `tail | mv` at the END of the run
+// (wsl-pressure-check.sh "Cap the rolling log") — after every sampler that rides the timer.
+// Stamp → pressure.log mtime is therefore bounded structurally by: census seam probe 30s
+// + 2 × `timeout 10 systemctl` + swap capture `timeout -k 10 180` = 240s. Chosen: 240s × 1.5
+// = 360s, the grace ceiling's own ratio (490s → 720s). An observed-only number (≈12s) or an
+// unexamined 60s would emit `wsl:pressure-unfinished` the first time the swap capture
+// legitimately hits its timeout — crying wolf in exactly the case the guard exists to report
+// truthfully. Cost: `*-unfinished` becomes actionable 6min after the stamp, against a 95min
+// dead threshold (≈6%). Twin: WSL_MONITOR_RUN_ALLOWANCE_SECS=360 in the bash pull half; the
+// cross-repo coupling probe compares the two like it compares the dead threshold.
+// Re-derivation procedure: cross-repo docs/coupling/wsl-monitor-liveness-thresholds.md.
+const WSL_MONITOR_RUN_ALLOWANCE_MS = 6 * 60 * 1000;
+
 // Boot grace CEILING — a backstop, no longer the primary mechanism. After every WSL2 start
 // the logs are legitimately as old as the downtime until the first run lands, so the segment
 // must stay silent until the producer has had its chance. The question that actually matters
@@ -1432,9 +1452,12 @@ const WSL_MONITOR_BOOT_GRACE_MS = 12 * 60 * 1000;
 // this signal costs nothing and needs no unit change.
 //
 // It proves the TIMER fired, never that the producer COMPLETED — which is exactly why it
-// anchors the grace and does not replace the log-mtime staleness check. (The pair is strictly
-// more expressive than either alone: fresh stamp + stale log = ran-but-did-not-finish, a
-// distinction this segment cannot currently draw. Filed, not built here.)
+// anchors the grace and does not replace the log-mtime staleness check. The pair is strictly
+// more expressive than either alone, and since 2026-09-19 the classifier draws on it twice:
+// the stamp's AGE under WSL_MONITOR_RUN_ALLOWANCE_MS with a non-fresh log is 'inflight' (the
+// run has not had time to finish — no verdict), and a stamp older than the allowance but
+// younger than the dead threshold beside ONE stale log is that producer's `*-unfinished`
+// (the timer is fine; the producer ran and did not complete).
 //
 // Bonus the /proc/uptime anchor could never have: this path is under $HOME, so makeFakeHome()
 // fixtures drive it directly — the exact limitation readUptimeMs() documents below.
@@ -1460,9 +1483,12 @@ function readUptimeMs() {
 }
 
 // Age of a producer log in ms, or null when it cannot be judged (absent / unreadable /
-// future mtime). null is deliberately NOT "stale": an ABSENT log is indistinguishable from
-// never-installed, and every reader in this family treats absent as silent. That is a real
-// coverage hole, documented rather than hidden.
+// future mtime). null is deliberately NOT "stale": it is the per-producer status `missing`,
+// which classifyWslMonitorState weighs against INSTALL EVIDENCE — exactly two things count, a
+// FRESH sibling log or a timer stamp fired THIS boot — and reports as `*-missing` only when
+// that evidence exists. With neither, both-missing stays silent: a machine that never
+// installed the stack must not carry a permanent RED. A missing log NEVER gets an invented
+// age (`ageMs: null`, no age suffix on the token). Also used for the timer stamp's own age.
 function wslLogAgeMs(file, now) {
   try {
     const ageMs = now - fs.statSync(file).mtimeMs;
@@ -1472,21 +1498,40 @@ function wslLogAgeMs(file, now) {
   }
 }
 
-// FIVE-state classification, exported for deterministic tests. NOT a first-match priority:
-// pressure-stale does not prove "the timer stopped". The census rides the pressure script's
-// tail via `[ -x "$CAPCENSUS" ] && { "$CAPCENSUS" --quiet || true; }` — a missing or
+// Classification, exported for deterministic tests. Each producer is read as one of THREE
+// statuses — `missing` (age null: absent / unreadable / future mtime), `stale` (age ≥ dead
+// threshold), `fresh` — and the kinds below name what was OBSERVED; none asserts an unproved
+// cause. pressure-stale does not prove "the timer stopped": the census rides the pressure
+// script's tail via `[ -x "$CAPCENSUS" ] && { "$CAPCENSUS" --quiet || true; }` — a missing or
 // non-executable script is skipped SILENTLY and a failure is swallowed, so the census can
 // freeze while pressure stays fresh. And the pressure log is written BEFORE the census is
 // invoked, so the converse (pressure log write fails, census still runs) is reachable too.
-// Each label therefore names the producer observed stale; none asserts an unproved cause.
-//   inside grace   → 'warming'  (no producer has run YET this boot — trust is UNPROVEN,
-//                                which is NOT the same as vouched; token is '', so nothing
-//                                red renders, but composeWslFront suppresses the two
-//                                self-clearing flags because neither has been re-vouched)
-//   both stale     → 'monitor'  (nothing in the stack has checked in)
-//   pressure only  → 'pressure' (trip + probe-broken flags unvouched)
-//   census only    → 'census'   (claude-cap-bypass flag unvouched)
-//   neither        → null       (silent)
+// Selection is evaluated TOP-DOWN in this order (the bash twin evaluates the same order):
+//   1 inside grace          → 'warming'   (no producer has run YET this boot — trust is
+//                                          UNPROVEN, not vouched; token '', nothing red
+//                                          renders, composeWslFront suppresses both
+//                                          self-clearing flags)
+//   2 stamp age < allowance,
+//     any log not fresh     → 'inflight'  (the timer fired moments ago and the run has not
+//                                          had time to finish; same shape as warming — no
+//                                          token, both self-clearing flags suppressed)
+//   3 both logs missing     → 'monitor-missing' iff the stamp fired THIS boot, else silent
+//                                          (no install evidence → never-installed → null)
+//   4 one log missing,
+//     sibling FRESH         → 'pressure-missing' / 'census-missing' (the fresh sibling IS
+//                                          the install evidence; no age — none exists)
+//   5 stamp age < dead,
+//     one stale, one fresh  → 'pressure-unfinished' / 'census-unfinished' (the timer is
+//                                          fine — the producer ran and did not complete;
+//                                          carries that producer's own log age)
+//   6 today's verdicts      → 'monitor'   (both stale — coverage age = the NEWER log)
+//                             'pressure'  (trip + probe-broken flags unvouched)
+//                             'census'    (claude-cap-bypass flag unvouched)
+//                             null        (silent)
+// Consequences that are deliberate, not gaps: one log missing beside a STALE sibling falls
+// through to step 6 (the stale sibling's verdict); both logs stale beside an alive stamp is
+// 'monitor', never `*-unfinished` (the timer really is the story); a stamp from a PREVIOUS
+// boot is not install evidence.
 // Has wsl-pressure.timer fired since THIS boot? Compares the systemd stamp's mtime against
 // boot wall-time (now - uptime). Own try/catch → false, and false means "grace still applies",
 // which is safe precisely because the grace is now ceiling-bounded: an absent stamp (timer
@@ -1502,10 +1547,21 @@ function readTimerFiredSinceBoot(uptimeMs, now) {
   }
 }
 
-function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFiredSinceBoot) {
-  // Post-boot grace: suppress the VERDICT only while the scheduler has NOT yet fired this
-  // boot, and only up to the ceiling. Once the timer has fired, a stale log is real evidence,
-  // not boot lag.
+// `stampAgeMs` (5th, 2026-09-19) is the timer stamp's own age from wslLogAgeMs — null when
+// the stamp is absent / unreadable / future-dated. `undefined` (the pre-existing 4-arg call
+// shape) is treated exactly as null, so a caller that does not know about the allowance gets
+// today's selection and can never be handed 'inflight' or `*-unfinished`.
+// INVARIANT: the bash twin wml_snapshot() in ~/repos/skills/dhx/infra/references/
+// wsl-monitor-liveness.sh MUST evaluate the SAME six steps in the SAME order with the same
+// constants (WSL_MONITOR_RUN_ALLOWANCE_SECS=360), emit the same kind spellings, and carry the
+// same age per kind (`-` for `*-missing`). Pinned from both sides: this file's probe, skills'
+// probe-infra-monitor-liveness.sh, and cross-repo
+// scripts/health/tests/probe-wsl-monitor-liveness-coupling.sh (which calls this function
+// directly with five arguments).
+function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFiredSinceBoot, stampAgeMs) {
+  // Step 1 — post-boot grace: suppress the VERDICT only while the scheduler has NOT yet fired
+  // this boot, and only up to the ceiling. Once the timer has fired, a stale log is real
+  // evidence, not boot lag.
   //
   // 'warming', NOT null (2026-09-19). Returning null made the grace mean "TRUSTED" rather than
   // "do not alarm": composeWslFront derives flag suppression from this kind, so a null handed
@@ -1529,9 +1585,46 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   if (!timerFiredSinceBoot && uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) {
     return { kind: 'warming', ageMs: null, token: '' };
   }
-  const stale = (a) => a !== null && a >= WSL_MONITOR_DEAD_MS;
-  const p = stale(pressureAgeMs);
-  const c = stale(censusAgeMs);
+  // Per-producer status. `missing` is null (wslLogAgeMs never emits anything else for a log
+  // it cannot judge); a non-finite value from a direct caller is treated the same way rather
+  // than compared, so garbage can neither fabricate a verdict nor suppress one.
+  const status = (a) => (!Number.isFinite(a) ? 'missing' : (a >= WSL_MONITOR_DEAD_MS ? 'stale' : 'fresh'));
+  const P = status(pressureAgeMs);
+  const C = status(censusAgeMs);
+  const stampAge = Number.isFinite(stampAgeMs) ? stampAgeMs : null;
+  // Step 2 — in flight: the timer fired under WSL_MONITOR_RUN_ALLOWANCE_MS ago and at least
+  // one log has not caught up. The stamp LEADS the producers' writes (it is written by the
+  // scheduler before the service starts), so a stamp newer than a stale log proves nothing
+  // about the producer until the run has had time to finish. No verdict, no token; like
+  // warming, both self-clearing flags are suppressed because nothing has re-vouched them yet.
+  // Two fresh logs never reach here: there is nothing to wait for.
+  const inAllow = stampAge !== null && stampAge < WSL_MONITOR_RUN_ALLOWANCE_MS;
+  if (inAllow && (P !== 'fresh' || C !== 'fresh')) {
+    return { kind: 'inflight', ageMs: null, token: '' };
+  }
+  // Step 3 — both logs missing. Reportable only with install evidence, and with both logs
+  // gone the only evidence left is the timer stamp having fired THIS boot (a stamp from a
+  // previous boot is not evidence). Without it this is never-installed → silent.
+  if (P === 'missing' && C === 'missing') {
+    return timerFiredSinceBoot ? { kind: 'monitor-missing', ageMs: null } : null;
+  }
+  // Step 4 — one log missing beside a FRESH sibling: the sibling is the install evidence.
+  // No age — a missing file has none, and inventing one is exactly the lie this guard exists
+  // to refuse. (Missing beside a STALE sibling falls through to step 6 on purpose: the stale
+  // sibling's verdict is the story, and the pull surface still renders `log missing`.)
+  if (P === 'missing' && C === 'fresh') return { kind: 'pressure-missing', ageMs: null };
+  if (C === 'missing' && P === 'fresh') return { kind: 'census-missing', ageMs: null };
+  // Step 5 — ran but did not finish: the stamp is alive (younger than the dead threshold) and
+  // past the allowance, and exactly ONE producer's log is stale while the other is fresh. The
+  // timer is fine; the named producer ran and never reached its write. Carries that
+  // producer's own log age. Both stale beside an alive stamp is NOT this — it is 'monitor'
+  // below, because then the timer really is the story.
+  const stampAlive = stampAge !== null && stampAge < WSL_MONITOR_DEAD_MS;
+  if (stampAlive && P === 'stale' && C === 'fresh') return { kind: 'pressure-unfinished', ageMs: pressureAgeMs };
+  if (stampAlive && C === 'stale' && P === 'fresh') return { kind: 'census-unfinished', ageMs: censusAgeMs };
+  // Step 6 — today's verdicts.
+  const p = P === 'stale';
+  const c = C === 'stale';
   // NEWER of the two, not older. The token renders `wsl:monitor-dead <age>`, and the pull
   // surface renders it as the sentence "no producer has checked in for <age>" — which is only
   // true of the MOST RECENT write across both producers. Math.max named the oldest producer's
@@ -1554,7 +1647,18 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   return null;
 }
 
-const WSL_MONITOR_LABELS = { monitor: 'wsl:monitor-dead', pressure: 'wsl:pressure-dead', census: 'wsl:census-dead' };
+// Push vocabulary for the VERDICT kinds only. 'warming' and 'inflight' have no entry by design
+// (no token ever renders for them). Spellings are shared byte-for-byte with the bash twin.
+const WSL_MONITOR_LABELS = {
+  monitor: 'wsl:monitor-dead',
+  pressure: 'wsl:pressure-dead',
+  census: 'wsl:census-dead',
+  'pressure-missing':    'wsl:pressure-log-missing',
+  'census-missing':      'wsl:census-log-missing',
+  'monitor-missing':     'wsl:monitor-logs-missing',
+  'pressure-unfinished': 'wsl:pressure-unfinished',
+  'census-unfinished':   'wsl:census-unfinished',
+};
 
 // Producer-liveness reader. RED — same imminent-OOM severity class as the trip and
 // probe-broken tokens (blind >= tripped), and broader than either: a dead producer
@@ -1573,15 +1677,21 @@ function readWslMonitorState() {
       wslLogAgeMs(WSL_CENSUS_LOG, now),
       uptimeMs,
       readTimerFiredSinceBoot(uptimeMs, now),
+      wslLogAgeMs(WSL_PRESSURE_TIMER_STAMP, now), // stamp AGE (null = absent); fired-since-boot above
     );
     if (!state) return { token: '', kind: null };
-    // 'warming' is a TRUST state, not a verdict: it must reach composeWslFront (which keys on
-    // `kind` to suppress the two self-clearing flags) while rendering nothing itself. Returned
-    // ahead of the label lookup on purpose — WSL_MONITOR_LABELS has no 'warming' entry by
-    // design, and `ageMs` is null, so falling through would compose `⚠ undefined NaN`.
-    if (state.kind === 'warming') return { token: '', kind: 'warming' };
-    const age = formatBurnDuration(state.ageMs / 60000);
+    // 'warming' and 'inflight' are TRUST states, not verdicts: each must reach composeWslFront
+    // (which keys on `kind` to suppress the two self-clearing flags) while rendering nothing
+    // itself. Returned ahead of the label lookup on purpose — WSL_MONITOR_LABELS has no entry
+    // for either by design, and `ageMs` is null, so falling through would compose
+    // `⚠ undefined NaN`.
+    if (state.kind === 'warming' || state.kind === 'inflight') return { token: '', kind: state.kind };
     const label = WSL_MONITOR_LABELS[state.kind];
+    if (!label) return { token: '', kind: state.kind }; // never interpolate `undefined` into a render
+    // `*-missing` kinds carry ageMs null — no age exists for a file that is not there, and
+    // formatBurnDuration(null / 60000) would render `<1m` (0 minutes), which is a fabricated
+    // age. Only a real age gets a suffix.
+    const age = (state.ageMs === null || state.ageMs === undefined) ? '' : formatBurnDuration(state.ageMs / 60000);
     return { token: `\x1b[31m⚠ ${label}${age ? ' ' + age : ''}\x1b[0m`, kind: state.kind };
   } catch {
     return { token: '', kind: null }; // fail-silent, exactly like the three flag readers
@@ -1608,8 +1718,18 @@ function readWslMonitorState() {
 //     no liveness token of its own (monitor.token is ''), so the grace stays quiet on the push
 //     surface — the operator-facing "awaiting first producer check this boot" line is the PULL
 //     surface's job (/dhx:infra), per the push/pull split this family already follows.
+//   - INFLIGHT (timer fired under the run-completion allowance ago, a log not yet caught up)
+//     → suppress BOTH, for the same reason as warming: the run that would re-vouch the flags
+//     is still in progress. No token of its own either.
+//   - `*-missing` / `*-unfinished` → suppress by PRODUCER exactly like the three `-dead`
+//     kinds: the pressure family (monitor, monitor-missing, pressure, pressure-missing,
+//     pressure-unfinished) un-vouches probe-broken; the census family (monitor,
+//     monitor-missing, census, census-missing, census-unfinished) un-vouches cap-bypass. The
+//     table is keyed on `kind`, never on per-producer status — same as the bash twin's
+//     wml_producer_stale / wml_stale_marker.
 // The suppressed detail is not lost — the /dhx:infra pull surface reports it as "last known,
-// stale". Push shows the actionable now-state; pull carries the forensics.
+// stale" (or "awaiting" for warming / inflight). Push shows the actionable now-state; pull
+// carries the forensics.
 // Order: trip → monitor-liveness → probe-broken → cap-bypass (trip's FIRST slot is a locked
 // do-not-re-litigate decision; liveness slots in second because a dead producer is broader
 // than a broken probe — it invalidates the census and the cap flag too).
@@ -1618,11 +1738,12 @@ function composeWslFront({ trip, monitor, broken, bypass }) {
   if (trip) out.push(trip);
   if (monitor && monitor.token) out.push(monitor.token);
   const kind = monitor && monitor.kind;
-  // 'warming' suppresses BOTH — unvouched-because-nothing-has-run-yet, not unvouched-because-
-  // the-producer-is-dead. Same suppression, earlier cause.
-  const warming = kind === 'warming';
-  const pressureStale = warming || kind === 'monitor' || kind === 'pressure';
-  const censusStale   = warming || kind === 'monitor' || kind === 'census';
+  // 'warming' and 'inflight' suppress BOTH — unvouched-because-nothing-has-run-yet (or the run
+  // is still going), not unvouched-because-the-producer-is-dead. Same suppression, earlier
+  // cause. 'monitor' / 'monitor-missing' suppress both because both producers are implicated.
+  const both = kind === 'warming' || kind === 'inflight' || kind === 'monitor' || kind === 'monitor-missing';
+  const pressureStale = both || kind === 'pressure' || kind === 'pressure-missing' || kind === 'pressure-unfinished';
+  const censusStale   = both || kind === 'census'   || kind === 'census-missing'   || kind === 'census-unfinished';
   if (broken && !pressureStale) out.push(broken);
   if (bypass && bypass.token && !censusStale) out.push(bypass.token);
   return out;
