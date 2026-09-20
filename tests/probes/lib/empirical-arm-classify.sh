@@ -31,11 +31,15 @@
 #       ran" from "dispatcher was attempted".
 #   arm_stop_dispatched <debug-log>   → prints N (count of Stop-dispatch lines)
 #       8c — LOAD-BEARING since 2026-09-19. Pinned to the 2.1.278 line shape
-#       `[DEBUG] "Hook Stop (Stop) success:|error:` — anchored on the `[DEBUG] "`
-#       prefix so a permission-rule echo (a line beginning `[DEBUG] Applying
+#       `<timestamp> [DEBUG] "Hook Stop (Stop) success:|error:` — anchored at
+#       LINE START (one non-space token, the timestamp, then the record) so that
+#       neither a permission-rule echo (a line beginning `<ts> [DEBUG] Applying
 #       permission update:`, the one settings-text carrier that reaches the
-#       debug file — H3) cannot produce a match whatever the rule says. A future
-#       CC that changes the shape reads 0 → INCONCLUSIVE, the safe direction.
+#       debug file — H3) nor another hook record's EMBEDDED output (CC folds a
+#       hook's stdout into its own `"Hook <Event> … success:\n…"` record, escaped
+#       `\n`, one line — so embedded text never starts a line; close-gate
+#       finding 1, 2026-09-19) can produce a match whatever the text says. A
+#       future CC that changes the shape reads 0 → INCONCLUSIVE, the safe direction.
 #   arm_auth_failed     <debug-log>   → prints yes|no
 #       The child never reached the model (`Could not resolve authentication
 #       method` / `Not logged in`). Named in the INCONCLUSIVE label so the
@@ -47,7 +51,7 @@
 # Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials; D4 row: control re-key);
 #        tests/probes/probe-empirical-arm-oracle.sh.
 
-ARM_STOP_RE='\[DEBUG\] "Hook Stop \(Stop\) (success|error):'
+ARM_STOP_RE='^[^ ]+ \[DEBUG\] "Hook Stop \(Stop\) (success|error):'
 ARM_AUTH_FAIL_RE='Could not resolve authentication method|Not logged in'
 
 arm_marker_fired() {

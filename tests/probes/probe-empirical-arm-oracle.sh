@@ -18,10 +18,12 @@
 #
 # Arms:
 #   1. fixtures — debug-file excerpts in the 2.1.278 line shape (H5 runs 1 and 2)
-#   2. arm_stop_dispatched counts exactly the `[DEBUG] "Hook Stop (Stop) …` lines:
-#      0 on the unauthenticated log, 6 on the authenticated one (5 error + 1 success); a SubagentStop
-#      line and a permission-rule ECHO whose rule text spells the Stop line (the
-#      one settings-text carrier that reaches the debug file — H3) count 0
+#   2. arm_stop_dispatched counts exactly the LINE-START `<ts> [DEBUG] "Hook Stop (Stop) …`
+#      records: 0 on the unauthenticated log, 6 on the authenticated one (5 error +
+#      1 success); a SubagentStop line, a permission-rule ECHO whose rule text spells
+#      the Stop line (the one settings-text carrier that reaches the debug file — H3),
+#      and another hook record whose EMBEDDED output spells it (close-gate finding 1)
+#      all count 0
 #   3. arm_auth_failed: yes on run-1 shape, no on run-2 shape
 #   4. NEGATIVE CONTROL — the pre-fix two-signal rule, reproduced inline, says
 #      REFUTE on the run-1 inputs; the oracle says INCONCLUSIVE and names auth
@@ -99,6 +101,8 @@ cat > "$DISTRACT" <<'EOF'
 2026-09-20T01:46:50.000Z [DEBUG] Applying permission update: Adding 1 allow rule(s) to destination 'localSettings': ["Bash([DEBUG] \"Hook Stop (Stop) error: *)"]
 2026-09-20T01:46:57.783Z [DEBUG] "Hook SubagentStop (SubagentStop) error:\nbash: x: No such file or directory"
 2026-09-20T01:46:57.784Z [DEBUG] Hook Stop (Stop) error: not quoted, not a dispatch line
+2026-09-20T01:46:55.234Z [DEBUG] "Hook SessionStart:startup (SessionStart) success:\n⚠ child printed: [DEBUG] \"Hook Stop (Stop) success:\" verbatim"
+2026-09-20T01:46:55.235Z [DEBUG] "Hook SessionStart:startup (SessionStart) success:\n[DEBUG] "Hook Stop (Stop) success:\n (reviewer's constructed shape: inner quote NOT escaped)"
 EOF
 MARKER_ABSENT="$ROOT/marker-absent.log"       # never created
 MARKER_FIRED="$ROOT/marker-fired.log"
@@ -109,13 +113,17 @@ chk "fixture: both logs carry the SessionStart error line (the old control's car
     "$(cat "$UNAUTH" "$AUTH" | grep -c 'Hook SessionStart:startup (SessionStart) error:')" 2
 chk "fixture: the rule-echo distractor spells the Stop line inside rule text (positive control for arm 2)" \
     "$(grep -c 'Hook Stop (Stop) error:' "$DISTRACT")" 2
+chk "fixture: SessionStart records EMBED the Stop success line in their hook output (close-gate finding 1; CC-escaped and reviewer-literal shapes)" \
+    "$(grep -c 'Hook Stop (Stop) success:' "$DISTRACT")" 2
+chk "positive control: the PRE-fix unanchored regex counts the reviewer's embedded shape" \
+    "$(grep -cE '\[DEBUG\] "Hook Stop \(Stop\) (success|error):' "$DISTRACT")" 1
 
 # ---------------------------------------------------------------------------
 echo "### 2. arm_stop_dispatched counts only the anchored 2.1.278 dispatch line"
 # ---------------------------------------------------------------------------
 chk "unauthenticated log → 0" "$(arm_stop_dispatched "$UNAUTH")" 0
 chk "authenticated log → 6" "$(arm_stop_dispatched "$AUTH")" 6
-chk "SubagentStop + rule-echo + unquoted distractors → 0" "$(arm_stop_dispatched "$DISTRACT")" 0
+chk "SubagentStop + rule-echo + unquoted + embedded-in-another-record distractors → 0" "$(arm_stop_dispatched "$DISTRACT")" 0
 chk "missing file → 0, no error" "$(arm_stop_dispatched "$ROOT/nope.log" 2>&1)" 0
 
 # ---------------------------------------------------------------------------
@@ -214,7 +222,7 @@ chk "arm calls arm_classify with four observations" "$(grep -cE '^arm_classify "
 chk "arm carries no inline REFUTE assignment (the pre-fix rule is gone)" "$(grep -c 'CLASS_LABEL="REFUTE' "$ARM")" 0
 chk "arm is tagged # CC-STDERR-EXEMPT: exactly once" "$(grep -c '^# CC-STDERR-EXEMPT:' "$ARM")" 1
 chk "arm no longer carries # CC-STDERR-UNMEASURED:" "$(grep -c '^# CC-STDERR-UNMEASURED:' "$ARM")" 0
-chk "lib pins the anchored Stop regex" "$(grep -c "^ARM_STOP_RE='\\\\\[DEBUG\\\\\] \"Hook Stop \\\\(Stop\\\\) (success|error):'" "$LIB")" 1
+chk "lib pins the LINE-ANCHORED Stop regex" "$(grep -cF "ARM_STOP_RE='^[^ ]+ \\[DEBUG\\] \"Hook Stop \\(Stop\\) (success|error):'" "$LIB")" 1
 
 # ---------------------------------------------------------------------------
 echo "### 10. CONTROL (D4) — the beat record is the control, the debug line is not"
