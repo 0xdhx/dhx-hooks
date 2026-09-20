@@ -25,15 +25,25 @@
 #   6. Each result file resolves under the expected
 #      tests/probes/.results/v1.3-multi-cc-ver/<cc-version>/ path prefix.
 #
-# Invocation modes (D-24):
+# Invocation modes (D-24) — exactly ONE argument, or none:
 #   bash scripts/verify-multi-cc-results.sh             # active CC (default)
 #   bash scripts/verify-multi-cc-results.sh 2.1.140     # explicit version
 #   bash scripts/verify-multi-cc-results.sh --all       # every <cc-ver>/ dir
 #
+# Argv discipline (2026-09-19): the version positional must look like a
+# version (`^[0-9]+(\.[0-9]+)+$`); any other `-`-prefixed token is an unknown
+# option; a second argument is an error. All three exit 2 with a usage line.
+# Before this, `--all --verbose` and `2.1.278 --verbose` silently DROPPED the
+# trailing token and exited 0 — a flag-as-positional false clean on the one
+# command an adoption run reads as "corpus valid" (cross-repo 2.1.278 adoption
+# ledger, D7). A lone `--verbose` was already exit 2 (it was tried as a version
+# dir); the D7 row's "exits 0" was that message read without its rc.
+#
 # Exit codes:
 #   0 = all assertions pass (silent on stdout).
 #   1 = at least one validation FAIL (per-FAIL line on stderr).
-#   2 = explicit-version arg points at a non-existent dir (D-24).
+#   2 = usage error (unknown option, extra argument, non-version positional),
+#       or explicit-version arg points at a non-existent dir (D-24).
 #
 # Stderr prefix on each FAIL: "verify-multi-cc-results: <reason> (in <file>)".
 #
@@ -241,6 +251,17 @@ validate_dir() {
 }
 
 # --- Arg parsing (D-24) ---
+# One argument or none. Anything the case below does not name is a usage error,
+# never a version dir — the "<dir> does not exist" branch is for a real version
+# that has no cells, not for a mistyped flag.
+usage_error() {
+  echo "verify-multi-cc-results: $1" >&2
+  echo "usage: $(basename "$0") [<cc-version>|--all|-h]" >&2
+  exit 2
+}
+if (( $# > 1 )); then
+  usage_error "unexpected extra argument(s): ${*:2} (one argument or none)"
+fi
 MODE="active"
 TARGET_VERSION=""
 case "${1:-}" in
@@ -251,10 +272,16 @@ case "${1:-}" in
     MODE="all"
     ;;
   -h|--help)
-    sed -n '2,32p' "$0"
+    sed -n '2,46p' "$0"
     exit 0
     ;;
+  -*)
+    usage_error "unknown option: $1"
+    ;;
   *)
+    if [[ ! "$1" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+      usage_error "version positional must look like N.N.N, got: $1"
+    fi
     MODE="explicit"
     TARGET_VERSION="$1"
     ;;
