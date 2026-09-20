@@ -12,6 +12,15 @@
 # to bare invocation when host preconditions are absent. Plugin manifest's
 # timeout: 300 stays as defense-in-depth.
 #
+# Logging is OPT-IN and the opt-in carries an obligation. The hook writes
+# $CLAUDE_PROJECT_DIR/.claude/hooks/logs/test-gate.log only when that directory
+# already exists; it never creates the directory and never writes a project's
+# ignore rules. A project that opts in MUST gitignore `.claude/hooks/logs/`
+# itself — otherwise the log shows as `??` in every `git status` there
+# (measured 2026-09-20: sigil was the one live offender; forgefinder, alembic
+# and statforge each carry their own rule). The log is self-capping: see
+# LOG_MAX_BYTES / LOG_KEEP_LINES below.
+#
 # Per-project config: .claude/test-gate.json (all keys optional):
 #   { "enabled": true,
 #     "target": "tests/test_unit",
@@ -47,11 +56,45 @@
 
 set -uo pipefail
 
+# --- Temp directory (Windows-portable) ---
+# Hoisted above the logging block on purpose: log()'s rotation writes its
+# staging file here, and log() is CALLED before the old assignment site (the
+# jq-missing WARN below), where `set -u` would abort on an unset $_TMPDIR.
+# One resolution site, used by both the rotation and COUNTER_FILE.
+_TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
+
 # --- Logging (optional — only if project has .claude/hooks/logs/) ---
+# Self-capping: the log is an unbounded append otherwise, and it was — measured
+# 2026-09-20, forgefinder had reached 1.38 MB over ~14.9k firings. Before each
+# append, a log over LOG_MAX_BYTES is rewritten to its last LOG_KEEP_LINES
+# lines. Same shape as the manual hooks.log recipe in docs/troubleshooting.md.
+# Every step is fail-soft: a failed stat, tail or mv leaves the log untouched
+# and the append proceeds — this hook's contract is to not block Stop, and a
+# logging problem must never become a gate problem. The threshold is BYTES and
+# the retention is LINES, so the headroom is a ratio, not a guarantee: 2000
+# lines measured 188-198 KB against the 256 KB cap on the live logs. If a
+# future log line grows enough to push that past the cap, rotation runs on
+# every firing — the file stays capped and retains 2000 lines either way, only
+# the frequency moves. Rotation is in-place (no .1 generation): history beyond
+# the last 2000 lines is dropped, deliberately.
 LOG_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/logs"
+LOG_MAX_BYTES=262144
+LOG_KEEP_LINES=2000
 if [ -d "$LOG_DIR" ]; then
   LOG_FILE="$LOG_DIR/test-gate.log"
-  log() { echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $1" >> "$LOG_FILE"; }
+  log() {
+    local _size _stage
+    _size=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "$_size" -gt "$LOG_MAX_BYTES" ] 2>/dev/null; then
+      _stage="$_TMPDIR/dhx-test-gate-rotate.$$"
+      if tail -n "$LOG_KEEP_LINES" "$LOG_FILE" > "$_stage" 2>/dev/null; then
+        mv -f "$_stage" "$LOG_FILE" 2>/dev/null || rm -f "$_stage"
+      else
+        rm -f "$_stage"
+      fi
+    fi
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $1" >> "$LOG_FILE"
+  }
 else
   log() { :; }
 fi
@@ -77,8 +120,7 @@ fi
 STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 
-# --- Temp directory (Windows-portable) ---
-_TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
+# --- Counter file (_TMPDIR resolved above the logging block) ---
 COUNTER_FILE="$_TMPDIR/claude-stop-${SESSION_ID}.count"
 
 log "Stop hook fired. session=$SESSION_ID stop_hook_active=$STOP_ACTIVE"
