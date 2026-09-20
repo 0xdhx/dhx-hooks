@@ -126,6 +126,39 @@ OUT=$(_fire "$C14" "$NARROW" "$GUARD" "$BASE")
 _assert "[14] message names the Bash-path consequence and the sha-proves-bytes limit" "yes" \
   "$(grep -qi 'unguarded' <<<"$OUT" && grep -qi 'proves bytes' <<<"$OUT" && echo yes || echo no)"
 
+# --- [19]-[22] pinned interpreters (nvm prune silently unregisters hooks) ---
+# The GSD hooks hard-pin nvm node paths. `nvm uninstall`/`nvm prune` removes the directory
+# and every hook registered through it stops executing with no diagnostic anywhere.
+# [20] IS THE ONE THAT MATTERS: the secret guard's own node path is an ARGUMENT to
+# gsd-node-runner.sh, not the command's first token, so a leading-token scan would miss
+# exactly the interpreter this file exists to care about.
+_settings_node() { # $1 absolute node path (embedded as the RUNNER'S ARGUMENT, not token 1)
+  local f="$TMP/settings-node.$RANDOM.json"
+  jq -n --arg n "$1" '{hooks:{PreToolUse:[{matcher:"Read|Grep|Bash",hooks:[{type:"command",
+      command:("bash \"$HOME/.claude/hooks/gsd-node-runner.sh\" \"" + $n + "\" \"$HOME/.claude/hooks/gsd-secret-read-guard.js\"")}]}]}}' > "$f"
+  echo "$f"
+}
+REAL_NODE="$(command -v node 2>/dev/null || true)"
+C19="$TMP/c19"; mkdir -p "$C19"
+OUT=$(_fire "$C19" "$(_settings_node /nonexistent/versions/node/v9.9.9/bin/node)" "$GUARD" "$BASE")
+_assert "[19] pinned interpreter not executable -> speaks INTERPRETER GONE" "yes" \
+  "$(grep -q 'INTERPRETER GONE:' <<<"$OUT" && echo yes || echo no)"
+_assert "[20] ...found in the RUNNER'S ARGUMENT, not just a leading token" "yes" \
+  "$(grep -q '/nonexistent/versions/node/v9.9.9/bin/node' <<<"$OUT" && echo yes || echo no)"
+if [[ -n "$REAL_NODE" ]]; then
+  C21="$TMP/c21"; mkdir -p "$C21"
+  # NON-VACUITY: an interpreter that DOES exist must be silent. Without this arm, [19] would
+  # pass just as well against a check that flagged every path it found, or found none at all.
+  _assert "[21] NON-VACUITY: an interpreter that exists -> silent" "" \
+    "$(_fire "$C21" "$(_settings_node "$(readlink -f "$REAL_NODE")")" "$GUARD" "$BASE")"
+else
+  echo "SKIP [21] no node on PATH"
+fi
+C22="$TMP/c22"; mkdir -p "$C22"
+OUT=$(_fire "$C22" "$(_settings_node /nonexistent/versions/node/v9.9.9/bin/node)" "$GUARD" "$BASE")
+_assert "[22] a missing interpreter alone does not mis-report the guard as absent" "no" \
+  "$(grep -q 'ABSENT:' <<<"$OUT" && echo yes || echo no)"
+
 # =====================================================================================
 # LIVE BEHAVIOURAL arms — fire the real guard. Skipped, not failed, when it is absent:
 # a missing guard is the WATCHER's finding to report, not this layer's to crash on.

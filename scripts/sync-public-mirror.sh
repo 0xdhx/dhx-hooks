@@ -468,6 +468,97 @@ REPORTS_PATTERN='\breports/(done/)?[0-9-]+-[a-z0-9-]+\.md\b'
   sed -i -E '/^[[:space:]]*(#|\/\/|\*)/ s#(~/repos/[^/[:space:]]+/|cross-repo/)?reports/(done/)?([0-9-]+-[a-z0-9-]+)\.md\b#private report \3#g' "$f"
 done
 
+# --- 3k. Key-inventory + Windows-username scrub ----------------------------
+# The mirror published `config/settings.json` with a NAMED INVENTORY of the SSH keys that
+# exist on this machine (custom names like a host-specific deploy key, plus the Windows
+# account name in two `/mnt/c/Users/<user>/.ssh/...` deny entries). The pre-2026-09-20
+# accepted-leak note covered OPERATOR PATHS, which is a defensible call, but it was taken
+# about paths: "this machine has a key for host X" is a different disclosure, and it is the
+# one an attacker uses to pick targets. Generic names are NOT redacted -- `id_rsa`,
+# `id_ed25519` and friends are ssh's own defaults and disclose nothing.
+#
+# KEEP-GENERIC ALLOWLIST, NOT A REDACT-THESE LIST, and that direction is the whole point:
+# a key added next month is redacted automatically. A deny-list of known custom names would
+# silently start leaking the moment a new key is added, which is exactly the failure mode
+# that produced this item.
+#
+# SCOPE IS config/*.json ONLY. Deliberately not the guard sources or the probes:
+#   - dhx/dhx-key-read-guard.js and scripts/vendor-dhx-key-read-guard.py carry
+#     `id_ed25519_github` as a DOCUMENTED EXAMPLE of the suffix form and as a self-test
+#     constant. Rewriting them would change guard behaviour on the mirror, and an example
+#     of a naming pattern is not a statement that this machine holds that key.
+#   - tests/probes/probe-dhx-key-read-guard.js uses `work_key` against host `w.example` --
+#     a synthetic fixture, not an inventory.
+# The Windows username IS scrubbed everywhere, including that probe: the assertion needs
+# *a* Windows-side path, not that particular account name.
+echo "[sync] scrubbing SSH key inventory + Windows username..."
+
+# Fail CLOSED. An unscrubbed publish is worse than a failed one, so a missing interpreter
+# stops the sync rather than falling back to "leave it as-is".
+command -v python3 >/dev/null 2>&1 || {
+  echo "[sync] FAIL Class K: python3 required for the key-inventory scrub — refusing to publish unscrubbed"
+  exit 1
+}
+
+# Windows account name -> placeholder, across every text file. Generic capture, so the real
+# name is never written into this script (which is itself removed from the mirror anyway).
+{ grep -rlEI '/mnt/c/Users/[^/"[:space:]]+' . --exclude-dir=.git 2>/dev/null || true; } | while IFS= read -r f; do
+  sed -i -E 's#(/mnt/c/Users/)[^/"[:space:]]+#\1WINUSER#g' "$f"
+done
+
+python3 - <<'PYSCRUB'
+import glob, json, re, sys
+
+# ssh's own default key names plus the non-secret companions. Anything else under .ssh/ is
+# this machine's own naming and gets a stable placeholder.
+GENERIC = {
+    'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ecdsa_sk', 'id_ed25519', 'id_ed25519_sk',
+    'id_xmss', 'id_xmss_sk',
+    'config', 'known_hosts', 'known_hosts2', 'authorized_keys',
+}
+PAT = re.compile(r'(\.ssh/)([A-Za-z0-9_.@-]+)')
+
+files = sorted(glob.glob('config/*.json'))
+custom = set()
+for fn in files:
+    with open(fn, encoding='utf-8') as fh:
+        for m in PAT.finditer(fh.read()):
+            base = m.group(2)
+            stem = base[:-4] if base.endswith('.pub') else base
+            if stem not in GENERIC:
+                custom.add(stem)
+
+# Deterministic numbering so repeated syncs produce byte-identical output.
+mapping = {name: 'redacted-key-%d' % (i + 1) for i, name in enumerate(sorted(custom))}
+
+def sub(m):
+    base = m.group(2)
+    pub = base.endswith('.pub')
+    stem = base[:-4] if pub else base
+    if stem in GENERIC:
+        return m.group(0)
+    return m.group(1) + mapping[stem] + ('.pub' if pub else '')
+
+for fn in files:
+    with open(fn, encoding='utf-8') as fh:
+        before = fh.read()
+    after = PAT.sub(sub, before)
+    if after != before:
+        with open(fn, 'w', encoding='utf-8') as fh:
+            fh.write(after)
+        # Re-parse: these are consumed as JSON, and a scrub that corrupts them would
+        # otherwise only be discovered by whoever cloned the mirror.
+        try:
+            json.loads(after)
+        except Exception as e:
+            print('[sync] FAIL Class K: %s is not valid JSON after scrub: %s' % (fn, e))
+            sys.exit(1)
+
+print('[sync] Class K: redacted %d custom key name(s) across %d config file(s)'
+      % (len(mapping), len(files)))
+PYSCRUB
+[ "${PIPESTATUS[0]:-0}" = "0" ] || exit 1
+
 # --- 3b. Scrub verification ------------------------------------------------
 echo "[sync] verifying scrubs..."
 
@@ -496,6 +587,34 @@ NAME_LEAK=$([ -z "$NAME_OUT" ] && echo 0 || echo "$NAME_OUT" | wc -l)
 if [ "$NAME_LEAK" != "0" ]; then
   echo "[sync] FAIL operator-name leak: $NAME_LEAK references"
   echo "$NAME_OUT"
+  exit 1
+fi
+
+# Class K verify. The scrub and these two gates share their allowlist by construction
+# (edit both together) — the gate is what makes the scrub load-bearing rather than
+# best-effort, since a silent scrub miss would only surface in a public clone.
+KEYINV_OUT=$(grep -rEnI '\.ssh/[A-Za-z0-9_.@-]+' config/ 2>/dev/null \
+  | grep -vE '\.ssh/(id_rsa|id_dsa|id_ecdsa|id_ecdsa_sk|id_ed25519|id_ed25519_sk|id_xmss|id_xmss_sk|config|known_hosts2?|authorized_keys|redacted-key-[0-9]+)(\.pub)?([^A-Za-z0-9_.@-]|$)')
+KEYINV_LEAK=$([ -z "$KEYINV_OUT" ] && echo 0 || echo "$KEYINV_OUT" | wc -l)
+if [ "$KEYINV_LEAK" != "0" ]; then
+  echo "[sync] FAIL Class K: $KEYINV_LEAK custom SSH key name(s) still named in config/ — this machine's key inventory would publish"
+  echo "$KEYINV_OUT"
+  exit 1
+fi
+
+# Non-vacuity guard for the check above: if config/ stopped carrying ANY .ssh reference,
+# the grep would be trivially clean and this gate would silently stop protecting anything.
+KEYINV_SEEN=$(grep -rcEI '\.ssh/' config/ 2>/dev/null | awk -F: '{t+=$2} END{print t+0}')
+if [ "${KEYINV_SEEN:-0}" = "0" ]; then
+  echo "[sync] FAIL Class K: no .ssh references found in config/ at all — the key-inventory gate has gone vacuous (deny list moved? path renamed?). Re-scope it rather than deleting it."
+  exit 1
+fi
+
+WINUSER_OUT=$(grep -rEnI '/mnt/c/Users/' . --exclude-dir=.git 2>/dev/null | grep -v '/mnt/c/Users/WINUSER')
+WINUSER_LEAK=$([ -z "$WINUSER_OUT" ] && echo 0 || echo "$WINUSER_OUT" | wc -l)
+if [ "$WINUSER_LEAK" != "0" ]; then
+  echo "[sync] FAIL Class K: $WINUSER_LEAK unscrubbed Windows account name(s)"
+  echo "$WINUSER_OUT"
   exit 1
 fi
 

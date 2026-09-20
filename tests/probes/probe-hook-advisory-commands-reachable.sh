@@ -145,6 +145,7 @@ dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/
 dhx-gsd-secret-guard-watch.sh|DATA|UNREGISTERED: the file exists
 dhx-gsd-secret-guard-watch.sh|DATA|BASH UNCOVERED: registered on matcher
 dhx-gsd-secret-guard-watch.sh|DATA|SHA CHANGED:
+dhx-gsd-secret-guard-watch.sh|ECHOBACK|INTERPRETER GONE:
 dhx-gsd-secret-guard-watch.sh|DATA|Consequence: secret-file reads issued through Bash
 dhx-gsd-secret-guard-watch.sh|DATA|The permissions deny list is not a fallback here
 dhx-gsd-secret-guard-watch.sh|PATH|bash ~/repos/hooks/tests/probes/probe-gsd-secret-guard-watch.sh

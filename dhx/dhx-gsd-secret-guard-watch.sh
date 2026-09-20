@@ -33,6 +33,20 @@
 #   4. SHA         — the bytes match the recorded baseline. A changed sha is not by itself
 #                    a defect; it means "third-party security code changed under you, go
 #                    re-run the behavioural probe and re-record deliberately".
+#   5. INTERPRETERS — every absolute `/.../bin/node` pinned anywhere in the live settings
+#                    file still exists and is executable. The GSD hooks hard-pin nvm
+#                    versions (v22.22.2, v24.14.1 as of 2026-09-20); `nvm uninstall` or an
+#                    `nvm prune` removes the directory and every hook registered through it
+#                    STOPS EXECUTING SILENTLY. Nothing else watches this.
+#                    SCOPE NOTE, because this is wider than the file name suggests: the
+#                    interpreter is a precondition for the very guard this file watches —
+#                    it is invoked through `gsd-node-runner.sh <abs-node> <guard>` — so the
+#                    check would be needed here even if it covered nothing else. Having read
+#                    the settings file already for check 2, enumerating the rest is free.
+#                    MATCHED ANYWHERE IN THE COMMAND, not just at the front: the secret
+#                    guard's own node path is the runner's FIRST ARGUMENT, not the command's
+#                    first token, so a leading-token scan would miss precisely the one that
+#                    matters most here.
 #
 # --- What this CANNOT check, stated so the green is not over-read ---
 # None of the four proves CC actually ROUTES a PreToolUse event into the guard in this
@@ -98,12 +112,23 @@ case "$MATCHER" in
   *Bash*)   COVERS_BASH=yes ;;
 esac
 
+# 5. pinned interpreters. Any absolute path ending in /bin/node, wherever it appears in a
+# registered hook command. Sorted+deduped so the state digest is stable across jq ordering.
+MISSING_NODES=""
+if [ -n "${SETTINGS:-}" ] && [ -r "$SETTINGS" ]; then
+  for n in $(jq -r '[.hooks[]?[]?.hooks[]?.command // ""] | join("\n")' "$SETTINGS" 2>/dev/null \
+               | grep -oE '/[^"'"'"'[:space:]]*/bin/node' | sort -u); do
+    [ -x "$n" ] || MISSING_NODES="$MISSING_NODES $n"
+  done
+fi
+MISSING_NODES="${MISSING_NODES# }"
+
 HEALTHY=no
 if [ "$PRESENT" = yes ] && [ "$REGISTERED" = yes ] && [ "$COVERS_BASH" = yes ] \
-   && [ "$SHA" = "$EXPECT_SHA" ]; then HEALTHY=yes; fi
+   && [ "$SHA" = "$EXPECT_SHA" ] && [ -z "$MISSING_NODES" ]; then HEALTHY=yes; fi
 
 # --- once per NEW state ---
-STATE="present=$PRESENT;registered=$REGISTERED;matcher=$MATCHER;bash=$COVERS_BASH;sha=$SHA"
+STATE="present=$PRESENT;registered=$REGISTERED;matcher=$MATCHER;bash=$COVERS_BASH;sha=$SHA;nodes=$MISSING_NODES"
 if command -v sha256sum >/dev/null 2>&1; then STATE_KEY=$(printf '%s' "$STATE" | sha256sum | cut -c1-16)
 else STATE_KEY=$(printf '%s' "$STATE" | cksum | tr -d ' /'); fi
 SEEN_DIR="$CACHE_ROOT/gsd-secret-guard-watch"
@@ -121,6 +146,8 @@ mkdir "$SEEN_DIR/$STATE_KEY" 2>/dev/null || exit 0   # state already seen -> sil
     echo "  BASH UNCOVERED: registered on matcher '$MATCHER', which does not include Bash. The file and its sha look fine; the Bash path is not guarded."
   [ "$PRESENT" = yes ] && [ "$SHA" != "$EXPECT_SHA" ] && [ "$SHA" != unreadable ] && \
     echo "  SHA CHANGED:  $SHA, baseline $EXPECT_SHA. Third-party security code changed under you."
+  [ -n "$MISSING_NODES" ] && \
+    echo "  INTERPRETER GONE: $MISSING_NODES -- pinned in the live settings file but not executable. Every hook registered through it, security guards included, silently stops running. Usual cause: nvm uninstall or nvm prune."
   echo "  Consequence: secret-file reads issued through Bash (cat, grep, a heredoc, a subshell) are unguarded. dhx-key-read-guard.js still covers SSH keys and AWS credentials; it does NOT cover the secret-file class."
   echo "  The permissions deny list is not a fallback here: it names that class on the Read tool only, and since CC 2.1.273 a Read() deny is defeated by a runtime-constructed path."
   echo "  Do: bash ~/repos/hooks/tests/probes/probe-gsd-secret-guard-watch.sh   (fires the LIVE guard; a sha match proves bytes, not that it still refuses)"
