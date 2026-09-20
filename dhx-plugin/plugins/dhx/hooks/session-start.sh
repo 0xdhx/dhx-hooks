@@ -266,6 +266,15 @@ printf '%s' "$INPUT" | _dhx_child dirty-tree bash /home/dhx/.claude/hooks/dhx-di
 _dhx_child grep-fn-cap bash /home/dhx/.claude/hooks/dhx-grep-fn-cap.sh < /dev/null
 # Phase 16 (REQ-DRIFT-ACTION-01/02): actionable drift surface; reads ~/.cache/dhx/gsd-drift-first-seen.json
 printf '%s' "$INPUT" | _dhx_child gsd-drift-surface bash /home/dhx/.claude/hooks/dhx-gsd-drift-surface.sh
+# Liveness of the ONE third-party guard covering the secret-file class on the Bash path
+# (2026-09-20). Checks presence, registration in the LIVE settings file, that the matcher
+# still covers Bash, and the recorded sha -- then speaks once per NEW STATE, never once per
+# session. Distinct from gsd-drift-surface above, which renders fork-mirror drift from a
+# statusline-written cache; this one reads the guard and the settings directly.
+# Its own blind spot, stated where it is dispatched: registration is a declaration, not
+# proof CC routes PreToolUse into the guard. Only firing it covers that --
+# tests/probes/probe-gsd-secret-guard-watch.sh. Suppression DHX_SKIP_GSD_GUARD_WATCH=1.
+printf '%s' "$INPUT" | _dhx_child gsd-guard-watch bash /home/dhx/.claude/hooks/dhx-gsd-secret-guard-watch.sh
 # ROADMAP Progress-table Status vocabulary check (2026-08-30). Per-repo, one read
 # of one file; silent unless this repo's ROADMAP carries a Status cell outside the
 # set both readers recognize. Sits beside the drift surface above because both are

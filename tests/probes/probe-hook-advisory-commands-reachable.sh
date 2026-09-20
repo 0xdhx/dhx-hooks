@@ -142,6 +142,14 @@ dhx-gsd-canonical-mirror-gate.sh|RECOMMEND|cp $FILE $CANONICAL
 dhx-gsd-drift-surface.sh|DATA|first seen
 dhx-gsd-drift-surface.sh|SLASH|run /dhx:statusline triad
 dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/
+dhx-gsd-secret-guard-watch.sh|DATA|UNREGISTERED: the file exists
+dhx-gsd-secret-guard-watch.sh|DATA|BASH UNCOVERED: registered on matcher
+dhx-gsd-secret-guard-watch.sh|DATA|SHA CHANGED:
+dhx-gsd-secret-guard-watch.sh|DATA|Consequence: secret-file reads issued through Bash
+dhx-gsd-secret-guard-watch.sh|DATA|The permissions deny list is not a fallback here
+dhx-gsd-secret-guard-watch.sh|PATH|bash ~/repos/hooks/tests/probes/probe-gsd-secret-guard-watch.sh
+dhx-gsd-secret-guard-watch.sh|DATA|Then re-record deliberately
+dhx-gsd-secret-guard-watch.sh|DATA|Silent from here until the state changes again
 dhx-key-coverage-audit.sh|DATA|deny edits land in BOTH
 session-start.sh|DATA|repeats of this exact failure stay silent
 session-start.sh|DATA|stays silent until the median drops back under budget
@@ -165,6 +173,11 @@ forms_for_row() {
     'dhx-gsd-drift-surface.sh|RECOMMEND|cp ~/.claude/gsd-core/')
       printf '%s\n' 'cp ~/.claude/gsd-core/workflows/x.md ~/.claude/gsd-local-patches/gsd-core/workflows/x.md'
       ;;
+    # The watcher tells the operator to fire the LIVE guard before trusting a sha match.
+    # That advice is worthless if the probe it names has moved, so it is a PATH row.
+    'dhx-gsd-secret-guard-watch.sh|PATH|bash ~/repos/hooks/tests/probes/probe-gsd-secret-guard-watch.sh')
+      printf '%s\n' "bash $REPO_ROOT/tests/probes/probe-gsd-secret-guard-watch.sh"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -172,6 +185,7 @@ forms_for_row() {
 # Scripts a PATH row invokes; each must resolve to an executable file.
 path_targets() {
   printf '%s\n' "$REPO_ROOT/scripts/dhx-draft-buffer.sh"
+  printf '%s\n' "$REPO_ROOT/tests/probes/probe-gsd-secret-guard-watch.sh"
 }
 
 # ---------------------------------------------------------------------------
