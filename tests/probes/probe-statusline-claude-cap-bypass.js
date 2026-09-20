@@ -38,7 +38,7 @@
 // probe-statusline-wsl-probe-broken.js.
 // Run: node tests/probes/probe-statusline-claude-cap-bypass.js
 //
-// SAFE_FOR_LIVE: yes   (uses `_make-fake-home` (mktemp + HOME + CLAUDE_CONFIG_DIR override per spawn); bypass/trip/broken/fleet fixtures planted inside the tmp home; never touches live ~/.local/state/wsl-stack or ~/.cache/dhx)
+// SAFE_FOR_LIVE: yes   (uses `_make-fake-home` (mktemp + HOME + CLAUDE_CONFIG_DIR override per spawn); bypass/trip/broken/fleet fixtures planted inside the tmp home; pins the boot grace out with DHX_WSL_UPTIME_MS so /proc/uptime is never consulted; never touches live ~/.local/state/wsl-stack or ~/.cache/dhx)
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -97,7 +97,14 @@ function runWith({ bypass = null, trip = null, broken = null, fleet = null }) {
     if (fleet) fs.writeFileSync(path.join(tmp, '.cache', 'dhx', 'fleet-statusline.json'), fleet);
     const res = spawnSync(process.execPath, [WRAPPER], {
       input: JSON.stringify({ session_id: 'probe-claude-cap-bypass', version: '2.1.227' }),
-      env: { ...process.env, HOME: tmp, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude') },
+      // DHX_WSL_UPTIME_MS pins the boot grace OUT (72h). Load-bearing since 2026-09-19: the
+      // grace now classifies as kind='warming', which suppresses probe-broken AND cap-bypass
+      // (a producer-self-clearing flag that survived a reboot is unvouched by construction).
+      // Unpinned, this fixture reads the HOST's /proc/uptime — so every assertion below would
+      // silently invert for the first 12 minutes after a WSL2 reboot, and the suite would be
+      // green on any other day. /proc/uptime is not under $HOME, so makeFakeHome cannot reach
+      // it; this override is the only lever.
+      env: { ...process.env, HOME: tmp, CLAUDE_CONFIG_DIR: path.join(tmp, '.claude'), DHX_WSL_UPTIME_MS: String(72 * 3600 * 1000) },
       encoding: 'utf8',
       timeout: 5000,
     });

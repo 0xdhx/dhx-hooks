@@ -1472,13 +1472,17 @@ function wslLogAgeMs(file, now) {
   }
 }
 
-// FOUR-state classification, exported for deterministic tests. NOT a first-match priority:
+// FIVE-state classification, exported for deterministic tests. NOT a first-match priority:
 // pressure-stale does not prove "the timer stopped". The census rides the pressure script's
 // tail via `[ -x "$CAPCENSUS" ] && { "$CAPCENSUS" --quiet || true; }` — a missing or
 // non-executable script is skipped SILENTLY and a failure is swallowed, so the census can
 // freeze while pressure stays fresh. And the pressure log is written BEFORE the census is
 // invoked, so the converse (pressure log write fails, census still runs) is reachable too.
 // Each label therefore names the producer observed stale; none asserts an unproved cause.
+//   inside grace   → 'warming'  (no producer has run YET this boot — trust is UNPROVEN,
+//                                which is NOT the same as vouched; token is '', so nothing
+//                                red renders, but composeWslFront suppresses the two
+//                                self-clearing flags because neither has been re-vouched)
 //   both stale     → 'monitor'  (nothing in the stack has checked in)
 //   pressure only  → 'pressure' (trip + probe-broken flags unvouched)
 //   census only    → 'census'   (claude-cap-bypass flag unvouched)
@@ -1499,9 +1503,32 @@ function readTimerFiredSinceBoot(uptimeMs, now) {
 }
 
 function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFiredSinceBoot) {
-  // Post-boot grace: suppress only while the scheduler has NOT yet fired this boot, and only
-  // up to the ceiling. Once the timer has fired, a stale log is real evidence, not boot lag.
-  if (!timerFiredSinceBoot && uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) return null;
+  // Post-boot grace: suppress the VERDICT only while the scheduler has NOT yet fired this
+  // boot, and only up to the ceiling. Once the timer has fired, a stale log is real evidence,
+  // not boot lag.
+  //
+  // 'warming', NOT null (2026-09-19). Returning null made the grace mean "TRUSTED" rather than
+  // "do not alarm": composeWslFront derives flag suppression from this kind, so a null handed
+  // it nothing to derive from and an old wsl-pressure-broken.flag / claude-cap-bypass.flag —
+  // both PRODUCER-SELF-CLEARING, so one surviving a reboot is precisely the unvouched case —
+  // kept rendering as a current RED verdict for up to the full ceiling. That is the same
+  // invariant this family exists to enforce ("never assert a verdict you cannot vouch for")
+  // failing on a different axis: suppression fired when a producer was confirmed DEAD but not
+  // when it was merely UNPROVEN. Carried in `kind` rather than in a new per-producer status
+  // field because `kind` is the carrier every consumer actually reads.
+  // `token: ''` keeps the public contract byte-identical — readWslMonitorState still emits an
+  // empty token, WSL_MONITOR_LABELS has no 'warming' entry, and no wsl:*-dead ever renders
+  // inside the grace. `ageMs: null` is deliberate: there is no meaningful duration yet.
+  // The ceiling (WSL_MONITOR_BOOT_GRACE_MS) and the stamp anchor are UNCHANGED — the fix is
+  // what the grace MEANS, never how long it lasts.
+  // INVARIANT: the bash twin wml_snapshot() in ~/repos/skills/dhx/infra/references/
+  // wsl-monitor-liveness.sh MUST emit kind=warming from its own grace branch, and wml_state's
+  // four-state stdout projection MUST stay byte-identical (consumers parse `${STATE##* }`).
+  // Pinned from both sides: this file's probe, skills' probe-infra-monitor-liveness.sh, and
+  // cross-repo scripts/health/tests/probe-wsl-monitor-liveness-coupling.sh.
+  if (!timerFiredSinceBoot && uptimeMs !== null && uptimeMs < WSL_MONITOR_BOOT_GRACE_MS) {
+    return { kind: 'warming', ageMs: null, token: '' };
+  }
   const stale = (a) => a !== null && a >= WSL_MONITOR_DEAD_MS;
   const p = stale(pressureAgeMs);
   const c = stale(censusAgeMs);
@@ -1548,6 +1575,11 @@ function readWslMonitorState() {
       readTimerFiredSinceBoot(uptimeMs, now),
     );
     if (!state) return { token: '', kind: null };
+    // 'warming' is a TRUST state, not a verdict: it must reach composeWslFront (which keys on
+    // `kind` to suppress the two self-clearing flags) while rendering nothing itself. Returned
+    // ahead of the label lookup on purpose — WSL_MONITOR_LABELS has no 'warming' entry by
+    // design, and `ageMs` is null, so falling through would compose `⚠ undefined NaN`.
+    if (state.kind === 'warming') return { token: '', kind: 'warming' };
     const age = formatBurnDuration(state.ageMs / 60000);
     const label = WSL_MONITOR_LABELS[state.kind];
     return { token: `\x1b[31m⚠ ${label}${age ? ' ' + age : ''}\x1b[0m`, kind: state.kind };
@@ -1569,6 +1601,13 @@ function readWslMonitorState() {
 //     that it outlives the incident, so staleness is a feature and suppression would be a bug.
 //   - pressure stale → suppress probe-broken (same producer).
 //   - census stale   → suppress claude-cap-bypass (same producer).
+//   - WARMING (inside the boot grace) → suppress BOTH, same reason one step earlier in the
+//     lifecycle: no producer has run yet this boot, so a flag that survived the reboot is
+//     unvouched BY CONSTRUCTION (the producer would have rewritten or removed it on a healthy
+//     run). "Not yet vouched" is not "trusted". Unlike the three stale kinds this one renders
+//     no liveness token of its own (monitor.token is ''), so the grace stays quiet on the push
+//     surface — the operator-facing "awaiting first producer check this boot" line is the PULL
+//     surface's job (/dhx:infra), per the push/pull split this family already follows.
 // The suppressed detail is not lost — the /dhx:infra pull surface reports it as "last known,
 // stale". Push shows the actionable now-state; pull carries the forensics.
 // Order: trip → monitor-liveness → probe-broken → cap-bypass (trip's FIRST slot is a locked
@@ -1579,8 +1618,11 @@ function composeWslFront({ trip, monitor, broken, bypass }) {
   if (trip) out.push(trip);
   if (monitor && monitor.token) out.push(monitor.token);
   const kind = monitor && monitor.kind;
-  const pressureStale = kind === 'monitor' || kind === 'pressure';
-  const censusStale   = kind === 'monitor' || kind === 'census';
+  // 'warming' suppresses BOTH — unvouched-because-nothing-has-run-yet, not unvouched-because-
+  // the-producer-is-dead. Same suppression, earlier cause.
+  const warming = kind === 'warming';
+  const pressureStale = warming || kind === 'monitor' || kind === 'pressure';
+  const censusStale   = warming || kind === 'monitor' || kind === 'census';
   if (broken && !pressureStale) out.push(broken);
   if (bypass && bypass.token && !censusStale) out.push(bypass.token);
   return out;

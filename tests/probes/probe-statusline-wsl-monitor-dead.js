@@ -159,16 +159,31 @@ function check(name, ok, detail) {
   check('classify: absent census + stale pressure → pressure (absent ≠ stale)', k(DEAD_MS, null, UP) === 'pressure');
   check('classify: boundary 94:59.999 → null (under threshold)', k(DEAD_MS - 1, DEAD_MS - 1, UP) === null);
   check('classify: boundary 95:00.000 → monitor (at threshold)', k(DEAD_MS, DEAD_MS, UP) === 'monitor');
-  check('classify: boot grace 11:59.999 + timer not yet fired → null (post-boot suppression)',
-    k(DEAD_MS, DEAD_MS, GRACE_MS - 1) === null);
+  check('classify: boot grace 11:59.999 + timer not yet fired → warming (post-boot suppression)',
+    k(DEAD_MS, DEAD_MS, GRACE_MS - 1) === 'warming');
   check('classify: boot grace 12:00.000 → monitor (ceiling reached, stamp never arrived)',
     k(DEAD_MS, DEAD_MS, GRACE_MS) === 'monitor');
   // THE REGRESSION CASE. Boot -6 (2026-08-07): user manager started at 134.05s, first producer
   // run landed at 489.976s. Under the old 480s kernel-boot-anchored grace this rendered a RED
   // on a healthy box for ~10s. The ceiling now covers it, and the stamp ends the grace the
   // instant the timer actually fires rather than at a guessed elapsed time.
-  check('classify: 490s uptime, timer NOT yet fired → null (the boot -6 false positive, fixed)',
-    k(DEAD_MS, DEAD_MS, 489.976 * 1000) === null);
+  check('classify: 490s uptime, timer NOT yet fired → warming (the boot -6 false positive, fixed)',
+    k(DEAD_MS, DEAD_MS, 489.976 * 1000) === 'warming');
+  // The grace means UNPROVEN, not TRUSTED (2026-09-19). Both assertions above read `null`
+  // until this change — that null is exactly what left composeWslFront with no kind to
+  // derive suppression from, so the two producer-self-clearing flags rendered as current
+  // REDs for up to the full ceiling. The rendered contract is unchanged: warming carries
+  // token '' and WSL_MONITOR_LABELS has no entry for it, pinned directly below.
+  check('classify: warming carries NO age and NO token (nothing red may render in the grace)',
+    (() => { const st = classifyWslMonitorState(DEAD_MS, DEAD_MS, GRACE_MS - 1, false);
+             // `!!st` is load-bearing, not defensive noise: pre-change this returns null, and
+             // an unguarded property read THROWS — killing the process before the render-path
+             // assertions below ever run, which is exactly the arm the negative control needs.
+             return !!st && st.kind === 'warming' && st.ageMs === null && st.token === ''; })());
+  check('classify: fresh logs inside the grace are ALSO warming (trust is unproven either way)',
+    k(0, 0, GRACE_MS - 1) === 'warming');
+  check('classify: absent logs inside the grace are ALSO warming (nothing has run yet)',
+    k(null, null, GRACE_MS - 1) === 'warming');
   check('classify: 490s uptime, timer HAS fired → monitor (stale logs are real evidence now)',
     k(DEAD_MS, DEAD_MS, 489.976 * 1000, true) === 'monitor');
   check('classify: timer fired ends the grace early — 1min uptime + fired → monitor',
@@ -207,6 +222,16 @@ function check(name, ok, detail) {
     JSON.stringify(c('pressure')) === JSON.stringify(['TRIP', 'DEAD', 'BYPASS']));
   check('arbitrate: census dead → cap-bypass suppressed, probe-broken KEPT (different producer)',
     JSON.stringify(c('census')) === JSON.stringify(['TRIP', 'DEAD', 'BROKEN']));
+  // WARMING — the boot grace. Suppresses BOTH flags like 'monitor', but renders no token of
+  // its own, so the front carries the trip alone. Inversion guard: the two assertions below
+  // differ in WHICH tokens survive, so a `warming` arm that suppressed nothing fails the
+  // first and a blanket suppression fails the 'arbitrate: no liveness state' case above.
+  // Built explicitly, NOT via c(): that helper substitutes a 'DEAD' token whenever `kind` is
+  // truthy, and warming's defining property is that its token is EMPTY.
+  check('arbitrate: warming → BOTH self-clearing flags suppressed, trip alone remains',
+    JSON.stringify(composeWslFront({ trip: 'TRIP', monitor: { token: '', kind: 'warming' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify(['TRIP']));
+  check('arbitrate: warming renders NO liveness token even if one were somehow handed in',
+    JSON.stringify(composeWslFront({ trip: '', monitor: { token: '', kind: 'warming' }, broken: 'BROKEN', bypass: { token: 'BYPASS', fault: 'BYPASS' } })) === JSON.stringify([]));
   check('arbitrate: trip ALWAYS survives (durable by decision, never suppressed)',
     composeWslFront({ trip: 'TRIP', monitor: { token: 'DEAD', kind: 'monitor' }, broken: '', bypass: { token: '', fault: '' } })[0] === 'TRIP');
   check('arbitrate: ordering is trip → liveness → broken → bypass',
@@ -356,6 +381,62 @@ function check(name, ok, detail) {
     && livenessToken(out).startsWith('wsl:pressure-dead') && !out.includes(MONITOR_SIGIL);
   check('arbitration (live): pressure dead → probe-broken suppressed, cap-bypass UNAFFECTED', ok,
     ok ? '' : `broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} tok=${JSON.stringify(livenessToken(out))}`);
+}
+
+// =========================================================================
+// THE BOOT GRACE MEANS "NOT YET VOUCHED", NOT "TRUSTED" (2026-09-19)
+// Required behaviour from .planning/backlog/2026-08-15-wsl-monitor-boot-grace-means-trusted.md
+// (cross-repo): uptime INSIDE the grace + no stamp + both logs stale + an old broken flag +
+// an old bypass flag + a trip flag  =>  trip token RENDERS, broken and bypass are SUPPRESSED,
+// and NO liveness token is emitted. Both flags are producer-self-clearing, so one that
+// survived the reboot is unvouched by construction — the producer would have rewritten or
+// removed it on a healthy run, and no producer has run yet.
+//
+// Driven THROUGH THE RENDER PATH (real wrapper spawn), not the pure classifier: the pure
+// arbitration cases above pin composeWslFront, but only a render proves readWslMonitorState
+// actually propagates kind='warming' into it with an empty token.
+// =========================================================================
+{
+  const out = runWith({
+    pressureMin: 540, censusMin: 540, uptimeMs: String(5 * 60 * 1000), stampMin: null,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const ok = out.includes(TRIP_TOKEN(447))
+    && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && livenessToken(out) === '' && !out.includes(MONITOR_SIGIL);
+  check('warming (live): in-grace + all three flags → trip renders, broken + bypass SUPPRESSED, no liveness token', ok,
+    ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
+}
+
+// --- NEGATIVE ARM (a): the same fixture with a stamp newer than boot. The grace ends, the
+// --- stale logs become real evidence, and today's behaviour returns: the RED liveness token
+// --- renders. Without this, "no liveness token" above is satisfied by a wrapper that never
+// --- renders one at all.
+{
+  const out = runWith({
+    pressureMin: 540, censusMin: 540, uptimeMs: String(5 * 60 * 1000), stampMin: 1,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const ok = out.includes(TRIP_TOKEN(447))
+    && livenessToken(out).startsWith('wsl:monitor-dead') && !out.includes(MONITOR_SIGIL);
+  check('warming NEGATIVE ARM: stamp newer than boot + stale logs → grace over, ⚠ wsl:monitor-dead renders', ok,
+    ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
+}
+
+// --- NEGATIVE ARM (b): stamp newer than boot + FRESH logs + all three flags. Nothing is
+// --- stale, so nothing is suppressed and all three flag tokens render. This is the arm that
+// --- catches a blanket suppression: a `warming` implementation that suppressed on every
+// --- in-grace-capable path, or one keyed on uptime rather than on the classified kind,
+// --- passes the required-behaviour case above and fails here.
+{
+  const out = runWith({
+    pressureMin: 1, censusMin: 1, uptimeMs: String(5 * 60 * 1000), stampMin: 1,
+    trip: TRIP(447), broken: 'fresh break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const ok = out.includes(TRIP_TOKEN(447)) && out.includes(BROKEN_TOKEN) && out.includes(BYPASS_TOKEN)
+    && livenessToken(out) === '' && !out.includes(MONITOR_SIGIL);
+  check('warming NEGATIVE ARM: stamp fired + fresh logs → all three flag tokens render (suppression is not blanket)', ok,
+    ok ? '' : `trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)} liveness=${JSON.stringify(livenessToken(out))}; output: ${JSON.stringify(out)}`);
 }
 
 // --- fresh logs must not disturb the existing readers (no-regression guard) ---
