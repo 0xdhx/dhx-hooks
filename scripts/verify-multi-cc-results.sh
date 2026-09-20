@@ -271,36 +271,42 @@ validate_dir() {
 # that has no cells, not for a mistyped flag.
 usage_error() {
   echo "verify-multi-cc-results: $1" >&2
-  echo "usage: $(basename "$0") [<cc-version>|--all|-h]" >&2
+  echo "usage: $(basename "$0") [<cc-version>|--all|-h|--help]" >&2
   exit 2
 }
-if (( $# > 1 )); then
-  usage_error "unexpected extra argument(s): ${*:2} (one argument or none)"
-fi
 MODE="active"
 TARGET_VERSION=""
-case "${1:-}" in
-  "")
-    MODE="active"
-    ;;
-  --all)
-    MODE="all"
-    ;;
-  -h|--help)
-    sed -n '2,46p' "$0"
-    exit 0
-    ;;
-  -*)
-    usage_error "unknown option: $1"
-    ;;
-  *)
-    if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      usage_error "version positional must be exactly N.N.N, got: $1"
-    fi
-    MODE="explicit"
-    TARGET_VERSION="$1"
-    ;;
-esac
+# Branch on ARGC, never on "${1:-}": an explicit empty argument ('') is a
+# positional, not an absence, and the old `case "${1:-}" in "")` arm read it as
+# active mode and exited 0 (close-gate round 2, 2026-09-19). With argc == 1 the
+# partition below is exhaustive — three literals, an anchored regex, and two
+# refusals — so nothing but `--all`, `-h`, `--help` or an exact N.N.N reaches
+# a non-usage exit.
+if (( $# == 0 )); then
+  MODE="active"
+elif (( $# > 1 )); then
+  usage_error "unexpected extra argument(s): ${*:2} (one argument or none)"
+else
+  case "$1" in
+    --all)
+      MODE="all"
+      ;;
+    -h|--help)
+      sed -n '2,46p' "$0"
+      exit 0
+      ;;
+    -*)
+      usage_error "unknown option: $1"
+      ;;
+    *)
+      if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        usage_error "version positional must be exactly N.N.N, got: '$1'"
+      fi
+      MODE="explicit"
+      TARGET_VERSION="$1"
+      ;;
+  esac
+fi
 
 # --- Dispatch ---
 GLOBAL_FAILS=0

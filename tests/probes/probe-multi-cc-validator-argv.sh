@@ -24,6 +24,9 @@
 #              `--all --verbose` -> 2  `9.9.9 --verbose` -> 2
 #              `1.2` -> 2  `1.2.3.4` -> 2  (exactly three components — the
 #              close-gate reviewer's round-1 counterexamples, 2026-09-19)
+#              `''` -> 2  (an explicit empty positional is not an absence —
+#              round-2 counterexample; the parser branches on $# so this is
+#              the whole non-matching class, not one more list entry)
 #              `1.2.3` (absent dir) -> 2 (D-24, pre-existing)
 #   each refusal prints a `usage:` line on stderr.
 #
@@ -37,6 +40,15 @@
 #     (acceptance criterion 1)
 #
 # Run: bash tests/probes/probe-multi-cc-validator-argv.sh
+#
+# CC-STDERR-EXEMPT: no real Claude Code binary is ever reached. The one
+#   `claude --version` call path (the validator's active mode) is exercised only
+#   in the third negative control, against a fixture `claude` on a private PATH
+#   that prints the constant "0.0.0 (fixture)" — it loads no settings, so no lint
+#   line exists to leak, and nothing here classifies its output beyond the
+#   validator's own version grep. Measured 2026-09-19: the net matched this file
+#   on that fixture's `claude --version` string alone.
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
 
 set -uo pipefail
 
@@ -88,6 +100,9 @@ refused "$VER --verbose (trailing flag)"  "$VER" --verbose
 refused "three args"                      "$VER" "$VER" "$VER"
 refused "two-component '1.2'"             1.2
 refused "four-component '1.2.3.4'"        1.2.3.4
+refused "explicit empty positional ''"    ""
+refused "whitespace positional ' '"       " "
+refused "leading-zero-free but 2-dot-suffixed '1.2.'" 1.2.
 
 # The one pre-existing exit-2 path: a well-formed version with no dir. Kept
 # distinct from the usage class — its message names the dir, not the usage.
@@ -98,7 +113,8 @@ assert "  ...and names the missing dir, not usage"        "$(grep -q 'does not e
 # Negative control for the trailing-flag class: a copy with the argc guard
 # removed must exit 0 on `--all --verbose` (the pre-fix shape), proving the
 # assertions above have a tooth and are not passing on the fixture alone.
-sed '/^if (( \$# > 1 )); then$/,/^fi$/d' "$T/scripts/verify-multi-cc-results.sh" > "$T/scripts/pre-fix.sh"
+sed '/^elif (( \$# > 1 )); then$/,+1d' "$T/scripts/verify-multi-cc-results.sh" > "$T/scripts/pre-fix.sh"
+grep -q 'unexpected extra argument' "$T/scripts/pre-fix.sh" && echo "WARN: argc-guard mutation did not apply"
 PRE_RC=$(bash "$T/scripts/pre-fix.sh" --all --verbose >/dev/null 2>&1; echo $?)
 assert "negative control: without the argc guard, --all --verbose -> 0 (the pre-fix false clean)" \
   "$([[ $PRE_RC -eq 0 ]] && echo true || echo false)"
@@ -117,6 +133,20 @@ assert "negative control: with the round-1 regex, 1.2.3.4 -> 0 (the reviewer's c
   "$([[ $PRE2_RC -eq 0 ]] && echo true || echo false)"
 run 1.2.3.4
 assert "  ...and the fixed script refuses the same dir -> 2" "$([[ $RC -eq 2 ]] && echo true || echo false)"
+
+# Negative control for the empty-positional class: a copy that branches on
+# "${1:-}" (the round-2 shape) must read '' as active mode. Active mode shells
+# out to `claude --version`; the copy is given a fake `claude` on PATH that
+# prints a version with no corpus dir, so active mode's absent-dir arm exits 0
+# — exactly the false clean the reviewer observed on the live tree.
+mkdir -p "$T/bin"; printf '#!/bin/sh\necho "0.0.0 (fixture)"\n' > "$T/bin/claude"; chmod +x "$T/bin/claude"
+sed 's/^if (( \$# == 0 )); then$/if [[ -z "${1:-}" ]]; then/' "$T/scripts/verify-multi-cc-results.sh" > "$T/scripts/pre-fix-argc.sh"
+grep -q 'if \[\[ -z "\${1:-}" \]\]; then' "$T/scripts/pre-fix-argc.sh" || echo "WARN: argc mutation did not apply"
+PRE3_RC=$(PATH="$T/bin:$PATH" bash "$T/scripts/pre-fix-argc.sh" "" >/dev/null 2>&1; echo $?)
+assert "negative control: branching on \"\${1:-}\", '' -> 0 (the round-2 false clean)" \
+  "$([[ $PRE3_RC -eq 0 ]] && echo true || echo false)"
+PRE3B_RC=$(PATH="$T/bin:$PATH" bash "$T/scripts/verify-multi-cc-results.sh" "" >/dev/null 2>&1; echo $?)
+assert "  ...and the fixed script refuses '' -> 2 under the same fake claude" "$([[ $PRE3B_RC -eq 2 ]] && echo true || echo false)"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
