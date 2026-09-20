@@ -13,15 +13,29 @@
 # manually when done (path printed at end).
 
 #
-# CC-STDERR-UNMEASURED: this arm drives a REAL `claude --debug-file $DEBUG_LOG
-#   -p 'hi'` and classifies $DEBUG_LOG with `grep -E "session-start|SessionStart"`
-#   to set CONTROL_FIRED. Measured 2026-09-18: the live settings file
-#   (~/.ccs/shared/settings.json) contains 1 line matching that alternation. So
-#   IF Claude Code's --debug-file carries the settings lint, CONTROL_FIRED is
-#   forged yes. Whether it does has NOT been measured — this is a declared open
-#   exposure on a surface the stderr filter does not cover (a file, not a 2>&1
-#   capture), not a cleared one. Counted by probe-cc-stderr-classifier-net.sh.
-#   Brief: .planning/backlog/2026-09-18-run-empirical-arm-classifies-cc-debug-file-which-may-carry-the-settings-lint.md
+# CC-STDERR-EXEMPT: this arm classifies $DEBUG_LOG (`--debug-file`), not a 2>&1
+#   capture, and the settings lint never reaches that file — measured 2026-09-19
+#   on CC 2.1.278, 2/2 lint-provoking cells: `Permission allow rule (...)` on stderr
+#   (positive control), 0 lines of that shape in the debug file; `--debug` changes
+#   nothing. What DOES reach it is every loaded permission rule's text, verbatim
+#   (`Applying permission update: Adding 1 allow rule(s) to destination
+#   'userSettings': ["Bash(SessionStart)"]`, 4/4 rule cells, lint-independent) —
+#   but this sandbox swaps HOME and CLAUDE_CONFIG_DIR, so the live settings are
+#   never read; the only read-through is <cwd>/.claude/settings.local.json (0
+#   matching rules in ~/repos/hooks today; project settings.json allow rules are
+#   dropped in an untrusted workspace). Re-measure if the arm is ever run from a
+#   cwd whose settings.local.json carries a rule naming SessionStart.
+#   Evidence: reports/2026-09-19-h3-debug-file-settings-lint-cc-2.1.278/
+#   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
+#
+# ORACLE (2026-09-19, H5): the verdict is computed by lib/empirical-arm-classify.sh
+#   and 8c is LOAD-BEARING — REFUTE requires >=1 Stop-dispatch line in $DEBUG_LOG
+#   besides marker-absent + control-fired. Unauthenticated, CC ends the turn at
+#   the API auth error BEFORE Stop dispatches, so the marker cannot fire and the
+#   old two-signal rule printed a vacuous REFUTE (H5 run 1). Credentials are
+#   therefore required up front (pre-flight below) — the swapped HOME hides any
+#   /login credential from the child, so they must come from the environment.
+#   Regression probe: tests/probes/probe-empirical-arm-oracle.sh.
 #
 
 set -uo pipefail
@@ -30,6 +44,8 @@ HOOKS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MARKER_FIXTURE="$HOOKS_REPO/tests/probes/fixtures/dhx-cache-probe-marker.sh"
 PROBE="$HOOKS_REPO/tests/probes/probe-plugin-cache-staleness.sh"
 PLUGIN_DIR="$HOOKS_REPO/dhx-plugin"
+# shellcheck source=lib/empirical-arm-classify.sh
+source "$HOOKS_REPO/tests/probes/lib/empirical-arm-classify.sh"
 
 # === Pre-flight ===
 err=0
@@ -38,6 +54,18 @@ command -v jq     >/dev/null || { echo "ERROR: jq not on PATH"          >&2; err
 [ -x "$MARKER_FIXTURE" ] || { echo "ERROR: marker fixture not executable: $MARKER_FIXTURE" >&2; err=1; }
 [ -x "$PROBE" ]          || { echo "ERROR: probe not executable: $PROBE"                 >&2; err=1; }
 [ -d "$PLUGIN_DIR" ]     || { echo "ERROR: dhx-plugin dir missing: $PLUGIN_DIR"          >&2; err=1; }
+# Credentials up front (H5, 2026-09-19). The sandbox swaps HOME and CLAUDE_CONFIG_DIR,
+# so a /login credential is invisible to the child; unauthenticated it prints
+# `Not logged in · Please run /login` and ends the turn at `Could not resolve
+# authentication method` BEFORE any Stop hook dispatches — the arm then measures
+# nothing. Refuse before provisioning a sandbox rather than classify a vacuous run.
+if [ -z "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "ERROR: no credential in the environment — set ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN /" >&2
+  echo "       CLAUDE_CODE_OAUTH_TOKEN). The sandboxed child cannot see a /login credential; without" >&2
+  echo "       one CC ends the turn before Stop dispatches and the verdict is INCONCLUSIVE by construction." >&2
+  echo "       e.g.  ( . ~/.env-keys && bash tests/probes/run-empirical-arm.sh )   # subshell: nothing leaks" >&2
+  err=1
+fi
 [ $err -eq 0 ] || exit 2
 
 SID="$$-$(date +%s)"
@@ -125,29 +153,29 @@ else
 fi
 [ "$CONTROL_FIRED" = "yes" ] || echo "    (no SessionStart trace found in debug log)"
 
-banner "8c. Debug log: Stop event trace (injected event-class)"
-grep -E "Hook Stop:|Stop event|\(Stop\)" "$DEBUG_LOG" 2>/dev/null | head -10 | sed 's/^/    /' \
-  || echo "    (no Stop event trace — operator should verify before accepting REFUTE)"
-
-# === D-05 advisory classification ===
-banner "D-05 advisory classification (verify before write-result)"
-# D-25: marker injected under Stop event-class — fires reliably under `claude -p`.
-# Marker absence + control fired → REFUTE is decisive (Stop event did trigger;
-# only explanation for marker absence is cache-not-read).
-if [ "$MARKER_FIRED" = "yes" ]; then
-  CLASS_LABEL="AFFIRM (cache IS the read path)"
-  CLASS_ARGS='--cache-read-path yes --control-hook-fired '"$CONTROL_FIRED"
-elif [ "$MARKER_FIRED" = "no" ] && [ "$CONTROL_FIRED" = "yes" ]; then
-  CLASS_LABEL="REFUTE (live source is the read path — cache is metadata-only, confirms HP-020)"
-  CLASS_ARGS='--cache-read-path no --control-hook-fired yes'
-else
-  CLASS_LABEL="INCONCLUSIVE (claude failed / install error — neither fired)"
-  CLASS_ARGS='--cache-read-path inconclusive --control-hook-fired '"$CONTROL_FIRED"
+banner "8c. Debug log: Stop-dispatch trace (LOAD-BEARING — REFUTE needs >= 1 line)"
+STOPS_DISPATCHED=$(arm_stop_dispatched "$DEBUG_LOG")
+grep -E "$ARM_STOP_RE" "$DEBUG_LOG" 2>/dev/null | head -10 | sed 's/^/    /'
+echo "    Stop-dispatch lines: $STOPS_DISPATCHED  (pattern: $ARM_STOP_RE)"
+AUTH_FAILED=$(arm_auth_failed "$DEBUG_LOG")
+if [ "$AUTH_FAILED" = "yes" ]; then
+  echo "    AUTH FAILURE in debug log — the child never reached the model:"
+  grep -E "$ARM_AUTH_FAIL_RE" "$DEBUG_LOG" 2>/dev/null | head -2 | cut -c1-160 | sed 's/^/      /'
 fi
+
+# === D-05 classification (lib/empirical-arm-classify.sh) ===
+banner "D-05 classification (verify before write-result)"
+# D-25: marker injected under Stop event-class — fires reliably under `claude -p`
+# ONLY IF Stop dispatched. Marker absence + control fired + >=1 Stop-dispatch
+# line → REFUTE is decisive (the Stop event did trigger; the only explanation
+# for marker absence is cache-not-read). With 0 Stop-dispatch lines the marker
+# could not have fired and the verdict is INCONCLUSIVE, never REFUTE (H5 run 1).
+arm_classify "$MARKER_FIRED" "$CONTROL_FIRED" "$STOPS_DISPATCHED" "$AUTH_FAILED"
 echo "    Suggested: $CLASS_LABEL"
 echo "    Args:      $CLASS_ARGS"
 echo "    Manual verification: review $DEBUG_LOG + $MARKER_LOG before accepting."
 echo "    --control-hook-fired observed: $CONTROL_FIRED"
+echo "    Stop-dispatch lines observed:  $STOPS_DISPATCHED"
 
 # === Ready-to-run write-result command ===
 cat <<EOF

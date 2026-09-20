@@ -310,6 +310,7 @@ A probe is a **version-gated behavior probe** when it asserts a *per-CC-version*
 | Probe | Backs | Run |
 |-------|-------|-----|
 | `probe-cc-stderr-classifier-net.sh` | decisions.md 2026-09-18 stderr-classifier-input row + § "A classifier's INPUT is a surface too" (fail-closed net: every file that can reach a CC binary carries exactly one `# CC-STDERR*` tag; § 5 crosses the live settings' permission rules against the classifier regexes harvested from the tree) | `bash tests/probes/probe-cc-stderr-classifier-net.sh` |
+| `probe-empirical-arm-oracle.sh` | decisions.md 2026-09-19 "the D-01 arm needs credentials" row (the arm's verdict oracle in `lib/empirical-arm-classify.sh`: REFUTE needs ≥1 Stop-dispatch line; the credential gate; § 4 is the pre-fix rule as negative control) | `bash tests/probes/probe-empirical-arm-oracle.sh` |
 | `probe-settings-hash.js` | decisions.md 2026-04-16 drift settings_hash row | `node tests/probes/probe-settings-hash.js` |
 | `probe-migration.js` | same row (graceful schema migration) | `node tests/probes/probe-migration.js` |
 | `probe-plugin-keys.sh` | decisions.md 2026-04-16 plugin-keys row (direct jq-check + sym-health.json fast-path) | `bash tests/probes/probe-plugin-keys.sh` |

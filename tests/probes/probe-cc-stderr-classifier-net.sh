@@ -79,7 +79,7 @@ TAG_RE='^# CC-STDERR(-EXEMPT|-UNMEASURED)?:'
 
 # Pinned floors. A count that DROPS means the net stopped finding things.
 FLOOR_CANDIDATES=21
-EXPECT_UNMEASURED=1
+EXPECT_UNMEASURED=0
 
 # ---------------------------------------------------------------------------
 echo "### 1. the net discovers candidates"
