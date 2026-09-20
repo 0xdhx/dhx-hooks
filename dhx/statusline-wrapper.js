@@ -1455,10 +1455,10 @@ const WSL_MONITOR_BOOT_GRACE_MS = 12 * 60 * 1000;
 // anchors the grace and does not replace the log-mtime staleness check. The pair is strictly
 // more expressive than either alone, and since 2026-09-19 the classifier draws on it twice:
 // the stamp's AGE under WSL_MONITOR_RUN_ALLOWANCE_MS with a non-fresh log is 'inflight' (the
-// run has not had time to finish — no verdict), and a stamp older than the allowance but
-// younger than the dead threshold beside a stale log is an `*-unfinished` verdict — that
-// producer's when the sibling is fresh, `monitor-unfinished` when BOTH are stale (the timer is
-// fine; the run started and never reached its writes).
+// run has not had time to finish — no verdict), and a stamp fired THIS boot, older than the
+// allowance but younger than the dead threshold, beside a stale log is an `*-unfinished`
+// verdict — that producer's when the sibling is fresh, `monitor-unfinished` when BOTH are
+// stale (the timer is fine; the run started and never reached its writes).
 //
 // Bonus the /proc/uptime anchor could never have: this path is under $HOME, so makeFakeHome()
 // fixtures drive it directly — the exact limitation readUptimeMs() documents below.
@@ -1521,7 +1521,8 @@ function wslLogAgeMs(file, now) {
 //   4 one log missing,
 //     sibling FRESH         → 'pressure-missing' / 'census-missing' (the fresh sibling IS
 //                                          the install evidence; no age — none exists)
-//   5 stamp age < dead,
+//   5 stamp fired THIS boot
+//     AND stamp age < dead,
 //     both stale            → 'monitor-unfinished' (the timer is fine — the ONE process that
 //                                          is wsl-pressure.service started and hung whole,
 //                                          so neither log moved; coverage age = the NEWER
@@ -1530,9 +1531,10 @@ function wslLogAgeMs(file, now) {
 //                                          fine — the producer ran and did not complete;
 //                                          carries that producer's own log age)
 //   6 today's verdicts      → 'monitor'   (both stale AND the stamp is dead / absent /
-//                                          from a previous boot — the timer itself has not
-//                                          fired within the dead threshold, so it genuinely
-//                                          IS the timer's story; coverage age = the NEWER log)
+//                                          from a previous boot — the timer has not fired
+//                                          THIS boot within the dead threshold, so it
+//                                          genuinely IS the timer's story; coverage age =
+//                                          the NEWER log)
 //                             'pressure'  (trip + probe-broken flags unvouched)
 //                             'census'    (claude-cap-bypass flag unvouched)
 //                             null        (silent)
@@ -1543,7 +1545,11 @@ function wslLogAgeMs(file, now) {
 // because a 600 s stamp proves the scheduler fired and the pull surface still told the
 // operator to restart it. `wsl-pressure-check.sh` runs `claude-cap-census.sh` as a CHILD, so
 // a producer that hangs most plausibly hangs whole and writes neither log: that is
-// 'monitor-unfinished', and 'monitor' is now reachable only without an alive stamp.
+// 'monitor-unfinished', and 'monitor' is now reachable only without an alive stamp. Round 3
+// (2026-09-20): "alive" has TWO conjuncts — fired THIS boot and younger than the dead
+// threshold. Age alone misread the previous-boot window: a stamp older than uptime but
+// younger than 5700 s (the first ~80 min after a boot in which the timer did not fire) is
+// a scheduler that never ran this boot, i.e. 'monitor', never `*-unfinished`.
 // Has wsl-pressure.timer fired since THIS boot? Compares the systemd stamp's mtime against
 // boot wall-time (now - uptime). Own try/catch → false, and false means "grace still applies",
 // which is safe precisely because the grace is now ceiling-bounded: an absent stamp (timer
@@ -1626,22 +1632,29 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   // sibling's verdict is the story, and the pull surface still renders `log missing`.)
   if (P === 'missing' && C === 'fresh') return { kind: 'pressure-missing', ageMs: null };
   if (C === 'missing' && P === 'fresh') return { kind: 'census-missing', ageMs: null };
-  // Step 5 — ran but did not finish: the stamp is alive (younger than the dead threshold) and
-  // past the allowance, and at least one producer's log is stale. The timer is fine — it
-  // fired within the threshold — so whatever is stale is the RUN's failure, not the scheduler's.
+  // Step 5 — ran but did not finish: the stamp is alive and past the allowance, and at least
+  // one producer's log is stale. "Alive" is TWO conjuncts, both required: the stamp fired THIS
+  // boot (mtime after boot wall-time — the same predicate step 3 uses as install evidence) AND
+  // it is younger than the dead threshold. Age alone is not enough (round 3, 2026-09-20): in
+  // the first ~80 min after a boot in which the timer has not fired, a stamp left by the
+  // PREVIOUS boot is older than uptime yet younger than 5700 s — reading that as alive sent a
+  // never-ran-this-boot scheduler to the producer diagnosis. With both conjuncts the timer is
+  // demonstrably fine, so whatever is stale is the RUN's failure, not the scheduler's.
+  // (`inflight` above needs no such guard: a stamp under the 360 s allowance, reached only
+  // past the 720 s grace, is younger than uptime and therefore this boot's by construction.)
   // Both stale → 'monitor-unfinished': wsl-pressure.service is one process (the census runs as
   // the pressure script's child), so a hang most plausibly takes both writes with it; the age
   // is the NEWER log, the same coverage-age rule and reason as 'monitor' below. One stale
   // beside a fresh sibling → that producer's own `*-unfinished`, carrying its own log age.
   // The three predicates are disjoint; the both-stale arm is first only for readability.
-  const stampAlive = stampAge !== null && stampAge < WSL_MONITOR_DEAD_MS;
+  const stampAlive = timerFiredSinceBoot && stampAge !== null && stampAge < WSL_MONITOR_DEAD_MS;
   if (stampAlive && P === 'stale' && C === 'stale') return { kind: 'monitor-unfinished', ageMs: Math.min(pressureAgeMs, censusAgeMs) };
   if (stampAlive && P === 'stale' && C === 'fresh') return { kind: 'pressure-unfinished', ageMs: pressureAgeMs };
   if (stampAlive && C === 'stale' && P === 'fresh') return { kind: 'census-unfinished', ageMs: censusAgeMs };
   // Step 6 — today's verdicts. 'monitor' is reachable here only with a stamp that is dead,
-  // absent, or from a previous boot (an alive stamp beside two stale logs left at step 5), so
-  // it now means exactly what its token says: both producers dark AND the timer itself has
-  // not fired within the dead threshold.
+  // absent, or from a previous boot (a stamp fired this boot and alive beside two stale logs
+  // left at step 5), so it now means exactly what its token says: both producers dark AND
+  // the timer has not fired this boot within the dead threshold.
   const p = P === 'stale';
   const c = C === 'stale';
   // NEWER of the two, not older. The token renders `wsl:monitor-dead <age>`, and the pull

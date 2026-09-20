@@ -291,6 +291,35 @@ function check(name, ok, detail) {
     k5(STALE, STALE, UP, true, 5699 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE, UP, true, 5699 * S)}`);
   check('classify5: stamp 5700 s (= dead) + BOTH stale → monitor 5760 (boundary: stamp dead, the timer is the story)',
     k5(STALE, STALE, UP, true, 5700 * S) === 'monitor 5760', `got ${k5(STALE, STALE, UP, true, 5700 * S)}`);
+  // --- stampAlive CLASS (round 3, 2026-09-20): every `*-unfinished` arm requires a stamp that
+  // --- fired THIS boot AND is younger than the dead threshold. Enumerated, not sampled: three
+  // --- not-alive stamp forms × three stale-log shapes = 9 cells, every one today's verdict.
+  // --- The previous-boot form is the reviewer's counterexample — uptime 900 s (past the 720 s
+  // --- grace), stamp 901 s (older than uptime → predates boot → never fired this boot), which
+  // --- round 2's age-only predicate read as alive and returned `monitor-unfinished`.
+  {
+    const forms = [
+      ['absent (no stamp)',                 UP,      false, null],
+      ['this boot but DEAD (6000 s)',       UP,      true,  6000 * S],
+      ['previous boot, aged 901 s @ up 900', 900 * S, false, 901 * S],
+    ];
+    const shapes = [
+      ['both stale',          STALE, STALE, 'monitor 5760'],
+      ['pressure stale only', STALE, FRESH, 'pressure 5760'],
+      ['census stale only',   FRESH, STALE, 'census 5760'],
+    ];
+    for (const [fname, up, fired, st] of forms) {
+      for (const [sname, p, c, want] of shapes) {
+        const got = k5(p, c, up, fired, st);
+        check(`stampalive-class: ${fname} × ${sname} → ${want} (no *-unfinished without a this-boot stamp)`,
+          got === want, `got ${got}`);
+      }
+    }
+  }
+  check('stampalive-class boundary: uptime 900 s + stamp 899 s (THIS boot, alive) + BOTH stale → monitor-unfinished 5760',
+    k5(STALE, STALE, 900 * S, true, 899 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE, 900 * S, true, 899 * S)}`);
+  check('stampalive-class boundary: uptime 900 s + stamp 901 s (PREVIOUS boot) + BOTH stale → monitor 5760 (the scheduler is the story)',
+    k5(STALE, STALE, 900 * S, false, 901 * S) === 'monitor 5760', `got ${k5(STALE, STALE, 900 * S, false, 901 * S)}`);
   check('classify5: stamp 6000 s (stamp itself stale) + pressure stale + census fresh → pressure (today\'s verdict)',
     k5(STALE, FRESH, UP, true, 6000 * S) === 'pressure 5760', `got ${k5(STALE, FRESH, UP, true, 6000 * S)}`);
   // --- contract edges the brief fixes ---
@@ -643,6 +672,26 @@ function check(name, ok, detail) {
     && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
     && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
   check('render (control): stamp 100 min (DEAD) + BOTH stale → ⚠ wsl:monitor-dead 1h36m still renders; both flags suppressed, trip renders', ok,
+    ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
+}
+
+// --- PREVIOUS-BOOT stamp (round 3, 2026-09-20): uptime 900 s (past the 720 s grace), stamp
+// --- aged 901 s — older than uptime, so its mtime predates boot wall-time and the timer has
+// --- NOT fired this boot — both logs 96 min stale, all three flags. The stamp is younger than
+// --- the dead threshold, which round 2's age-only `stampAlive` read as alive and rendered
+// --- `wsl:monitor-unfinished`; the scheduler never ran this boot, so it IS the story:
+// --- `wsl:monitor-dead`, both flags suppressed, trip renders. (The wrapper derives
+// --- fired-this-boot from mtime vs boot wall-time; spawn latency only ages the stamp further.)
+{
+  const out = runWith({
+    pressureMin: 96, censusMin: 96, uptimeMs: String(900 * 1000), stampMin: 901 / 60,
+    trip: TRIP(447), broken: 'stale break', bypass: BYPASS_SEAM_BROKEN,
+  });
+  const tok = livenessToken(out);
+  const ok = tok === 'wsl:monitor-dead 1h36m'
+    && out.includes(TRIP_TOKEN(447)) && !out.includes(BROKEN_TOKEN) && !out.includes(BYPASS_TOKEN)
+    && NO_HOLES(out) && !out.includes(MONITOR_SIGIL);
+  check('render (stampalive-class): previous-boot stamp 901 s @ uptime 900 s + BOTH stale → ⚠ wsl:monitor-dead 1h36m; both flags suppressed, trip renders', ok,
     ok ? '' : `tok=${JSON.stringify(tok)} trip=${out.includes(TRIP_TOKEN(447))} broken=${out.includes(BROKEN_TOKEN)} bypass=${out.includes(BYPASS_TOKEN)}; output: ${JSON.stringify(out)}`);
 }
 
