@@ -25,6 +25,11 @@
 #   matching rules in ~/repos/hooks today; project settings.json allow rules are
 #   dropped in an untrusted workspace). Re-measure if the arm is ever run from a
 #   cwd whose settings.local.json carries a rule naming SessionStart.
+#   (2026-09-19 D4: CONTROL_FIRED no longer reads $DEBUG_LOG at all — it keys on
+#   session-start.sh's own beat record under $DHX_HOOKS_CACHE_DIR; the one
+#   load-bearing $DEBUG_LOG classifier left is 8c's `[DEBUG] "Hook Stop (Stop) `
+#   anchor, which a rule echo — a line beginning `[DEBUG] Applying permission
+#   update:` — cannot produce. The 8b debug-line listing is informational.)
 #   Evidence: reports/2026-09-19-h3-debug-file-settings-lint-cc-2.1.278/
 #   Convention: tests/probes/README.md § "A classifier's INPUT is a surface too".
 #
@@ -79,8 +84,14 @@ banner "1. Sandbox"
 SANDBOX=$(mktemp -d -t dhx-cache-probe-XXXXXX)
 mkdir -p "$SANDBOX/home" "$SANDBOX/config"
 export HOME="$SANDBOX/home" CLAUDE_CONFIG_DIR="$SANDBOX/config"
+# The dhx hooks' cache root, honoured by session-start.sh (`_SCH_HB_DIR`). Its
+# session-start/ beat record is the CONTROL (8b, D4 2026-09-19): written by the
+# dispatcher itself, in the sandbox, before any child runs.
+export DHX_HOOKS_CACHE_DIR="$SANDBOX/hooks-cache"
+CONTROL_DIR="$DHX_HOOKS_CACHE_DIR/session-start"
 echo "    HOME              = $HOME"
 echo "    CLAUDE_CONFIG_DIR = $CLAUDE_CONFIG_DIR"
+echo "    DHX_HOOKS_CACHE_DIR = $DHX_HOOKS_CACHE_DIR"
 
 # === 2. CC version ===
 banner "2. CC version"
@@ -141,17 +152,17 @@ else
   MARKER_FIRED=no
 fi
 
-banner "8b. Debug log: SessionStart control trace (session-start.sh)"
-if grep -E "session-start|SessionStart" "$DEBUG_LOG" 2>/dev/null | head -10 | sed 's/^/    /'; then
-  if grep -qE "session-start|SessionStart" "$DEBUG_LOG" 2>/dev/null; then
-    CONTROL_FIRED=yes
-  else
-    CONTROL_FIRED=no
-  fi
+banner "8b. SessionStart control: session-start.sh's own beat record ($CONTROL_DIR)"
+CONTROL_FIRED=$(arm_control_fired "$CONTROL_DIR")
+if [ "$CONTROL_FIRED" = "yes" ]; then
+  find "$CONTROL_DIR" -type f -name '*.json' 2>/dev/null | head -3 | while IFS= read -r f; do
+    echo "    $f"; sed 's/^/      /' "$f"
+  done
 else
-  CONTROL_FIRED=no
+  echo "    (no beat record — the dispatcher registered in the live manifest did not run)"
 fi
-[ "$CONTROL_FIRED" = "yes" ] || echo "    (no SessionStart trace found in debug log)"
+echo "    debug-file SessionStart lines (informational, NOT the control — see header):"
+grep -E '\[DEBUG\] "Hook SessionStart' "$DEBUG_LOG" 2>/dev/null | head -4 | cut -c1-160 | sed 's/^/      /'
 
 banner "8c. Debug log: Stop-dispatch trace (LOAD-BEARING — REFUTE needs >= 1 line)"
 STOPS_DISPATCHED=$(arm_stop_dispatched "$DEBUG_LOG")

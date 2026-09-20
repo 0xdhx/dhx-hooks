@@ -34,6 +34,13 @@
 #      discriminating pair, so the gate is shown to key on the variables
 #   9. WIRING — the arm sources the lib, calls arm_classify, carries no inline
 #      REFUTE assignment, and is tagged `# CC-STDERR-EXEMPT:` exactly once
+#  10. CONTROL (D4, 2026-09-19) — CONTROL_FIRED keys on session-start.sh's OWN
+#      beat record under $DHX_HOOKS_CACHE_DIR/session-start, never on a debug
+#      line: a log carrying the `Hook SessionStart:startup (SessionStart) error:`
+#      ENOENT line (what the old control read, satisfied by the sandbox's own
+#      dhx-vitals-banner.sh miss — H3 cell E) with no beat → control no →
+#      INCONCLUSIVE; a beat record → yes; the arm exports DHX_HOOKS_CACHE_DIR and
+#      the dispatcher's `_SCH_HB_DIR` honours it with the `/session-start` suffix
 #
 # Backs docs/decisions.md 2026-09-19 "prompt-type Stop hooks block for real on
 # 2.1.278; the D-01 arm needs credentials" row.
@@ -208,6 +215,38 @@ chk "arm carries no inline REFUTE assignment (the pre-fix rule is gone)" "$(grep
 chk "arm is tagged # CC-STDERR-EXEMPT: exactly once" "$(grep -c '^# CC-STDERR-EXEMPT:' "$ARM")" 1
 chk "arm no longer carries # CC-STDERR-UNMEASURED:" "$(grep -c '^# CC-STDERR-UNMEASURED:' "$ARM")" 0
 chk "lib pins the anchored Stop regex" "$(grep -c "^ARM_STOP_RE='\\\\\[DEBUG\\\\\] \"Hook Stop \\\\(Stop\\\\) (success|error):'" "$LIB")" 1
+
+# ---------------------------------------------------------------------------
+echo "### 10. CONTROL (D4) — the beat record is the control, the debug line is not"
+# ---------------------------------------------------------------------------
+DISPATCHER="$REPO/dhx-plugin/plugins/dhx/hooks/session-start.sh"
+BEAT="$ROOT/hooks-cache/session-start"
+chk "no cache dir → no" "$(arm_control_fired "$BEAT")" no
+mkdir -p "$BEAT/058549d3851b258a"
+chk "session dir without a record → no" "$(arm_control_fired "$BEAT")" no
+printf '{"schema_version":2,"kind":"event","leg":"session-start","fired_at":"2026-09-20T02:13:52Z","event_hash":"ba591e36da01e388","session_hash_stdin":"058549d3851b258a","session_hash_env":"058549d3851b258a"}\n' \
+  > "$BEAT/058549d3851b258a/ba591e36da01e388.1789870432005.4242.17.json"
+chk "beat record present → yes" "$(arm_control_fired "$BEAT")" yes
+chk "empty arg → no" "$(arm_control_fired "")" no
+# The H3 cell-E carrier: the sandbox's own ENOENT line is in BOTH fixture logs,
+# and the old control read it as yes. With no beat the oracle says control no.
+chk "fixture logs carry the old control's carrier (positive control for this arm)" \
+    "$(grep -c 'Hook SessionStart:startup (SessionStart) error:' "$UNAUTH")" 1
+arm_classify "$(arm_marker_fired "$MARKER_ABSENT")" "$(arm_control_fired "$ROOT/no-such-cache")" "$(arm_stop_dispatched "$AUTH")" no
+chk "SessionStart error line + 6 Stop lines + NO beat → INCONCLUSIVE (control no)" "$CLASS_VERDICT" INCONCLUSIVE
+chk "…args carry control no" "$CLASS_ARGS" "--cache-read-path inconclusive --control-hook-fired no"
+case "$CLASS_LABEL" in *"beat record"*) ok "label names the missing beat record" ;; *) bad "label does not name the beat: $CLASS_LABEL" ;; esac
+arm_classify no "$(arm_control_fired "$BEAT")" "$(arm_stop_dispatched "$AUTH")" no
+chk "same log WITH the beat → REFUTE" "$CLASS_VERDICT" REFUTE
+# wiring: arm ↔ dispatcher agree on the env var and the suffix
+chk "arm exports DHX_HOOKS_CACHE_DIR into the sandbox" "$(grep -cE '^export DHX_HOOKS_CACHE_DIR="\$SANDBOX/hooks-cache"$' "$ARM")" 1
+chk "arm reads CONTROL_DIR=\$DHX_HOOKS_CACHE_DIR/session-start" "$(grep -cE '^CONTROL_DIR="\$DHX_HOOKS_CACHE_DIR/session-start"$' "$ARM")" 1
+chk "arm sets CONTROL_FIRED from arm_control_fired only" "$(grep -cE '^CONTROL_FIRED=\$\(arm_control_fired "\$CONTROL_DIR"\)$' "$ARM")" 1
+chk "arm no longer derives CONTROL_FIRED from a debug-file grep" "$(grep -cE 'grep -q?E "session-start\|SessionStart"' "$ARM")" 0
+chk "dispatcher's _SCH_HB_DIR honours DHX_HOOKS_CACHE_DIR with the /session-start suffix" \
+    "$(grep -cF '_SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start"' "$DISPATCHER")" 1
+chk "dispatcher writes the record as <dir>/<session16>/<event>.<ms>.<pid>.<nonce>.json" \
+    "$(grep -cF '_SCH_REC_F="$_SCH_REC_DIR/$_SCH_EV_NAME.$_SCH_MS.$$.$RANDOM.json"' "$DISPATCHER")" 1
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

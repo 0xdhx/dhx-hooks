@@ -16,6 +16,19 @@
 #
 #   arm_marker_fired    <marker-log>  → prints yes|no
 #       8a — the cache-only marker fixture wrote a line.
+#   arm_control_fired   <beat-dir>    → prints yes|no
+#       8b — since 2026-09-19 (D4): session-start.sh's OWN reference beat record
+#       exists under the sandbox's hooks cache, `<beat-dir>/<session16>/<event16>.
+#       <ms>.<pid>.<nonce>.json`, written by the dispatcher's first block on every
+#       fire (`_SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start"`).
+#       That is evidence the dispatcher registered in the live manifest RAN, and
+#       nothing in a debug file can forge it. The previous control —
+#       `grep -E "session-start|SessionStart"` over the debug file — was satisfied
+#       in the arm's own sandbox by construction: the manifest's second
+#       SessionStart entry (`$HOME/.claude/hooks/dhx-vitals-banner.sh`) ENOENTs
+#       under the swapped HOME and CC logs `Hook SessionStart:startup (SessionStart)
+#       error:` for it (H3 cells E/P), so the control could not tell "dispatcher
+#       ran" from "dispatcher was attempted".
 #   arm_stop_dispatched <debug-log>   → prints N (count of Stop-dispatch lines)
 #       8c — LOAD-BEARING since 2026-09-19. Pinned to the 2.1.278 line shape
 #       `[DEBUG] "Hook Stop (Stop) success:|error:` — anchored on the `[DEBUG] "`
@@ -31,7 +44,7 @@
 #       Sets CLASS_VERDICT (AFFIRM|REFUTE|INCONCLUSIVE), CLASS_LABEL, CLASS_ARGS.
 #       REFUTE requires ALL of: marker=no, control=yes, stops>=1.
 #
-# Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials);
+# Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials; D4 row: control re-key);
 #        tests/probes/probe-empirical-arm-oracle.sh.
 
 ARM_STOP_RE='\[DEBUG\] "Hook Stop \(Stop\) (success|error):'
@@ -39,6 +52,14 @@ ARM_AUTH_FAIL_RE='Could not resolve authentication method|Not logged in'
 
 arm_marker_fired() {
   if [ -n "${1:-}" ] && [ -s "$1" ]; then printf 'yes\n'; else printf 'no\n'; fi
+}
+
+arm_control_fired() {
+  local d="${1:-}" f=""
+  if [ -n "$d" ] && [ -d "$d" ]; then
+    f=$(find "$d" -type f -name '*.json' -print -quit 2>/dev/null)
+  fi
+  if [ -n "$f" ]; then printf 'yes\n'; else printf 'no\n'; fi
 }
 
 arm_stop_dispatched() {
@@ -75,7 +96,7 @@ arm_classify() {
     CLASS_ARGS="--cache-read-path inconclusive --control-hook-fired yes"
   else
     CLASS_VERDICT=INCONCLUSIVE
-    CLASS_LABEL="INCONCLUSIVE (control did not fire — claude failed / install error)"
+    CLASS_LABEL="INCONCLUSIVE (control did not fire — session-start.sh left no beat record: claude failed / install error / dispatcher not run)"
     CLASS_ARGS="--cache-read-path inconclusive --control-hook-fired $control"
   fi
 }
