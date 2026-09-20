@@ -320,6 +320,31 @@ function check(name, ok, detail) {
     k5(STALE, STALE, 900 * S, true, 899 * S) === 'monitor-unfinished 5760', `got ${k5(STALE, STALE, 900 * S, true, 899 * S)}`);
   check('stampalive-class boundary: uptime 900 s + stamp 901 s (PREVIOUS boot) + BOTH stale → monitor 5760 (the scheduler is the story)',
     k5(STALE, STALE, 900 * S, false, 901 * S) === 'monitor 5760', `got ${k5(STALE, STALE, 900 * S, false, 901 * S)}`);
+  // --- inflight-fired CLASS (round 4, 2026-09-20): rung 2 (`inflight`) ALSO requires the stamp
+  // --- to have fired THIS boot. The reviewer's counterexample: uptime UNAVAILABLE (uptimeMs
+  // --- null → readTimerFiredSinceBoot returns false, "cannot locate boot; let the ceiling
+  // --- govern"), stamp 100 s, both logs stale → round 3 still answered `inflight` and
+  // --- suppressed both flags on a stamp it had just been told is not this boot's. Every rung
+  // --- that reads the stamp (2, 3, 5) now carries fired-this-boot; unknown uptime fails toward
+  // --- REPORTING on every rung, the same stance as the grace ceiling.
+  {
+    const cells = [
+      ['both stale',                    STALE, STALE, 'monitor 5760'],
+      ['pressure stale only',           STALE, FRESH, 'pressure 5760'],
+      ['census stale only',             FRESH, STALE, 'census 5760'],
+      ['both ABSENT',                   null,  null,  '-'],            // rung 3 with fired=false → silent
+      ['pressure fresh + census ABSENT', FRESH, null,  'census-missing -'], // rung 4 — was swallowed by inflight
+    ];
+    for (const [name, p, c, want] of cells) {
+      const got = k5(p, c, null, false, 100 * S);
+      check(`inflight-fired-class: uptime UNKNOWN (null → fired=false) + stamp 100 s × ${name} → ${want} (no inflight without a this-boot stamp)`,
+        got === want, `got ${got}`);
+    }
+  }
+  check('inflight-fired-class control: uptime 999999 + fired + stamp 100 s + BOTH stale → inflight (a this-boot stamp inside the allowance still waits)',
+    k5(STALE, STALE, UP, true, 100 * S) === 'inflight -', `got ${k5(STALE, STALE, UP, true, 100 * S)}`);
+  check('inflight-fired-class control: uptime UNKNOWN + NO stamp + BOTH stale → monitor 5760 (neither ceiling applies; fails toward reporting)',
+    k5(STALE, STALE, null, false, null) === 'monitor 5760', `got ${k5(STALE, STALE, null, false, null)}`);
   check('classify5: stamp 6000 s (stamp itself stale) + pressure stale + census fresh → pressure (today\'s verdict)',
     k5(STALE, FRESH, UP, true, 6000 * S) === 'pressure 5760', `got ${k5(STALE, FRESH, UP, true, 6000 * S)}`);
   // --- contract edges the brief fixes ---

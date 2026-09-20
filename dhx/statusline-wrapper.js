@@ -1454,9 +1454,10 @@ const WSL_MONITOR_BOOT_GRACE_MS = 12 * 60 * 1000;
 // It proves the TIMER fired, never that the producer COMPLETED — which is exactly why it
 // anchors the grace and does not replace the log-mtime staleness check. The pair is strictly
 // more expressive than either alone, and since 2026-09-19 the classifier draws on it twice:
-// the stamp's AGE under WSL_MONITOR_RUN_ALLOWANCE_MS with a non-fresh log is 'inflight' (the
-// run has not had time to finish — no verdict), and a stamp fired THIS boot, older than the
-// allowance but younger than the dead threshold, beside a stale log is an `*-unfinished`
+// a stamp fired THIS boot with AGE under WSL_MONITOR_RUN_ALLOWANCE_MS beside a non-fresh log
+// is 'inflight' (the run has not had time to finish — no verdict), and a stamp fired THIS
+// boot, older than the allowance but younger than the dead threshold, beside a stale log is
+// an `*-unfinished`
 // verdict — that producer's when the sibling is fresh, `monitor-unfinished` when BOTH are
 // stale (the timer is fine; the run started and never reached its writes).
 //
@@ -1512,7 +1513,8 @@ function wslLogAgeMs(file, now) {
 //                                          UNPROVEN, not vouched; token '', nothing red
 //                                          renders, composeWslFront suppresses both
 //                                          self-clearing flags)
-//   2 stamp age < allowance,
+//   2 stamp fired THIS boot
+//     AND stamp age < allowance,
 //     any log not fresh     → 'inflight'  (the timer fired moments ago and the run has not
 //                                          had time to finish; same shape as warming — no
 //                                          token, both self-clearing flags suppressed)
@@ -1549,7 +1551,11 @@ function wslLogAgeMs(file, now) {
 // (2026-09-20): "alive" has TWO conjuncts — fired THIS boot and younger than the dead
 // threshold. Age alone misread the previous-boot window: a stamp older than uptime but
 // younger than 5700 s (the first ~80 min after a boot in which the timer did not fire) is
-// a scheduler that never ran this boot, i.e. 'monitor', never `*-unfinished`.
+// a scheduler that never ran this boot, i.e. 'monitor', never `*-unfinished`. Round 4 (same
+// day): EVERY rung that reads the stamp — 2 (inflight), 3 (monitor-missing), 5 (unfinished)
+// — carries fired-this-boot. Unknown uptime makes `fired` false (readTimerFiredSinceBoot:
+// "cannot locate boot; let the ceiling govern"), so no stamp-keyed rung can suppress or
+// invent a verdict there: both ceilings fail toward REPORTING, and today's verdicts govern.
 // Has wsl-pressure.timer fired since THIS boot? Compares the systemd stamp's mtime against
 // boot wall-time (now - uptime). Own try/catch → false, and false means "grace still applies",
 // which is safe precisely because the grace is now ceiling-bounded: an absent stamp (timer
@@ -1610,13 +1616,21 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   const P = status(pressureAgeMs);
   const C = status(censusAgeMs);
   const stampAge = Number.isFinite(stampAgeMs) ? stampAgeMs : null;
-  // Step 2 — in flight: the timer fired under WSL_MONITOR_RUN_ALLOWANCE_MS ago and at least
-  // one log has not caught up. The stamp LEADS the producers' writes (it is written by the
-  // scheduler before the service starts), so a stamp newer than a stale log proves nothing
-  // about the producer until the run has had time to finish. No verdict, no token; like
-  // warming, both self-clearing flags are suppressed because nothing has re-vouched them yet.
-  // Two fresh logs never reach here: there is nothing to wait for.
-  const inAllow = stampAge !== null && stampAge < WSL_MONITOR_RUN_ALLOWANCE_MS;
+  // Step 2 — in flight: the timer fired THIS boot, under WSL_MONITOR_RUN_ALLOWANCE_MS ago, and
+  // at least one log has not caught up. The stamp LEADS the producers' writes (it is written
+  // by the scheduler before the service starts), so a stamp newer than a stale log proves
+  // nothing about the producer until the run has had time to finish. No verdict, no token;
+  // like warming, both self-clearing flags are suppressed because nothing has re-vouched them
+  // yet. Two fresh logs never reach here: there is nothing to wait for.
+  // TWO conjuncts (round 4, 2026-09-20), not age alone. With uptime UNKNOWN the caller passes
+  // fired=false ("cannot locate boot; let the ceiling govern"), and this rung must then NOT
+  // suppress: it has just been told the stamp is not this boot's, and suppressing on it
+  // anyway would be the grace's own failure mode on a different ceiling — the grace does not
+  // apply on unknown uptime either, so both ceilings fail toward reporting. The residual is
+  // the cheaper error: a PREVIOUS-boot stamp inside the allowance is only possible within
+  // 360 s of a reboot, and there it reads as today's verdict (a RED for at most 6 min after
+  // boot, on a box whose timer is about to fire) rather than as a silent suppression.
+  const inAllow = timerFiredSinceBoot && stampAge !== null && stampAge < WSL_MONITOR_RUN_ALLOWANCE_MS;
   if (inAllow && (P !== 'fresh' || C !== 'fresh')) {
     return { kind: 'inflight', ageMs: null, token: '' };
   }
@@ -1640,8 +1654,7 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   // PREVIOUS boot is older than uptime yet younger than 5700 s — reading that as alive sent a
   // never-ran-this-boot scheduler to the producer diagnosis. With both conjuncts the timer is
   // demonstrably fine, so whatever is stale is the RUN's failure, not the scheduler's.
-  // (`inflight` above needs no such guard: a stamp under the 360 s allowance, reached only
-  // past the 720 s grace, is younger than uptime and therefore this boot's by construction.)
+  // (`inflight` above carries the same conjunct since round 4 — every stamp-reading rung does.)
   // Both stale → 'monitor-unfinished': wsl-pressure.service is one process (the census runs as
   // the pressure script's child), so a hang most plausibly takes both writes with it; the age
   // is the NEWER log, the same coverage-age rule and reason as 'monitor' below. One stale
