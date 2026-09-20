@@ -62,6 +62,68 @@
 #     config dir (an atomic mkdir marker); repeats stay silent until the outcome changes or
 #     the registry is HEALTHY again. Contention never prints.
 #
+# --- WHO REMOVES THE ENTRY, AND WHO PUTS IT BACK (attributed 2026-09-20) ---
+# THE WRITER IS CCS, NOT CLAUDE CODE. `@kaitranntt/ccs`
+# `dist/management/shared-manager/plugin-metadata-normalizer.js` ::
+# `buildMarketplaceRegistryContent` keeps ONLY those known_marketplaces entries that have a
+# physical `<cfg>/plugins/marketplaces/<name>` directory and `delete`s the rest, writing both
+# `~/.claude` and the instance copy. It runs from `normalizeSharedPluginMetadataPathsLocked`
+# on every `ccs <account> …` invocation. `dhx-local` is a `directory`-source marketplace
+# pointing at this repo, so it has no directory under `plugins/marketplaces/` and is deleted
+# every single time. Nothing about it is dhx-specific: `chrome-devtools-plugins`, the other
+# directory-source marketplace here, is dropped by the same line.
+# MEASURED, not read off the source: a fixture run of the real normalizer drops the entry
+# with no marketplaces dir, KEEPS it when a REAL DIRECTORY exists at that path, and STILL
+# DROPS IT when that path is a SYMLINK — `readdirSync(…, {withFileTypes:true})` reports the
+# link, not its target, so `entry.isDirectory()` is false. A symlink shortcut does not work;
+# do not reach for one. A real directory does work, but the normalizer then rewrites
+# `installLocation` to that (empty) directory, which is why it is not the chosen fix.
+#
+# THE RESTORER IS CLAUDE CODE ITSELF, and that is what keeps this heal from being the only
+# thing standing between a `ccs` invocation and an unguarded session.
+# HOW IT WAS ESTABLISHED, INCLUDING THE FALSE START, because the false start is the easy
+# mistake to repeat. First attempt: launch against `~/.claude` (whose registry had been
+# stripped) WITHOUT the ccs wrapper, on the theory that this skipped the heal. It did skip
+# the PRE-LAUNCH heal — and proved nothing about `dhx-local`, because THIS SCRIPT ALSO RUNS
+# AS A SessionStart CHILD of the dispatcher, and duly logged
+# `12:23:17Z /home/dhx/.claude REPAIRED`. The only clean signal in that run was
+# `chrome-devtools-plugins` returning at 12:23:20.796Z, which this script never touches.
+# CLEAN DEMONSTRATION: a sandbox `HOME` + `CLAUDE_CONFIG_DIR` (so no dhx hook fires at all),
+# settings declaring the SAME directory source under a DIFFERENT key so this script no-ops
+# on "dhx-local not declared", and a registry valid but missing the entry. `claude -p` there
+# wrote the entry unaided, and the heal log gained no row. It did so while NOT LOGGED IN, so
+# the marketplace reconciler runs ahead of, and independently of, auth. `claude plugin list`
+# does NOT trigger it; it is a launch-path reconciler.
+# NAMING, found the same way and worth knowing before reading a registry: CC registers the
+# marketplace under the `name` from the source directory's own
+# `.claude-plugin/marketplace.json` — `dhx-local` — NOT under the key used in
+# `extraKnownMarketplaces`. The sandbox declared `sbx-local` and CC wrote `dhx-local`. A
+# settings key and a registry key are therefore not the same identifier and must not be
+# assumed to match.
+# CONSEQUENCE FOR THIS SCRIPT'S STATUS: it is a RACE-WINNER, not the sole repairer. Running
+# pre-launch, it writes the entry before CC's reconciler gets there — which is why every
+# `dhx-local` `lastUpdated` on this machine matches a REPAIRED row in the log to the second,
+# and why that correlation must NOT be read as "CC would not have restored it". It was read
+# that way once during this very investigation and was wrong.
+# WHAT IT STILL BUYS: cover for the mid-session strip (a `ccs` invocation while a session is
+# already up), for config dirs nothing launches under, and for the four non-MISSING shapes
+# (ABSENT / TRUNCATED / NO_TIMESTAMP / STALE) that CC does not fix. Keep it.
+#
+# --- CONTENTION rows: the same drop seen twice, NOT a second writer ---
+# A CONTENTION row is a heal that could not take the lock within ~1 s. It is one CCS strip
+# observed by a BURST of concurrent pre-launch heals — several instances launching together,
+# plus CC holding its own km lock during the startup reconcile described above. The evidence
+# that it is one drop and not two writers: the heal rows cluster on a single second
+# (2026-09-20 saw four instances all stamped 10:31:44Z), which is one `ccs` invocation
+# rewriting every copy, not independent events. CONTENTION is therefore benign by
+# construction — the peer holding the lock is writing the same repair this run wanted, and
+# the entry ends up present either way. It exits 0 and stays out of the pre-launch surface
+# deliberately.
+#
+# STATUS: permanent until the upstream CCS behaviour changes. The right fix is upstream --
+# the normalizer should not require a `plugins/marketplaces/<name>` directory for a
+# marketplace whose declared source is a directory. Until then this heal stays.
+#
 # Exit: 0 healthy / repaired / contention / dhx-local not declared; 1 refusal or failed write.
 # Out of scope: dhx-local not declared in settings → dhx-plugin-keys-heal.sh (HP-017), which
 # dhx-prelaunch.sh runs first; PATH / DISABLED
