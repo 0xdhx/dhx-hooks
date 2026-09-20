@@ -22,7 +22,9 @@
 #                                        the mechanism, and every such driver lands BEFORE the
 #                                        verb it needs is widened in, precisely so the deny
 #                                        routes into a sanctioned path rather than the bypass.
-#   4. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, 60s window
+#   4. `dhx-upstream-bypass.sh --reason "<why>"` — deliberate, audited, SINGLE-USE 60s window
+#      (the script writes an audit line; this gate requires that line, then CONSUMES the
+#      window on the write it allows — see the gated-path check below)
 #   DELIBERATELY NOT ENUMERATED HERE OR IN THE DENY REASON: the driver script FILENAMES, and
 #   the skills-repo rule for when an edit beats a follow-up. Both are another repo's canon on
 #   another repo's clock; enumerating them aged this file three separate ways in three weeks
@@ -45,6 +47,10 @@
 # four they carried had all drifted; resolve these by content.) 5-min TTL — do NOT
 # extend it; a long TTL rots hard mode back into soft. The bypass marker is a SEPARATE
 # path (`.upstream-bypass-<session-id>`, 60s TTL) so the audit trail stays distinguishable.
+# The BYPASS marker is not merely read: as of 2026-09-20 an allow on that branch requires a
+# matching audit line and then CONSUMES the window (marker removed, consume recorded). The
+# SKILL marker is read-only by comparison — it legitimately covers several calls inside one
+# Stage 7, so consuming it would break the flow it exists to permit.
 #
 # NOTE: /dhx:upstream's own gh calls run INSIDE file-and-wire.sh / comment-and-wire.sh,
 # so PreToolUse (which sees only the top-level Bash command) never matches them. The
@@ -270,20 +276,93 @@ if [ -n "$OWNER" ]; then
   done
 fi
 
-# --- Gated-path check: fresh /dhx:upstream marker OR fresh deliberate-bypass marker ---
+# --- Gated-path check: fresh /dhx:upstream marker OR AUDITED deliberate-bypass window ---
+# The bypass branch requires POSITIVE EVIDENCE that the audited script ran for THIS session
+# inside the TTL -- a marker mtime is not that evidence. Before 2026-09-20 this branch read
+# the marker's mtime alone, and `touch` is in the settings allow list while
+# $CLAUDE_CODE_SESSION_ID is exported into every tool subprocess (HP-043) and the marker
+# directory path is printed verbatim in this gate's own deny message. So the window could be
+# opened by a one-token command that wrote nothing to the audit log and named nothing
+# recognisable in the transcript: of the three properties dhx-upstream-bypass.sh claims --
+# LOUD, LOGGED, SHORT -- only SHORT actually survived.
+# Now BOTH must hold: the per-session marker is fresh AND the audit log's last line for this
+# session is inside the same window. The script writes both, in that order; `touch` writes
+# neither. This does not make the hatch harder to open on purpose -- nothing can, there being
+# no human-only channel in this session model -- it makes a defection leave a record in the
+# file that gets reviewed, which is the whole security argument.
+# TIMESTAMP SOURCE is the log line's own `date -Is` field, NOT the log file's mtime: mtime
+# is a property of the last write by ANY session, so a peer session opening its own window
+# would refresh it for everyone.
+# FAIL-CLOSED throughout: log unreadable, no line for this session, an unparseable timestamp,
+# or a future-dated one -> the branch does not allow, and the deny below routes as usual.
+# The `find ... -mmin` form is LOAD-BEARING and must not become a relative `-newermt`: this
+# machine's `find` is a bfs shim where a relative `-newermt` exits 1 with no output, which
+# reads as a clean miss (global CLAUDE.md; docs/troubleshooting.md).
+# STATED RESIDUAL -- the 5-min SKILL marker branch above is still mtime-only and has the
+# same touch-ability. Lower stake, deliberately left: it attests that the gated pre-flight
+# ran, and the pre-flight is the thing a defector would be skipping anyway. The bypass marker
+# is the one with a self-service door and an explicit audit claim attached to it.
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 MARKER_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dhx-tools"
+BYPASS_TTL_SEC=60
 if [ -n "$SESSION_ID" ]; then
   MARKER="$MARKER_DIR/.upstream-marker-$SESSION_ID"
   BYPASS="$MARKER_DIR/.upstream-bypass-$SESSION_ID"
-  # Skill marker: 5-min TTL. Bypass marker: 60s TTL (deliberate, single-command window).
+  AUDIT="$MARKER_DIR/upstream-bypass.log"
+  # Skill marker: 5-min TTL, mtime-only (see the stated residual above).
   if [ -f "$MARKER" ] && [ -n "$(find "$MARKER" -mmin -5 2>/dev/null)" ]; then exit 0; fi
-  if [ -f "$BYPASS" ] && [ -n "$(find "$BYPASS" -mmin -1 2>/dev/null)" ]; then exit 0; fi
+  # Bypass window: 60s TTL, marker AND audit line.
+  if [ -f "$BYPASS" ] && [ -n "$(find "$BYPASS" -mmin -1 2>/dev/null)" ] && [ -r "$AUDIT" ]; then
+    # Read the LAST audit event for this session and require it to be an OPEN.
+    # Two event kinds name a session: an opening (`session=<id>`, written by
+    # dhx-upstream-bypass.sh) and a consume (`consumed_by=<id>`, written below). Matching
+    # only openings would make the consume unenforceable -- the opening line stays inside
+    # its own TTL for the rest of the 60s, so re-touching the marker would reopen the
+    # window on a line that had already been spent. Measured, not theorised: probe [35d]
+    # was red for exactly this before the check became last-event-wins.
+    # awk compares WHOLE TAB-SEPARATED FIELDS, so a session id that is a strict prefix of
+    # another cannot match it, and no part of the id is ever treated as a regex -- which a
+    # `grep -E` alternation over an interpolated id would have done.
+    # awk absent, or no event for this session -> empty -> deny (fail-closed).
+    LAST_EVENT=$(awk -F'\t' -v s="$SESSION_ID" '
+      { hit = 0
+        for (i = 1; i <= NF; i++) {
+          if      ($i == "session="     s) { hit = 1; kind = "open" }
+          else if ($i == "consumed_by=" s) { hit = 1; kind = "consume" }
+        }
+        if (hit) last = kind "\t" $1 }
+      END { if (last != "") print last }' "$AUDIT" 2>/dev/null || true)
+    LAST_KIND=${LAST_EVENT%%$'\t'*}
+    LAST_LINE=${LAST_EVENT#*$'\t'}
+    [ "$LAST_KIND" = "open" ] || LAST_LINE=""
+    if [ -n "$LAST_LINE" ]; then
+      LAST_TS=$LAST_LINE
+      LAST_EPOCH=$(date -d "$LAST_TS" +%s 2>/dev/null || true)
+      NOW_EPOCH=$(date +%s)
+      if [ -n "$LAST_EPOCH" ] && [ "$LAST_EPOCH" -le "$NOW_EPOCH" ] \
+         && [ "$((NOW_EPOCH - LAST_EPOCH))" -lt "$BYPASS_TTL_SEC" ]; then
+        # CONSUME the window. Before 2026-09-20 the gate only READ the marker, so one
+        # opening bought every covered write that fit inside 60 seconds -- while the script
+        # and this header both described it as "one command's worth". Removing the marker
+        # here makes the single-use claim true rather than aspirational: a second write needs
+        # a second opening, which needs a second audit line naming its own reason.
+        # FIELD NAME IS `consumed_by=`, NOT `session=`, and that is load-bearing. The audit
+        # check above matches a tab-bounded `session=<id>`; a consume line carrying that field
+        # would itself satisfy the check, so re-touching the marker after a consume would
+        # reopen the window on the gate's own bookkeeping. Do not rename this field.
+        rm -f "$BYPASS" 2>/dev/null || true
+        printf '%s\tevent=consume\tconsumed_by=%s\tarm=%s\towner=%s\n' \
+          "$(date -Is)" "$SESSION_ID" "$MATCH_ARM" "${OWNER:-<unresolved>}" \
+          >> "$AUDIT" 2>/dev/null || true
+        exit 0
+      fi
+    fi
+  fi
 fi
 
 # --- Deny (structured, exit 0 — see "Emit shape" in the header) ---
 TARGET="${OWNER:-<unresolved owner>}"
-REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare call skips all of it, and the write cannot be taken back. Take one of these routes: (1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply <issue-url-or-number>' — that mode covers posting a comment, amending a comment you already posted, and editing the issue body, so an edit is NOT a reason to reach for the bypass; (3) anything on an EXISTING PR of yours — response comment, retitle, body edit, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>'. The skill owns the current route list and the current rule for when an edit is preferred over a follow-up; read it there rather than inferring either from this message, which deliberately names no driver scripts and restates no doctrine. (4) deliberate one-off, audited + 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. NOT ACTUALLY MAKING A CALL? This gate greps the whole command string, so a command that merely AUTHORS OR QUOTES A DOCUMENT containing one of the covered verbs matches too, heredoc bodies included — nothing upstream is written by such a command. Assemble the verb tokens from shell variables, or write the file with the Write/Edit tool instead of a shell heredoc, and this deny disappears. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
+REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare call skips all of it, and the write cannot be taken back. Take one of these routes: (1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply <issue-url-or-number>' — that mode covers posting a comment, amending a comment you already posted, and editing the issue body, so an edit is NOT a reason to reach for the bypass; (3) anything on an EXISTING PR of yours — response comment, retitle, body edit, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>'. The skill owns the current route list and the current rule for when an edit is preferred over a follow-up; read it there rather than inferring either from this message, which deliberately names no driver scripts and restates no doctrine. (4) deliberate one-off, audited + single-use 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. That opening is spent by the first write it lets through, so a second write needs a second opening with its own stated reason. NOT ACTUALLY MAKING A CALL? This gate greps the whole command string, so a command that merely AUTHORS OR QUOTES A DOCUMENT containing one of the covered verbs matches too, heredoc bodies included — nothing upstream is written by such a command. Assemble the verb tokens from shell variables, or write the file with the Write/Edit tool instead of a shell heredoc, and this deny disappears. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
 MSG="Blocked: upstream write to $TARGET outside /dhx:upstream. Use '/dhx:upstream reply <issue>' or '/dhx:upstream <report-path>' — or run dhx-tools/dhx-upstream-bypass.sh --reason \"...\" for a deliberate one-off."
 
 if DENY_JSON=$(jq -cn --arg r "$REASON" --arg m "$MSG" \

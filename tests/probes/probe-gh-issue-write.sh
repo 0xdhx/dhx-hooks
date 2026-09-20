@@ -10,7 +10,9 @@
 # `gh api graphql` carrying a mutation) when ALL of:
 #   (a) the target owner is NOT in the hook's OWN_OWNERS list (or does not resolve), and
 #   (b) no fresh /dhx:upstream marker exists for the session, and
-#   (c) no fresh deliberate-bypass marker exists for the session.
+#   (c) no UNSPENT deliberate-bypass window is open for the session -- which since
+#       2026-09-20 means a marker AND a `session=<id>` line in upstream-bypass.log inside
+#       the 60s TTL that has not already been consumed by a previous write.
 # The deny is structured JSON on **exit 0** (`permissionDecision:"deny"` +
 # `permissionDecisionReason` carrying the routing, plus `systemMessage` for the user).
 # exit 0 is load-bearing: CC reads stdout JSON only on exit 0 — an exit-2 deny still
@@ -20,7 +22,8 @@
 #
 # It stays SILENT (no output, exit 0) when: the owner is own (`--repo 0xdhx/…`, a
 # `repos/0xdhx/…` api path, or a cwd whose origin is 0xdhx), the skill marker is fresh
-# (<5m), the bypass marker is fresh (<60s), the subcommand is different (`gh issue list`),
+# (<5m), an unspent bypass window is open (<60s, marker + matching audit line, no consume
+# recorded since), the subcommand is different (`gh issue list`),
 # token-anchoring rejects it (`create-something-else`, `mygh issue comment`, `edit-something-else`,
 # `issue closed`), the call is a READ (`gh api` GET, or a graphql QUERY carrying no mutation
 # token), or the shape is a documented NON-GOAL (`gh pr create`, raw `curl`).
@@ -171,13 +174,52 @@ touch -d '10 minutes ago' "$MARKERDIR/.upstream-marker-s3"
 _assert "[15] foreign create, stale (>5m) skill marker -> deny" "deny" \
   "$(_verdict "$(_json s3 "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
 
-# --- Bypass marker: fresh allows, >60s does not (short deliberate window) ---
+# --- Bypass window: the MARKER ALONE does not open it (rewritten 2026-09-20) ---
+# [16] asserted the OPPOSITE until 2026-09-20 -- "fresh bypass marker -> silent" -- and that
+# assertion was pinning the defect as if it were the contract. The gate keyed on the marker's
+# MTIME alone, while `touch` is in the settings allow list, $CLAUDE_CODE_SESSION_ID is exported
+# into every tool subprocess (HP-043), and the marker directory path is printed verbatim in the
+# gate's own deny message. Of the three properties scripts/dhx-upstream-bypass.sh claims for the
+# hatch -- LOUD, LOGGED, SHORT -- only SHORT was actually enforced. The gate now additionally
+# requires a line in upstream-bypass.log naming THIS session with a timestamp inside the TTL.
+# The paired POSITIVE direction is [32]-[35]: the real script writes marker AND log line, and
+# the gate opens. Both directions are required -- an arm that only proves the deny would pass
+# just as well against a gate that had stopped honouring the hatch at all.
+_BPLOG="$MARKERDIR/upstream-bypass.log"
+_logline() { # $1 session, $2 date-spec for `date -Is -d`, $3 reason
+  printf '%s\tsession=%s\tcwd=%s\treason=%s\n' \
+    "$(date -Is -d "$2")" "$1" "/tmp/probe" "$3" >> "$_BPLOG"
+}
 touch "$MARKERDIR/.upstream-bypass-s4"
-_assert "[16] fresh bypass marker -> silent (escape hatch works)" "silent" \
+_assert "[16] touched bypass marker, NO audit line -> deny (unaudited window stays shut)" "deny" \
   "$(_verdict "$(_json s4 "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
 touch -d '5 minutes ago' "$MARKERDIR/.upstream-bypass-s5"
 _assert "[17] stale (>60s) bypass marker -> deny (window closed)" "deny" \
   "$(_verdict "$(_json s5 "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+# A fresh marker whose audit line is OUTSIDE the TTL is shut too. The gate reads the LINE's own
+# `date -Is` field, never the log file's mtime -- mtime is a property of the last write by ANY
+# session, so a peer opening its own window would otherwise refresh the clock for everyone.
+touch "$MARKERDIR/.upstream-bypass-s4b"
+_logline s4b '10 minutes ago' "probe: audit line outside the TTL"
+_assert "[16b] fresh marker + EXPIRED audit line -> deny (line timestamp, not file mtime)" "deny" \
+  "$(_verdict "$(_json s4b "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+# A fresh line belonging to a DIFFERENT session does not open this session's window.
+touch "$MARKERDIR/.upstream-bypass-s4c"
+_logline other-session now "probe: another session's window"
+_assert "[16c] fresh marker + fresh audit line for ANOTHER session -> deny" "deny" \
+  "$(_verdict "$(_json s4c "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+# Session-field match is TAB-BOUNDED, so a session id that is a strict PREFIX of one with a
+# live window does not inherit it. s4b and s4c now both hold `session=s4...` lines; re-running
+# s4 here (its own marker still fresh from [16]) proves `session=s4` does not match them.
+_logline s4bb now "probe: prefix-collision bait, fresh and irrelevant"
+_assert "[16d] prefix-collision: fresh lines for s4b/s4bb do not open s4's window" "deny" \
+  "$(_verdict "$(_json s4 "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+# A FUTURE-dated line does not open a window either (guards a forged or clock-skewed stamp
+# from buying an arbitrarily long one).
+touch "$MARKERDIR/.upstream-bypass-s4e"
+_logline s4e '1 hour' "probe: future-dated audit line"
+_assert "[16e] fresh marker + FUTURE-dated audit line -> deny" "deny" \
+  "$(_verdict "$(_json s4e "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
 
 # --- Widened matcher: gh api POST on issue/PR threads (the raw-API detour) ---
 _assert "[18] gh api POST issues comments -> deny" "deny" \
@@ -230,8 +272,27 @@ _assert "[33] bypass wrote its session marker" "yes" \
   "$([[ -f "$MARKERDIR/.upstream-bypass-probe-sess" ]] && echo yes || echo no)"
 _assert "[34] bypass appended an audit line naming the reason" "yes" \
   "$(grep -q 'probe: verifying the audited escape hatch' "$MARKERDIR/upstream-bypass.log" 2>/dev/null && echo yes || echo no)"
-# The marker the bypass just wrote must actually open the gate (end-to-end contract).
-_assert "[35] bypass marker opens the gate end-to-end" "silent" \
+# The marker AND audit line the bypass just wrote must together open the gate. This is the
+# POSITIVE half of the pair whose negative half is [16]: script-written opens, `touch` does not.
+_assert "[35] bypass marker + its audit line open the gate end-to-end" "silent" \
+  "$(_verdict "$(_json probe-sess "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+# --- The window is SINGLE-USE: [35] CONSUMED it (2026-09-20) ---
+# Until 2026-09-20 the gate only read the marker, so one opening bought every covered write
+# that fit inside 60 seconds, while both the script and the hook header called it "one
+# command's worth". [35a] pins the claim. ORDER IS LOAD-BEARING: [35a] must follow [35] and
+# no arm between them may reuse probe-sess.
+_assert "[35a] second write on the same opening -> deny (window consumed by [35])" "deny" \
+  "$(_verdict "$(_json probe-sess "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
+_assert "[35b] consume removed the marker file" "no" \
+  "$([[ -f "$MARKERDIR/.upstream-bypass-probe-sess" ]] && echo yes || echo no)"
+_assert "[35c] consume is recorded in the audit log" "yes" \
+  "$(grep -q 'event=consume' "$MARKERDIR/upstream-bypass.log" 2>/dev/null && echo yes || echo no)"
+# The consume line must NOT be readable as a fresh opening. It records the session in a
+# `consumed_by=` field precisely so the gate's tab-bounded `session=<id>` match cannot see
+# it; were it named `session=`, re-touching the marker after a consume would reopen the
+# window on the gate's own bookkeeping. This arm is the tooth on that field name.
+touch "$MARKERDIR/.upstream-bypass-probe-sess"
+_assert "[35d] re-touch after consume -> deny (consume line is not an opening)" "deny" \
   "$(_verdict "$(_json probe-sess "$GH $ISSUE $CREATE --repo open-gsd/gsd-core --title x")")"
 
 # --- Positional target URL: the owner comes from the URL, not the cwd ---
