@@ -120,9 +120,18 @@
 # the entry ends up present either way. It exits 0 and stays out of the pre-launch surface
 # deliberately.
 #
-# STATUS: permanent until the upstream CCS behaviour changes. The right fix is upstream --
-# the normalizer should not require a `plugins/marketplaces/<name>` directory for a
-# marketplace whose declared source is a directory. Until then this heal stays.
+# STATUS: PERMANENT DESIGN -- ruled 2026-09-20 (docs/decisions.md, "The known_marketplaces
+# writer is CCS and the RESTORER is Claude Code"). NOT a stopgap awaiting an upstream fix.
+# Claude Code itself restores a declared directory marketplace on the launch path, so this
+# heal is belt-and-braces rather than the sole repairer -- it wins the race by running
+# pre-launch. It is retained for what that launch path does NOT cover: a `ccs` invocation
+# stripping the file mid-session, config dirs nothing launches under, and above all the four
+# non-MISSING shapes (ABSENT / TRUNCATED / NO_TIMESTAMP / STALE) CC never fixes.
+#
+# The upstream cause WAS fixed: kaitranntt/ccs#1737, by PR #1744, merged 2026-09-22. That is
+# NOT a trigger to retire this heal -- and it has not even landed here yet. The fix is on the
+# `dev` channel only (8.10.0-dev.6); npm `latest` 8.10.0 and this fleet's installed 8.9.0 both
+# still carry the stripping filter, so the strip-repair role is live on this machine as well.
 #
 # Exit: 0 healthy / repaired / contention / dhx-local not declared; 1 refusal or failed write.
 # Out of scope: dhx-local not declared in settings → dhx-plugin-keys-heal.sh (HP-017), which
