@@ -1,0 +1,42 @@
+{
+  "probe_id": "probe-effort-level-stdin-absent",
+  "exit_code": 0,
+  "exit_code_convention": "exit_0_means_pass",
+  "cc_version": "2.1.281",
+  "ts": "2026-09-23T22:27:36Z",
+  "run_id": "106d3d9f-c2b3-4d50-9f0d-41b906f14503",
+  "observations": {
+    "stdin_payload_top_level_keys": [
+      "context_window",
+      "cost",
+      "cwd",
+      "effort",
+      "exceeds_200k_tokens",
+      "fast_mode",
+      "model",
+      "output_style",
+      "prompt_cache",
+      "prompt_id",
+      "rate_limits",
+      "scratchpad_dir",
+      "session_id",
+      "session_name",
+      "thinking",
+      "transcript_path",
+      "version",
+      "workspace"
+    ],
+    "effortLevel_present": false,
+    "effort_present": true,
+    "effort_level_observed": "high",
+    "effort_level_renderability": "renderable",
+    "renderer_level_set": "low medium high xhigh max",
+    "workspace_current_dir_present": true,
+    "cell_version_source": "payload",
+    "payload_version": "2.1.281",
+    "host_version": "2.1.281",
+    "capture_session_was_probe_session": true,
+    "published_from_hostname": "fc1384b33eb0e7f4351f7bda74bb2cb135422f99c69f3b47d1bbfb7146bbf33c"
+  },
+  "conclusion": "validated_stable"
+}
