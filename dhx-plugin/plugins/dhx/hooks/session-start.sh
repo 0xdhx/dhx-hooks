@@ -16,12 +16,15 @@ echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-pro
 # qw-call.sh exports QW_CELL=1 on a b cell's client line. Everything this dispatcher prints
 # lands in the first user turn, i.e. INSIDE the cached prompt prefix the cell measures — and
 # the watch digest's `· polled Nm ago` ticks per minute, so no two cell sessions sent the
-# same bytes and every warm re-send re-created the ≈ 22k tail (B run 1, report § 8). Exit
-# BEFORE the schedule reference beat, so a cell session writes neither leg of that pair (a
-# reference record with no schedule counterpart scores DEAD). The probe-log line above stays.
+# same bytes and every warm re-send re-created the ≈ 22k tail (B run 1, report § 8). The
+# dispatcher still RUNS WHOLE — its first-action reference beat, the schedule child, every
+# sibling — and only its stdout is discarded. Do NOT turn this into an early exit: the first
+# version did (2fd26c1c), so no beat was written, and dhx-guard-load-assert.sh (the settings-
+# channel observer) then injected "the dhx plugin did not load" naming the per-session beat
+# path — a new per-session string in the same prefix (proof pair, 2026-09-23: read 26,812).
 if [ "${QW_CELL:-}" = "1" ]; then
   echo "[$TS] dhx-plugin-dispatch qw-cell-silent session=$SID" >> /tmp/dhx-plugin-probe.log
-  exit 0
+  exec >/dev/null
 fi
 
 # --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
