@@ -1,4 +1,4 @@
-# baseline-build: 2.1.273
+# baseline-build: 2.1.280
 registry dangerousRemoval bypassImmune=1 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
 registry backgroundOperator bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
 registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
@@ -16,6 +16,8 @@ reducer "ask"
 reducer .name
 reducer "mode"
 reducer "plan"
+reducer "passthrough"
+reducer .name
 reducer .behavior
 reducer "deny"
 reducer "ask"
