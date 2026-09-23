@@ -1,11 +1,11 @@
-# baseline-build: 2.1.280
-registry dangerousRemoval bypassImmune=1 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
-registry backgroundOperator bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
-registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1 hostPersonOnly=0 localProjectionOnly=0
-registry isolatePeerMachines bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
-registry restrictedMode bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
-registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 hostPersonOnly=0 localProjectionOnly=0
-registry claudeSettingsFile bypassImmune=0 classifierRouted=0 hostPersonOnly=1 localProjectionOnly=0
+# baseline-build: 2.1.281
+registry dangerousRemoval bypassImmune=1 classifierRouted=1 autoModeDeny=1 hostPersonOnly=0 localProjectionOnly=0
+registry backgroundOperator bypassImmune=0 classifierRouted=1 autoModeDeny=0 hostPersonOnly=0 localProjectionOnly=0
+registry suspiciousWindowsPath bypassImmune=0 classifierRouted=1 autoModeDeny=0 hostPersonOnly=0 localProjectionOnly=0
+registry isolatePeerMachines bypassImmune=1 classifierRouted=0 autoModeDeny=0 hostPersonOnly=0 localProjectionOnly=0
+registry restrictedMode bypassImmune=1 classifierRouted=0 autoModeDeny=0 hostPersonOnly=0 localProjectionOnly=0
+registry outsideReadsBlocked bypassImmune=1 classifierRouted=0 autoModeDeny=0 hostPersonOnly=0 localProjectionOnly=0
+registry claudeSettingsFile bypassImmune=0 classifierRouted=0 autoModeDeny=0 hostPersonOnly=1 localProjectionOnly=0
 reducer .mcpInfo
 reducer .isReadOnly
 reducer .behavior
@@ -33,6 +33,15 @@ reducer "ask"
 reducer .name
 reducer "other"
 reducer "requiresUserInteraction"
+reducer .behavior
+reducer "allow"
+reducer .servedCall
+reducer .mode
+reducer "ask"
+reducer .name
+reducer .updatedInput
+reducer "other"
+reducer .decisionReason
 reducer .behavior
 reducer "ask"
 reducer .mcpInfo
