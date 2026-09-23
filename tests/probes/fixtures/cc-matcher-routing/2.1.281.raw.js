@@ -1,0 +1,5 @@
+function _ho(e,n,r){if(!(n?/^[a-zA-Z0-9_|, -]+$/:/^[a-zA-Z0-9_|]+$/).test(e))return;return e.split(n?/[|,]/:"|").map((g)=>g.trim()).filter(Boolean).flatMap((g)=>Wme(Rc(g),r))}
+function sAe(e,n,r,s,g,h){if(!n||n==="*")return!0;let _=_ho(n,r,s),w=xOt(e,g,h);if(_!==void 0)return _.includes(e)||w.some((M)=>_.includes(M));try{let M=new RegExp(n);if(M.test(e))return!0;if(bho.test(n)&&w.some((N)=>M.test(N)))return!0;for(let N of S5e(e))if(M.test(N))return!0;for(let N of l9(e,s))if(M.test(N))return!0;return!1}catch{return t(`Invalid regex pattern in hook matcher: ${n}`),!1}}
+function deo(e,n,r){let s=COt(e);return s===void 0||!n||sAe(s,eAe(e.hook_event_name,n),rAe.has(e.hook_event_name),r,void 0,"tool_input"in e?e.tool_input:void 0)}
+function eAe(e,n){if(e!=="PreModelSwitch"&&e!=="PostModelSwitch")return n;let r=n.replace(/\[[12]m\](?=\s*(?:[|,]|$))/gi,"");return r.trim()===""?n:r}
+function xOt(e,n,r){let s=[],g=who(e,n);if(g!==void 0)s.push(g);let h=n===void 0?void 0:_n(n,e);if(h!==void 0){if(h.mcpInfo===void 0)s.push(...h.hookMatcherFamilyNames?.(r)??[])}else{let _=Y9e(e,r);if(_!==void 0)s.push(_)}return s}

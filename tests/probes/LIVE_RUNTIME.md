@@ -128,6 +128,7 @@ tier, it needs a **new** tag and a new roster, not a redefinition of this one.
 | `probe-stale-hooks-filter-retired.js` | `dhx/statusline-wrapper.js` | dropped a `# gsd-hook-version:` header from a copied installed hook → rc=1 | upstream/repo, session |
 | `probe-gsd-roots-resolve.sh` | `dhx/dhx-gsd-canonical-mirror-gate.sh`, `dhx/dhx-gsd-drift-surface.sh`, `scripts/dhx-gsd-triad.sh`, `scripts/dhx-draft-buffer.sh` | demonstrated by absence of `skills/gsd-*` (weaker: not a faithful install simulation) | repo, session |
 | `probe-gate-6-canonical-mirror-discipline.sh` | *(none — deliberate)* | appended a line to the copied live `ui-review.md` → rc=2 | **live state** — re-apply the fork |
+| `probe-cc-matcher-routing-fingerprint.sh` | `tests/probes/probe-updatedinput-producer-disjointness.sh`, `tests/probes/lib/cc-matcher-routing-fingerprint.py`, `config/cc-matcher-routing.tsv` | a one-token router mutant presented as the newest build under a synthetic `CC_VERSIONS_DIR` → rc=1 CHANGED (section D2, runs every time). The flipping install is a **CC** release, not a gsd-core one | repo, **session** — re-derive `BASH_MATCHER_FILTER` against the new cluster, then `--record` |
 
 Every flip above was produced by mutating a **copy** of `~/.claude/gsd-core` under a
 scratch `$HOME`. The live runtime was never mutated.

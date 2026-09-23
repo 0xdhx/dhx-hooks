@@ -120,16 +120,31 @@ command -v jq >/dev/null 2>&1 || die "jq is required to enumerate the manifest"
 # hermetic and makes it test what is committed, not what happens to be installed.
 # MATCHER SELECTION — mirrors CC's OWN routing routine, not the manifest's syntax.
 # ------------------------------------------------------------------------------
-# Derived by reading CC 2.1.241: `getMatchingHooks` -> `_zl` keeps a hook when
-# `!C.matcher || vAE(a, C.matcher, l, c)` with `a = tool_name` and
-# `l = _AE.has("PreToolUse")` — and `_AE` CONTAINS "PreToolUse", so the permissive
-# branch is always live for this event. `vAE` itself:
+# The routine is a five-function cluster (read from CC 2.1.281, 2026-09-23; first
+# derived from 2.1.241, restructured by 2.1.273). Minified names change every build,
+# so they are given as ROLES — tests/probes/lib/cc-matcher-routing-fingerprint.py
+# resolves each by literal anchor and `--raw <build>` prints the current text:
+#   caller      keeps a hook when `tool_name === void 0 || !matcher ||
+#               router(tool_name, normalizer(event, matcher), PERMISSIVE.has(event),
+#                      aliases, void 0, tool_input)` — and PERMISSIVE CONTAINS
+#               "PreToolUse", so the comma/space branch is always live here.
+#   normalizer  strips a trailing [1m]/[2m] for Pre/PostModelSwitch only.
+#   router      (tool, matcher, permissive, aliases, _, tool_input):
 #
-#   if (!t || t === "*") return true;
-#   if ((r ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(t))
-#     return t.split(r ? /[|,]/ : "|").map(s => s.trim()).filter(Boolean)
-#             .flatMap(s => PMn(X5(s), n)).includes(e);
-#   try { if (new RegExp(t).test(e)) return true; ... } catch { ... return false }
+#     if (!matcher || matcher === "*") return true;
+#     let members = splitter(matcher, permissive, aliases), fam = alias(tool, _, tool_input);
+#     if (members !== void 0) return members.includes(tool) || fam.some(f => members.includes(f));
+#     try { let re = new RegExp(matcher); if (re.test(tool)) return true;
+#           /* + family names, name variants, tool_input-derived names */ return false }
+#     catch { return false }
+#
+#   splitter    if (!(permissive ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(m)) return;
+#               return m.split(permissive ? /[|,]/ : "|").map(s => s.trim())
+#                       .filter(Boolean).flatMap(s => <alias-expand>(s, aliases));
+#   alias       the tool's family names (hookMatcherFamilyNames) or an input-derived name.
+#
+# Any change to that cluster reds probe-cc-matcher-routing-fingerprint.sh, which is the
+# cue to re-read it and re-check the two properties below.
 #
 # Two properties any selector here MUST reproduce, both of which cost us a review
 # round when guessed instead of read:
@@ -148,9 +163,10 @@ command -v jq >/dev/null 2>&1 || die "jq is required to enumerate the manifest"
 # earlier selectors (exact-equality, then hand-rolled alternation) each shipped a
 # demonstrable false green for exactly this reason.
 #
-# Conservative by construction: `vAE`'s simple path additionally expands members
-# through the tool-alias maps (`PMn(X5(s), n)`) and the regex path also tests name
-# variants (`oVo`/`$Dt`). Both can only WIDEN what CC routes, never narrow it, so
+# Conservative by construction: the splitter additionally alias-expands each member,
+# the simple path also accepts the tool's family names, and the regex path also tests
+# family names, name variants and tool_input-derived names. All of these can only
+# WIDEN what CC routes, never narrow it, so
 # mirroring the core without alias expansion under-enrolls at worst — and this
 # probe's failure direction for under-enrollment is a missed sweep, so if a live
 # alias-routed rewriter ever appears, widen this to match.
@@ -172,13 +188,13 @@ mapfile -t RAW < <(jq -r "$BASH_MATCHER_FILTER" "$MANIFEST")
 [ "${#RAW[@]}" -gt 0 ]; ck $? "manifest: PreToolUse:Bash matcher registers at least one hook"
 
 # Pin the selector against a synthetic manifest covering EVERY routing form found
-# in `vAE`, so the round-3/round-4 regressions cannot come back silently. Fed on
+# in CC's router, so the round-3/round-4 regressions cannot come back silently. Fed on
 # stdin, never written to disk (SAFE_FOR_LIVE: no fixtures).
 #
 # This fixture must DISCRIMINATE, which the first version of it did not: it carried
 # only the three styles the then-current selector already handled, so it stayed
 # green against a selector that was broken for ten other forms. Every row below is
-# a form `vAE` was verified to route (or refuse), so a narrowing edit to the filter
+# a form CC's router was verified to route (or refuse), so a narrowing edit to the filter
 # reds here instead of silently shrinking the sweep.
 SEL_GOT=$(jq -r "$BASH_MATCHER_FILTER" <<'FIXTURE_JSON' | tr '\n' ' '
 {"hooks":{"PreToolUse":[
@@ -203,7 +219,7 @@ SEL_GOT=$(jq -r "$BASH_MATCHER_FILTER" <<'FIXTURE_JSON' | tr '\n' ' '
 FIXTURE_JSON
 )
 SEL_WANT="exact.sh alt-head.sh alt-tail.sh alt-empty.sh comma.sh comma-space.sh pipe-space.sh nomatcher.sh wildcard.sh regex-any.sh regex-prefix.sh regex-anchored.sh regex-group.sh regex-dot.sh "
-[ "$SEL_GOT" = "$SEL_WANT" ]; ck $? "matcher selector mirrors CC vAE: pipe/comma/space alternation + matcher-less + wildcard + regex enroll; BashOutput/Edit|Write/bash do not"
+[ "$SEL_GOT" = "$SEL_WANT" ]; ck $? "matcher selector mirrors CC's matcher router: pipe/comma/space alternation + matcher-less + wildcard + regex enroll; BashOutput/Edit|Write/bash do not"
 [ "$SEL_GOT" = "$SEL_WANT" ] || printf '       want: %s\n       got:  %s\n' "$SEL_WANT" "$SEL_GOT"
 
 HOOKS=(); NAMES=()
