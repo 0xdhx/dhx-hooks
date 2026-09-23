@@ -275,6 +275,28 @@ console.log(n+" "+bad);' "$STORE" "$FH/.cache/dhx/hooks" 2>"$SB/v-err")
     else
       check "[B13] registry writer emits NO record on a non-empty agent_id / empty session_id" fail "records=$SUBN"
     fi
+    # B13b — QW_CELL=1 (a measured quota cell's client session, 2026-09-23, N9 B R-B12): all
+    # three writers stay SILENT and pair-consistent. The prompt shim prints nothing and the
+    # registry writes no reference beat (the same parity, one more term); the dispatcher exits
+    # before its reference beat, prints nothing, and never runs the schedule child. A POSITIVE
+    # control — the same eligible payload with QW_CELL unset — must write a reference record,
+    # or zero records under QW_CELL proves nothing.
+    FH6="$SB/home6"; mkdir -p "$FH6/.claude"; CC6="$SB/cache6"
+    printf '%s' "$PAYLOAD" | env HOME="$FH6" DHX_HOOKS_CACHE_DIR="$CC6" QW_CELL=1 bash "$REGISTRY_HOOK" >"$SB/b13b-reg.out" 2>&1
+    printf '%s' "$PAYLOAD" | env HOME="$FH6" DHX_HOOKS_CACHE_DIR="$CC6" QW_CELL=1 bash "$PROMPT_SHIM" >"$SB/b13b-shim.out" 2>&1
+    printf '{"session_id":"probe-sched-0001","source":"startup"}' | env HOME="$FH6" DHX_HOOKS_CACHE_DIR="$CC6" QW_CELL=1 bash "$DISPATCHER" >"$SB/b13b-disp.out" 2>&1
+    N13B=$(find "$CC6" -type f 2>/dev/null | wc -l | tr -d ' ')
+    O13B=$(cat "$SB/b13b-reg.out" "$SB/b13b-shim.out" "$SB/b13b-disp.out" | wc -c | tr -d ' ')
+    CC7="$SB/cache7"; printf '%s' "$PAYLOAD" | env HOME="$FH6" DHX_HOOKS_CACHE_DIR="$CC7" bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    P13B=$(find "$CC7" -type f 2>/dev/null | wc -l | tr -d ' ')
+    GUARD_LINE=$(grep -n 'if \[ "\${QW_CELL:-}" = "1" \]; then' "$DISPATCHER" | head -1 | cut -d: -f1)
+    HB_LINE=$(grep -n '^_SCH_HB_DIR=' "$DISPATCHER" | head -1 | cut -d: -f1)
+    if [ "${N13B:-1}" -eq 0 ] && [ "${O13B:-1}" -eq 0 ] && [ "${P13B:-0}" -ge 1 ] \
+       && [ -n "$GUARD_LINE" ] && [ -n "$HB_LINE" ] && [ "$GUARD_LINE" -lt "$HB_LINE" ]; then
+      check "[B13b] QW_CELL=1: shim, registry writer and dispatcher print nothing and write no record (unset: $P13B record(s)); the dispatcher's guard precedes its beat" ok
+    else
+      check "[B13b] QW_CELL=1 silences all three writers, pair-consistent" fail "records=${N13B:-?} bytes=${O13B:-?} control-records=${P13B:-?} guard@${GUARD_LINE:-none} beat@${HB_LINE:-none}"
+    fi
     # B14 — DHX_HOOKS_CACHE_DIR is honoured (the reader's HOOKS_CACHE_ENV) and the writer
     # re-runs its whole transaction when the session directory vanishes mid-write: a stub
     # `mv` that deletes the target directory on its first call models the GC's quarantine

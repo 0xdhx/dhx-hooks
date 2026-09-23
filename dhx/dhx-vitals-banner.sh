@@ -29,6 +29,11 @@
 
 set -uo pipefail
 
+# QW_CELL=1: a measured quota cell's client (qw-call.sh, 2026-09-23, N9 B R-B12) — no banner.
+# Its `ran Nh ago` ages per hour; the systemMessage renders to the operator, not the model
+# (HP-055), so this is hygiene for a headless session no one reads, not a prefix fix.
+[ "${QW_CELL:-}" = "1" ] && exit 0
+
 TOOL="$HOME/.claude/dhx-tools/dhx-dashboard.cjs"
 [ -e "$TOOL" ] && node "$TOOL" notify </dev/null 2>/dev/null || true
 exit 0

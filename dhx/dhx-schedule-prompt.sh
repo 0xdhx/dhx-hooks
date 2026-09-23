@@ -17,6 +17,10 @@
 set -uo pipefail
 
 [ "${DHX_SKIP_SCHEDULE_PROMPT:-0}" = "1" ] && exit 0
+# QW_CELL=1: a measured quota cell's client (qw-call.sh, 2026-09-23, N9 B R-B12). The due list
+# changes when an item falls due (00:00 local, mid-cell), which would move the cached prefix;
+# dhx-session-registry-prompt.sh skips its reference beat on the same term (eligibility parity).
+[ "${QW_CELL:-}" = "1" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
 # KEEP THE RAW BYTES. The event digest is computed over exactly what arrived; re-serialising

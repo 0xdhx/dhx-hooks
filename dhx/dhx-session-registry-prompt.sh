@@ -98,7 +98,9 @@ _dhx_digest16() {
   fi
 }
 _SCH_HB_KEY=""
-if [ -z "${_SCH_AGENT:-}" ] && [ -n "${_SCH_SID:-}" ]; then
+# QW_CELL=1 (a measured quota cell's client, 2026-09-23): the shim exits silent on it, so the
+# reference beat is skipped on it too — the same parity, one more term.
+if [ -z "${_SCH_AGENT:-}" ] && [ -n "${_SCH_SID:-}" ] && [ "${QW_CELL:-}" != "1" ]; then
   _SCH_HB_KEY=$(_dhx_digest16 "$_SCH_SID") || _SCH_HB_KEY=""
 fi
 # The EVENT digest: the RAW payload this hook already holds. `$(cat)` above already stripped

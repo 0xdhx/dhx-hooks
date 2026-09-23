@@ -12,6 +12,18 @@ SID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo unkno
 SRC=$(echo "$INPUT" | jq -r '.source // "unknown"' 2>/dev/null || echo unknown)
 echo "[$TS] dhx-plugin-dispatch session=$SID source=$SRC" >> /tmp/dhx-plugin-probe.log
 
+# --- QW_CELL: a measured quota cell's client session is SILENT (2026-09-23, N9 B R-B12) ---
+# qw-call.sh exports QW_CELL=1 on a b cell's client line. Everything this dispatcher prints
+# lands in the first user turn, i.e. INSIDE the cached prompt prefix the cell measures — and
+# the watch digest's `· polled Nm ago` ticks per minute, so no two cell sessions sent the
+# same bytes and every warm re-send re-created the ≈ 22k tail (B run 1, report § 8). Exit
+# BEFORE the schedule reference beat, so a cell session writes neither leg of that pair (a
+# reference record with no schedule counterpart scores DEAD). The probe-log line above stays.
+if [ "${QW_CELL:-}" = "1" ]; then
+  echo "[$TS] dhx-plugin-dispatch qw-cell-silent session=$SID" >> /tmp/dhx-plugin-probe.log
+  exit 0
+fi
+
 # --- /dhx:schedule liveness reference beat (cross-repo phase 40, D-03/D-22/D-28) ----------
 # Reuses $SID/$INPUT already in hand — no second jq call. One ~200-byte write; no lock, no
 # directory scan (scans belong to the health verb alone); every failure path silent.
