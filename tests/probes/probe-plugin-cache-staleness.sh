@@ -46,7 +46,9 @@ HOOK="$PROBE_REPO_ROOT/dhx/dhx-plugin-cache-staleness-detector.sh"
 # 404'd the hardcoded read and FAILed the empirical-arm scenario on every
 # probe-touching commit (2026-06-25 archival-path-desync fix — docs/decisions.md).
 # The archived copy stays put as the phase's historical decision-provenance record.
-RESULT_ARTIFACT="$PROBE_REPO_ROOT/tests/probes/fixtures/10.1-D-01-RESULT.md"
+# CC_D01_RESULT_ARTIFACT is a TEST seam only (probe-empirical-arm-oracle.sh § 11 drives
+# the write-result guard against a scratch fixture); unset, the tracked fixture is used.
+RESULT_ARTIFACT="${CC_D01_RESULT_ARTIFACT:-$PROBE_REPO_ROOT/tests/probes/fixtures/10.1-D-01-RESULT.md}"
 LIVE_DISPATCHER="$PROBE_REPO_ROOT/dhx-plugin/plugins/dhx/hooks/session-start.sh"
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -77,6 +79,7 @@ declare -A PRE_M PRE_H
 write_result_artifact() {
   local cache_read_path="" cc_version="" evidence="" evidence_debug=""
   local control_hook_fired="" cache_manifest_path="" live_manifest_path="" marker_log_path=""
+  local restamp=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --cache-read-path)     cache_read_path=${2:-}; shift 2 ;;
@@ -87,6 +90,7 @@ write_result_artifact() {
       --cache-manifest-path) cache_manifest_path=${2:-}; shift 2 ;;
       --live-manifest-path)  live_manifest_path=${2:-}; shift 2 ;;
       --marker-log-path)     marker_log_path=${2:-}; shift 2 ;;
+      --restamp)             restamp=1; shift ;;
       *)
         echo "write_result_artifact: unknown flag '$1'" >&2
         return 2
@@ -112,6 +116,22 @@ write_result_artifact() {
     override_note="Auto-overridden from \`no\` → \`inconclusive\`: --control-hook-fired was not \`yes\`, so a REFUTE cannot be distinguished from an auth/install failure masquerading as REFUTE (D-05)."
     cache_read_path="inconclusive"
   fi
+  # Re-stamp policy (docs/decisions.md 2026-09-24): the fixture records the last
+  # verdict CHANGE, so a same-verdict rewrite — or an INCONCLUSIVE over a recorded
+  # verdict — is refused unless the operator passes --restamp deliberately. Runs
+  # AFTER the D-05 override above, so a silently downgraded `no` is judged as the
+  # inconclusive it now is. Exit 3 = policy refusal (2 stays usage/validation).
+  # shellcheck source=lib/empirical-arm-classify.sh
+  source "$PROBE_REPO_ROOT/tests/probes/lib/empirical-arm-classify.sh"
+  arm_restamp_owed "$RESULT_ARTIFACT" "$cache_read_path" || return 2
+  if [[ "$RESTAMP_OWED" != "yes" && "$restamp" != 1 ]]; then
+    echo "write_result_artifact: REFUSED — no write owed: this run's cache_read_path is '$cache_read_path'," >&2
+    echo "  the fixture records '$RESTAMP_RECORDED'. The fixture holds the last verdict CHANGE (docs/decisions.md" >&2
+    echo "  2026-09-24); record this release as a dated run-log line in" >&2
+    echo "  .planning/backlog/2026-05-13-plugin-cache-staleness-statusline-tier-followup.md instead." >&2
+    echo "  A deliberate re-stamp: re-run with --restamp. Nothing was written." >&2
+    return 3
+  fi
 
   local verified_at
   verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -136,6 +156,12 @@ write_result_artifact() {
     echo "deterministically by the \`write-result\` subcommand of"
     echo "\`tests/probes/probe-plugin-cache-staleness.sh\` (D-18) — operator supplied"
     echo "observations as CLI flags; no hand-edited YAML."
+    echo ""
+    echo "This file records the last verdict CHANGE (or the first measurement): its"
+    echo "\`cc_version\` and evidence describe that run, not the newest CC release."
+    echo "Releases re-measured with an unchanged verdict are dated run-log lines in"
+    echo "\`.planning/backlog/2026-05-13-plugin-cache-staleness-statusline-tier-followup.md\`"
+    echo "(docs/decisions.md 2026-09-24)."
     echo ""
     case "$cache_read_path" in
       yes)
@@ -310,7 +336,7 @@ case "${1:-}" in
     : # fall through to the read-only scenario suite below
     ;;
   *)
-    echo "Usage: $0 [write-result --cache-read-path <yes|no|inconclusive> --cc-version ... | (no subcommand)]" >&2
+    echo "Usage: $0 [write-result --cache-read-path <yes|no|inconclusive> --cc-version ... [--restamp] | (no subcommand)]" >&2
     exit 2
     ;;
 esac

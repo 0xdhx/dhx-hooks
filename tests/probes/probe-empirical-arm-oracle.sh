@@ -43,9 +43,15 @@
 #      dhx-vitals-banner.sh miss — H3 cell E) with no beat → control no →
 #      INCONCLUSIVE; a beat record → yes; the arm exports DHX_HOOKS_CACHE_DIR and
 #      the dispatcher's `_SCH_HB_DIR` honours it with the `/session-start` suffix
+#  11. RE-STAMP POLICY (2026-09-24) — arm_restamp_owed's truth table (absent /
+#      same / flip / inconclusive / malformed, frontmatter-only read); write-result
+#      refuses a no-owed rewrite with rc 3 and writes nothing, judges a D-05-
+#      downgraded `no` as inconclusive, writes on --restamp / a flip / no fixture;
+#      the tracked fixture is untouched; the arm's Step 9 asks the same function
 #
 # Backs docs/decisions.md 2026-09-19 "prompt-type Stop hooks block for real on
-# 2.1.278; the D-01 arm needs credentials" row.
+# 2.1.278; the D-01 arm needs credentials" row, and the 2026-09-24 re-stamp-
+# only-on-a-verdict-change row (§ 11).
 #
 # Run: bash tests/probes/probe-empirical-arm-oracle.sh
 set -uo pipefail
@@ -255,6 +261,62 @@ chk "dispatcher's _SCH_HB_DIR honours DHX_HOOKS_CACHE_DIR with the /session-star
     "$(grep -cF '_SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/session-start"' "$DISPATCHER")" 1
 chk "dispatcher writes the record as <dir>/<session16>/<event>.<ms>.<pid>.<nonce>.json" \
     "$(grep -cF '_SCH_REC_F="$_SCH_REC_DIR/$_SCH_EV_NAME.$_SCH_MS.$$.$RANDOM.json"' "$DISPATCHER")" 1
+
+# ---------------------------------------------------------------------------
+echo "### 11. RE-STAMP POLICY (2026-09-24) — the fixture records the last verdict CHANGE"
+# ---------------------------------------------------------------------------
+STALE="$HERE/probe-plugin-cache-staleness.sh"
+REAL_FIX="$REPO/tests/probes/fixtures/10.1-D-01-RESULT.md"
+REAL_SHA=$(sha256sum "$REAL_FIX" | cut -d' ' -f1)
+# The body quotes a DIFFERENT value in prose: the lib must read the frontmatter key only.
+mkfix() { printf -- '---\ncache_read_path: %s\ncc_version: 2.1.281 (Claude Code)\n---\nprose: cache_read_path: yes\n' "$2" > "$1"; }
+restamp() { arm_restamp_owed "$1" "$2"; echo "$?:$RESTAMP_OWED/$RESTAMP_RECORDED"; }
+F="$ROOT/fixture.md"
+chk "no fixture → owed (first write)" "$(restamp "$ROOT/none.md" no)" "0:yes/absent"
+mkfix "$F" no
+chk "recorded no, run no → not owed (frontmatter read, body prose ignored)" "$(restamp "$F" no)" "0:no/no"
+chk "recorded no, run yes → owed (a real flip)" "$(restamp "$F" yes)" "0:yes/no"
+chk "recorded no, run inconclusive → not owed (instrument failure, not a verdict)" "$(restamp "$F" inconclusive)" "0:no/no"
+mkfix "$F" inconclusive
+chk "recorded inconclusive, run no → owed (first conclusive verdict)" "$(restamp "$F" no)" "0:yes/inconclusive"
+chk "recorded inconclusive, run inconclusive → not owed" "$(restamp "$F" inconclusive)" "0:no/inconclusive"
+mkfix "$F" maybe
+chk "malformed recorded value → owed (the rewrite repairs it)" "$(restamp "$F" no)" "0:yes/malformed"
+chk "bad new value → rc 2" "$(restamp "$F" maybe | cut -d: -f1)" 2
+
+# End to end: write-result's guard, through the CC_D01_RESULT_ARTIFACT test seam.
+wr() {
+  CC_D01_RESULT_ARTIFACT="$1" bash "$STALE" write-result --cache-read-path "$2" --control-hook-fired "$3" \
+    --cc-version "9.9.9 (Claude Code)" --evidence e --evidence-debug d --cache-manifest-path c \
+    --live-manifest-path l --marker-log-path m "${@:4}" >/dev/null 2>"$ROOT/wr.err"
+  echo $?
+}
+mkfix "$F" no; cp "$F" "$ROOT/before.md"
+chk "write-result, same verdict → refused rc 3" "$(wr "$F" no yes)" 3
+chk "…and wrote nothing" "$(cmp -s "$F" "$ROOT/before.md" && echo same)" same
+chk "…and says why" "$(grep -c 'REFUSED — no write owed' "$ROOT/wr.err")" 1
+chk "write-result, 'no' with control NOT fired (D-05 downgrades it to inconclusive) → refused rc 3" "$(wr "$F" no no)" 3
+chk "write-result, inconclusive over a recorded verdict → refused rc 3" "$(wr "$F" inconclusive yes)" 3
+chk "…fixture still unchanged after all three refusals" "$(cmp -s "$F" "$ROOT/before.md" && echo same)" same
+chk "write-result --restamp, same verdict → written rc 0" "$(wr "$F" no yes --restamp)" 0
+chk "…with the new cc_version" "$(grep -c '^cc_version: 9.9.9 (Claude Code)$' "$F")" 1
+mkfix "$F" no
+chk "write-result, a real flip (no → yes) → written rc 0" "$(wr "$F" yes yes)" 0
+chk "…records the flip" "$(awk '/^---$/{n++; next} n==1 && /^cache_read_path: /{print $2; exit}' "$F")" yes
+rm -f "$F"
+chk "write-result, no fixture → written rc 0" "$(wr "$F" no yes)" 0
+chk "…and the written body states the last-verdict-CHANGE contract" "$(grep -c 'records the last verdict CHANGE' "$F")" 1
+chk "the tracked fixture was never touched (the seam did not leak)" "$(sha256sum "$REAL_FIX" | cut -d' ' -f1)" "$REAL_SHA"
+# The sha cell alone passes when a leak rewrites byte-identical content (a prior leak in the
+# same second — observed in the negative control); the probe's own stamp cannot be there.
+chk "…and carries none of this section's cc_version stamp" "$(grep -c '^cc_version: 9.9.9' "$REAL_FIX")" 0
+# Wiring: one rule, two consumers, and the guard judges the post-override value.
+chk "arm maps REFUTE → no before asking" "$(grep -cF 'REFUTE) NEW_CRP=no' "$ARM")" 1
+chk "arm's Step 9 asks arm_restamp_owed" "$(grep -cF 'arm_restamp_owed "$RESULT_FIXTURE" "$NEW_CRP"' "$ARM")" 1
+chk "arm no longer prints the unconditional write-result step" "$(grep -c 'run write-result (substitute classification if needed)' "$ARM")" 0
+g_line=$(grep -nF 'arm_restamp_owed "$RESULT_ARTIFACT" "$cache_read_path"' "$STALE" | cut -d: -f1)
+o_line=$(grep -nF 'cache_read_path="inconclusive"' "$STALE" | head -1 | cut -d: -f1)
+chk "write-result's guard sits AFTER the D-05 downgrade" "$([ -n "$g_line" ] && [ -n "$o_line" ] && [ "$g_line" -gt "$o_line" ] && echo after)" after
 
 echo "---"
 echo "$PASS passed, $FAIL failed"

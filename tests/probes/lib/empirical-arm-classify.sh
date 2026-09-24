@@ -47,8 +47,19 @@
 #   arm_classify <marker> <control> <stops> <auth_failed>
 #       Sets CLASS_VERDICT (AFFIRM|REFUTE|INCONCLUSIVE), CLASS_LABEL, CLASS_ARGS.
 #       REFUTE requires ALL of: marker=no, control=yes, stops>=1.
+#   arm_restamp_owed <fixture> <new cache_read_path: yes|no|inconclusive>
+#       Sets RESTAMP_OWED (yes|no) and RESTAMP_RECORDED (the fixture's
+#       cache_read_path, or absent|malformed); returns 2 on a bad new value.
+#       Since 2026-09-24 the D-01 fixture records the last verdict CHANGE, not
+#       the newest CC release: a write is owed only when the fixture is absent
+#       or malformed, or a CONCLUSIVE new value differs from the recorded one.
+#       INCONCLUSIVE never replaces a recorded value — it is an instrument
+#       failure, not a verdict. Consumed by run-empirical-arm.sh's Step 9 and
+#       by probe-plugin-cache-staleness.sh's write-result guard, so the rule
+#       exists once.
 #
-# Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials; D4 row: control re-key);
+# Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials; D4 row: control re-key),
+#        2026-09-24 (re-stamp only on a verdict change);
 #        tests/probes/probe-empirical-arm-oracle.sh.
 
 ARM_STOP_RE='^[^ ]+ \[DEBUG\] "Hook Stop \(Stop\) (success|error):'
@@ -102,5 +113,25 @@ arm_classify() {
     CLASS_VERDICT=INCONCLUSIVE
     CLASS_LABEL="INCONCLUSIVE (control did not fire — session-start.sh left no beat record: claude failed / install error / dispatcher not run)"
     CLASS_ARGS="--cache-read-path inconclusive --control-hook-fired $control"
+  fi
+}
+
+arm_restamp_owed() {
+  local fixture="${1:-}" new="${2:-}" rec=""
+  RESTAMP_OWED=""; RESTAMP_RECORDED=""
+  case "$new" in yes|no|inconclusive) ;; *) return 2 ;; esac
+  if [ -z "$fixture" ] || [ ! -r "$fixture" ]; then
+    RESTAMP_RECORDED=absent; RESTAMP_OWED=yes; return 0
+  fi
+  # First frontmatter key only — the body quotes `cache_read_path: <v>` in prose.
+  rec=$(awk '/^---$/{n++; next} n==1 && /^cache_read_path: /{print $2; exit}' "$fixture")
+  case "$rec" in
+    yes|no|inconclusive) RESTAMP_RECORDED="$rec" ;;
+    *) RESTAMP_RECORDED=malformed; RESTAMP_OWED=yes; return 0 ;;
+  esac
+  if [ "$new" = "$rec" ] || [ "$new" = inconclusive ]; then
+    RESTAMP_OWED=no
+  else
+    RESTAMP_OWED=yes
   fi
 }

@@ -188,10 +188,39 @@ echo "    Manual verification: review $DEBUG_LOG + $MARKER_LOG before accepting.
 echo "    --control-hook-fired observed: $CONTROL_FIRED"
 echo "    Stop-dispatch lines observed:  $STOPS_DISPATCHED"
 
-# === Ready-to-run write-result command ===
+# === Step 9 — is a write owed? (docs/decisions.md 2026-09-24) ===
+# The fixture records the last verdict CHANGE, not the newest CC release. Before
+# 2026-09-24 this step printed write-result unconditionally, and two same-verdict
+# bumps (2.1.278, 2.1.281) each re-stamped six files. write-result enforces the
+# same rule (it refuses without --restamp); this branch just prints the right step.
+case "$CLASS_VERDICT" in AFFIRM) NEW_CRP=yes ;; REFUTE) NEW_CRP=no ;; *) NEW_CRP=inconclusive ;; esac
+RESULT_FIXTURE="${CC_D01_RESULT_ARTIFACT:-$HOOKS_REPO/tests/probes/fixtures/10.1-D-01-RESULT.md}"
+arm_restamp_owed "$RESULT_FIXTURE" "$NEW_CRP"
+if [ "$RESTAMP_OWED" != "yes" ]; then
+  if [ "$NEW_CRP" = inconclusive ]; then
+    WHY="INCONCLUSIVE is an instrument failure, not a verdict — fix the cause named in the classification and re-run the arm; write-result refuses to overwrite the recorded '$RESTAMP_RECORDED'."
+  else
+    WHY="verdict UNCHANGED (this run: '$NEW_CRP', fixture: '$RESTAMP_RECORDED'). Record this release as a dated run-log line in .planning/backlog/2026-05-13-plugin-cache-staleness-statusline-tier-followup.md, with this run's logs committed under reports/<date>-cc-<ver>-version-triggers/ (scrub sk-ant- first)."
+  fi
+  cat <<EOF
+
+=== Step 9 — NO write-result owed ===
+
+    $WHY
+    The fixture records the last verdict CHANGE (docs/decisions.md 2026-09-24).
+    write-result refuses a no-owed rewrite unless given --restamp (a deliberate re-stamp).
+
+=== Cleanup (when done — copy the logs out first) ===
+
+rm -rf "$SANDBOX"
+rm -f  "$MARKER_LOG" "$DEBUG_LOG"
+
+EOF
+  exit 0
+fi
 cat <<EOF
 
-=== Step 9 — run write-result (substitute classification if needed) ===
+=== Step 9 — run write-result: the verdict CHANGED (fixture: '$RESTAMP_RECORDED' → this run: '$NEW_CRP') ===
 
 cd $HOOKS_REPO
 bash tests/probes/probe-plugin-cache-staleness.sh write-result \\
