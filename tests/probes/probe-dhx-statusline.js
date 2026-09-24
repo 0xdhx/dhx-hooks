@@ -600,6 +600,11 @@ const ACW650 = { autoCompactWindow: 650000 };
                         project: { autoCompactWindow: 500000 },
                         local: { autoCompactWindow: 300000 } });
   ok('ctx: project settings.local.json beats project + user → 133.5k is 50% of 267k', r.pct, 50);
+  const r2 = renderCtx({ cw: ccContextWindow(233500, 1_000_000), user: ACW650,
+                         project: { autoCompactWindow: 500000 } });
+  ok('ctx: project settings.json beats user (no local) → 233.5k is 50% of 467k', r2.pct, 50);
+  const r3 = renderCtx({ cw: ccContextWindow(83500, 200000), user: ACW650 });
+  ok('ctx: settings window above the model window is capped at it → 83.5k is 50% of 167k', r3.pct, 50);
 }
 // Compaction disabled → 100% is the model window, no compaction scaling.
 {
