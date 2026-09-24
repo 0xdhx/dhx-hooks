@@ -197,16 +197,6 @@
             "command": "bash \"$HOME/.claude/hooks/dhx-milestone-close-blocker-pretooluse.sh\""
           }
         ]
-      },
-      {
-        "matcher": "Agent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$HOME/.claude/hooks/dhx-oracle-prestate-gate.sh\"",
-            "timeout": 30
-          }
-        ]
       }
     ],
     "PostToolUse": [
