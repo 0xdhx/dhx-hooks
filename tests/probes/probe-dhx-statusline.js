@@ -415,7 +415,7 @@ const outSingle = renderWithFixtures({
   session_id: 'probe',
   model: { display_name: 'Opus 4.7 (1M context)' },
   workspace: { current_dir: os.tmpdir() },
-  context_window: { total_tokens: 1_000_000, remaining_percentage: 85 },
+  context_window: ccContextWindow(150000, 1_000_000), // CC's real shape (§ 8)
   effort: { level: 'high' },
 });
 ok('e2e: single line when no GSD + no signals (no newline)',
@@ -432,7 +432,7 @@ const outHooks = renderWithFixtures({
   session_id: 'probe',
   model: { display_name: 'Opus 4.7 (1M context)' },
   workspace: { current_dir: '/home/dhx/repos/hooks' },
-  context_window: { total_tokens: 1_000_000, remaining_percentage: 85 },
+  context_window: ccContextWindow(150000, 1_000_000), // CC's real shape (§ 8)
   effort: { level: 'high' },
 });
 const [hLine1, hLine2] = outHooks.split('\n');
@@ -471,6 +471,203 @@ fs.rmSync(e2eStubDir, { recursive: true, force: true });
      refineDiscussStatus(mk('planning', '48'), path.join(t, 'nope')).status, 'planning');
   fs.rmSync(t, { recursive: true, force: true });
 }
+
+// --- § 8 ctx meter: 100% is the auto-compact point, in CC's real payload shape
+//
+// The bar's 100% is where Claude Code auto-compacts, and the bridge's
+// remaining_percentage counts down to that same point, so
+// gsd-context-monitor's warnings fire before compaction (not at a
+// model-window percentage compaction always beats). Fixtures carry CC's REAL
+// statusline `context_window` (built by Uwe() in the CC 2.1.281 binary). It
+// has no `total_tokens`: the pre-2026-09-24 fixtures sent one because they
+// were shaped to the meter rather than to CC, so they proved only that the
+// meter agreed with itself. Arithmetic: .planning/backlog/ brief
+// "statusline-ctx-meter-ignores-autocompactwindow" § CC's actual arithmetic.
+//
+// Every case runs in its own scratch CLAUDE_CONFIG_DIR / project / TMPDIR,
+// with the four compaction env vars cleared unless the case sets them, so
+// neither the operator's live settings nor this shell's env leak in.
+
+const AC_ENV_KEYS = [
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
+  'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT',
+];
+const ctxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dhx-sl-ctx-'));
+let ctxN = 0;
+
+// CC's payload for a context of `tokens` on a model window of `size`.
+function ccContextWindow(tokens, size) {
+  const current_usage = {
+    input_tokens: 2,
+    cache_creation_input_tokens: 819,
+    cache_read_input_tokens: tokens - 821,
+    output_tokens: 412,
+  };
+  const used = Math.min(100, Math.max(0, Math.round((tokens / size) * 100)));
+  return {
+    total_input_tokens: tokens,
+    total_output_tokens: 412,
+    context_window_size: size,
+    current_usage,
+    used_percentage: used,
+    remaining_percentage: 100 - used,
+  };
+}
+
+function renderCtx({ cw, user, project, local, claudeJson, env = {} }) {
+  const root = path.join(ctxRoot, String(++ctxN));
+  const cfg = path.join(root, 'cfg');
+  const shared = path.join(root, 'shared');
+  const proj = path.join(root, 'proj');
+  const sub = path.join(proj, 'sub');
+  const tmp = path.join(root, 'tmp');
+  for (const d of [cfg, shared, path.join(proj, '.claude'), sub, tmp]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+  // CCS shape: the config dir's settings.json is a symlink into a shared dir.
+  if (user) {
+    fs.writeFileSync(path.join(shared, 'settings.json'), JSON.stringify(user));
+    fs.symlinkSync(path.join(shared, 'settings.json'), path.join(cfg, 'settings.json'));
+  }
+  if (project) fs.writeFileSync(path.join(proj, '.claude', 'settings.json'), JSON.stringify(project));
+  if (local) fs.writeFileSync(path.join(proj, '.claude', 'settings.local.json'), JSON.stringify(local));
+  if (claudeJson) fs.writeFileSync(path.join(cfg, '.claude.json'), JSON.stringify(claudeJson));
+  const childEnv = { ...process.env, CLAUDE_CONFIG_DIR: cfg, TMPDIR: tmp, ...env };
+  for (const k of AC_ENV_KEYS) if (!(k in env)) delete childEnv[k];
+  const session = `probe-ctx-${ctxN}`;
+  const out = execFileSync(process.execPath, [SCRIPT], {
+    input: JSON.stringify({
+      session_id: session,
+      model: { display_name: 'Opus 5.5 (1M context)' },
+      // current_dir is a SUBDIR: project settings come from project_dir.
+      workspace: { current_dir: sub, project_dir: proj },
+      context_window: cw,
+    }),
+    encoding: 'utf8',
+    env: childEnv,
+  });
+  const m = strip(out).match(/[█░]{5} (\d+)%(?: (\d+(?:\.\d)?[kM]))?/);
+  let bridge = null;
+  try {
+    bridge = JSON.parse(fs.readFileSync(path.join(tmp, `claude-ctx-${session}.json`), 'utf8'));
+  } catch (e) { /* absent bridge → asserts below report null */ }
+  return { pct: m ? Number(m[1]) : null, tokens: m ? (m[2] || null) : null, bridge, tmp, session, proj };
+}
+
+const ACW650 = { autoCompactWindow: 650000 };
+
+// (a) settings 650000 on a 1M model → compaction at 650000 − 20000 − 13000 =
+//     617,000. 616,927 is the measured preTokens of the 2026-09-24
+//     forgefinder compaction (session b9a0a56e) — the meter showed ~74% there.
+{
+  const r = renderCtx({ cw: ccContextWindow(616927, 1_000_000), user: ACW650 });
+  ok('ctx (a): 616,927 against a 617k threshold → ≥ 99%', r.pct !== null && r.pct >= 99, true);
+  ok('ctx (a): dim token suffix reads 617k', r.tokens, '617k');
+  ok('ctx (a): bridge remaining counts down to compaction (≤ 1)',
+     r.bridge !== null && r.bridge.remaining_percentage <= 1, true);
+}
+// (b) the operator's reading: ~608k, where the meter said 73%.
+{
+  const r = renderCtx({ cw: ccContextWindow(608000, 1_000_000), user: ACW650 });
+  ok('ctx (b): 608k → 98–99%, never 73%', r.pct !== null && r.pct >= 98 && r.pct <= 99, true);
+  ok('ctx (b): token suffix reads 608k', r.tokens, '608k');
+  ok('ctx (b): bridge used_pct + remaining_percentage = 100 (one scale)',
+     r.bridge !== null && r.bridge.used_pct + r.bridge.remaining_percentage, 100);
+}
+// (c) nothing configured, 200k model → 200000 − 20000 − 13000 = 167,000. The
+//     old fixed 16.5% buffer IS 33k/200k, so the old display was right here
+//     within rounding; the bridge (raw model-window remaining) was not.
+{
+  let r = renderCtx({ cw: ccContextWindow(167000, 200000) });
+  ok('ctx (c): 167,000 on an unconfigured 200k model → 100%', r.pct, 100);
+  r = renderCtx({ cw: ccContextWindow(83500, 200000) });
+  ok('ctx (c): 83,500 → 50% (the 100% point is 167k, not 200k)', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(160000, 200000) });
+  ok('ctx (c): 160,000 → bridge remaining 5 (to 167k), not 20 (to 200k)',
+     r.bridge && r.bridge.remaining_percentage, 5);
+}
+// (d) env beats settings: 400000 → 367,000.
+{
+  const r = renderCtx({ cw: ccContextWindow(183500, 1_000_000), user: ACW650,
+                        env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } });
+  ok('ctx (d): env 400000 beats settings 650000 → 183.5k is 50% of 367k', r.pct, 50);
+}
+// Settings chain: user < project < local, read from project_dir.
+{
+  const r = renderCtx({ cw: ccContextWindow(133500, 1_000_000), user: ACW650,
+                        project: { autoCompactWindow: 500000 },
+                        local: { autoCompactWindow: 300000 } });
+  ok('ctx: project settings.local.json beats project + user → 133.5k is 50% of 267k', r.pct, 50);
+}
+// Compaction disabled → 100% is the model window, no compaction scaling.
+{
+  let r = renderCtx({ cw: ccContextWindow(500000, 1_000_000), user: ACW650,
+                      env: { DISABLE_AUTO_COMPACT: '1' } });
+  ok('ctx: DISABLE_AUTO_COMPACT=1 → 500k is 50% of the 1M model window', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(500000, 1_000_000), user: ACW650,
+                  env: { DISABLE_COMPACT: 'true' } });
+  ok('ctx: DISABLE_COMPACT=true → 50% of the model window', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(500000, 1_000_000),
+                  user: { autoCompactWindow: 650000, autoCompactEnabled: false } });
+  ok('ctx: autoCompactEnabled false in settings → 50% of the model window', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(500000, 1_000_000), user: ACW650,
+                  claudeJson: { autoCompactEnabled: false } });
+  ok('ctx: autoCompactEnabled false in legacy .claude.json (settings silent) → model window', r.pct, 50);
+}
+// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE lowers the threshold: floor(630000 × 0.5).
+{
+  const r = renderCtx({ cw: ccContextWindow(157500, 1_000_000), user: ACW650,
+                        env: { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50' } });
+  ok('ctx: PCT_OVERRIDE 50 → 157.5k is 50% of 315k', r.pct, 50);
+}
+// Out-of-range and garbage values are dropped the way CC drops them.
+{
+  let r = renderCtx({ cw: ccContextWindow(308500, 1_000_000), user: ACW650,
+                      env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 'abc' } });
+  ok('ctx: unparseable env window ignored → settings 650000 applies', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(33500, 1_000_000),
+                  env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '50000' } });
+  ok('ctx: env window below 100k is clamped up to 100k → 33.5k is 50% of 67k', r.pct, 50);
+  r = renderCtx({ cw: ccContextWindow(483500, 1_000_000), user: { autoCompactWindow: 50000 } });
+  ok('ctx: settings window below 100k is dropped → model window 1M (967k)', r.pct, 50);
+}
+// Token suffix formatting.
+{
+  let r = renderCtx({ cw: ccContextWindow(53000, 1_000_000) });
+  ok('ctx: token suffix 53k', r.tokens, '53k');
+  r = renderCtx({ cw: ccContextWindow(999700, 1_000_000), env: { DISABLE_COMPACT: '1' } });
+  ok('ctx: token suffix at the top reads 1.0M', r.tokens, '1.0M');
+}
+// Payload without token fields (a CC predating them): CC's own percentage of
+// the model window, unscaled — no suffix, nothing invented.
+{
+  const r = renderCtx({ cw: { remaining_percentage: 85 }, user: ACW650 });
+  ok('ctx fallback: no token fields → CC used_percentage 15%, unscaled', r.pct, 15);
+  ok('ctx fallback: no token suffix', r.tokens, null);
+  ok('ctx fallback: bridge remaining 85', r.bridge && r.bridge.remaining_percentage, 85);
+}
+// The monitor half: feed the bridge the meter wrote to gsd-context-monitor.js
+// and observe its warnings BELOW the 617k compaction point.
+{
+  const MONITOR = path.join(os.homedir(), '.claude', 'hooks', 'gsd-context-monitor.js');
+  const haveMonitor = fs.existsSync(MONITOR);
+  ok('ctx monitor: gsd-context-monitor.js is installed (not a silent skip)', haveMonitor, true);
+  const monitor = (r) => execFileSync(process.execPath, [MONITOR], {
+    input: JSON.stringify({ session_id: r.session, hook_event_name: 'PostToolUse',
+                            tool_name: 'Bash', cwd: r.proj }),
+    encoding: 'utf8',
+    env: { ...process.env, TMPDIR: r.tmp },
+  });
+  if (haveMonitor) {
+    let r = renderCtx({ cw: ccContextWindow(300000, 1_000_000), user: ACW650 });
+    ok('ctx monitor: 300k of 617k → silent', monitor(r).includes('CONTEXT'), false);
+    r = renderCtx({ cw: ccContextWindow(420000, 1_000_000), user: ACW650 });
+    ok('ctx monitor: 420k (< 617k) → CONTEXT WARNING', monitor(r).includes('CONTEXT WARNING'), true);
+    r = renderCtx({ cw: ccContextWindow(470000, 1_000_000), user: ACW650 });
+    ok('ctx monitor: 470k (< 617k) → CONTEXT CRITICAL', monitor(r).includes('CONTEXT CRITICAL'), true);
+  }
+}
+fs.rmSync(ctxRoot, { recursive: true, force: true });
 
 // --- Summary ----------------------------------------------------------------
 

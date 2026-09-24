@@ -572,6 +572,131 @@ function formatGsdState(s) {
   return parts.join(' · ');
 }
 
+// --- Context meter -----------------------------------------------------------
+//
+// The ctx bar's 100% is the token count at which Claude Code auto-compacts.
+// resolveAutoCompact() mirrors CC's own resolution, read from the CC 2.1.281
+// binary (minified names are for re-derivation only; they change per build):
+//   enabled    Pm()  off when env DISABLE_COMPACT or DISABLE_AUTO_COMPACT is
+//                    truthy, or setting autoCompactEnabled is false. CC tests
+//                    DISABLE_COMPACT with 1/true/yes/on; DISABLE_AUTO_COMPACT
+//                    goes through an env accessor not traced — same set assumed.
+//   window     Bk()  env CLAUDE_CODE_AUTO_COMPACT_WINDOW (unparseable → ignored,
+//                    clamped to [100k, 1M]), else settings autoCompactWindow
+//                    (an integer in [100k, 1M], else dropped; consulted only
+//                    while enabled), else the model window. Always capped at
+//                    the model window.
+//   effective  Uq()  window − min(modelMaxOutput, 20000)
+//   threshold  HX()  effective − 13000, or floor(effective × pct/100) when
+//                    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (0 < pct ≤ 100) is lower
+// CC's sources after settings (clientdata, experiment, per-model defaults) are
+// invisible to a statusline and fall through to the model window.
+// Evidence + arithmetic: the 2026-09-24 ctx-meter backlog brief, and
+// tests/probes/probe-dhx-statusline.js § 8.
+const AC_WINDOW_MIN = 100_000;
+const AC_WINDOW_MAX = 1_000_000;
+const AC_OUTPUT_RESERVE = 20_000; // min(modelMaxOutput, 20000) — every current model's max output is ≥ 20k
+const AC_SUMMARY_BUFFER = 13_000;
+
+function envTruthy(v) {
+  return ['1', 'true', 'yes', 'on'].includes(String(v || '').trim().toLowerCase());
+}
+
+function readJsonOrNull(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; }
+}
+
+// Settings layers CC merges, lowest precedence first: user (via
+// CLAUDE_CONFIG_DIR — on CCS a symlink into ~/.ccs/shared, which readFileSync
+// follows), then project, then project-local. Project files come from
+// workspace.project_dir (CC's launch dir), not current_dir. Each file is read
+// once per render; a missing or unparseable file counts as unset.
+function readSettingsKeys(projectDir, env, keys) {
+  const cfg = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const files = [path.join(cfg, 'settings.json')];
+  if (projectDir) {
+    files.push(path.join(projectDir, '.claude', 'settings.json'));
+    files.push(path.join(projectDir, '.claude', 'settings.local.json'));
+  }
+  const out = {};
+  for (const f of files) {
+    const s = readJsonOrNull(f);
+    if (!s || typeof s !== 'object') continue;
+    for (const k of keys) if (s[k] !== undefined) out[k] = s[k];
+  }
+  return out;
+}
+
+function parseEnvWindow(raw) {
+  const s = String(raw).trim();
+  const n = /^[\d_,]+$/.test(s) ? parseInt(s.replace(/[_,]/g, ''), 10) : parseInt(s, 10);
+  if (isNaN(n) || n <= 0) return null;
+  return Math.max(AC_WINDOW_MIN, Math.min(AC_WINDOW_MAX, n));
+}
+
+function resolveAutoCompact(modelWindow, projectDir, env = process.env) {
+  const settings = readSettingsKeys(projectDir, env, ['autoCompactWindow', 'autoCompactEnabled']);
+  let autoEnabled = settings.autoCompactEnabled;
+  if (autoEnabled === undefined) {
+    // Legacy global config, only when no settings layer decides — it is
+    // ~190 KB on this machine, so it stays off the common path.
+    const cfg = env.CLAUDE_CONFIG_DIR;
+    const legacy = readJsonOrNull(cfg ? path.join(cfg, '.claude.json') : path.join(os.homedir(), '.claude.json'));
+    autoEnabled = legacy ? legacy.autoCompactEnabled : undefined;
+  }
+  const enabled = !envTruthy(env.DISABLE_COMPACT) && !envTruthy(env.DISABLE_AUTO_COMPACT)
+    && autoEnabled !== false;
+  if (!enabled) return { enabled: false, window: modelWindow, threshold: null, source: 'disabled' };
+
+  let window = modelWindow;
+  let source = 'model';
+  const envWindow = env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ? parseEnvWindow(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) : null;
+  const w = settings.autoCompactWindow;
+  if (envWindow !== null) {
+    window = Math.min(modelWindow, envWindow); source = 'env';
+  } else if (Number.isInteger(w) && w >= AC_WINDOW_MIN && w <= AC_WINDOW_MAX) {
+    window = Math.min(modelWindow, w); source = 'settings';
+  }
+  const effective = window - AC_OUTPUT_RESERVE;
+  let threshold = effective - AC_SUMMARY_BUFFER;
+  const pct = parseFloat(env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE);
+  if (!isNaN(pct) && pct > 0 && pct <= 100) {
+    threshold = Math.min(Math.floor(effective * (pct / 100)), threshold);
+  }
+  return { enabled: true, window, threshold, source };
+}
+
+// Returns { used, remaining, tokens, denominator } in one scale (used +
+// remaining = 100), or null when CC has no usage yet. Tokens are CC's own
+// count (input + cache creation + cache read of the last turn); the percentage
+// is taken against the compaction threshold, or the model window when
+// compaction is off. A payload without token fields falls back to CC's own
+// model-window percentage, unscaled — re-scaling a rounded percentage is the
+// defect this replaced.
+function contextMeter(cw, projectDir, env = process.env) {
+  if (!cw) return null;
+  const u = cw.current_usage;
+  const size = cw.context_window_size;
+  if (u && typeof u === 'object' && size > 0) {
+    const tokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0)
+      + (u.cache_read_input_tokens || 0);
+    const ac = resolveAutoCompact(size, projectDir, env);
+    const denominator = ac.enabled ? ac.threshold : size;
+    if (denominator > 0) {
+      const used = Math.max(0, Math.min(100, Math.floor((tokens / denominator) * 100)));
+      return { used, remaining: 100 - used, tokens, denominator };
+    }
+  }
+  if (cw.remaining_percentage == null) return null;
+  const used = Math.max(0, Math.min(100, Math.round(100 - cw.remaining_percentage)));
+  return { used, remaining: 100 - used, tokens: null, denominator: null };
+}
+
+// 53k / 617k / 1.0M — never wider than 4 characters.
+function formatTokens(n) {
+  return n < 999_500 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 // --- stdin ------------------------------------------------------------------
 
 function runStatusline() {
@@ -590,26 +715,19 @@ function runStatusline() {
     const dir = data.workspace?.current_dir || process.cwd();
     const session = data.session_id || '';
     const effort = renderEffort(data.effort?.level);
-    const remaining = data.context_window?.remaining_percentage;
-
-    // Context window display (shows USED percentage scaled to usable context)
-    // Claude Code reserves a buffer for autocompact. By default this is ~16.5%
-    // of the total window, but users can override it via CLAUDE_CODE_AUTO_COMPACT_WINDOW
-    // (a token count). When the env var is set, compute the buffer % dynamically so
-    // the meter correctly reflects early-compaction configurations (#2219).
-    const totalCtx = data.context_window?.total_tokens || 1_000_000;
-    const acw = parseInt(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '0', 10);
-    const AUTO_COMPACT_BUFFER_PCT = acw > 0
-      ? Math.min(100, (acw / totalCtx) * 100)
-      : 16.5;
+    // Context window display: USED percentage of the auto-compact threshold
+    // (100% = compaction fires), plus CC's absolute token count. See
+    // contextMeter() / resolveAutoCompact() above.
+    const meter = contextMeter(data.context_window, data.workspace?.project_dir || dir);
     let ctx = '';
-    if (remaining != null) {
-      // Normalize: subtract buffer from remaining, scale to usable range
-      const usableRemaining = Math.max(0, ((remaining - AUTO_COMPACT_BUFFER_PCT) / (100 - AUTO_COMPACT_BUFFER_PCT)) * 100);
-      const used = Math.max(0, Math.min(100, Math.round(100 - usableRemaining)));
+    if (meter) {
+      const { used, remaining } = meter;
 
       // Write context metrics to bridge file for the context-monitor PostToolUse hook.
       // The monitor reads this file to inject agent-facing warnings when context is low.
+      // remaining_percentage counts down to the SAME point as the bar — the
+      // compaction threshold — so the monitor's ≤35% / ≤25% warnings fire
+      // before compaction rather than after it, and used_pct + remaining = 100.
       // Reject session IDs with path separators or traversal sequences to prevent
       // a malicious session_id from writing files outside the temp directory.
       const sessionSafe = session && !/[/\\]|\.\./.test(session);
@@ -620,6 +738,8 @@ function runStatusline() {
             session_id: session,
             remaining_percentage: remaining,
             used_pct: used,
+            used_tokens: meter.tokens,
+            threshold_tokens: meter.denominator,
             timestamp: Math.floor(Date.now() / 1000)
           });
           fs.writeFileSync(bridgePath, bridgeData);
@@ -645,6 +765,9 @@ function runStatusline() {
       } else {
         ctx = ` \x1b[5;31m💀 ${bar} ${used}%\x1b[0m`;
       }
+      // Absolute count, dim: the one label that does not depend on which
+      // denominator the percentage is taken against (it matches /context).
+      if (meter.tokens != null) ctx += ` \x1b[2m${formatTokens(meter.tokens)}\x1b[0m`;
     }
 
     // Current task from CC's per-session task store. Layout migrated 2026-05:
@@ -934,6 +1057,7 @@ module.exports = {
   truncate, findRepoRoot, getRepoSignals,
   getActiveTask,
   formatLine2Gsd, formatLine2Signals,
+  resolveAutoCompact, contextMeter, formatTokens,
 };
 
 if (require.main === module) runStatusline();

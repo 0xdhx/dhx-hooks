@@ -73,7 +73,13 @@ const baseFixture = {
   session_id: 'probe-load',
   model: { display_name: 'Opus 4.7 (1M context)' },
   workspace: { current_dir: os.tmpdir() },
-  context_window: { total_tokens: 1_000_000, remaining_percentage: 85 },
+  // CC's real statusline shape (Uwe() in the 2.1.281 binary) — no total_tokens.
+  context_window: {
+    total_input_tokens: 150000, total_output_tokens: 412, context_window_size: 1_000_000,
+    current_usage: { input_tokens: 2, cache_creation_input_tokens: 819,
+                     cache_read_input_tokens: 149179, output_tokens: 412 },
+    used_percentage: 15, remaining_percentage: 85,
+  },
   effort: { level: 'xhigh' },
 };
 
