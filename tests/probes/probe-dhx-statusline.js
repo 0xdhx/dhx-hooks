@@ -591,6 +591,8 @@ const ACW650 = { autoCompactWindow: 650000 };
   const r = renderCtx({ cw: ccContextWindow(183500, 1_000_000), user: ACW650,
                         env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } });
   ok('ctx (d): env 400000 beats settings 650000 → 183.5k is 50% of 367k', r.pct, 50);
+  ok('ctx (d): bridge counts down to the env threshold (remaining 50, threshold_tokens 367000)',
+     r.bridge && `${r.bridge.remaining_percentage}/${r.bridge.threshold_tokens}`, '50/367000');
 }
 // Settings chain: user < project < local, read from project_dir.
 {
