@@ -202,7 +202,10 @@ echo "--- D. section C's own verdicts, against SYNTHETIC version dirs ---"
 live() {  # live <versions-dir> [--record] -> sets LV_RC, LV_OUT
   LV_OUT=$(CC_MRF_ONLY_LIVE=1 CC_VERSIONS_DIR="$1" CC_MRF_LEDGER="$TMP/ledger.tsv" bash "$0" "${@:2}" 2>&1); LV_RC=$?
 }
-cp "$LEDGER" "$TMP/ledger.tsv"
+# D's scratch ledger holds the FIXTURE's rows only, never the live tail: D asserts against the
+# 2.1.281 fixture, so a live `--record` of any later build must not move D's "latest recorded".
+awk -F'\t' '/^#/ || $1=="version" || $1=="2.1.273" || $1=="2.1.281"' "$LEDGER" >"$TMP/ledger.tsv"
+cp "$TMP/ledger.tsv" "$TMP/ledger.orig"
 mkdir -p "$TMP/v1" "$TMP/v2" "$TMP/v3" "$TMP/v4" "$TMP/v5"
 cp "$TMP/base.js" "$TMP/v1/9.9.9"
 live "$TMP/v1"
@@ -227,7 +230,7 @@ live "$TMP/v1" --record
 r1=$LV_RC; row=$(awk -F'\t' '$1=="9.9.9"' "$TMP/ledger.tsv")
 live "$TMP/v1" --record
 [ "$r1" = 0 ] && [ "$(cut -f2 <<<"$row")" = "$S281" ] && [ "$LV_RC" = 2 ] && grep -q 'already recorded' <<<"$LV_OUT" \
-  && cmp -s <(head -n -1 "$TMP/ledger.tsv") "$LEDGER" \
+  && cmp -s <(head -n -1 "$TMP/ledger.tsv") "$TMP/ledger.orig" \
   && ok "D6 --record appends exactly one row with the resolved sha, refuses a second, touches no other line" \
   || bad "D6 record rc=$r1 row='$row' second rc=$LV_RC"
 fi
