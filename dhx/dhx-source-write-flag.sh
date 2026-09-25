@@ -8,7 +8,7 @@
 # Supported extensions: .py .js .ts .tsx .jsx .rs .go
 # Only extensions with a matching runner in dhx-test-gate.sh's cascade
 # are flagged. Do NOT add extensions without verifying the gate can
-# actually verify them — see reports/done/2026-04-11-source-write-flag-sh-classification.md
+# actually verify them.
 # for the false-safety issue that motivated trimming this list.
 #
 # Scope (audit 2026-04-21, campaign 2026-04-21): intent is parent+subagent

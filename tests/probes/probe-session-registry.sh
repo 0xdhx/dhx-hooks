@@ -59,7 +59,6 @@
 #      DELETED together with the instrument — see the hook header's retirement
 #      condition (the reason->continuation table landing in HP-042).
 #
-# Backs: docs/decisions.md 2026-06-08 session-registry-producer row +
 #        docs/decisions.md 2026-06-09 UserPromptSubmit-backfill producer-fix row +
 #        docs/decisions.md 2026-09-18 end-reason sidecar instrument row.
 # Run:   bash tests/probes/probe-session-registry.sh

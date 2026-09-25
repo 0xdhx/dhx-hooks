@@ -18,11 +18,11 @@
 #
 # Canonical gate + taxonomy (D-06): the surface path-gate rule
 # (surfaceForRelpath) and the required-field classifier (classifyArtifact)
-# live in EXACTLY ONE place -- ~/repos/skills/scripts/lib/artifact-coverage-parser.cjs,
+# live in EXACTLY ONE place -- ~/repos/<skills-monorepo>/scripts/lib/artifact-coverage-parser.cjs,
 # consumed here only via the artifact-coverage.cjs CLI's `observe` verb. This
 # script MUST NEVER carry a second copy of those rules (no directory
 # exclusion tokens, no field-presence regex) -- that drift is exactly what
-# ~/repos/skills/tests/probe-artifact-coverage-cross-repo.sh (plan 53-01
+# ~/repos/<skills-monorepo>/tests/probe-artifact-coverage-cross-repo.sh (plan 53-01
 # Task 2) exists to pin, mirroring the 2026-04-29 deferred-item-classifier
 # divergence this repo has already lived through once.
 #

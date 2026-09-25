@@ -12,7 +12,6 @@
 # it escalates to permissionDecision:ask. It never hard-blocks, and never fires
 # on Edits, MEMORY.md, existing-file overwrites, or non-memory paths.
 #
-# Backs: docs/decisions.md 2026-07-08 memory-scope-guard row (write-time front-
 #        stop complementing /dhx:doctor memory's audit-time wrong-home/memory@3).
 #
 # Run: bash tests/probes/probe-memory-scope-guard.sh
@@ -31,7 +30,7 @@ if [[ ! -f "$HOOK" ]]; then
 fi
 
 TMP="$(mktemp -d)"
-MEMDIR="$TMP/.ccs/instances/x/projects/-home-dhx-repos-forgefinder/memory"
+MEMDIR="$TMP/.ccs/instances/x/projects/-home-dhx-repos-acme-app/memory"
 mkdir -p "$MEMDIR" "$TMP/repo"
 NEW="$MEMDIR/reference_new.md"                 # never created — birth cells
 EXISTS="$MEMDIR/reference_exists.md"           # created on disk — update cell
@@ -81,7 +80,7 @@ description: the widget cache needs a manual flush after import
 metadata:
   type: project
 ---
-The forgefinder widget importer leaves a stale cache; flush it via the reset button.'
+The acme-app widget importer leaves a stale cache; flush it via the reset button.'
 
 # [1] Non-memory path (lacks /.ccs/…/memory/) -> skip
 _assert "[1] non-memory path Write -> none" "none" \
@@ -117,7 +116,7 @@ _assert "[8] >=2 CC-internals terms -> ask" "ask" \
 
 # [9] New memory with EXACTLY ONE CC-internals term -> context (precision floor)
 _assert "[9] single CC-internals term -> context (no over-fire)" "context" \
-  "$(_verdict "$(_json_write "$NEW" "The forgefinder build daemon must be restarted after a schema change.")")"
+  "$(_verdict "$(_json_write "$NEW" "The acme-app build daemon must be restarted after a schema change.")")"
 
 # [10] Reminder JSON is well-formed + additionalContext non-empty
 AC=$(printf '%s' "$(_json_write "$NEW" "$BENIGN")" | bash "$HOOK" 2>/dev/null \

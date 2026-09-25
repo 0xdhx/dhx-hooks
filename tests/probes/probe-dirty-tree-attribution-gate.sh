@@ -25,7 +25,6 @@
 # permanent one in a single `||`, so the permanent cause inherited the transient
 # one's silence. The ANTI-NOISE arms (timeout, zero-byte, helper-absent,
 # non-allowlisted) are what prove silence was not traded for spam.
-# Backs: docs/decisions.md 2026-07-28 dirty-tree attribution enrichment row
 #        + 2026-07-30 non-silent-degrade row + 2026-09-18 outcome-log section.
 # Run: bash tests/probes/probe-dirty-tree-attribution-gate.sh
 #
@@ -316,18 +315,18 @@ check_eq "rotation: the full log moved to .1" "$(stat -c %s "$RLOG.1" 2>/dev/nul
 check_eq "rotation: the fresh log holds just this run" "$(wc -l < "$RLOG" | tr -d ' ')" "1"
 
 # Hermetic default. POSITIVE CONTROL first: with NO seam, a fake HOME whose
-# default-allowlisted ~/repos/skills is the dirty repo logs helper-absent to the
+# default-allowlisted ~/repos/<skills-monorepo> is the dirty repo logs helper-absent to the
 # default path — so the negative below is not vacuous.
 FH="$TMP/fakehome"; mkdir -p "$FH/repos"
-git clone -q "$REPO" "$FH/repos/skills" 2>/dev/null
-echo dirty > "$FH/repos/skills/c.txt"
+git clone -q "$REPO" "$FH/repos/<skills-monorepo>" 2>/dev/null
+echo dirty > "$FH/repos/<skills-monorepo>/c.txt"
 DEF="$FH/.local/state/dhx/dirty-tree-who.tsv"
 ( unset XDG_STATE_HOME DHX_DIRTY_TREE_LOG DHX_DIRTY_TREE_WHO DHX_DIRTY_TREE_ALLOWLIST
-  printf '{"cwd":"%s"}' "$FH/repos/skills" | HOME="$FH" bash "$HOOK" >/dev/null )
+  printf '{"cwd":"%s"}' "$FH/repos/<skills-monorepo>" | HOME="$FH" bash "$HOOK" >/dev/null )
 check_eq "hermetic control: no seam → default log written" "$(cut -f3 "$DEF" 2>/dev/null)" "helper-absent"
 # NEGATIVE: a helper seam without DHX_DIRTY_TREE_LOG never touches the default log.
 ( unset XDG_STATE_HOME DHX_DIRTY_TREE_LOG DHX_DIRTY_TREE_ALLOWLIST
-  printf '{"cwd":"%s"}' "$FH/repos/skills" | HOME="$FH" DHX_DIRTY_TREE_WHO="$S_GOOD" \
+  printf '{"cwd":"%s"}' "$FH/repos/<skills-monorepo>" | HOME="$FH" DHX_DIRTY_TREE_WHO="$S_GOOD" \
     bash "$HOOK" >/dev/null )
 check_eq "hermetic: a WHO seam without the log seam writes no default log" "$(wc -l < "$DEF" | tr -d ' ')" "1"
 

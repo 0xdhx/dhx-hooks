@@ -15,7 +15,6 @@
 # - Output shape: single summary line + action line (total 2 lines when output emitted)
 # - Exit code always 0 (non-blocking)
 #
-# Backs: docs/decisions.md 2026-04-20 dhx-new-milestone-promote-reminder row
 #        + 2026-07-16 stale-version count row
 # Run:   bash tests/probes/probe-new-milestone-promote-reminder.sh
 
@@ -188,7 +187,7 @@ rm -rf "$TMP"
 # For each heading shape, the hook emitting and the planner resolving a version
 # must AGREE — and when both accept, they must agree on the version STRING.
 # Skipped (not failed) when the skills repo isn't present on this machine.
-PLANNER="$HOME/repos/skills/scripts/backlog-promote-next.cjs"
+PLANNER="$HOME/repos/<skills-monorepo>/scripts/backlog-promote-next.cjs"
 if [ -f "$PLANNER" ] && command -v node >/dev/null 2>&1; then
   PARITY_FAIL=0
   for ver in "v2" "v1.5" "v0.3.0" "v10.0.1" "v0.3.0.1"; do
@@ -218,7 +217,7 @@ fi
 # load-bearing reason the compare did not have to change when the reminder was
 # re-scoped, so it is demonstrated here across an actual cut rather than argued.
 # Skipped (not failed) when the skills repo planner is absent.
-PLANNER="$HOME/repos/skills/scripts/backlog-promote-next.cjs"
+PLANNER="$HOME/repos/<skills-monorepo>/scripts/backlog-promote-next.cjs"
 if [ -f "$PLANNER" ] && command -v node >/dev/null 2>&1; then
   TMP=$(mktemp -d)
   mk_fixture "$TMP" "v1.5"                    # PRE-cut: v1.5 is the CLOSING milestone
@@ -292,7 +291,7 @@ rm -rf "$TMP"
 # A13 pins that the two agree on which VERSIONS parse. This pins that they agree
 # on HOW MANY briefs are promotable — the axis the head -30 window broke while
 # every version assertion stayed green. Skipped when the skills repo is absent.
-PLANNER="$HOME/repos/skills/scripts/backlog-promote-next.cjs"
+PLANNER="$HOME/repos/<skills-monorepo>/scripts/backlog-promote-next.cjs"
 if [ -f "$PLANNER" ] && command -v node >/dev/null 2>&1; then
   TMP=$(mktemp -d)
   mk_fixture "$TMP" "v1.5"

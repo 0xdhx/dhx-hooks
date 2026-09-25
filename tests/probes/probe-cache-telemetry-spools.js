@@ -1,6 +1,5 @@
 // Probe: recordCacheTelemetry — cache-event + quota-snapshot spool writers
 // (arc N7, manifest Item C as amended by the N5 review).
-// Backs docs/decisions.md 2026-08-15 N7 bust-signal row and the accepted
 // refinements f15/f29 (rows tagged {profile, session, resets_at}), f16 (log on
 // main-chain advance, not only value change; suppress timer-only repeats),
 // f28 (per-session spools + deterministic event IDs), f31/f61 (0600 files,

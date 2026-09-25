@@ -106,7 +106,7 @@
 # count for a few seconds, silently". Revisit deployment isolation only on a
 # real incident where the wrapper degraded because of mid-edit tree state.
 #
-# Helper contract: ~/repos/skills/.planning/backlog/
+# Helper contract: ~/repos/<skills-monorepo>/.planning/backlog/
 #   2026-07-28-dirty-tree-attribution-session-start.md (criterion "Hook
 #   boundary and scope") + docs/research/2026-07-28-dirty-tree-attribution-
 #   codex-review.md §5 + M5/M6 (same repo).
@@ -117,7 +117,7 @@
 #
 # TEST SEAMS (default-preserving; production sets none):
 #   DHX_DIRTY_TREE_ALLOWLIST    colon-separated repo toplevels
-#                               (default: ~/repos/skills:~/repos/cross-repo)
+#                               (default: ~/repos/<skills-monorepo>:~/repos/cross-repo)
 #   DHX_DIRTY_TREE_WHO          helper path
 #                               (default: ~/.claude/dhx-tools/dhx-history/dhx-who.sh)
 #   DHX_DIRTY_TREE_WHO_TIMEOUT  seconds (default: 8)
@@ -156,7 +156,7 @@ BARE="Working tree has $TOTAL uncommitted changes ($MODIFIED modified, $UNTRACKE
 
 # ---- attribution branch (allowlist-gated, strict fail-open) ----------------
 TOPLEVEL=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
-ALLOWLIST="${DHX_DIRTY_TREE_ALLOWLIST:-$HOME/repos/skills:$HOME/repos/cross-repo}"
+ALLOWLIST="${DHX_DIRTY_TREE_ALLOWLIST:-$HOME/repos/<skills-monorepo>:$HOME/repos/cross-repo}"
 IN_ALLOWLIST=0
 if [ -n "$TOPLEVEL" ]; then
   IFS=':' read -ra ROOTS <<< "$ALLOWLIST"

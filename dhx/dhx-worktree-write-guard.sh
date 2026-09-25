@@ -81,7 +81,7 @@ WT_ROOT=$(echo "$CWD" | sed -E 's|(.*\.claude/worktrees/[^/]+).*|\1|')
 
 # --- Scratch roots: /tmp and THIS session's job dir (2026-09-25, operator ruling) ---
 # 136 of this guard's 141 false denies in 90 days were worktree agents writing scratch files
-# (reports/2026-09-25-guard-false-positive-census.md fix 3). Those two roots are not the leak
+# (private report 2026-09-25-guard-false-positive-census fix 3). Those two roots are not the leak
 # #36182 is about, so they pass — but only after canonicalizing, because every lexical version
 # of this allowance was broken by an adversarial pass before it shipped:
 #   - `realpath -m` FIRST: a /tmp symlink aliased onto the main repo, and a `/tmp/../` path,

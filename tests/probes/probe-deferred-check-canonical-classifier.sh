@@ -11,13 +11,7 @@
 # vs prefix-or-end-of-bullet on the skill, with no static check to catch the
 # drift. This probe is the static check.
 #
-# Sister probe: ~/repos/skills/tests/probe-classifier-cross-repo.sh runs the
-# same kind of structural assertion from the skills-repo side. Either probe
-# alone would catch reintroduction of inline filters; the pair makes the
-# invariant visible from both repos' test suites.
 #
-# Backs: docs/decisions.md 2026-04-27 cross-repo classifier sync row.
-# Parent report: reports/done/2026-04-27-cross-repo-classifier-sync-handoff.md
 #
 # Run: bash tests/probes/probe-deferred-check-canonical-classifier.sh
 
@@ -105,7 +99,7 @@ fi
 #     commits next in this repo rather than to whoever renamed the marker.
 #
 # The vocabulary half is a real contract and is NOT dropped — it moved to the repo
-# that owns it. `~/repos/skills/scripts/hooks/pre-commit.d/12-classifier-cross-repo.sh`
+# that owns it. `~/repos/<skills-monorepo>/scripts/hooks/pre-commit.d/12-classifier-cross-repo.sh`
 # runs it when, and only when, the classifier itself is staged, so the red lands on
 # the rename that caused it, at the moment it is made. Moving the WHOLE sister probe
 # there was considered and rejected: it also reads this repo's live working tree, so
@@ -245,7 +239,7 @@ fi
 #     longer bare-substring-match and silence a marker-less deferred bullet). The
 #     HP-028 invariant this section guards is unchanged: still a single
 #     short-circuiting `-q` command, no `grep -rl … | head -1` pipeline.
-#     See ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+#     See private report 2026-05-22-classify-deferred-auto-silence-false-positive
 # 2026-08-27 — 6.3 and 6.4 DE-PINNED from the canonical script's source text.
 #
 # Both used to grep $CLASSIFIER for an exact command form:
@@ -509,7 +503,6 @@ fi
 #       the blocking path; that would silently stop blocking session-end).
 # Marker syntax stays discoverable at /dhx:defer-review or /dhx:capture.
 #
-# Backs: docs/decisions.md Phase 20 block-message legend-removal row
 #        (cites e2bd3df reversal + exact old/new char + approx token counts).
 MSG_BLOCK=$(awk '/^MSG="/{f=1} f{print} f && /"$/ && !/^MSG="/{f=0}' "$HOOK")
 if [[ -z "$MSG_BLOCK" ]]; then
@@ -565,7 +558,6 @@ fi
 # tests/probe-deferred-silence-e2e.sh:81-83 detects the same migration via the
 # HOOK_USES_CANONICAL gate (warn-skip vs full PROBE_MODE).
 #
-# Backs: docs/decisions.md 2026-05-09 silenced-marker canonical-extractor row.
 
 SILENCED_HELPER="${DHX_TOOLS:-$HOME/.claude/dhx-tools}/dhx-silenced-marker.sh"
 if [[ ! -r "$SILENCED_HELPER" ]]; then
@@ -602,7 +594,7 @@ fi
 # `echo` appends a phantom newline, so empty input → 1 and whitespace-only
 # input (e.g. "   ", which passes the line-215 `-z` guard) → 1 too — a phantom
 # "1 unassessed item(s)" Stop block on a CONTEXT.md with zero real deferrals.
-# See reports/done/2026-05-12-dhx-deferred-check-fires-on-empty-uncaptured.md.
+# See private report 2026-05-12-dhx-deferred-check-fires-on-empty-uncaptured.
 #
 # Fix A (D-01 + D-10 errexit-safety): the count formula is bullet-shape-aware
 # AND errexit-safe — `printf '%s\n' "$UNCAPTURED" | grep -cE '<bullet-shape>' || true`.
@@ -619,7 +611,6 @@ fi
 # then exited the hook SILENTLY on a genuine unassessed item. The defense-in-depth guard
 # was the bypass. Section 13 is the behavioral leg that would have caught it.
 #
-# Backs: docs/decisions.md Phase 20 row (count-bug fix) + 2026-07-14 bullet-shape row.
 
 # 10a. Static: Fix A formula present verbatim (bullet-shape-aware + D-10 `|| true`).
 if grep -qF "printf '%s\n' \"\$UNCAPTURED\" | grep -cE '^[[:space:]]*[-*+][[:space:]]+' || true" "$HOOK"; then
@@ -728,7 +719,6 @@ fi
 # count + a positive-count guard before emitting. The whitespace→0 behavioral
 # primitive is already proven in 10d/10e (same formula); 11a-c lock the fallback.
 #
-# Backs: docs/decisions.md Phase 20 code-review-follow-up row (WR-03).
 
 # 11a. Static: header-fallback uses the safe printf|grep -cE formula, same bullet shape
 #      as the main path (2026-07-14 — the indent/separator-blind `^- ` was cloned here
@@ -763,7 +753,6 @@ fi
 # citation) — but which carries no Stage-1-recognizable marker — was silenced
 # by the main path but surfaced as a false positive by the header-fallback.
 #
-# Backs: docs/decisions.md 2026-05-27 header-fallback Stage 2 parity row.
 # Parent brief: .planning/backlog/2026-05-22-deferred-check-header-fallback-missing-stage2-autosilence.md
 
 # 12a. Static: check_header_fallback() body contains the second-stage call.
@@ -867,7 +856,6 @@ fi
 # contract: the hook actually emits `decision: block`. A static pin alone re-freezes
 # whatever string is there; the behavioral leg is what makes the probe a test.
 #
-# Backs: docs/decisions.md 2026-07-14 bullet-shape row.
 # Source: docs/prompts/done/2026-07-14-deferred-check-indent-blind-count-prompt.md
 
 TMP_FIXTURE_E2E=$(mktemp -d /tmp/probe-deferred-e2e-indent.XXXXXX)
@@ -940,7 +928,7 @@ fi
 # POSITIVE — orthogonal to the false NEGATIVE this section covers, and out of scope here
 # (the classifier is probe-pinned and skills-owned; see the prompt's "Do NOT change the
 # emit shape of classify_deferred_lines from this repo").
-# Filed: ~/repos/skills/reports/2026-07-14-classify-deferred-closing-tag-eats-end-of-bullet-marker.md
+# Filed: private report 2026-07-14-classify-deferred-closing-tag-eats-end-of-bullet-marker
 # Blank-lining the fixture isolates THIS section to the count-shape change under test;
 # without it the control fails for a reason that has nothing to do with the count.
 # When that fix lands, DROP the blank line here — the control gets strictly stronger.

@@ -7,7 +7,7 @@
 # templates; a hand-written Agent(subagent_type="gsd-…") prompt never gets it, and the
 # agent-side self-load its definitions instruct ran 0 times in 743 reviewer / executor /
 # verifier runs since it shipped (measured 2026-09-25, cross-repo
-# docs/research/2026-09-25-gsd-subagent-skill-delivery-reach.md).
+# the project docs).
 #
 # Mechanism: SubagentStart `hookSpecificOutput.additionalContext` lands in the subagent's
 # context before its first prompt (HP-065). It cannot see or change the dispatch — chosen

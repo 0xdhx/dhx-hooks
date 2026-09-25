@@ -2,12 +2,12 @@
 # SAFE_FOR_LIVE: yes  (every seam the hook reads is redirected into a mktemp tree: jobs root
 #   DHX_BG_JOBS_ROOT, transcript dir DHX_DUP_LAUNCH_TX_DIR, marker dir DHX_DUP_LAUNCH_CACHE_DIR,
 #   clock DHX_DUP_LAUNCH_NOW/DHX_BG_JOBS_NOW, and `cwd` in the stdin payload is a throwaway git
-#   repo; the live helper under ~/repos/skills/scripts/dhx-history/ is executed READ-ONLY against
+#   repo; the live helper under ~/repos/<skills-monorepo>/scripts/dhx-history/ is executed READ-ONLY against
 #   those fixtures; nothing under ~/.ccs, ~/.cache/dhx or the live repo is read or written)
 #
 # Exercises dhx/dhx-duplicate-launch.sh — the UserPromptSubmit advisory that fires ONE line when
 # the typed prompt names a docs/prompts/…\.md handoff another session is already executing.
-# Ruling: ~/repos/skills/docs/decisions/2026-09-19-duplicate-prompt-launch-surface-never-gate.md
+# Ruling: the skills-monorepo docs
 # (§ Decision item 4). Backs docs/decisions.md 2026-09-19 "duplicate-launch advisory line" row.
 #
 # Sections (each behavioural cell carries a positive control — the same fixture, one field moved):
@@ -46,7 +46,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="${DHX_PROBE_HOOK:-$REPO_ROOT/dhx/dhx-duplicate-launch.sh}"
 HOOKS_JSON="$REPO_ROOT/dhx-plugin/plugins/dhx/hooks/hooks.json"
-HELPER="$HOME/repos/skills/scripts/dhx-history/enumerate-bg-jobs.sh"
+HELPER="$HOME/repos/<skills-monorepo>/scripts/dhx-history/enumerate-bg-jobs.sh"
 
 PASS=0; FAIL=0
 ok(){ echo "OK   $1"; PASS=$((PASS+1)); }

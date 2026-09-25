@@ -14,7 +14,6 @@
 # zero-match files, erroring the -gt test to false, so the FIRST [assessed]
 # written into an existing CONTEXT.md never blocked (asserted in [3]/[12]).
 #
-# Backs: docs/decisions.md 2026-07-07 assessed-guard position-anchoring row
 #        (CL-H.assessed-guard; brief
 #        2026-06-30-assessed-guard-bracket-position-anchoring.md).
 #

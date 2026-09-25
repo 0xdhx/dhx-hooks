@@ -18,7 +18,6 @@
 # mutates the live registry, spawns no `claude -p` subprocess, requires no auth/network. Unlike
 # the 4 unsafe natural-heal rows (which are unsafe precisely because they spawn real `claude -p`).
 #
-# Backs docs/decisions.md Phase 19 row + HP-025 active doctrine.
 # Run: bash tests/probes/probe-repair-installed-plugins.sh
 #
 # CC-STDERR-EXEMPT: spawns no Claude Code child (the SAFE_FOR_LIVE note above

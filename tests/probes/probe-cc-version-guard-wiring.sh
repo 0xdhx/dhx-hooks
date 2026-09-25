@@ -23,7 +23,6 @@
 #      isn't provisioned, so the probe stays green in a fresh hooks clone with no
 #      cross-repo checkout — matching the dispatcher's own [ -e ] graceful no-op.
 #
-# Backs docs/decisions.md 2026-06-02 "cc-version-guard SessionStart wiring
 # (dhx-tools indirection)" row.
 # Run: bash tests/probes/probe-cc-version-guard-wiring.sh
 

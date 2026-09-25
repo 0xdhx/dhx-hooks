@@ -58,7 +58,6 @@
 #       by probe-plugin-cache-staleness.sh's write-result guard, so the rule
 #       exists once.
 #
-# Backs: docs/decisions.md 2026-09-19 (H5 row: the arm needs credentials; D4 row: control re-key),
 #        2026-09-24 (re-stamp only on a verdict change);
 #        tests/probes/probe-empirical-arm-oracle.sh.
 

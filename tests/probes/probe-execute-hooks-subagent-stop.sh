@@ -31,8 +31,8 @@
 #                       — 2026-05-08 supersession row (output channel reshape)
 #   - docs/hook-patterns.md — HP-021 SubagentStop, HP-011 addendum
 #   - docs/hook-dev-guide.md — "Output JSON Schema (advisory-only events)"
-#   - reports/done/2026-05-06-dhx-execute-test-drive-review-2.md (Code Issue #5)
-#   - reports/2026-05-08-subagentstop-hookspecificoutput-schema-audit.md
+#   - private report 2026-05-06-dhx-execute-test-drive-review-2 (Code Issue #5)
+#   - private report 2026-05-08-subagentstop-hookspecificoutput-schema-audit
 #
 # Run: bash tests/probes/probe-execute-hooks-subagent-stop.sh
 #

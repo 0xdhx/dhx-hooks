@@ -26,7 +26,6 @@
 # specific starting state for $CONFIG/plugins/installed_plugins.json and the
 # cache dir, runs the hook, and asserts the resulting state matches pre-state.
 #
-# Backs docs/decisions.md 2026-04-24 registry-heal-hook row + 2026-05-03
 # Phase 6 surgical-slim retire row + HP-025 active doctrine.
 # Run: bash tests/probes/probe-plugin-registry-heal.sh
 #

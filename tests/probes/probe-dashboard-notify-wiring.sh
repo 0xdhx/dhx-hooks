@@ -14,7 +14,7 @@
 # is a SHELL precmd (cross-repo dotfiles/dhx-vitals-badge.sh). The BANNER reaches the
 # USER only via a JSON {systemMessage}, which must be its OWN SessionStart hook (the
 # plain-text session-start.sh dispatcher concatenates children's stdout and would
-# corrupt the JSON). See cross-repo docs/research/2026-06-04-hook-cannot-emit-osc-badge.md.
+# corrupt the JSON). See the cross-repo knowledge base.
 #
 # NOTE: the hooks.json registration is FROZEN in the running plugin cache until a
 # refresh (see the staged-unblock prompt) — this probe asserts the REPO source that
@@ -29,7 +29,6 @@
 #      SetUserVar escape (badge is not a hook's job), and is labeled DISTINCT from
 #      the digest's "Action required" awaiting_us inbox; silent (empty) at count 0.
 #
-# Backs docs/decisions.md 2026-06-04 "dhx-dashboard vitals: badge=shell precmd,
 # banner=systemMessage SessionStart hook" row.
 # Run: bash tests/probes/probe-dashboard-notify-wiring.sh
 

@@ -9,7 +9,6 @@
 # HERMETIC_TIER: yes
 # RUNTIME: ~3s
 #
-# Backs docs/decisions.md 2026-09-17 — the two rows that landed together:
 #   hermetic-tier-refuses-live-capture  (run-probes.sh exports DHX_PROBE_HERMETIC)
 #   baseline-publish-gate               (probe-subagent-stop-sync.sh)
 #

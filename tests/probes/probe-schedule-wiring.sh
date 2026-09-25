@@ -42,7 +42,6 @@
 # RESIDUAL (not closable from this repository): a probe can assert what a hook EMITS, never
 # that Claude Code RENDERS it. See dhx/dhx-cold-return-gate.sh's header for the standing note.
 #
-# Backs docs/decisions.md 2026-08-22 "/dhx:schedule delivery legs wired" row.
 # B9-B11 back the 2026-08-22 "One digest-tool policy at every /dhx:schedule computing site" row.
 # A10-A11, A13, B6, B7b, B12-B14 back the 2026-08-23 "reference writers emit per-occurrence
 # records (schema_version 2)" row. A4 (repinned) + B15 back the 2026-09-14 "schedule child runs

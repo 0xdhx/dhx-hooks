@@ -11,10 +11,6 @@
 // Probe pins each transform so a future refactor can't ship a silent
 // miscompute.
 //
-// Pairs with: docs/decisions.md 2026-04-18 statusline-line2 row, and the
-// 2026-04-18 renames/extensions in dhx/dhx-statusline.js (compactModel,
-// getCcsProfile, truncate, getRepoSignals, formatLine2Gsd,
-// formatLine2Signals).
 
 // SAFE_FOR_LIVE: yes   (re-implements helpers via require; no FS writes outside whatever the renderer does internally on tmp paths)
 const fs = require('fs');
@@ -558,7 +554,7 @@ const ACW650 = { autoCompactWindow: 650000 };
 
 // (a) settings 650000 on a 1M model → compaction at 650000 − 20000 − 13000 =
 //     617,000. 616,927 is the measured preTokens of the 2026-09-24
-//     forgefinder compaction (session b9a0a56e) — the meter showed ~74% there.
+//     acme-app compaction (session b9a0a56e) — the meter showed ~74% there.
 {
   const r = renderCtx({ cw: ccContextWindow(616927, 1_000_000), user: ACW650 });
   ok('ctx (a): 616,927 against a 617k threshold → ≥ 99%', r.pct !== null && r.pct >= 99, true);

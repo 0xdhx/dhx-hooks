@@ -5,7 +5,7 @@
 # scaffold payload (conventions/scaffolds/backlog-frontmatter-gate/payload/hooks/
 # pre-commit) and from there into every adopting repo, so a repo name or an upstream
 # path in THIS header is false in every copy but one. It was: the "for cross-repo
-# [XR] … ported near-verbatim from ~/repos/skills/…" wording reached skills in
+# [XR] … ported near-verbatim from ~/repos/<skills-monorepo>/…" wording reached skills in
 # e87d4512 and made that repo's dispatcher identify as cross-repo's while citing
 # ITSELF as its own upstream (WR-05, 2026-07-26). Do not reintroduce a per-repo
 # identity line here — put repo-local rationale in the adopting repo's own docs.

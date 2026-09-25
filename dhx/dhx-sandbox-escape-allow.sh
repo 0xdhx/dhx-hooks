@@ -14,7 +14,7 @@
 # logic, full engage protocol). Detection/recommendation of new shapes belongs to the
 # /dhx:permissions session audit (lane pending: skills-repo docs/prompts/ handoff).
 # Design notes + citations:
-#   ~/repos/cross-repo/docs/research/2026-07-13-claude-code-sandbox-network-prompt-friction.md
+#   the cross-repo knowledge base
 set -euo pipefail
 
 INPUT=$(cat)

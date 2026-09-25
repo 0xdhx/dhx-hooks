@@ -7,7 +7,6 @@
 # "stays green unmodified" as its AC-2 instrument, and the close-gate reviewer (round 1) held it
 # to the letter. The scaffold carries zero assertions; this file carries the scan contract.
 #
-# Backs docs/decisions.md 2026-09-14 "watch-digest single jq pass" row. The digest scan was
 # rewritten from a per-line double `jq` spawn (>=3,600 processes to surface zero rows) to ONE
 # `jq -Rs` pass. These assertions pin the scan's OBSERVABLE contract so the pass can never
 # drift from what the old loop rendered: exact stdout bytes for every row class, the

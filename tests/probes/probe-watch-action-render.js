@@ -31,7 +31,6 @@
 //      closed-upstream item demands action for up to cadence_hours (24h). Both selects
 //      (count + rows) carry the clause, asserted together so divergence is caught.
 //
-// Backs docs/decisions.md 2026-05-28 watch action-required banner-consumer row
 // + the 2026-09-04 Gap 7 / AC9 row.
 // Hermetic: each spawn points DHX_WATCH_DIR at a throwaway mktemp dir holding only a
 // fixtured watchlist.json, and DHX_WATCH_HEALTH_CACHE at a nonexistent path — so the

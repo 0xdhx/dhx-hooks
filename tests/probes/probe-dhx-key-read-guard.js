@@ -51,7 +51,7 @@ const grep = (p, glob) => ({ tool_name: 'Grep', tool_input: { pattern: 'x', path
 
 console.log('--- must BLOCK ---');
 expect('Read ~/.ssh/id_ed25519', read('/home/u/.ssh/id_ed25519'), 'block');
-expect('Read Windows-side id_ed25519_github', read('/mnt/c/Users/JoshG/.ssh/id_ed25519_github'), 'block');
+expect('Read Windows-side id_ed25519_github', read('/mnt/c/Users/WINUSER/.ssh/id_ed25519_github'), 'block');
 expect('Read ~/.aws/credentials', read('/home/u/.aws/credentials'), 'block');
 expect('Read configured IdentityFile (work_key)', read('/home/u/.ssh/work_key'), 'block');
 expect('Bash cat ~/.ssh/id_rsa', bash('cat ~/.ssh/id_rsa'), 'block');

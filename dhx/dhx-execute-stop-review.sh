@@ -12,7 +12,7 @@
 # Why Stop and not PostToolUse:Agent? Hooks do not propagate into Agent
 # boundaries — no PreToolUse, PostToolUse, or SubagentStop events fire
 # for tool calls inside spawned agents. Stop is the only reliable
-# post-execution hook point. See docs/hook-dev-guide.md § Propagation.
+# post-execution hook point.
 
 INPUT=$(cat)
 

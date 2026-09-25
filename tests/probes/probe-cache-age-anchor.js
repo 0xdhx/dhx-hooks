@@ -1,5 +1,4 @@
 // Probe: parseTranscriptTail anchor semantics + getCacheAge render (arc N7).
-// Backs docs/decisions.md 2026-04-17 statusline cache-age JSONL anchor row,
 // the 2026-08-15 N7 bust-signal row, HP-019 (JSONL transcript schema), and the
 // N5 review amendments f20 (TTL from observed write bucket) + f21 (anchor on
 // substantial cache_creation, not only positive reads).

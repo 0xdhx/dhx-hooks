@@ -147,7 +147,7 @@ carry a real and *measured* version of this hazard — five of them flip, and on
 (`c90d734`, 2026-05-22) already blocked a clean-HEAD commit — but **they cannot join
 this roster, and that is a ruling, not a backlog item.**
 
-`~/.claude/dhx-tools/` is 33 symlinks into `~/repos/skills/scripts/` and
+`~/.claude/dhx-tools/` is 33 symlinks into `~/repos/<skills-monorepo>/scripts/` and
 `~/repos/cross-repo/scripts/` — live working trees, not an installed snapshot. There
 is no install event and no version file, so there is nothing for a freshness stamp to
 key on; a content hash over two peer repos' `scripts/` trees would go stale on every

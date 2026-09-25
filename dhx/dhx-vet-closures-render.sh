@@ -8,7 +8,7 @@
 # stale with the close question unanswered. Both answers remove the row, so a row
 # that survives is evidence the operator NEVER consented.
 #
-# Ledger schema (single source of truth): ~/repos/skills/dhx/vet/SKILL.md
+# Ledger schema (single source of truth): ~/repos/<skills-monorepo>/dhx/vet/SKILL.md
 #   § "Closure ledger — pending close-offers"  (shipped skills 84a4b4e3).
 #
 # ─── The one invariant (read before changing ANY emitted line) ───

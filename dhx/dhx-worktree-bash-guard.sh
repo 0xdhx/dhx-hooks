@@ -5,7 +5,7 @@
 # Companion to dhx-worktree-write-guard.sh. Blocks Bash tool calls that write
 # to main-repo absolute paths when cwd is inside a CC-managed worktree —
 # closes the shell-fallback channel of anthropics/claude-code #36182 (third
-# incident, 2026-04-19, reports/2026-04-19-worktree-leak-gh-36182-third-incident.md).
+# incident class, 2026-04-19 — gh#36182 worktree-leak).
 #
 # The write-guard only covers Edit|Write|MultiEdit. When CC's read-before-edit
 # enforcement rejects an Edit, agents fall back to `sed -i`, `tee`, `>`, etc.,
@@ -45,7 +45,7 @@
 # intended cross-tree write). Before widening: allowlist the intended target, or give
 # the drain a guard-approved cross-tree affordance. Scope note: `git` is NOT a write-
 # verb here, so git-safe / `git -C "$ROOT"` are unaffected either way.
-# Full analysis: reports/2026-07-08-worktree-bash-guard-gap-is-loadbearing-for-deliberate-cross-tree-writes.md
+# Full analysis: private report 2026-07-08-worktree-bash-guard-gap-is-loadbearing-for-deliberate-cross-tree-writes
 
 set -euo pipefail
 
@@ -106,7 +106,7 @@ fi
 # `env -C <root>` never produces "$MAIN_ROOT/" and evaded detection. Catch
 # `env -C <MAIN_ROOT>` as a bare/quoted directory token (incl. `env -i -C` and
 # multi-space), provided it is NOT the WT_ROOT form. The trailing space|quote|end
-# boundary keeps a sibling repo (/repos/forge vs /repos/forgefinder) from
+# boundary keeps a sibling repo (/repos/forge vs /repos/forgeworks) from
 # false-matching, and an `env -C <root>/subpath` absolute form stays on the
 # existing path (already caught via the literal "$MAIN_ROOT/").
 ENV_C_MAIN_HIT=0

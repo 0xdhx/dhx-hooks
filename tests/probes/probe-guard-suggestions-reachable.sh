@@ -9,7 +9,6 @@
 # Authored alongside the removal of the guard's 'in-lane reset' suggestion, which
 # recommended a bare `git reset --hard` that the deny list forbids outright.
 #
-# Backs docs/decisions.md 2026-08-06 row and .planning/backlog/2026-08-05-destructive-guard-suggests-a-denied-recovery-command.md criterion 4.
 #
 # Run: bash tests/probes/probe-guard-suggestions-reachable.sh
 #

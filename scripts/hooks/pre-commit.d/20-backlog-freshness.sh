@@ -16,7 +16,7 @@
 # The actionable-lifecycle committers that mutate reports/skills/*/actionable/ (the
 # defect-row input — membership AND in-place status) carry it too since 2026-09-12,
 # on the commit's own basis, and a staged actionable/ change triggers this gate — see
-# ~/repos/skills/docs/decisions/2026-09-12-backlog-freshness-gate-triggers-on-actionable-changes.md
+# ~/repos/<skills-monorepo>/docs/decisions/2026-09-12-backlog-freshness-gate-triggers-on-actionable-changes.md
 # The uncovered residue is AD-HOC brief commits (observed 2026-07-12: a manually-
 # shipped brief left the aggregate stale a full day, hiding it from navigation).
 # This leaf makes that drift UNCOMMITTABLE, with the exact fix in the block message.

@@ -18,7 +18,6 @@
 // checker's package-identity output. A future package rename re-breaks this
 // the same silent way if the renderer ever re-hardcodes the name.
 //
-// Backs docs/decisions.md 2026-06-05 gsd-update cache-name row.
 //
 // Run: node tests/probes/probe-gsd-update-cache-name-resolves.js
 // SAFE_FOR_LIVE: yes  (each case builds a throwaway mktemp HOME and points the

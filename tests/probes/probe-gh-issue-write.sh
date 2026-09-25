@@ -47,7 +47,6 @@
 # line. A test payload pasted into a command string trips the live hook (observed
 # 2026-07-21 while smoke-testing this very change).
 #
-# Backs: docs/decisions.md 2026-07-21 D-12 hard-deny row (supersedes the 2026-07-10
 # soft-warn row, whose 18 assertions this file replaces).
 #
 # Run: bash tests/probes/probe-gh-issue-write.sh
@@ -680,7 +679,7 @@ _assert "[88] reason names the document-authoring escape (the self-deny mitigati
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
 
 # --- [89]-[110]: union-of-every-source ownership + matcher spellings (2026-09-25) ---------
-# Source: reports/2026-09-25-guard-false-positive-census.md fix 1, two GPT-6 Astra adversarial
+# Source: private report 2026-09-25-guard-false-positive-census fix 1, two GPT-6 Astra adversarial
 # passes. BITE = silent against the pre-change hook (a real tooth); CTRL = green before and
 # after, kept so the new parse cannot re-open it; ACCEPTED = a new deny the ruling priced in.
 # _verdict_env runs the hook with a variable in ITS OWN environment (gh reads GH_REPO from

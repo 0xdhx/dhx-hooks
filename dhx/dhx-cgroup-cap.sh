@@ -27,7 +27,7 @@
 # hole flagged in `dhx/dhx-pytest-cgroup-cap.sh`, which the cascade cannot see.
 # `MemorySwapMax=0` is load-bearing — `MemoryMax` alone is
 # advisory on a swap-enabled host (verified in
-# reports/2026-05-03-test-gate-collection-cost.md).
+# private report 2026-05-03-test-gate-collection-cost).
 #
 # This file is sourced, never executed — no stdin read, no exit. It only DEFINES
 # functions. A consumer that sources it and finds the functions absent (truncated

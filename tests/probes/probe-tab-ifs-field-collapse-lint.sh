@@ -8,7 +8,6 @@
 # variable to the left. Nothing errors. The canonical carrier was `jq … | @tsv` split by a
 # TAB-IFS `read`, which shipped at 13 hook sites plus 8 elsewhere.
 #
-# Backs: docs/decisions.md 2026-09-25 rows — the class sweep (the 2026-08-03 row fixed two guards
 #        and left the rest standing on a "safe by construction" claim that reasoned only about
 #        @tsv's newline-escaping half) and the gate-check row (commit-time check #5b).
 #

@@ -6,7 +6,7 @@
 #
 # ONE ADVISORY LINE when the typed prompt names a `docs/prompts/…\.md` handoff that ANOTHER session
 # is already executing. Never blocks, never asks, never exits non-zero on a hit. Ruling:
-#   ~/repos/skills/docs/decisions/2026-09-19-duplicate-prompt-launch-surface-never-gate.md
+#   the skills-monorepo docs
 #   (§ Decision item 4; § Overturn window names what re-opens it).
 # Origin: 2026-09-19, two sessions launched on one handoff 91 min apart; the second found the
 # first by hand in ~10 minutes (commit trailers, a transcript mtime, a growing evidence file).
@@ -18,7 +18,7 @@
 # that keeps naming its own prompt (the closeout `git mv`, a re-read) pays nothing after the first.
 #
 # ROW SOURCES (both PRIMARY on-disk; no process table):
-#   1. Background jobs — `~/repos/skills/scripts/dhx-history/enumerate-bg-jobs.sh` (working jobs from
+#   1. Background jobs — `~/repos/<skills-monorepo>/scripts/dhx-history/enumerate-bg-jobs.sh` (working jobs from
 #      ~/.ccs/instances/<lane>/jobs/<id>/state.json; column 11 = the prompt/command the job is on).
 #      CALLED, never copied (distribution-copy drift class). Absent, exit 3, or timeout → no rows.
 #   2. Interactive sessions — not in that list. Covered by the transcripts beside this session's
@@ -60,7 +60,7 @@
 #
 # TEST SEAMS (hermetic; production sets none):
 #   DHX_SKIP_DUPLICATE_LAUNCH=1   kill switch
-#   DHX_DUP_LAUNCH_HELPER=<path>  row-source helper (default ~/repos/skills/scripts/dhx-history/enumerate-bg-jobs.sh;
+#   DHX_DUP_LAUNCH_HELPER=<path>  row-source helper (default ~/repos/<skills-monorepo>/scripts/dhx-history/enumerate-bg-jobs.sh;
 #                                 extract-recent-signal.sh is resolved beside it)
 #   DHX_BG_JOBS_ROOT / DHX_BG_JOBS_NOW   pass through to the helper (fixture jobs root / clock)
 #   DHX_DUP_LAUNCH_NOW=<epoch>    this hook's clock for the gap (default DHX_BG_JOBS_NOW, then date)
@@ -108,7 +108,7 @@ mkdir -p "$CACHE_DIR" 2>/dev/null && : > "$MARK" 2>/dev/null
 NOW="${DHX_DUP_LAUNCH_NOW:-${DHX_BG_JOBS_NOW:-$(date +%s)}}"
 MIN_GAP="${DHX_DUP_LAUNCH_MIN_GAP:-600}"
 [[ "$MIN_GAP" =~ ^[0-9]+$ ]] || MIN_GAP=600
-HELPER="${DHX_DUP_LAUNCH_HELPER:-$HOME/repos/skills/scripts/dhx-history/enumerate-bg-jobs.sh}"
+HELPER="${DHX_DUP_LAUNCH_HELPER:-$HOME/repos/<skills-monorepo>/scripts/dhx-history/enumerate-bg-jobs.sh}"
 SIGNAL="$(dirname "$HELPER")/extract-recent-signal.sh"
 JOBS_ROOT="${DHX_BG_JOBS_ROOT:-$HOME/.ccs/instances}"
 SELF_JOB_DIR="${CLAUDE_JOB_DIR:-}"; SELF_JOB_DIR="${SELF_JOB_DIR%/}"

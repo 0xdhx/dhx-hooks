@@ -11,7 +11,6 @@
 // Each spawn runs under an isolated fake $HOME (mktemp), so both surfaces read the
 // SAME fixture cache file from one write; side-effects on real $HOME are zero.
 //
-// Backs docs/decisions.md 2026-05-28 watch-health consumer row. Verifies the
 // renderer freshness gate (1h, HEALTH_CACHE_STALE_MS / HEALTH_CACHE_STALE_SECONDS)
 // is DISTINCT from the cache's internal timer_stale_threshold_hours (3h) — a fresh
 // cache with timer_stale:true SHOWS, a >1h cache HIDES everything regardless.

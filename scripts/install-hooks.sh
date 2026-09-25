@@ -2,7 +2,7 @@
 set -euo pipefail
 # install-hooks.sh — idempotently install cross-repo's [XR] tracked git hooks.
 #
-# Ported verbatim from ~/repos/skills/scripts/install-hooks.sh (D-10) with one
+# Ported verbatim from ~/repos/<skills-monorepo>/scripts/install-hooks.sh (D-10) with one
 # documented self-heal-glob decision (see "Self-heal note" below).
 #
 # Installs:
@@ -13,7 +13,7 @@ set -euo pipefail
 #                                        the backlog-frontmatter gate via the scaffold installs the pre-commit gate alone)
 #   .git/hooks/<name>                -> scripts/hooks/<name>                (generic sweep: every additional dot-free
 #                                        regular file directly under scripts/hooks/ is wired as a self-contained hook —
-#                                        e.g. forgefinder's pre-push, relater's post-checkout — so adopter repos never
+#                                        e.g. acme-app's pre-push, relater's post-checkout — so adopter repos never
 #                                        need to fork this installer to wire repo-own hooks)
 #
 # scripts/hooks/pre-commit is a run-parts dispatcher over scripts/hooks/
@@ -156,7 +156,7 @@ fi
 # EVERY PROSE POINTER AT A cross-repo ARTIFACT IN THIS FILE IS ABSOLUTE (~/repos/cross-repo/...),
 # deliberately. This file is spliced VERBATIM into fourteen vendored copies, where a bare
 # repo-relative pointer is false in thirteen of them — the same false-in-every-copy-but-one header
-# WR-05 / d70afd0c removed from the validator. forgefinder's 25-pointer-rot.sh is the only gate in
+# WR-05 / d70afd0c removed from the validator. acme-app's 25-pointer-rot.sh is the only gate in
 # the fleet that catches it, and it REFUSED this file on 2026-08-24 for exactly that. Runtime paths
 # (scripts/hooks/..., resolved against the target at run time) stay relative — they are correct in
 # every copy; only prose references to cross-repo's OWN artifacts get qualified.
@@ -331,7 +331,7 @@ install_hook "pre-merge-commit" "$DISPATCHER_ABS"
 # ── Generic self-contained hook sweep (2026-07-23 fleet re-vendor arc) ────────
 # Wire EVERY additional self-contained hook the repo tracks directly under
 # scripts/hooks/ — the general case the reftxn presence-gate below is one
-# instance of. Downstream adopters carry repo-own hooks here (forgefinder:
+# instance of. Downstream adopters carry repo-own hooks here (acme-app:
 # pre-push; relater: post-checkout); before this sweep their vendored installers
 # needed local edits to wire them, which pinned those repos to forked
 # pre-2026-07-13 installers (the drift the per-layout comparable set detects).
@@ -384,7 +384,7 @@ fi
 SNAPSHOT="$GIT_TOPLEVEL/scripts/hooks/reftxn-veto-snapshot.sh"
 GIT_SAFE_SRC="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dhx-shared/lib/git-safe.sh"
 [ -f "$GIT_SAFE_SRC" ] || GIT_SAFE_SRC="$HOME/.claude/dhx-shared/lib/git-safe.sh"
-[ -f "$GIT_SAFE_SRC" ] || GIT_SAFE_SRC="$HOME/repos/skills/dhx-shared/lib/git-safe.sh"
+[ -f "$GIT_SAFE_SRC" ] || GIT_SAFE_SRC="$HOME/repos/<skills-monorepo>/dhx-shared/lib/git-safe.sh"
 
 if [ ! -f "$GIT_SAFE_SRC" ]; then
   echo "install-hooks: NOTICE git-safe.sh canonical not resolvable — keeping the existing" >&2

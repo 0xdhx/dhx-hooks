@@ -22,7 +22,7 @@
 # manifest does not (HP-020). HP-012 previously asserted the OPPOSITE of its
 # current claim — upstream changed underneath a sound April probe. So "cached"
 # here is a live upstream behavior, not a law: it can flip the same way, and the
-# consumers that would silently break are named in the HP-062 row (forgefinder's
+# consumers that would silently break are named in the HP-062 row (acme-app's
 # `ff-*` dispatch constraint; `statusline-wrapper.js::checkDrift()`'s agents-dir
 # `⚠ restart` warning).
 #
@@ -32,7 +32,7 @@
 #   exit 1 + fail     = the mid-session write RESOLVED with no reload — the
 #                       registry now hot-reloads PASSIVELY. Behavior flipped
 #                       upstream. Revisit HP-062, HP-012's Process line, the
-#                       docs/decisions.md rows, and forgefinder's
+#                       docs/decisions.md rows, and acme-app's
 #                       `.continue-here.md` blocking constraint, whose
 #                       reload-before-dispatch requirement would then be DEAD.
 #   exit 0 + skipped  = inconclusive (no auth, subprocess failure, or the child
@@ -42,7 +42,7 @@
 # THE CONTROL LEGS ARE THE PROBE (do not remove them). A bare "not found" has two
 # causes — the registry is cached, or the fixture was malformed / its `name:` did
 # not match its basename. Those are indistinguishable from the failed dispatch
-# alone, and the malformed-frontmatter trap is not hypothetical: forgefinder
+# alone, and the malformed-frontmatter trap is not hypothetical: acme-app
 # shipped EIGHT `ff-*` agents with no `name:` field and CC dropped them all from
 # the registry with no load-time warning. So:
 #   Control 1 (in child 1, after the write): dispatch a session-start-registered
@@ -225,7 +225,7 @@ if [ "${registry_hot_reloaded:-0}" -eq 1 ]; then
   echo "  Revisit: docs/hook-patterns.md HP-062 + HP-012 Process line,"
   echo "           docs/decisions.md 2026-09-05 agent-registry rows (both),"
   echo "           docs/troubleshooting.md 'An Agent Type Is Not Found' path,"
-  echo "           ~/repos/forgefinder/.planning/milestones/v1.4-phases/25-ff-manager-dashboard/.continue-here.md"
+  echo "           ~/repos/acme-app/.planning/milestones/v1.4-phases/25-ff-manager-dashboard/.continue-here.md"
   echo "           + 25-02-SMOKE-RESULTS.md (their reload-before-dispatch requirement would be DEAD)."
 fi
 

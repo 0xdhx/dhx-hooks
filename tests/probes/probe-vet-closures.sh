@@ -16,7 +16,6 @@
 #      action lines, ` · ` U+00B7 separators, exactly one trailing newline).
 #   6. Shim contract — suppression var, absent-worker no-op, stdin drained.
 #
-# Backs: docs/decisions.md 2026-07-22 vet-closure SessionStart producer row.
 # Run:   bash tests/probes/probe-vet-closures.sh
 #
 # SAFE_FOR_LIVE: yes

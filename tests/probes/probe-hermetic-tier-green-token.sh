@@ -40,7 +40,6 @@
 # exclude to ever hit — a stub cannot show that (adversarial pass, round 1,
 # reports/2026-09-14-hermetic-tier-token-presteer-codex/).
 #
-# Backs: docs/decisions.md 2026-09-14 hermetic-tier green-token row.
 # Run: bash tests/probes/probe-hermetic-tier-green-token.sh
 set -uo pipefail
 unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR

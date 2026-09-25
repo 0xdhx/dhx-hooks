@@ -26,7 +26,7 @@
 # repo and tested in bash AND JavaScript by another. Nothing in either language can
 # enforce that the three agree, so this probe drives all three over the same inputs.
 #
-# Backs ~/repos/skills/docs/decisions/2026-09-15-sym-health-lane-stamp.md and the
+# Backs the skills-monorepo docs and the
 # hooks-side docs/decisions.md row of the same date.
 # Run: bash tests/probes/probe-sym-health-lane-stamp.sh
 #
@@ -44,7 +44,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO/dhx/dhx-health-check.sh"
 WRAPPER="$REPO/dhx/statusline-wrapper.js"
 RENDERER="$REPO/dhx/dhx-statusline.js"
-PUBLISHER="$HOME/repos/skills/scripts/dhx-sym.sh"
+PUBLISHER="$HOME/repos/<skills-monorepo>/scripts/dhx-sym.sh"
 
 pass=0; fail=0
 ok()  { echo "OK   $1"; pass=$((pass+1)); }

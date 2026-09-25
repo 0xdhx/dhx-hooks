@@ -28,7 +28,6 @@
 #     does the actual asserting against the live API. Static probe pins the shape; the
 #     scheduled job pins the state.
 #
-# Backs: docs/decisions.md 2026-07-22 mirror CI promotion row, and the 2026-09-03
 # mirror-ruleset-detection row.
 #
 # Run: bash tests/probes/probe-mirror-workflow-gate.sh

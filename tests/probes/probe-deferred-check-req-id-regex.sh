@@ -19,10 +19,8 @@
 # function against a synthetic project root, so the invariant is asserted
 # through the behaviour the hook actually depends on.
 #
-# Backs: docs/decisions.md 2026-04-20 deferred-check D-NN false-positive row,
 # extended by the 2026-05-02 auto-silence-extraction row and the 2026-08-27
 # de-pin row.
-# Parent report: ~/repos/skills/reports/2026-04-20-defer-hook-decision-label-false-positive.md
 #
 # Run: bash tests/probes/probe-deferred-check-req-id-regex.sh
 
@@ -36,7 +34,7 @@
 #     REGEX=$(grep -E '^[[:space:]]*req_ids=' "$CLASSIFIER" | ... )
 # and then exercise the extracted regex directly. That is a text pin on a PEER
 # repo's live working tree: ~/.claude/dhx-tools/ is a tree of symlinks into
-# ~/repos/skills/scripts/, so renaming the `req_ids` local, re-indenting the
+# ~/repos/<skills-monorepo>/scripts/, so renaming the `req_ids` local, re-indenting the
 # assignment, or building the pattern from a variable would red this probe — and
 # with it every hooks-repo commit — with ZERO behavioural change and nothing
 # committed anywhere. Measured 2026-08-20: this probe is one of five that flip
@@ -180,7 +178,7 @@ v=$(verdict "- Work item covered by REQ-TABLE-09")
 #
 # A future reader who sees extraction accept REVIEW-CODE should NOT mistake it for a
 # leak; see report:
-# ~/repos/skills/reports/done/2026-05-22-classify-deferred-auto-silence-false-positive.md
+# private report 2026-05-22-classify-deferred-auto-silence-false-positive
 
 v=$(verdict "- Chunked output from REVIEW-CODE needs a home")
 [[ "$v" == "SILENCED" ]] && check "artifact-shaped token REVIEW-CODE resolves when DEFINED" 1 \

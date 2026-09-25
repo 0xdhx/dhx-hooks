@@ -11,7 +11,6 @@
 #   (c) file_path is outside the enclosing worktree prefix.
 # All other paths exit 0 + silent (allow).
 #
-# Backs: docs/decisions.md 2026-04-19 worktree-write-guard row.
 # Companion: probe-agent-leak-check.sh covers the subagent-side detector.
 #
 # Run: bash tests/probes/probe-worktree-write-guard.sh
@@ -62,27 +61,27 @@ run "[1] cwd=main-repo, file=main-repo → allow" \
 
 # [2] In worktree, file inside same worktree → allow
 run "[2] cwd=worktree, file=worktree → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/dhx/x.sh"}}' \
   allow
 
 # [3] In worktree, file in main repo → BLOCK (primary leak signature)
 run "[3] cwd=worktree, file=main-repo → BLOCK" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/dhx/x.sh"}}' \
   deny
 
 # [4] In worktree, relative file_path → allow (CC resolves against cwd)
 run "[4] cwd=worktree, file=relative → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"dhx/x.sh"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"dhx/x.sh"}}' \
   allow
 
 # [5] cwd is worktree subdir, file is in worktree's docs dir → allow
 run "[5] cwd=worktree/subdir, file=worktree root → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/dhx","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/docs/x.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa/dhx","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/docs/x.md"}}' \
   allow
 
 # [6] Two different worktrees → BLOCK (cross-worktree write)
 run "[6] cwd=worktree-A, file=worktree-B → BLOCK" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-bbb/x.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-bbb/x.md"}}' \
   deny
 
 # [7] Malformed JSON → allow (defensive, never crash)
@@ -92,7 +91,7 @@ run "[7] malformed JSON → allow" \
 
 # [8] Missing file_path key → allow
 run "[8] missing file_path → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{}}' \
   allow
 
 # [9] Empty cwd → allow
@@ -102,15 +101,15 @@ run "[9] empty cwd → allow" \
 
 # [10] Writing to /tmp from worktree → ALLOW. FLIPPED 2026-09-25 (was BLOCK): /tmp is a
 # sanctioned scratch root by operator ruling — 136 of this guard's 141 false denies in 90 days
-# were scratch writes (reports/2026-09-25-guard-false-positive-census.md fix 3). The scratch
+# were scratch writes (private report 2026-09-25-guard-false-positive-census fix 3). The scratch
 # allowance canonicalizes first; [15]-[25] below pin what it must still refuse.
 run "[10] cwd=worktree, file=/tmp → allow (scratch root)" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/scratch.txt"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/scratch.txt"}}' \
   allow
 
 # [11] Nested worktree directory with trailing slash variation
 run "[11] cwd=worktree no trailing slash, file=worktree nested → allow" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/deep/nested/file.md"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/deep/nested/file.md"}}' \
   allow
 
 # [12]-[14] the 2026-09-25 NUL-framed parse (docs/decisions.md 2026-09-25 row). ALL THREE ARE
@@ -121,13 +120,13 @@ run "[11] cwd=worktree no trailing slash, file=worktree nested → allow" \
 # survive, and a NUL inside a field keeps the old verdict. [14] is the exception to "never teeth"
 # against the INTERMEDIATE draft: a reject-NUL parse emptied both fields and ALLOWED it.
 run "[12] empty cwd, file path inside a worktree → allow (no cwd, no anchor)" \
-  '{"cwd":"","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/x.sh"}}' \
+  '{"cwd":"","tool_input":{"file_path":"/tmp/test-repo/.claude/worktrees/agent-aaa/x.sh"}}' \
   allow
 run "[13] cwd=worktree, newline-bearing file path outside → BLOCK (exact bytes, no @tsv escape)" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/etc/a\nb"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/etc/a\nb"}}' \
   deny
 run "[14] NUL inside a worktree cwd → BLOCK, as the @tsv parse did (a guard never loosens)" \
-  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa\u0000x","tool_input":{"file_path":"/etc/x"}}' \
+  '{"cwd":"/tmp/test-repo/.claude/worktrees/agent-aaa\u0000x","tool_input":{"file_path":"/etc/x"}}' \
   deny
 
 # --- [15]-[25]: scratch roots (2026-09-25) — /tmp and THIS session's job dir, canonicalized ---
@@ -138,7 +137,7 @@ run "[14] NUL inside a worktree cwd → BLOCK, as the @tsv parse did (a guard ne
 # ~/.ccs/instances/*/jobs/*/state.json) — [26]-[33] pin that. Fixtures live OUTSIDE /tmp (under ~/.cache) so the
 # job-dir cells cannot pass on the /tmp rule by accident. The hardlink cell is a real attack
 # here: /tmp and $HOME share one filesystem on this host (df, 2026-09-25).
-WT='/home/dhx/repos/hooks/.claude/worktrees/agent-aaa'
+WT='/tmp/test-repo/.claude/worktrees/agent-aaa'
 FIX="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/probe-wwg.XXXXXX")"
 TFIX="$(mktemp -d /tmp/probe-wwg.XXXXXX)"
 trap 'rm -rf "$FIX" "$TFIX"' EXIT

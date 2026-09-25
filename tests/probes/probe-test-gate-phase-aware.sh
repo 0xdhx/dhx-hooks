@@ -17,7 +17,7 @@
 #
 # Backs:
 #   - docs/decisions.md — 2026-05-07 phase-aware test-gate skip row
-#   - reports/done/2026-05-06-dhx-execute-test-drive-review-2.md (Code Issue #4)
+#   - private report 2026-05-06-dhx-execute-test-drive-review-2 (Code Issue #4)
 #
 # Run: bash tests/probes/probe-test-gate-phase-aware.sh
 #

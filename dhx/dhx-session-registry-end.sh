@@ -55,7 +55,7 @@
 # Analysis method when the table is written: take activity from the TRANSCRIPTS,
 # not from this log or the registry (neither records turns). Two confounds will
 # invent the finding if skipped — see
-# ~/repos/cross-repo/docs/research/2026-09-18-cc-transcript-activity-scans-two-confounds.md
+# the cross-repo knowledge base
 # ---------------------------------------------------------------------------
 set -uo pipefail
 

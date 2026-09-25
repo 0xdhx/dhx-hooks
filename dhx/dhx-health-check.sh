@@ -191,7 +191,7 @@ missing=0
 # KNOWN GAP, filed not fixed: `/dhx:sym repair` cannot currently fix what this branch
 # counts. Its per-path audit (cmd_check) prints `symlink` for a decoy-pointing link, so
 # repair never collects the item — though cmd_link repoints one correctly when asked.
-# Brief: ~/repos/skills/.planning/backlog/2026-09-15-sym-audit-check-is-destination-blind.md
+# Brief: ~/repos/<skills-monorepo>/.planning/backlog/2026-09-15-sym-audit-check-is-destination-blind.md
 for item in gsd-core hooks gsd-file-manifest.json gsd-local-patches dhx-tools; do
   p="$config_dir_real/$item"
   expected_real="$(readlink -f "$claude_home_real/$item" 2>/dev/null || echo "$claude_home_real/$item")"
@@ -279,7 +279,7 @@ fi
 # itself. An UNSTAMPED file is refused, not trusted — written before this
 # change, unknown provenance, and unknown provenance is what the stamp ends.
 # Refusal costs nothing: it falls through to the lane-local jq check below.
-# Producer + schema: ~/repos/skills/docs/decisions/2026-09-15-sym-health-lane-stamp.md
+# Producer + schema: the skills-monorepo docs
 plugin_keys=""
 sym_health="$CACHE_DIR/sym-health.json"
 if [[ -f "$sym_health" ]]; then

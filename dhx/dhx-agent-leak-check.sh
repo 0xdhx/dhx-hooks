@@ -297,7 +297,7 @@ left uncommitted, and every command swap was considered and rejected by
 cross-AI council (2026-05-08). Route by the "Concurrent sessions (shared
 working trees)" section of cross-repo CLAUDE.md. The canonical deny-history
 record is not reachable from this tree; read it at
-  /home/dhx/repos/cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md
+  the cross-repo knowledge base
 
 If expected (agent intentionally wrote to shared state), no action needed.
 WARNING

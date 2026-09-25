@@ -17,7 +17,7 @@
 # already exists; it never creates the directory and never writes a project's
 # ignore rules. A project that opts in MUST gitignore `.claude/hooks/logs/`
 # itself — otherwise the log shows as `??` in every `git status` there
-# (measured 2026-09-20: sigil was the one live offender; forgefinder, alembic
+# (measured 2026-09-20: sigil was the one live offender; acme-app, alembic
 # and statforge each carry their own rule). The log is self-capping: see
 # LOG_MAX_BYTES / LOG_KEEP_LINES below.
 #
@@ -65,7 +65,7 @@ _TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
 
 # --- Logging (optional — only if project has .claude/hooks/logs/) ---
 # Self-capping: the log is an unbounded append otherwise, and it was — measured
-# 2026-09-20, forgefinder had reached 1.38 MB over ~14.9k firings. Before each
+# 2026-09-20, acme-app had reached 1.38 MB over ~14.9k firings. Before each
 # append, a log over LOG_MAX_BYTES is rewritten to its last LOG_KEEP_LINES
 # lines. Same shape as the manual hooks.log recipe in docs/troubleshooting.md.
 # Every step is fail-soft: a failed stat, tail or mv leaves the log untouched
@@ -271,7 +271,7 @@ cd "$PROJECT_DIR" || exit 0
 # UP from its args/cwd, so bare pytest from the repo root never sees a subdir
 # config — its addopts/markers are silently dropped and a broader/wrong
 # selection runs. These helpers let the gate anchor on the config dir (= pytest
-# rootdir) and run from there. See docs/decisions.md 2026-05-29 row.
+# rootdir) and run from there.
 
 # _has_pytest_cfg DIR — true if DIR holds a recognized pytest config.
 _has_pytest_cfg() {
@@ -377,7 +377,6 @@ fi
 # lives there). RUN_TARGET = optional path arg, relative to RUN_CWD. Reproduces
 # the canonical `cd <config-dir> && <runner> [rel-target]`: `python -m` puts cwd
 # on sys.path, addopts/markers load, .pytest_cache anchors at the rootdir.
-# See docs/decisions.md 2026-05-29 row.
 RUN_CWD="$PROJECT_DIR"
 RUN_TARGET=""
 if [ -n "$TEST_TARGET" ] && [[ "$TEST_TARGET" != /* ]] && [ -d "$TEST_TARGET" ]; then
@@ -406,7 +405,7 @@ fi
 # memory kill from a runtime kill: for that, read the named scope's UNIT_RESULT
 # (`oom-kill` vs `timeout`), not `$?`. (MemoryMax alone is advisory on hosts with swap available —
 # verified empirically on this
-# WSL2 host; see reports/2026-05-03-test-gate-collection-cost.md). RuntimeMaxSec
+# WSL2 host; see private report 2026-05-03-test-gate-collection-cost). RuntimeMaxSec
 # is the systemd-native runtime ceiling (NOT TimeoutStopSec, which is the
 # SIGTERM→SIGKILL grace period after stop is requested) — fires at the cap
 # with SIGTERM/exit 143. Both 137 and 143 fail open via the exit-code cascade

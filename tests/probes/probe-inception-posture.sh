@@ -17,7 +17,6 @@
 #      word-boundary near-miss (/gsd-new-project-harness), on empty prompt, and
 #      on malformed JSON (fail-open). additionalContext carries both principles.
 #
-# Backs docs/decisions.md 2026-07-09 "build-posture codification — inception
 # hook (#1 runtime + #3 commercial) + #2 global CLAUDE.md bullet" row.
 # Run: bash tests/probes/probe-inception-posture.sh
 

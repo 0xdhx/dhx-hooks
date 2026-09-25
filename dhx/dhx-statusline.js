@@ -8,7 +8,6 @@
 //
 // Owned by the hooks repo (not by /gsd-update). Kept byte-distinct from
 // gsd-statusline.js so GSD updates never alter our rendering.
-// See docs/statusline-wrapper.md for segment table and color semantics.
 // Patterns: HP-032
 
 const fs = require('fs');

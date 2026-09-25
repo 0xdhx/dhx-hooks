@@ -31,7 +31,6 @@
 //
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-08-12 claude-cap-bypass statusline consumer row (closes
 // cross-repo .planning/backlog/2026-08-11-claude-cap-bypass-flag-statusline-consumer.md).
 // Same runtime-assumption class as readWslPressure / readWslProbeBroken / readWatchHealth
 // (cache/file-read segment, no new HP). Structural twin of

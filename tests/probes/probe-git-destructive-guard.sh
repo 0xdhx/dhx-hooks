@@ -7,7 +7,7 @@
 # `Bash(git push --force *)` / `Bash(git push -f *)` deny strings cannot
 # catch — namely the two syntactic bypasses verified to slip the live CC
 # 2.1.150 matcher in
-# `cross-repo/reports/done/2026-05-25-git-force-push-deny-rule-bypass-vectors.md`:
+# `private report 2026-05-25-git-force-push-deny-rule-bypass-vectors`:
 #
 #   1. Refspec with leading `+` — `git push <remote> +<ref>` and
 #      `git push <remote> <src>:+<dst>`. Force-ness lives in the refspec
@@ -26,7 +26,6 @@
 # (does not force-push to remote — out of scope); reads (`git log`,
 # `git status`); and non-git commands.
 #
-# Backs: docs/decisions.md 2026-05-25 dhx-git-destructive-guard row (NEW)
 #         + HP-037 (the why-this-scope anchor: bare `--force`/`-f` are
 #         already caught by the existing deny strings, so this hook
 #         exists ONLY for the syntactic bypasses deny-strings structurally

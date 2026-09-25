@@ -2,7 +2,6 @@
 # Exercises the plugin-registry drift detector added to
 # dhx/statusline-wrapper.js (checkPluginRegistry / readHealthCache wiring).
 #
-# Backs docs/decisions.md 2026-04-24 plugin-registry-drift row + HP-025.
 # Run: bash tests/probes/probe-plugin-registry.sh
 #
 # For each of the 6 drift states we stand up an isolated tmpdir-as-config

@@ -2,14 +2,14 @@
 # dhx-vitals-banner.sh — SessionStart user-visible cross-repo vitals banner.
 # Patterns: HP-009, HP-015
 #
-# Emits a JSON {"systemMessage": "..."} (forgefinder pattern,
-# ~/repos/forgefinder/hooks/session-start.sh) so the USER sees the GLOBAL
+# Emits a JSON {"systemMessage": "..."} (acme-app pattern,
+# ~/repos/acme-app/hooks/session-start.sh) so the USER sees the GLOBAL
 # cross-repo vitals at session start — watch overdue/health + sym + crashes +
 # STATE drift/stall across ~/repos/*. The badge (📥 N) is delivered SEPARATELY by
 # a shell precmd (cross-repo dotfiles/dhx-vitals-badge.sh); a CC hook CANNOT render
 # an OSC badge — hook stdout is captured as model context, /dev/tty was removed from
 # hooks in CC 2.1.139, and OSC 1337 is off the terminalSequence allowlist. See
-# cross-repo docs/research/2026-06-04-hook-cannot-emit-osc-badge.md.
+# the cross-repo knowledge base.
 #
 # OUTPUT CONTRACT: ONLY the {"systemMessage":...} JSON (banner), or NOTHING when the
 # count is 0 (→ CC renders no banner). This MUST be a SEPARATE SessionStart hook,

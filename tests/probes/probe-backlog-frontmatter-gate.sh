@@ -10,7 +10,6 @@
 # 'in-progress'] or absent target_milestone) and PASSES a canonical one (status:
 # captured OR in-progress + non-empty target_milestone).
 #
-# Backs: docs/decisions.md 2026-05-22 backlog-frontmatter-gate enrollment row +
 #        the INFRA-05 intent ON THE GATE (not the dropped advisory backlog hook).
 #
 # How to run: bash tests/probes/probe-backlog-frontmatter-gate.sh

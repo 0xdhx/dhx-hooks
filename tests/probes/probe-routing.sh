@@ -19,7 +19,6 @@
 #      command (colon + hyphen forms); redirect vs calibration mode is correct;
 #      silent on a non-GSD prompt and on a word-boundary near-miss.
 #
-# Backs docs/decisions.md 2026-07-09 "dhx-routing .user_prompt -> .prompt field
 # fix (3-month silent no-op)" row (D-04 GSD->DHX routing).
 # Run: bash tests/probes/probe-routing.sh
 

@@ -830,7 +830,7 @@ function checkPluginRegistry(configDir, sessionId) {
 // instead was considered and rejected: it would mint a SECOND bash/JS predicate
 // pair to keep in agreement, to buy back a window the brief deliberately scoped
 // to the repairing lane.
-// Producer + schema: ~/repos/skills/docs/decisions/2026-09-15-sym-health-lane-stamp.md
+// Producer + schema: the skills-monorepo docs
 //
 // CORRECTED 2026-09-15 — this used to read "INVARIANT: sole runtime reader of
 // ~/.cache/dhx/health.json", and that was false. A source sweep across both repos
@@ -877,7 +877,7 @@ function checkPluginRegistry(configDir, sessionId) {
 // Does a published sym-health.json verdict belong to THIS lane?
 //
 // INVARIANT (cross-repo, unenforceable by code): the stamp this compares is written
-// by ~/repos/skills/scripts/lib/doctor.sh::cmd_health_export as `readlink -f` of its
+// by ~/repos/<skills-monorepo>/scripts/lib/doctor.sh::cmd_health_export as `readlink -f` of its
 // own $CLAUDE_CONFIG_DIR. Both sides must normalise, and both sides do — a lexical
 // comparison here would rebuild the exact bug a close-gate reviewer refuted in the
 // parallel health.json arc, where a lane symlinked to canonical (or merely named
@@ -1185,7 +1185,7 @@ function readHealthCache(sessionId) {
 // cache file, cloning the sym-health reader pattern above (readFileSync in a
 // try/catch). This path NEVER spawns a subprocess — no tmux, git, node-child,
 // and it NEVER invokes the scanner. The 2026-04-26 tmux capture-pane wedge
-// (reports/done/2026-04-26-statusline-capture-pane-wedge.md) was caused by a
+// (private report 2026-04-26-statusline-capture-pane-wedge) was caused by a
 // subprocess spawned per-refresh across 17 concurrent sessions overwhelming the
 // single tmux server; a cache-file read is that report's recommended mitigation,
 // not the hazard. The expensive scan stays on the daily systemd cadence (Phase 9),
@@ -1575,7 +1575,7 @@ function readTimerFiredSinceBoot(uptimeMs, now) {
 // the stamp is absent / unreadable / future-dated. `undefined` (the pre-existing 4-arg call
 // shape) is treated exactly as null, so a caller that does not know about the allowance gets
 // today's selection and can never be handed 'inflight' or `*-unfinished`.
-// INVARIANT: the bash twin wml_snapshot() in ~/repos/skills/dhx/infra/references/
+// INVARIANT: the bash twin wml_snapshot() in ~/repos/<skills-monorepo>/dhx/infra/references/
 // wsl-monitor-liveness.sh MUST evaluate the SAME six steps in the SAME order with the same
 // constants (WSL_MONITOR_RUN_ALLOWANCE_SECS=360), emit the same kind spellings, and carry the
 // same age per kind (`-` for `*-missing`). Pinned from both sides: this file's probe, skills'
@@ -1601,7 +1601,7 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   // inside the grace. `ageMs: null` is deliberate: there is no meaningful duration yet.
   // The ceiling (WSL_MONITOR_BOOT_GRACE_MS) and the stamp anchor are UNCHANGED — the fix is
   // what the grace MEANS, never how long it lasts.
-  // INVARIANT: the bash twin wml_snapshot() in ~/repos/skills/dhx/infra/references/
+  // INVARIANT: the bash twin wml_snapshot() in ~/repos/<skills-monorepo>/dhx/infra/references/
   // wsl-monitor-liveness.sh MUST emit kind=warming from its own grace branch, and wml_state's
   // four-state stdout projection MUST stay byte-identical (consumers parse `${STATE##* }`).
   // Pinned from both sides: this file's probe, skills' probe-infra-monitor-liveness.sh, and
@@ -1682,7 +1682,7 @@ function classifyWslMonitorState(pressureAgeMs, censusAgeMs, uptimeMs, timerFire
   // The per-producer detail is not lost — the /dhx:infra pull surface prints both ages beneath
   // the headline (surface-monitor-liveness.sh, monitor branch), per the push/pull split this
   // family already follows: push carries the actionable now-state, pull carries the forensics.
-  // INVARIANT: the bash twin wsl_state() in ~/repos/skills/dhx/infra/references/
+  // INVARIANT: the bash twin wsl_state() in ~/repos/<skills-monorepo>/dhx/infra/references/
   // wsl-monitor-liveness.sh MUST select the same end of the range (`p < c ? p : c`). Two
   // different ages for one condition trains distrust in the guard. Pinned from both sides:
   // this probe's newer-age assertion, and scenario 10 of skills' probe-infra-monitor-liveness.sh.
@@ -1818,7 +1818,7 @@ function resolveSkillsRoot() {
     candidates.push(process.env.DHX_SKILLS_REPO);
   }
   // Step 2: symlink-derive — realpath dhx-plugin/plugins/dhx/skills → parent.
-  // The symlink resolves to ~/repos/skills/dhx; its PARENT is the repo root.
+  // The symlink resolves to ~/repos/<skills-monorepo>/dhx; its PARENT is the repo root.
   // The PARENT correction is load-bearing: realpathing the marketplace path
   // alone lands in the hooks repo, not the skills repo. (Verified 2026-05-29.)
   try {
@@ -2027,7 +2027,7 @@ function hashWarnSettings(settingsReal) {
 //
 // Observed 2026-08-23: the host's `nvm alias default` moved 22 -> 24 on
 // 2026-08-19 18:18 and six probes went red at an UNCHANGED HEAD. Peer precedent
-// for the correct idiom predates it by four months -- forgefinder
+// for the correct idiom predates it by four months -- acme-app
 // `scripts/hub.js` `d.parentPath ?? d.path` (9294e138, 2026-04-23).
 // See docs/decisions.md 2026-08-23 row and HP-056.
 //
@@ -2042,7 +2042,7 @@ function direntParent(entry, root) {
 // anyway, so counting the returned array is free. Both signals feed checkDrift()'s
 // compare — mtime catches new/modified files; count catches deletions that would
 // otherwise shrink the recursive max below the snapshot and silently slip past the
-// strict `>` comparison. See docs/decisions.md 2026-04-18 drift-bundle row.
+// strict `>` comparison.
 //
 // INVARIANT: POSIX directory mtime does NOT bump on descendant writes — only on
 // direct-child add/remove. A plugin version update writing into
@@ -2058,7 +2058,7 @@ function direntParent(entry, root) {
 // is shared across all CCS instances, any sibling session's sweep false-positives
 // every running session's drift signal. Filtering affects both mtime and count,
 // so an orphan sweep is invisible to checkDrift while real plugin writes are still
-// caught. See docs/decisions.md 2026-04-23 orphaned_at filter row.
+// caught.
 function scanRecursive(dir, keepPredicate) {
   let maxMtime = 0;
   let count = 0;
@@ -2242,7 +2242,6 @@ function enumerateNovelPatterns(pluginsCacheRoot) {
 // GSD fork-aware drift suppression roots. Live tree is the install snapshot
 // `/gsd:update` rewrites; canonical fork mirror holds the user's local patches
 // re-applied by the fork-sync command. See `isGsdDriftFromForkSync()` below
-// and docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
 //
 // INVARIANT: both roots MUST track the live gsd install dir name. 2026-06-05
 // `@opengsd/gsd-core@1.3.1` renamed `get-shit-done/` -> `gsd-core/` (live) and
@@ -2260,8 +2259,7 @@ const GSD_FORK_ROOT = path.join(os.homedir(), '.claude', 'gsd-local-patches', 'g
 // hot-reload note in the wrapper doc for why /effort, /model, /output-style,
 // permission-grant mutations MUST NOT trip drift. All three filesystem trees
 // (agents, gsd, plugins) scan recursively via scanRecursive() — plugins was
-// shallow pre-2026-04-18, missed nested writes. See docs/decisions.md drift-
-// bundle row.
+// shallow pre-2026-04-18, missed nested writes.
 function collectSnapshot(data) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
@@ -2377,7 +2375,7 @@ function isGsdDriftFromForkSync(snapshot, liveRoot = GSD_LIVE_ROOT, forkRoot = G
 // any age under a day, so the statusline render gates the (Nd) token on >= 1
 // (mirrors the triad's N >= 1 gate). Pure + exported for probe coverage
 // (probe-drift-detection.js scenario [18]). Drift-duration-render todo (2026-06-25);
-// backs Problem 2 in reports/2026-05-18-canonical-mirror-drift-from-unmirrored-edit.md.
+// backs Problem 2 in private report 2026-05-18-canonical-mirror-drift-from-unmirrored-edit.
 function gsdDriftPersistenceDays(firstSeenCache, nowMs = Date.now()) {
   if (!firstSeenCache || typeof firstSeenCache !== 'object') return 0;
   let oldestMs = Infinity;
@@ -2855,8 +2853,7 @@ function checkDrift(data) {
 
     // gsd branch — split mtime and count so the count branch is non-suppressible.
     // A deletion cannot be validated by byte-equal, so the helper is only invoked
-    // when the mtime branch fired alone. See `isGsdDriftFromForkSync` above and
-    // docs/statusline-wrapper.md § "Fork-aware suppression (gsd trigger only)".
+    // when the mtime branch fired alone. See `isGsdDriftFromForkSync` above.
     const gsdMtimeFired = current.gsd_mtime > snapshot.gsd_mtime;
     const gsdCountFired = current.gsd_count < snapshot.gsd_count;
     let gsdSuppressed = false;

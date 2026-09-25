@@ -10,7 +10,7 @@
 # WHY THIS EXISTS — a /dhx:execute session ran the orchestrator's own checkpoint-11
 # proof re-run and treated it as a SUBSTITUTE for spawning gsd-verifier, skipping
 # the verifier entirely until the operator asked why. Post-mortem:
-# ~/repos/skills/reports/execute/2026-06-18-gsd-verifier-skipped-despite-checkpoint-11-backstop.md
+# ~/repos/<skills-monorepo>/reports/execute/2026-06-18-gsd-verifier-skipped-despite-checkpoint-11-backstop.md
 # The skills-side prose sharpen (dhx/execute/SKILL.md checkpoint-11 "Checkpoint 11
 # is not the verifier" sub-clause) raises the bar but is still model-executed prose
 # that CAN be rationalized past. This hook is the deterministic, out-of-context

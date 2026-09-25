@@ -3,7 +3,7 @@
 # real candidate instead of instructing an agent to run it.
 #
 # ── THIS IS A PORT (2026-09-14), NOT A SHARED FILE ─────────────────────────────────
-# Ported from ~/repos/skills/scripts/hooks/pre-commit.d/30-deletion-audit.sh under the
+# Ported from ~/repos/<skills-monorepo>/scripts/hooks/pre-commit.d/30-deletion-audit.sh under the
 # hooks repo's own protocol. Each repo owns its pre-commit chain, so this file is a COPY:
 # no symlink, no vendor-sync — a coupling between the two copies would be the drift
 # source, not a cure for it. Below the `set -uo pipefail` line the BODY IS BYTE-IDENTICAL
@@ -57,14 +57,14 @@
 # staged-diff surface at all; every one of the 7 library-generated commits (prompt
 # closeout, report close) surfaced nothing. Skills measured 32.5/4.6/62.9 over 151 —
 # similar, not materially different, so the port ships at full scope. Evidence:
-# ~/repos/skills/reports/2026-09-14-hooks-deletion-audit-base-rate-evidence/. This leaf
+# ~/repos/<skills-monorepo>/reports/2026-09-14-hooks-deletion-audit-base-rate-evidence/. This leaf
 # closes that gap at the only layer that cannot be skipped.
 #
 # WHAT IT IS NOT. It is not a confirm gate. It asks no question and accepts an
 # unchanged rerun with no input: on FIRST SIGHT of a given (HEAD, write-tree) pair it
 # prints git's real candidate patch and exits non-zero; rerun the identical commit and
 # it proceeds automatically. A CHANGED candidate is a new pair and is surfaced again.
-# See ~/repos/skills/dhx-shared/references/confirm-gate-disposition.md — the two floors it honours are
+# See ~/repos/<skills-monorepo>/dhx-shared/references/confirm-gate-disposition.md — the two floors it honours are
 # "never auto-proceed on a red" and "surface is not silence".
 #
 # WHAT IT ENFORCES, STATED HONESTLY. It forces the deletion set into context at the
@@ -81,7 +81,7 @@
 # the skill-body recipe cannot: the before/after-staging window, and the worktree-vs-index
 # gap (`git commit -- <paths>` records the WORKTREE, not the index an agent audited).
 #
-# THE AUTHORITY SEMANTICS (~/repos/skills/docs/decisions/2026-09-06-u0-patch-is-the-deletion-authority.md).
+# THE AUTHORITY SEMANTICS (~/repos/<skills-monorepo>/docs/decisions/2026-09-06-u0-patch-is-the-deletion-authority.md).
 # The -U0 patch is the authority on WHICH lines went; --stat/--shortstat are scale. This
 # leaf therefore emits the patch RAW and performs NO mechanical stat-vs-patch comparison.
 # A leaf that redded whenever a stat total exceeded the patch's `-` count would
@@ -115,7 +115,7 @@
 # line per event is appended to $CLAUDE_CONFIG_DIR/dhx-state/deletion-audit/<repo>.jsonl —
 # OUTSIDE every consumer repo, because an untracked unowned file in a shared working tree is
 # debris in every peer's `git status`, not instrumentation (the siting precedent and its
-# refusal: ~/repos/skills/docs/decisions/2026-09-02-oracle-prestate-gate-report-only-execute-item-f.md).
+# refusal: ~/repos/<skills-monorepo>/docs/decisions/2026-09-02-oracle-prestate-gate-report-only-execute-item-f.md).
 # TWO events, and the pair is what carries the signal:
 #   surfaced — first sight of a candidate, this leaf refusing
 #   passed   — the unchanged rerun proceeding
@@ -215,16 +215,16 @@
 # `passed` path would assert a refusal that did not happen and break attribution outright.
 #
 # CONSUMERS (a reword must break all of them loudly, which the probe enforces). All of
-# them live in ~/repos/skills and commit into THIS repo through the shared tooling:
-#   ~/repos/skills/dhx-shared/lib/git-safe.sh          git_safe_commit >= 1.9 (dhx-commit -C ~/repos/hooks)
-#   ~/repos/skills/scripts/lib/deletion-audit-retry.cjs  all FOUR backlog committers (.planning/backlog/ here)
-#   ~/repos/skills/tests/probe-deletion-audit-scripted-retry.sh   pins these exact bytes
-# Ruling: ~/repos/skills/docs/decisions/2026-09-12-deletion-audit-first-sight-sentinel-bounded-retry.md
+# them live in ~/repos/<skills-monorepo> and commit into THIS repo through the shared tooling:
+#   ~/repos/<skills-monorepo>/dhx-shared/lib/git-safe.sh          git_safe_commit >= 1.9 (dhx-commit -C ~/repos/hooks)
+#   ~/repos/<skills-monorepo>/scripts/lib/deletion-audit-retry.cjs  all FOUR backlog committers (.planning/backlog/ here)
+#   ~/repos/<skills-monorepo>/tests/probe-deletion-audit-scripted-retry.sh   pins these exact bytes
+# Ruling: ~/repos/<skills-monorepo>/docs/decisions/2026-09-12-deletion-audit-first-sight-sentinel-bounded-retry.md
 #
 # Probe (this repo): tests/probes/probe-deletion-audit-leaf.sh
 # Ruling (this repo): docs/decisions.md 2026-09-14 row "binding deletion audit ported to the hooks pre-commit chain"
-# Source ruling: ~/repos/skills/docs/decisions/2026-09-07-pre-commit-deletion-audit-binds-at-the-candidate.md
-# Source leaf:   ~/repos/skills/scripts/hooks/pre-commit.d/30-deletion-audit.sh
+# Source ruling: ~/repos/<skills-monorepo>/docs/decisions/2026-09-07-pre-commit-deletion-audit-binds-at-the-candidate.md
+# Source leaf:   ~/repos/<skills-monorepo>/scripts/hooks/pre-commit.d/30-deletion-audit.sh
 
 set -uo pipefail
 

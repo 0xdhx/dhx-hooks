@@ -1,7 +1,6 @@
 #!/bin/bash
 # Probe: hooks.json wiring canary in dhx-health-check.sh.
 #
-# Backs: docs/decisions.md 2026-04-26 hooks-wiring canary row.
 #
 # Invariants exercised:
 #   1. hooks_wiring="ok" when every dhx-script command in the manifest is

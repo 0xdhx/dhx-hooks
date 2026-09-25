@@ -63,7 +63,6 @@
 //
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-08-15 wsl-stack producer-liveness row, the 2026-09-19 warming
 // row, and the 2026-09-19 run-completion-allowance / missing-arms row.
 // Structural sibling of probe-statusline-wsl-pressure.js / probe-statusline-wsl-probe-broken.js
 // / probe-statusline-claude-cap-bypass.js.

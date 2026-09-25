@@ -14,7 +14,6 @@
 # vocabulary — an inverted predicate (ask-on-read) reds the silent arms and
 # a deleted one reds the ask arms (README § "A guard has two layers").
 #
-# Backs: docs/decisions.md 2026-09-19 dhx-global-claude-md-write-ask row
 #        (companion to the `permissions.ask` Edit(path) rules, hooks 29aacddb).
 # Companion: probe-git-destructive-guard.sh (same harness shape; orthogonal
 #        surface).

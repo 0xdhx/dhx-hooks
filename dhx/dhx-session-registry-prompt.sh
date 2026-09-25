@@ -17,8 +17,8 @@
 # uuid that is current WHEN A HUMAN TYPES captures the uuid that actually
 # accumulates the conversation and that CC reports on exit. "No turn → no row"
 # also excludes RC bridge-ghost / summary files (#29205) for free.
-#   Research: ~/repos/cross-repo/docs/research/2026-06-09-cc-session-uuid-identity-registry-unreliability.md
-#   Findings: ~/repos/forgefinder/research/cc-session-identity/2026-06-09-cc-session-identity.md
+#   Research: the cross-repo knowledge base
+#   Findings: ~/repos/acme-app/research/cc-session-identity/2026-06-09-cc-session-identity.md
 #   Contract (row schema — do NOT diverge): ~/repos/cross-repo/.planning/backlog/2026-06-08-alive-session-recovery-registry.md
 #
 # Registry path is LITERAL $HOME/.claude — NOT $CLAUDE_CONFIG_DIR. Under CCS the

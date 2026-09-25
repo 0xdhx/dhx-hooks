@@ -27,7 +27,6 @@
 #   9. no-digest-tool fail-open: with sha256sum/shasum absent the child still runs,
 #      nothing is printed, nothing is written
 #
-# Backs docs/decisions.md 2026-09-14 "SessionStart child-failure first-sight
 # surface" row.
 # Run: bash tests/probes/probe-session-start-child-failure-surface.sh
 

@@ -27,7 +27,6 @@
 #      the child with no error text
 #  11. WIRING: the dispatcher calls _dhx_child_slow_check after the last _dhx_child
 #
-# Backs docs/decisions.md 2026-09-19 watch-digest residuals row (R2).
 # Run: bash tests/probes/probe-session-start-child-timing.sh
 
 set -uo pipefail

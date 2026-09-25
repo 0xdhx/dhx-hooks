@@ -13,14 +13,13 @@
 # Every arm is MUTATION-CONTROLLED where a false green is possible: case 10 breaks the
 # deletion oracle, case 13g breaks the sentinel emission, and both must make the probe RED.
 #
-# Backs: docs/decisions.md 2026-09-14 row "binding deletion audit ported to the hooks
 #        pre-commit chain". Contract it honours (skills-repo rulings, absolute paths):
-#        ~/repos/skills/docs/decisions/2026-09-07-pre-commit-deletion-audit-binds-at-the-candidate.md
-#        ~/repos/skills/docs/decisions/2026-09-06-u0-patch-is-the-deletion-authority.md
-#        ~/repos/skills/docs/decisions/2026-09-12-deletion-audit-first-sight-sentinel-bounded-retry.md
+#        the skills-monorepo docs
+#        the skills-monorepo docs
+#        the skills-monorepo docs
 #
 # WHY THIS PROBE EXISTS. The leaf is the ONLY runtime enforcement of the deletion-naming
-# floor in this repo. Check 4 in ~/repos/skills/dhx-shared/verification/hooks/modify.md
+# floor in this repo. Check 4 in ~/repos/<skills-monorepo>/dhx-shared/verification/hooks/modify.md
 # asserts that PROSE EXISTS in dhx/hooks/SKILL.md — it cannot observe whether a commit was
 # audited. If this probe goes green while the leaf is broken, nothing else in the corpus reds.
 #
@@ -313,7 +312,7 @@ DHX_DELETION_AUDIT_RECORD_DIR="$RECDIR12R" commit_run 'c12 rename'   # clear
 DHX_DELETION_AUDIT_RECORD_DIR="$FIXTURE/.record"
 
 # --- Case 13: THE FIRST-SIGHT SENTINEL ------------------------------------------------
-# Consumers pin these bytes: ~/repos/skills/dhx-shared/lib/git-safe.sh git_safe_commit
+# Consumers pin these bytes: ~/repos/<skills-monorepo>/dhx-shared/lib/git-safe.sh git_safe_commit
 # (dhx-commit -C ~/repos/hooks) and the backlog committers' shared retry helper. A reword
 # here must break them loudly — that is what this case is for.
 printf 's1\ns2\ns3\n' > "$FIXTURE/sent.txt"

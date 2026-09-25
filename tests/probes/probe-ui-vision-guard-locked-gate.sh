@@ -12,7 +12,6 @@
 # in [5]-[8]). A locked vision still scaffolds + injects the advisory;
 # a missing vision file and non-UI agent types are silent no-ops.
 #
-# Backs: docs/decisions.md 2026-07-07 CL-H.ui-vision-guard locked-gate row
 #        (brief .planning/backlog/2026-07-07-ui-vision-guard-grep-count-
 #        double-emission.md; same `|| echo` class as CL-H.assessed-guard).
 #

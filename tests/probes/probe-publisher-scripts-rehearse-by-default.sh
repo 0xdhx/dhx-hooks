@@ -36,7 +36,6 @@
 # probe-sync-mirror-publish-gate.sh, and any NEW publisher needs its own equivalent —
 # this lint's job is to make a missing gate loud, not to certify a present one.
 #
-# Backs: docs/decisions.md 2026-07-21 sync-mirror publish-gate row.
 #
 # Run: bash tests/probes/probe-publisher-scripts-rehearse-by-default.sh
 #

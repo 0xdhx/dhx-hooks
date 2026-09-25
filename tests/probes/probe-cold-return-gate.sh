@@ -8,7 +8,6 @@
 # passes the immediate resend — and fails OPEN on every ambiguous transcript
 # state, because exit 2 erases the operator's prompt.
 #
-# Backs: docs/decisions.md 2026-08-15 "cold-return advisory gate" row
 #        (arc node N6, manifest Item B as amended by the N5 codex review).
 #
 # Run: bash tests/probes/probe-cold-return-gate.sh

@@ -240,7 +240,7 @@ fi
 #   cardinality right — the "stray" summary IS a plan's declared output:
 #     alembic v2.0/32 (`32-06-PLAN.md` files_modified lists `32-SUMMARY.md`),
 #     relater v0.40/12.4 (`12.4-VERIFICATION.md` reconciles PLAN-06 as executed).
-#   cardinality wrong — the ONLY one: forgefinder v1.4/25 fires Exit-A on a phase
+#   cardinality wrong — the ONLY one: acme-app v1.4/25 fires Exit-A on a phase
 #     that is `status: passed`, because `25-02-PLAN.md` has no `25-02-SUMMARY.md`
 #     while `25-02-GAPS-SUMMARY.md` records plan 02 as completed input. Pairing
 #     happens to be right here, but only via an id-collision bug

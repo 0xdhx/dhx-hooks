@@ -14,7 +14,7 @@
 #
 # Backs:
 #   - docs/decisions.md — 2026-05-03 cgroup-bound test-gate row
-#   - reports/2026-05-03-test-gate-collection-cost.md (design memo)
+#   - private report 2026-05-03-test-gate-collection-cost (design memo)
 #   - docs/hook-patterns.md — HP-001, HP-002, HP-009, HP-020, HP-028
 #
 # Run: bash tests/probes/probe-test-gate-cgroup.sh

@@ -20,7 +20,6 @@
 # the neutralized backup `settings.json.bak.2026-04-19-bash-guard.disabled` (D-04b)
 # nor any `.bak`/`.disabled` suffix — only live settings files are scanned.
 #
-# Backs: docs/decisions.md Phase 43 ownership disposition (global-only, plugin-only).
 # Companion: probe-worktree-bash-guard.sh, probe-worktree-write-guard.sh,
 #            probe-worktree-guard-adversarial.test.js.
 #

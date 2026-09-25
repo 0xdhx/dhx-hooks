@@ -6,7 +6,6 @@
 // under os.tmpdir(); the module registers each one and removes it on process exit, so
 // a caller cannot leak by forgetting to write a `finally`.
 //
-// Backs docs/decisions.md 2026-08-15 fake-home-cleanup row. The defect it guards is a
 // SILENT one, which is why it is worth a probe rather than a code review note:
 // probe-statusline-self-diag.js allocated five fake homes per run and removed none,
 // leaving 41 `selfdiag-*` trees in /tmp — while reporting rc 0, PASS. Nothing about a

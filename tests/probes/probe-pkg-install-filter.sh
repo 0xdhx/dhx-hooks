@@ -19,8 +19,7 @@
 #         passthrough, HP-040 cause never eaten) AND the runner's exit code is
 #         PRESERVED through the wrapper.
 #
-# Backs: docs/decisions.md 2026-05-31 package-install output-reducer row (HP-040 cause-eating + HP-041 updatedInput).
-# Mirrors the forgefinder ff-test-output-filter.test.js assertion template (17 cases).
+# Mirrors a sibling repo's ff-test-output-filter.test.js assertion template (17 cases).
 #
 # How to run: bash tests/probes/probe-pkg-install-filter.sh
 # Output: OK/FAIL per assertion + "N passed, M failed" summary; non-zero on any fail.

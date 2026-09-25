@@ -29,7 +29,7 @@
 #
 # Backs:
 #   - docs/decisions.md — 2026-05-19 Phase 14 TEST-GATE closure row
-#   - reports/2026-05-03-test-gate-collection-cost.md (design memo Q-frame)
+#   - private report 2026-05-03-test-gate-collection-cost (design memo Q-frame)
 #   - .planning/REQUIREMENTS.md TEST-GATE-07
 #   - .planning/phases/14-test-gate-cgroup-bounded-redesign-test-gate/14-CONTEXT.md
 #     § D-09, D-10, D-11, G-01

@@ -18,7 +18,6 @@
 #      skipped silently (both channels) — re-classifying a brief must NOT
 #      fire the gate even when the brief carries a non-canonical literal.
 #
-# Backs: docs/decisions.md 2026-05-27 backlog target_milestone value-enum
 # write-time advisory row + .planning/backlog/2026-05-09-backlog-target-
 # milestone-validation-hook.md + reports/2026-05-09-backlog-target-milestone-
 # validation-hook.md.

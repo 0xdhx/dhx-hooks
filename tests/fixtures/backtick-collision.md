@@ -1,4 +1,4 @@
-# Phase 04 CONTEXT.md — Backtick collision fixture (original forgefinder 22.1 pattern)
+# Phase 04 CONTEXT.md — Backtick collision fixture (real-world 22.1 pattern)
 
 <domain>
 - Fact-checking platform with confidence scoring

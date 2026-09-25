@@ -22,7 +22,6 @@
 //
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-06-15 wsl-pressure probe-broken signal row (the
 // dead-monitor push-surface gap fix, extending the same-day trip-flag alarm). Same
 // runtime-assumption class as readWslPressure / readWatchHealth / readFleetFeed
 // (cache/file-read segment, no new HP). Structural twin of

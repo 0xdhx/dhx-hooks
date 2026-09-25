@@ -4,7 +4,7 @@
 # Invariant: dhx/dhx-test-gate.sh's opt-in project log is SELF-CAPPING. log()
 # rewrites $LOG_FILE to its last LOG_KEEP_LINES lines before appending whenever
 # the file exceeds LOG_MAX_BYTES, and leaves an under-threshold log untouched.
-# Before 2026-09-20 nothing truncated it and forgefinder's had reached 1.38 MB.
+# Before 2026-09-20 nothing truncated it and acme-app's had reached 1.38 MB.
 #
 # Backs:
 #   - docs/decisions.md — 2026-09-20 test-gate log rotation + ignore contract row

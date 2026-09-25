@@ -1,7 +1,7 @@
 // Probe: dhx-statemd-phase-line-lint.js warns ONLY when gsd-core's parser would
 //   harvest a name that differs from current_phase_name at aligned phase numbers,
 //   never blocks, and stays silent on every sibling-repo STATE.md shape surveyed
-//   in reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+//   in private report 2026-06-25-statemd-phase-line-current-phase-name-lint.
 //   NOT "first-paren-≠-name" any more: gsd-core 1.9.1 (#2736) inverted the
 //   parser's precedence to status-keyword-aware dash-over-paren, which fixed the
 //   original hazard and created its mirror image. Fixture expectations were
@@ -44,7 +44,6 @@
 //   either field. Third instance of one pattern: a rung, a scope, or a caller that
 //   no fixture exercises is one no assertion protects. See docs/decisions.md
 //   2026-08-19.
-// Backs docs/decisions.md 2026-06-25 STATE.md phase-line lint row and the
 //   2026-07-31 differential-oracle row.
 // Run: node tests/probes/probe-statemd-phase-line-lint.js
 // SAFE_FOR_LIVE: yes   (requires the hook module + writes fixtures only under an
@@ -160,7 +159,7 @@ const CASES = [
   { name: 'PASS milestone-terminal no paren (skills)',
     content: STATE(35, 'Drain + Vet Backstops', 'Phase: Milestone v1.7 complete'),
     warn: false },
-  { name: 'PASS milestone-terminal paren junk but misaligned number (forgefinder)',
+  { name: 'PASS milestone-terminal paren junk but misaligned number (acme-app)',
     content: STATE(52, null,
       'Phase: Milestone v1.8 complete (Phases 43-52 shipped, archived to `milestones/v1.8-*`)'),
     warn: false },

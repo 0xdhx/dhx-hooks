@@ -17,7 +17,6 @@
 //
 // Side-effects on real $HOME are zero — each spawn runs in an isolated tmpdir.
 //
-// Backs docs/decisions.md 2026-06-15 wsl-pressure statusline alarm row (the
 // write-only-flag-gap fix). Same runtime-assumption class as readFleetFeed /
 // readWatchHealth / readSkillPressure (cache-read segment, no new HP). Structural
 // twin of probe-fleet-statusline-render.js.

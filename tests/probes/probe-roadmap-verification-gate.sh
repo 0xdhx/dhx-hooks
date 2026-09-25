@@ -10,7 +10,6 @@
 # (D-31 anchor — the regex is lifted verbatim from the skills-repo sibling probe
 # tests/probe-phase-verification-completeness.sh; this asserts the live-hook half).
 #
-# Backs: docs/decisions.md 2026-06-18 roadmap-verification-gate row.
 #        Coupling: ~/repos/cross-repo/docs/coupling/2026-06-18-roadmap-verification-gate-probe.md
 #
 # How to run: bash tests/probes/probe-roadmap-verification-gate.sh

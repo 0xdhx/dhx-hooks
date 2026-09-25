@@ -6,7 +6,7 @@
 // silently corrupts the curated frontmatter `current_phase_name`: one where
 // gsd-core's frontmatter rebuild harvests a DIFFERENT name out of the
 // `## Current Position` `Phase:` prose line than the one curated in frontmatter.
-// See reports/done/2026-06-25-statemd-phase-line-current-phase-name-lint.md.
+// See private report 2026-06-25-statemd-phase-line-current-phase-name-lint.
 //
 // WHICH shape that is has INVERTED — 2026-07-31, gsd-core 1.9.1 (#2736). It was
 // `N — Name (status aside)`, because the old parser took the first parenthetical.

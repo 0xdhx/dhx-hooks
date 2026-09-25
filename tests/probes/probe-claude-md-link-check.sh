@@ -9,7 +9,6 @@
 # the advisory tail token). Together they cover the brief's acceptance: a broken
 # config symlink surfaces, an intact one stays silent.
 #
-# Backs docs/decisions.md 2026-06-15 "claude_md config-symlink integrity" row.
 # Motivating incident: $HOME/.claude/CLAUDE.md silently became a regular file and
 # drifted the dotfiles backup ~8 weeks undetected.
 # Run: bash tests/probes/probe-claude-md-link-check.sh

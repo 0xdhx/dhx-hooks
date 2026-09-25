@@ -44,10 +44,9 @@
 # WHAT THIS PROBE DOES NOT COVER, said plainly: `/dhx:sym repair` cannot fix what case [2]
 # counts. The skills-repo per-path audit (cmd_check) reports a decoy-pointing link as a
 # healthy `symlink`, so repair never collects the item. Filed as
-# ~/repos/skills/.planning/backlog/2026-09-15-sym-audit-check-is-destination-blind.md;
+# ~/repos/<skills-monorepo>/.planning/backlog/2026-09-15-sym-audit-check-is-destination-blind.md;
 # the manual relink in docs/troubleshooting.md is the working recovery meanwhile.
 #
-# Backs docs/decisions.md 2026-09-15 symlink-destination-check row.
 # Run: bash tests/probes/probe-symlink-target-check.sh
 #
 # SAFE_FOR_LIVE: yes  (one run-scoped `mktemp -d` root holds every fake $HOME; the hook and

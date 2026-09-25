@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 // Probe: stale-hooks filter retirement
 //
-// Backs: docs/decisions.md 2026-04-18 stale-hooks-filter-retire row
-//        docs/backlog.md "gsd-stale-hooks-filter-retire" (closed 2026-04-18)
 //
 // Invariants:
 //   1. statusline-wrapper.js no longer strips "⚠ stale hooks" / "⚠ dev install" warnings.

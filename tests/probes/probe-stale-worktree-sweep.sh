@@ -22,7 +22,6 @@
 #   Non-locked:                  an unlocked worktree is IGNORED (not swept, not reported).
 #   No-op:                       a repo with no worktrees produces silent exit 0.
 #
-# Backs: docs/decisions.md 2026-04-19 stale-worktree-sweep row + 2026-04-21 .claude/ allowlist row
 #        + 2026-06-11 dead-ref-count / phase-lane-classification row.
 #
 # Run: bash tests/probes/probe-stale-worktree-sweep.sh

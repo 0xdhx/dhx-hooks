@@ -5,7 +5,6 @@
 // Underscore prefix keeps this file out of `scripts/run-probes.sh`'s
 // `probe-*.{js,sh}` glob — it's a helper module, not a probe.
 //
-// Backs docs/decisions.md 2026-04-28 probe-fixture centralization row.
 // Companion to the same-day silent-red repair (probe-statusline-self-diag.js
 // + probe-health-suffix.js) and the same-day verify-hook-patterns.sh
 // check #8 that gates the probe suite on wrapper/probe edits.

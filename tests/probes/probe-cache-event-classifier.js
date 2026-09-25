@@ -1,6 +1,5 @@
 // Probe: classifyCacheEvent — diagnostics-first bust/cold classification
 // (arc N7, manifest Item C as amended by the N5 review).
-// Backs docs/decisions.md 2026-08-15 N7 bust-signal row and the accepted
 // refinements f4 (diagnostics primary, ratio heuristic explicitly labeled),
 // f24 (UNKNOWN_SMALL below the ~30k separability floor), f25 (terminal records
 // only), f26 (ancestry rule), f27 (EXPECTED_COLD:<cause> vs UNEXPECTED_BUST).

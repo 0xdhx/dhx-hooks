@@ -14,7 +14,6 @@
 # missing/non-array .files → exit 1 + "ERROR". The triad exit contract is 0=all-OK
 # (incl. no-files), 2=DRIFT, 1=setup-failure.
 #
-# Backs: docs/decisions.md 2026-06-08 "triad empty-files[] classification" row.
 # Run: bash tests/probes/probe-triad-empty-files-retired.sh
 
 # SAFE_FOR_LIVE: yes  (mktemp + DHX_TRIAD_BACKUP_META env override; never reads live ~/.claude or the live backup-meta)

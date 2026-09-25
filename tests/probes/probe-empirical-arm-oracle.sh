@@ -49,7 +49,6 @@
 #      downgraded `no` as inconclusive, writes on --restamp / a flip / no fixture;
 #      the tracked fixture is untouched; the arm's Step 9 asks the same function
 #
-# Backs docs/decisions.md 2026-09-19 "prompt-type Stop hooks block for real on
 # 2.1.278; the D-01 arm needs credentials" row, and the 2026-09-24 re-stamp-
 # only-on-a-verdict-change row (§ 11).
 #

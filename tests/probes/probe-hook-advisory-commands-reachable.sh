@@ -9,7 +9,6 @@
 # erred, and where the command is a recovery command it teaches the exact
 # reflex the doctrine exists to remove.
 #
-# Backs docs/decisions.md 2026-08-06 tree-sweep row and .planning/backlog/2026-08-06-hooks-tree-sweep-for-published-recovery-commands.md criteria 1-4.
 #
 # Run: bash tests/probes/probe-hook-advisory-commands-reachable.sh
 #

@@ -1,6 +1,0 @@
-dhx/
-dhx-plugin/
-tests/
-scripts/
-config/
-gsd/

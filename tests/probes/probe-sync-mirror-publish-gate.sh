@@ -33,7 +33,6 @@
 # that PUBLIC_REMOTE does not redirect (Codex review finding 11). Read-only, but the
 # containment claim must be stated accurately rather than as "no network".
 #
-# Backs: docs/decisions.md 2026-07-21 sync-mirror publish-gate row.
 #
 # Run: bash tests/probes/probe-sync-mirror-publish-gate.sh
 #
@@ -228,7 +227,7 @@ _assert "[17] --push lands a commit on the remote" "yes" \
 # unscrubbed content is not a working gate).
 WORK="$TMP/verify-clone"
 git clone -q "$BARE" "$WORK" 2>/dev/null
-for token in forgefinder "repos/skills"; do
+for token in acme-app "repos/<skills-monorepo>"; do
   HITS=$(grep -rIl "$token" "$WORK" --exclude-dir=.git 2>/dev/null | wc -l)
   _assert "[18/$token] published tree carries no '$token'" "0" "$HITS"
 done

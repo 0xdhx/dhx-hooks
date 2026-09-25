@@ -58,7 +58,6 @@
 # that says only 'CC bumped' reproduces the failure — the operator still has to
 # know which briefs to go read."
 #
-# Backs docs/decisions.md 2026-09-17 "cc-version-observer SessionStart wiring
 # (dhx-tools indirection, _dhx_child-wrapped, stdout preserved)" row.
 # Run: bash tests/probes/probe-cc-version-observer-wiring.sh
 

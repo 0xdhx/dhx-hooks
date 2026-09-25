@@ -12,7 +12,6 @@
 // documented-gap PASS) and the SC4 deny shape. Mirrors the bash probe's
 // _assert_block/_assert_allow shape over the same guard binaries (stdlib only — D-02).
 //
-// Backs: docs/decisions.md Phase 43 ownership/hardening row; companion to the
 //   retained 25/25 native probe tests/probes/probe-worktree-bash-guard.sh.
 //
 // Run: node --test tests/probes/probe-worktree-guard-adversarial.test.js
@@ -32,9 +31,9 @@ const path = require('node:path');
 const BASH_HOOK  = path.join(__dirname, '..', '..', 'dhx', 'dhx-worktree-bash-guard.sh');
 const WRITE_HOOK = path.join(__dirname, '..', '..', 'dhx', 'dhx-worktree-write-guard.sh');
 
-const WT_CWD     = '/home/dhx/repos/forgefinder/.claude/worktrees/agent-test/';
-const MAIN_ROOT  = '/home/dhx/repos/forgefinder';
-const MAIN       = '/home/dhx/repos/forgefinder/scripts/hub.js';
+const WT_CWD     = '/home/dhx/repos/forgeworks/.claude/worktrees/agent-test/';
+const MAIN_ROOT  = '/home/dhx/repos/forgeworks';
+const MAIN       = '/home/dhx/repos/forgeworks/scripts/hub.js';
 
 // fire() — synthetic Bash hook-JSON ({cwd, tool_input:{command}}) into the bash guard.
 function fire(cwd, command) {
@@ -99,12 +98,12 @@ test('prefix-collision: write to OWN worktree path PASSES (SC2)', () => {
   assertAllow(fire(WT_CWD, `sed -i s/a/b/ ${WT_CWD}scripts/hub.js`));
 });
 
-test('sibling-repo /repos/forge vs /repos/forgefinder is NOT false-blocked (D-06)', () => {
-  // cwd in a /repos/forge worktree, writing to the SIBLING /repos/forgefinder repo:
+test('sibling-repo /repos/forge vs /repos/forgeworks is NOT false-blocked (D-06)', () => {
+  // cwd in a /repos/forge worktree, writing to the SIBLING /repos/forgeworks repo:
   // the trailing-slash `grep -qF "$MAIN_ROOT/"` (MAIN_ROOT=/home/dhx/repos/forge)
-  // does NOT match "/home/dhx/repos/forgefinder/..." (forge + 'f', not forge + '/').
+  // does NOT match "/home/dhx/repos/forgeworks/..." (forge + 'f', not forge + '/').
   assertAllow(fire('/home/dhx/repos/forge/.claude/worktrees/agent-x/',
-                   `sed -i s/a/b/ /home/dhx/repos/forgefinder/x`));
+                   `sed -i s/a/b/ /home/dhx/repos/forgeworks/x`));
 });
 
 // ── Documented gaps: MUST ALLOW — a complete shell matcher is structurally

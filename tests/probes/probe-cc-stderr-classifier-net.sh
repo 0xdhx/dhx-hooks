@@ -54,7 +54,6 @@
 #        probe-cc-binary-resolution.sh § 5, which drives the filter's BEHAVIOUR
 #        on a verbatim live advisory with a positive control.
 #
-# Backs: docs/decisions.md 2026-09-18 stderr-classifier-input row
 #        .planning/backlog/2026-09-18-probes-that-classify-a-cc-child-by-grepping-stderr-inherit-the-operators-settings-as-an-input-surface.md
 #
 # Run: bash tests/probes/probe-cc-stderr-classifier-net.sh

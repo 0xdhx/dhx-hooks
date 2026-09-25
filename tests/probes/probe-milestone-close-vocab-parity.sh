@@ -31,7 +31,7 @@
 #     awk '/^const CANONICAL_URGENCY = new Set\(\[/ …'         # the vocab Set block
 # Measured 2026-08-20: renaming the helper `headerFor` -> `headerLabel` — a PURE
 # RENAME with zero behavioural change — reds this probe and blocks every hooks-repo
-# commit. backlog-regen.cjs is symlinked into ~/repos/skills/scripts/, a peer WORKING
+# commit. backlog-regen.cjs is symlinked into ~/repos/<skills-monorepo>/scripts/, a peer WORKING
 # TREE, so nothing need be committed anywhere for that to happen. This probe was the
 # clearest instance of the class; the originating brief expected it to be the hardest
 # to de-pin, on the assumption no runnable seam existed.

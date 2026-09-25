@@ -31,7 +31,6 @@
 # serving one lane's reading to another — but the backstop degrades the signal, so
 # the agreement is asserted here rather than left to it.
 #
-# Backs docs/decisions.md 2026-09-15 health-cache lane-scoping row + the 2026-09-16
 # plugin-keys lane-scoping row (which reverses the 2026-09-15 row's AC-3).
 # Run: bash tests/probes/probe-health-lane-scoping.sh
 #

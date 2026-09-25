@@ -3,7 +3,7 @@
 # dhx-read-guard.js fires the PARTIAL-READ NOTE off the session-scoped detection
 # store, and is SILENT in every other case.
 #
-# Backs the 2026-05-24 decisions.md Option C collapse row. The collapse removed
+# The Option C read-guard collapse removed
 # State-1 (strong READ-BEFORE-EDIT advisory) and State-2 (full-read suppress +
 # global-TTL cache). The guard now fires the soft PARTIAL-READ NOTE iff the file
 # was recorded in ~/.cache/dhx/partial-read-detect-<session_id>.jsonl by

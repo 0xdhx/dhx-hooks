@@ -569,7 +569,7 @@ assert_blocks_contains "[17c] UAT.md complete but no routing marker → fall thr
 #     a plan's declared output (`32-06-PLAN.md` files_modified names
 #     `32-SUMMARY.md`; `12.4-VERIFICATION.md` reconciles PLAN-06 as executed),
 #     so the hook is RIGHT on both. Corrected 2026-07-22 after external review.
-#   The one OBSERVED cardinality-wrong dir is forgefinder v1.4/25, and it is the
+#   The one OBSERVED cardinality-wrong dir is acme-app v1.4/25, and it is the
 #     OPPOSITE direction from [18] (Exit-A over-fires on a complete phase), so
 #     [18] is not its regression test either.
 #

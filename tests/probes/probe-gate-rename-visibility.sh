@@ -28,7 +28,6 @@
 # The plain (non-rename) controls for #1-#4 are the first coverage those checks have
 # had: before this probe nothing in tests/ exercised their messages.
 #
-# Backs: docs/decisions.md 2026-09-25 row "gate rename visibility" (backlog row
 # gate-acm-filter-drops-renames, executed).
 #
 # Fixture shape (tests/probes/probe-live-runtime-tier.sh § "3. Gate" is the model):

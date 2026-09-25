@@ -19,7 +19,6 @@
 #   E. PARTIAL: one of two skills unreadable -> readable body delivered + notice; `partial`.
 #   F. FAIL-OPEN: malformed stdin -> rc 0, no stdout.
 #
-# Backs docs/decisions.md 2026-09-25 "SubagentStart agent-skills injector" row; HP-065.
 # Run: bash tests/probes/probe-agent-skills-inject.sh
 
 set -uo pipefail

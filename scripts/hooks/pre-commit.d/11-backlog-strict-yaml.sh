@@ -7,9 +7,9 @@
 # half below is byte-identical to that source; only this header is local.
 #
 # RULINGS LIVE IN THE SKILLS REPO AND ARE NOT REACHABLE FROM THIS TREE:
-#   ~/repos/skills/docs/decisions/2026-07-22-backlog-strict-yaml-active-tier-gate.md
+#   ~/repos/<skills-monorepo>/docs/decisions/2026-07-22-backlog-strict-yaml-active-tier-gate.md
 #     -- the origin ruling: tier scoping, why a SEPARATE leaf, fail-OPEN posture.
-#   ~/repos/skills/docs/decisions/2026-08-20-strict-yaml-fleet-port-and-repair-baseline.md
+#   ~/repos/<skills-monorepo>/docs/decisions/2026-08-20-strict-yaml-fleet-port-and-repair-baseline.md
 #     -- the fleet extension that authorized this install.
 #   ~/repos/cross-repo/docs/conventions/2026-08-20-backlog-strict-yaml-fleet-gating.md
 #     -- the fleet pointer, if you are reading from a cross-repo session.
@@ -84,7 +84,7 @@
 # re-verify after any change to this file, this repo's hook wiring, or its python
 # environment, run from a skills checkout:
 #
-#   bash ~/repos/skills/scripts/strict-yaml-gate-firecheck.sh ~/repos/hooks
+#   bash ~/repos/<skills-monorepo>/scripts/strict-yaml-gate-firecheck.sh ~/repos/hooks
 #
 # It stages a known-bad brief in an isolated worktree-or-clone (never this repo's
 # own index) and asserts exit 1 WITH the brief named. Nothing else watches this
@@ -112,7 +112,7 @@ mapfile -d '' -t all_staged < <(git diff -z --cached --name-only --diff-filter=A
 # (`example.md` and not a fictional `foo.md` because this leaf is PORTED: a target
 # repo's own pointer-rot gate classifies any non-resolving path as rot unless it
 # sits in the reserved `example` namespace, so an illustrative path here blocks the
-# install. Measured 2026-08-21 in forgefinder. Same rule for any path added below.)
+# install. Measured 2026-08-21 in acme-app. Same rule for any path added below.)
 staged=()
 for p in "${all_staged[@]}"; do
   case "$p" in
@@ -213,7 +213,7 @@ if violations:
         "  fleet regressions this gate's own advice was meant to prevent.\n"
         "  Value contains BOTH quote styles? SCALAR fields may escape (\\\" inside\n"
         "  \"...\", or '' inside '...'): both frontmatter readers share the\n"
-        "  scalar reader ~/repos/skills/scripts/lib/parse-frontmatter-scalar.cjs,\n"
+        "  scalar reader ~/repos/<skills-monorepo>/scripts/lib/parse-frontmatter-scalar.cjs,\n"
         "  which UNESCAPES (2026-08-15).\n"
         "  Block-LIST items may NOT — backlog-close.cjs's list wrapper strips the\n"
         "  outer quotes only, so an escape leaks into the value verbatim.\n"

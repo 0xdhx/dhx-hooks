@@ -5,8 +5,7 @@
 # Closes the SYNTACTIC bypass surface that the existing
 # `Bash(git push --force *)` / `Bash(git push -f *)` / `Bash(git reset --hard*)`
 # deny strings structurally cannot catch. The H1 enforcement-backstop for the
-# skills-repo v1.3 /dhx:git (cross-repo
-# docs/git/destructive-op-enforcement-backstop.md).
+# skills-repo v1.3 /dhx:git.
 #
 # ════════════════════════════════════════════════════════════════════════════
 # WHY THIS HOOK EXISTS (HP-037 anchor)
@@ -19,8 +18,7 @@
 #
 # Two bypasses are SYNTACTIC — no prefix-anchored deny string can see
 # them, regardless of trailing-glob behavior — and were verified to slip
-# the live CC matcher in
-# cross-repo/reports/done/2026-05-25-git-force-push-deny-rule-bypass-vectors.md:
+# the live CC matcher (bypass-vector audit):
 #
 #   #1  Refspec with leading `+`     git push origin +main
 #                                    git push origin +HEAD:main
@@ -29,8 +27,7 @@
 #                                    git --git-dir=<path> push --force
 #                                    git -c k=v push --force
 #
-# Permission eval order (canonical:
-# cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md):
+# Permission eval order:
 #   Hooks → Deny rules → mode check → Allow → canUseTool
 # Hooks run BEFORE deny rules → this PreToolUse:Bash guard can block on
 # INTENT before the deny-string check. Deny holds even under
@@ -128,7 +125,7 @@
 # pair. Concurrency of writers is orthogonal to branching strategy; pairing them
 # would exempt the ONE repo that declares the flag today (`~/repos/cross-repo`,
 # which sets `git.branching_strategy: phase`). That decoupling is the whole finding
-# of skills `docs/decisions/2026-07-09-commit-mode-branching-none-scoped.md`.
+# of the skills-monorepo docs.
 #
 # KNOWN RESIDUAL (deliberate, not an oversight): `git add .` from the repo root is
 # an equivalent sweep but is NOT blocked — from a subdirectory it is legitimately
@@ -148,8 +145,7 @@
 # ════════════════════════════════════════════════════════════════════════════
 # WHAT THIS HOOK DOES NOT TOUCH (decoupling — council-locked)
 # ════════════════════════════════════════════════════════════════════════════
-# `git reset --hard` enforcement is council-locked D-1..D-7 (2026-05-08;
-# cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md):
+# `git reset --hard` enforcement is council-locked D-1..D-7 (2026-05-08):
 # the agent-runtime layer stays fail-closed and NOT intent-aware; legitimate
 # worktree-base correction was relocated to the orchestrator layer, NOT by
 # loosening enforcement. The AUTHZ-01 extension ADDS redirection-bypass
@@ -605,7 +601,7 @@ inspect_segment() {
       # `git add -A` stages EVERY change in the tree, including files a concurrent
       # session staged but has not yet committed. On a shared working tree the index
       # is shared state, so the next `git commit` in EITHER session carries the
-      # other's work. Two documented incidents on `~/repos/skills` (2026-06-04,
+      # other's work. Two documented incidents on `~/repos/<skills-monorepo>` (2026-06-04,
       # 9 files; 2026-07-07, 4 files). Disjoint file sets do NOT protect you.
       #
       # Synonyms per git-add(1): `-A`, `--all`, `--no-ignore-removal` are the same
@@ -785,7 +781,7 @@ No reset / force-move recovery command is offered above — that is doctrine,
 not an omission. Agent runtime is verify-only fail-closed, and every command
 swap was considered and rejected by cross-AI council (2026-05-08).
 The canonical deny-history record is not reachable from this tree; read it at
-  /home/dhx/repos/cross-repo/docs/research/2026-05-08-git-reset-hard-worktree-deny-history.md
+  the cross-repo knowledge base
 
 If this command is genuinely correct, invoke git directly outside Claude's
 Bash tool. This guard is an accident tripwire for the shared working tree,
