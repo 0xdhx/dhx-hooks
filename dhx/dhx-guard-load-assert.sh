@@ -93,9 +93,11 @@
 #   * A --resume within 10 s of the previous invocation's last beat can inherit that beat
 #     (BEAT_SKEW_MS, below).
 #   * The converse, a false alarm on a LIVE channel: in state 5 a plugin whose prompt writer
-#     fails on two consecutive prompts (disk full, a permissions fault) is warned about while
-#     its guards still run. The warning text says "two independent misses, not proof" for
-#     exactly this reason (close review, 2026-09-24).
+#     misses the previous prompt (a write failure: disk full, a permissions fault) AND does not
+#     land this prompt's record inside the 2 s wait (a second failure, or just a writer slower
+#     than the wait -- reproduced at 2,039 ms) is warned about while its guards still run. The
+#     warning text says "two independent misses, not proof" for exactly this reason (close
+#     review rounds 1-2, 2026-09-24).
 #
 # --- Digest chain must match the dispatcher's byte for byte ---
 # `printf '%s'` (never echo -- the trailing newline would be hashed), sha256sum then shasum,
