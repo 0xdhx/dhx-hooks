@@ -165,7 +165,6 @@
       "Read(~/.ssh/inkling_test_harness)",
       "Read(//mnt/c/Users/JoshG/.ssh/id_ed25519)",
       "Read(//mnt/c/Users/JoshG/.ssh/id_ed25519_github)",
-      "Bash(*|*taskkill*)",
       "Bash(get-shit-done-cc:*)",
       "Bash(*npm i*get-shit-done*)",
       "Bash(*npx*get-shit-done*)",
