@@ -85,7 +85,10 @@ PANE_ID=""
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   fmt=$'#{session_name}\t#{window_index}\t#{pane_id}'
   info=$(timeout 2 tmux display-message -p -t "$TMUX_PANE" "$fmt" 2>/dev/null) || info=""
-  IFS=$'\t' read -r TMUX_SESSION TMUX_WINDOW PANE_ID <<<"$info"
+  # Split on the TAB itself (`mapfile -d`), NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read
+  # collapses an empty field and shifts the rest left (docs/decisions.md 2026-09-25 row).
+  mapfile -t -d $'\t' _tm <<<"$info"; _tm[-1]=${_tm[-1]%$'\n'}
+  TMUX_SESSION=${_tm[0]-} TMUX_WINDOW=${_tm[1]-} PANE_ID=${_tm[2]-}
   PANE_ID="${PANE_ID:-$TMUX_PANE}"
 fi
 

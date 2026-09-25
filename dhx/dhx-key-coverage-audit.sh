@@ -153,13 +153,16 @@ rule_for() {
 }
 
 # --- report ----------------------------------------------------------------------
-GAPS=()
+# Parallel arrays, NOT tab-joined rows split by `IFS=$'\t' read`: TAB is IFS whitespace, so
+# `read` collapses an empty field and shifts the rest left (docs/decisions.md 2026-09-25 row).
+# Three arrays need no delimiter at all.
+GAPS=() GAP_RULE=() GAP_GUARD=()
 for key in "${CANDIDATES[@]}"; do
   rule_ok=no; guard_ok=no
   covered_by_rule "$key" && rule_ok=yes
   covered_by_guard "$key" && guard_ok=yes
   [[ "$rule_ok" == yes && "$guard_ok" == yes ]] && continue
-  GAPS+=("$key"$'\t'"$rule_ok"$'\t'"$guard_ok")
+  GAPS+=("$key"); GAP_RULE+=("$rule_ok"); GAP_GUARD+=("$guard_ok")
 done
 
 [[ "${#GAPS[@]}" -gt 0 ]] || exit 0
@@ -167,8 +170,8 @@ done
 n=${#GAPS[@]}
 noun="key"; [[ "$n" -gt 1 ]] && noun="keys"
 printf '⚠ key-coverage: %d SSH private %s not fully protected\n' "$n" "$noun"
-for row in "${GAPS[@]}"; do
-  IFS=$'\t' read -r key rule_ok guard_ok <<< "$row"
+for i in "${!GAPS[@]}"; do
+  key=${GAPS[$i]} rule_ok=${GAP_RULE[$i]} guard_ok=${GAP_GUARD[$i]}
   printf '    %s\n' "$(display_path "$key")"
   printf '      deny rule: %s · read-guard: %s\n' \
     "$([[ "$rule_ok" == yes ]] && echo covered || echo MISSING)" \

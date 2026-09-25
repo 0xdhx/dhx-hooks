@@ -58,7 +58,7 @@ PARSED=$(printf '%s\n' "$RAW" | jq -rR '
   | [ (.repo_root // ""), (.prompt_relpath // ""), (.slug // ""),
       (.verdict // ""), (.state // "offered"),
       (.last_offered // .first_seen // "") ]
-  | @tsv' 2>/dev/null) || exit 0
+  | map(tostring | gsub("[\u001f\n\r]"; " ")) | join("\u001f")' 2>/dev/null) || exit 0
 [ -n "$PARSED" ] || exit 0
 
 now=$(date +%s 2>/dev/null) || exit 0
@@ -67,7 +67,11 @@ count=0
 
 # Here-string, NOT a pipe: a `while … done < <(pipe)` subshell would discard every
 # variable set in the loop body and this block would render permanently empty.
-while IFS=$'\t' read -r repo_root relpath slug verdict state ts; do
+# Unit separator, NOT @tsv + TAB: TAB is IFS whitespace, so `read` collapsed an EMPTY slug or
+# verdict and shifted state/ts into their columns (docs/decisions.md 2026-09-25 row). jq flattens
+# 0x1f/newline inside a value to a space above — this is a renderer, and a path so mangled only
+# fails the -d/-f checks below and skips its row.
+while IFS=$'\x1f' read -r repo_root relpath slug verdict state ts; do
   [ -n "$repo_root" ] && [ -n "$relpath" ] || continue
 
   # ─── Self-heal on read (never surface a row unverified against disk THIS run) ───

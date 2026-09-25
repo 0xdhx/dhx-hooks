@@ -277,7 +277,10 @@ DERIVED_COUNT="$(printf '%s\n' "$DERIVED" | grep -c '[^[:space:]]')"
   || bad "non-vacuity: derived $DERIVED_COUNT lines — the awk parser is broken, probe is inert"
 
 UNKNOWN=0
-while IFS=$'\t' read -r file line; do
+# First-TAB split, NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read collapses an empty
+# field and shifts the rest left (hooks docs/decisions.md 2026-09-25 row).
+while IFS= read -r _row; do
+  file=${_row%%$'\t'*}; line=${_row#"$file"}; line=${line#$'\t'}
   [[ -n "${file:-}" ]] || continue
   matched=0
   while IFS='|' read -r inv_file inv_class inv_sub; do
@@ -300,7 +303,8 @@ STALE=0
 while IFS='|' read -r inv_file inv_class inv_sub; do
   [[ -n "${inv_file:-}" ]] || continue
   found=0
-  while IFS=$'\t' read -r file line; do
+  while IFS= read -r _row; do
+    file=${_row%%$'\t'*}; line=${_row#"$file"}; line=${line#$'\t'}
     [[ -n "${file:-}" ]] || continue
     [[ "$file" == "$inv_file" ]] || continue
     if [[ "$line" == *"$inv_sub"* ]]; then found=1; break; fi

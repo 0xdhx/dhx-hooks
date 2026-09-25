@@ -49,8 +49,18 @@ INPUT=$(cat)
 
 if ! command -v jq >/dev/null 2>&1; then exit 0; fi
 
-# Single jq pass — tab-separated cwd + file_path
-IFS=$'\t' read -r CWD FILE < <(jq -r '[.cwd // "", .tool_input.file_path // ""] | @tsv' <<<"$INPUT" 2>/dev/null || echo $'\t')
+# Single jq pass, NUL-framed — NOT `@tsv` + `IFS=$'\t' read`. TAB is IFS *whitespace*, so
+# `read` collapsed an EMPTY `.cwd` and shifted the file path into CWD, leaving FILE empty.
+# Here that was verdict-NEUTRAL, measured (docs/decisions.md 2026-09-25 row): with no cwd the
+# guard has nothing to anchor a deny on, so both bindings reached the same allow. The parse is
+# fixed so it stays honest, not because it misfired. NUL follows every field, so an empty one
+# still has its delimiter. A NUL INSIDE a field is escaped to the two characters `\0` — exactly how
+# `@tsv` rendered it — NOT rejected as the non-guard parses do: rejecting empties both fields,
+# which ALLOWS, and the old parse DENIED a worktree cwd carrying one (probe [14]). A guard does
+# not loosen, even on input no kernel path can produce; both values are compared, never keyed.
+{ IFS= read -r -d '' CWD; IFS= read -r -d '' FILE; } < <(jq -j '
+  def f: (. // "") | tostring | gsub("\u0000"; "\\0");
+  (.cwd | f), "\u0000", (.tool_input.file_path | f), "\u0000"' <<<"$INPUT" 2>/dev/null) || { CWD=""; FILE=""; }
 
 # Fast exit: not in a CC-managed worktree
 [[ "$CWD" == *".claude/worktrees/"* ]] || exit 0

@@ -116,7 +116,10 @@ eldest_cc_epoch() {
   snap="$(cc_proc_snapshot)"; snap_rc=$?
   [[ "$snap_rc" -ne 0 ]] && return "$snap_rc"
 
-  while IFS=$'\t' read -r pid lstart; do
+  # First-TAB split, NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read collapses an empty
+  # field and shifts the rest left (hooks docs/decisions.md 2026-09-25 row).
+  while IFS= read -r _row; do
+    pid=${_row%%$'\t'*}; lstart=${_row#"$pid"}; lstart=${lstart#$'\t'}
     [[ -z "$pid" ]] && continue
     # Empty only on the injected path; the snapshot pairs pid with lstart.
     [[ -z "$lstart" ]] && continue
@@ -230,7 +233,10 @@ else
   gate4_failed_pid=""
   gate4_failed_epoch=""
   gate4_unparsed_pid=""
-  while IFS=$'\t' read -r pid lstart; do
+  # First-TAB split, NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read collapses an empty
+  # field and shifts the rest left (hooks docs/decisions.md 2026-09-25 row).
+  while IFS= read -r _row; do
+    pid=${_row%%$'\t'*}; lstart=${_row#"$pid"}; lstart=${lstart#$'\t'}
     [[ -z "$pid" ]] && continue
     if [[ -z "$lstart" ]]; then
       # Reachable only via DHX_PROBE_PGREP_FAKE_OUTPUT. A pid the snapshot could

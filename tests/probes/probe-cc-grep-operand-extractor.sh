@@ -114,7 +114,10 @@ grep -q '^// SHA-256:' "$FIXTURE"; ck $? "fixture records its source executable 
 grep -q 'function Rst(e,n,r=\[\]){' "$FIXTURE"; ck $? "fixture carries the verbatim 2.1.259 extractor head"
 FIX_OUT=$(node "$TMP/run.js" "$FIXTURE" "$TMP/vectors.json" 2>&1)
 i=0
-while IFS=$'\t' read -r idx label got; do
+# `mapfile -d` splits on the TAB itself, NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read
+# collapses an empty field and shifts the rest left (hooks docs/decisions.md 2026-09-25 row).
+while IFS= read -r _row; do
+  mapfile -t -d $'\t' _f <<<"$_row"; _f[-1]=${_f[-1]%$'\n'}; idx=${_f[0]-} label=${_f[1]-} got=${_f[2]-}
   want=$(jq -c ".[$idx][3]" "$TMP/vectors.json")
   if [ "$got" = "$want" ]; then ok "fixture: $label -> $got"; else bad "fixture: $label -> $got (want $want)"; fi
   i=$((i+1))
@@ -243,7 +246,8 @@ EOF
       ok "live extractor evaluates (callee=$CALLEE, grep-family arrow=${NAMES#*	})"
       LIVE_OUT=$(node "$TMP/run.js" "$TMP/live.js" "$TMP/vectors.json" 2>&1)
       drift=0; n=0
-      while IFS=$'\t' read -r idx label got; do
+      while IFS= read -r _row; do
+        mapfile -t -d $'\t' _f <<<"$_row"; _f[-1]=${_f[-1]%$'\n'}; idx=${_f[0]-} label=${_f[1]-} got=${_f[2]-}
         want=$(jq -c ".[$idx][3]" "$TMP/vectors.json")
         n=$((n+1))
         if [ "$got" = "$want" ]; then ok "live $LIVE agrees with fixture: $label -> $got"

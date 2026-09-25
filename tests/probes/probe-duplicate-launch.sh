@@ -131,6 +131,12 @@ fire "run $KEY"; fires "B0 [pre-state: control] the guard fixture DOES fire with
 rm -rf "$CACHE"/*
 fire "run $KEY" "$SELF" '{"agent_id":"agent-xyz"}'; silent "B4 agent_id payload is silent"
 rm -rf "$CACHE"/*
+# B4b — an EMPTY middle field keeps the later ones in place (docs/decisions.md 2026-09-25 row).
+# `@tsv` + `IFS=$'\t' read` collapsed the empty transcript_path (TAB is IFS whitespace): cwd
+# landed in TRANSCRIPT, agent_id in CWD, AGENT_ID read empty, and the subagent got the warning.
+# RED against the c76e949b copy (DHX_PROBE_HOOK); B0 above is its positive control.
+fire "run $KEY" "$SELF" '{"agent_id":"agent-xyz","transcript_path":""}'; silent "B4b agent_id payload with an EMPTY transcript_path is still silent"
+rm -rf "$CACHE"/*
 FIRE_ENV="DHX_SKIP_DUPLICATE_LAUNCH=1" fire "run $KEY"; silent "B5 kill switch DHX_SKIP_DUPLICATE_LAUNCH=1 is silent"; FIRE_ENV=""
 rm -rf "$CACHE"/*
 FIRE_ENV="DHX_DUP_LAUNCH_HELPER=$TMP/nonexistent/enumerate-bg-jobs.sh" fire "run $KEY"; silent "B6 [pre-state: guard] helper absent → exit 0, no output"; FIRE_ENV=""

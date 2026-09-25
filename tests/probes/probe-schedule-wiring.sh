@@ -55,9 +55,10 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOKS_JSON="$REPO_ROOT/dhx-plugin/plugins/dhx/hooks/hooks.json"
 DISPATCHER="$REPO_ROOT/dhx-plugin/plugins/dhx/hooks/session-start.sh"
-PROMPT_SHIM="$REPO_ROOT/dhx/dhx-schedule-prompt.sh"
+# DHX_PROBE_*_OVERRIDE: the hook-path seam, so [B16] can be driven against a pre-fix copy.
+PROMPT_SHIM="${DHX_PROBE_PROMPT_SHIM_OVERRIDE:-$REPO_ROOT/dhx/dhx-schedule-prompt.sh}"
 CTX_SHIM="$REPO_ROOT/dhx/dhx-schedule-context.sh"
-REGISTRY_HOOK="$REPO_ROOT/dhx/dhx-session-registry-prompt.sh"
+REGISTRY_HOOK="${DHX_PROBE_REGISTRY_HOOK_OVERRIDE:-$REPO_ROOT/dhx/dhx-session-registry-prompt.sh}"
 
 PASS=0; FAIL=0
 check(){ if [ "$2" = ok ]; then echo "OK   $1"; PASS=$((PASS+1)); else echo "FAIL $1${3:+ ($3)}"; FAIL=$((FAIL+1)); fi; }
@@ -142,9 +143,10 @@ for pair in "A10:REGISTRY_HOOK:dhx-session-registry-prompt.sh" "A11:DISPATCHER:s
   fi
 done
 # A13 — eligibility parity: the registry writer applies the shim's predicate (skip on a
-# non-empty agent_id / empty session_id) from the SAME jq extraction.
-if grep -qF "jq -r '[(.session_id // \"\"), (.agent_id // \"\")] | @tsv'" "$REGISTRY_HOOK" \
-   && grep -q '\[ -z "\${_SCH_AGENT:-}" \] && \[ -n "\${_SCH_SID:-}" \]' "$REGISTRY_HOOK"; then
+# non-empty agent_id / empty session_id). This used to ALSO grep for the literal
+# `@tsv` extraction line — a spelling assertion that pinned the field-collapse defect in place
+# (docs/decisions.md 2026-09-25 row). The extraction is now asserted by BEHAVIOUR, [B16].
+if grep -q '\[ -z "\${_SCH_AGENT:-}" \] && \[ -n "\${_SCH_SID:-}" \]' "$REGISTRY_HOOK"; then
   check "[A13] registry writer gates its record on the shim's eligibility predicate (agent_id empty, session_id non-empty)" ok
 else
   check "[A13] registry writer gates its record on the shim's eligibility predicate" fail
@@ -599,6 +601,41 @@ FB4EOF
   fi
 else
   echo "SKIP [B9-B11] digest-tool portability — sha256sum/shasum/jq/node absent"
+fi
+
+# B16 — ELIGIBILITY PARITY, BY BEHAVIOUR, INCLUDING EMPTY LEADING/MIDDLE FIELDS (2026-09-25).
+# Both legs must agree, payload by payload, on whether this prompt is eligible: the shim
+# "fires" when it reaches its renderer, the registry "fires" when it writes a prompt record.
+# The two collapse cases are the teeth: `@tsv` + `IFS=$'\t' read` collapsed an EMPTY
+# session_id (registry: agent id became the session key and a record was written) and an
+# EMPTY transcript_path (shim: agent_id shifted into TRANSCRIPT, the subagent ran as a main
+# session). Each is RED against the c76e949b copies via the *_OVERRIDE seam above.
+if command -v sha256sum >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  printf '%s\n' "require('fs').appendFileSync(process.env.REC,'x\\n');" > "$SB/render16.cjs"
+  b16() {  # b16 <label> <expect-eligible yes|no> <payload>
+    local d="$SB/b16-$1"; mkdir -p "$d/h/.claude"; : > "$d/rec"
+    printf '%s' "$3" | env HOME="$d/h" REC="$d/rec" DHX_SCHEDULE_CACHE_DIR="$d/sc" \
+      DHX_SCHEDULE_RENDERER="$SB/render16.cjs" bash "$PROMPT_SHIM" >/dev/null 2>&1
+    printf '%s' "$3" | env HOME="$d/h" DHX_HOOKS_CACHE_DIR="$d/hc" DHX_REGISTRY_SKIP_PANE_BACKFILL=1 \
+      bash "$REGISTRY_HOOK" >/dev/null 2>&1
+    local shim=no reg=no
+    [ -s "$d/rec" ] && shim=yes
+    [ -n "$(ls "$d/hc/prompt" 2>/dev/null)" ] && reg=yes
+    if [ "$shim" = "$2" ] && [ "$reg" = "$2" ]; then
+      check "[B16:$1] shim=$shim registry=$reg (expected eligible=$2)" ok
+    else
+      check "[B16:$1] shim and registry both eligible=$2" fail "shim=$shim registry=$reg"
+    fi
+  }
+  # Positive control first: a dead harness (no renderer call, no record) would satisfy every
+  # "no" row below, so the "yes" row proves both legs RAN before the others are believed.
+  b16 main yes '{"session_id":"s16","transcript_path":"/p/s16.jsonl","cwd":"/p","prompt":"x"}'
+  b16 subagent no '{"session_id":"s16","transcript_path":"/p/s16.jsonl","agent_id":"a16","cwd":"/p","prompt":"x"}'
+  b16 no-session-id no '{"agent_id":"a16","transcript_path":"/p/s16.jsonl","cwd":"/p","prompt":"x"}'
+  b16 no-transcript no '{"session_id":"s16","agent_id":"a16","cwd":"/p","prompt":"x"}'
+  b16 empty-session-id no '{"session_id":"","transcript_path":"/p/s16.jsonl","cwd":"/p","prompt":"x"}'
+else
+  echo "SKIP [B16] eligibility parity — sha256sum/jq/node absent"
 fi
 
 echo "---"

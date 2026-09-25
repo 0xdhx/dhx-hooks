@@ -97,12 +97,16 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 [ -n "$INPUT" ] || exit 0
 
-# Field extraction. session_id / transcript_path / agent_id cannot contain a
-# newline, so @tsv is safe for them (docs/decisions.md 2026-08-03 @tsv defect
-# row). `.prompt` CAN contain newlines and is never read through @tsv — it is
-# streamed straight to the stage file by jq below.
-FIELDS=$(printf '%s' "$INPUT" | jq -r '[(.session_id // ""), (.transcript_path // ""), (.agent_id // "")] | @tsv' 2>/dev/null) || exit 0
-IFS=$'\t' read -r SESSION_ID TRANSCRIPT AGENT_ID <<<"$FIELDS"
+# Field extraction, NUL-framed — NOT `@tsv` + `IFS=$'\t' read`. TAB is IFS
+# whitespace, so an EMPTY transcript_path collapsed and agent_id shifted into
+# TRANSCRIPT, reading a subagent payload as a main session (docs/decisions.md
+# 2026-09-25 row; the 2026-08-03 row fixed only @tsv's escaping half here).
+# A field carrying NUL makes jq error; a failed parse exits, as it always did.
+# `.prompt` CAN contain newlines and is streamed straight to the stage file by
+# jq below.
+{ IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' TRANSCRIPT; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '
+  def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+  (.session_id | f), "\u0000", (.transcript_path | f), "\u0000", (.agent_id | f), "\u0000"' 2>/dev/null) || exit 0
 
 # Defense in depth: subagents fire no UserPromptSubmit (HP-008 decommissioning
 # cross-check: 0 of 1,185 fires carried agent_id). Never block a subagent turn.
@@ -205,12 +209,14 @@ SCAN=$(tail -c "$WINDOW" "$TRANSCRIPT" 2>/dev/null | jq -R -s -r '
       (if $bkt == null then "assumed" else "observed" end),
       $disorder,
       (if ($invcmds | map(select(.ts > $anchor.ts)) | length) > 0 then 1 else 0 end)
-    ] | @tsv end') || exit 0
+    ] | map(tostring) | join("\u001f") end') || exit 0
 
 [ -n "$SCAN" ] || exit 0
 [ "$SCAN" = "NONE" ] && exit 0   # no anchor candidate in window — fail open
 
-IFS=$'\t' read -r A_TS CTX TTL TTL_SRC DISORDER INVALID <<<"$SCAN"
+# Unit separator, NOT @tsv + TAB: TAB is IFS whitespace, so `read` collapses an empty field and
+# shifts the rest left. Every field above is a number or a fixed word, so none can carry 0x1f.
+IFS=$'\x1f' read -r A_TS CTX TTL TTL_SRC DISORDER INVALID <<<"$SCAN"
 case "${A_TS:-}" in ''|*[!0-9]*) exit 0 ;; esac
 case "${CTX:-}" in ''|*[!0-9]*) exit 0 ;; esac
 [ "${DISORDER:-1}" = "0" ] || exit 0   # HP-019 file disorder — fail open

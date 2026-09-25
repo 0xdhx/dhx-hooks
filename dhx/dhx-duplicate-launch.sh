@@ -78,10 +78,14 @@ INPUT=$(cat)
 case "$INPUT" in *docs/prompts/*) ;; *) exit 0 ;; esac
 command -v jq >/dev/null 2>&1 || exit 0
 
-# One parse for the scalar fields (none can contain a newline, so @tsv is safe — the
-# dhx-schedule-prompt.sh shape). The prompt is parsed separately: it CAN contain newlines.
-FIELDS=$(printf '%s' "$INPUT" | jq -r '[(.session_id // ""), (.transcript_path // ""), (.cwd // ""), (.agent_id // "")] | @tsv' 2>/dev/null) || exit 0
-IFS=$'\t' read -r SESSION_ID TRANSCRIPT CWD AGENT_ID <<<"$FIELDS"
+# One parse for the scalar fields, NUL-framed (the dhx-schedule-prompt.sh shape). NOT `@tsv` +
+# `IFS=$'\t' read`: TAB is IFS whitespace, so an EMPTY transcript_path collapsed and every later
+# field shifted left — agent_id landed in CWD and a subagent payload ran as a main session
+# (docs/decisions.md 2026-09-25 row). A field carrying NUL makes jq error; a failed parse exits.
+# The prompt is parsed separately: it CAN contain newlines.
+{ IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' TRANSCRIPT; IFS= read -r -d '' CWD; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '
+  def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+  (.session_id | f), "\u0000", (.transcript_path | f), "\u0000", (.cwd | f), "\u0000", (.agent_id | f), "\u0000"' 2>/dev/null) || exit 0
 # Subagents fire no UserPromptSubmit (dhx-schedule-prompt.sh, defense in depth). Never slow one.
 [ -n "$AGENT_ID" ] && exit 0
 PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // ""' 2>/dev/null) || exit 0
@@ -114,12 +118,20 @@ CANDS=()
 SEEN_TX=()
 
 _iso_epoch() { date -d "$1" +%s 2>/dev/null; }
+# Split one TAB-framed row into _F, keeping EMPTY fields in place. `mapfile -d` splits on the
+# delimiter byte itself; `IFS=$'\t' read` does not — TAB is IFS whitespace, so read collapses an
+# empty leading/middle field and shifts the rest left. The row is never re-framed onto another
+# byte (a field carrying that byte would then split). The here-string's newline rides the last
+# element and is stripped.
+_split_tab() { mapfile -t -d $'\t' _F <<<"$1"; _F[-1]=${_F[-1]%$'\n'}; }
 
 # --- source 1: background jobs (working only; the helper's own filter) --------------------
 if [ -f "$HELPER" ]; then
   ROWS=$(timeout 4 bash "$HELPER" 2>/dev/null); RC=$?
   if [ "$RC" -eq 0 ] && [ -n "$ROWS" ]; then
-    while IFS=$'\t' read -r lane job _state _tempo uuid tx age _cwd _name _src sig _sp; do
+    while IFS= read -r _row; do
+      _split_tab "$_row"
+      lane=${_F[0]-} job=${_F[1]-} uuid=${_F[4]-} tx=${_F[5]-} age=${_F[6]-} sig=${_F[10]-}
       [ -n "${job:-}" ] || continue
       [ "$uuid" = "$SESSION_ID" ] && continue
       [ -n "$TRANSCRIPT" ] && [ "$tx" = "$TRANSCRIPT" ] && continue
@@ -127,8 +139,9 @@ if [ -f "$HELPER" ]; then
       case "$sig" in *"$KEY"*) ;; *) continue ;; esac
       JOB_DIR="$JOBS_ROOT/$lane/jobs/$job"
       [ -n "$SELF_JOB_DIR" ] && [ "$JOB_DIR" = "$SELF_JOB_DIR" ] && continue
-      META=$(jq -r '[(.createdAt // ""), (.sessionId // "")] | @tsv' "$JOB_DIR/state.json" 2>/dev/null) || continue
-      IFS=$'\t' read -r created sid <<<"$META"
+      { IFS= read -r -d '' created; IFS= read -r -d '' sid; } < <(jq -j '
+        def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+        (.createdAt | f), "\u0000", (.sessionId | f), "\u0000"' "$JOB_DIR/state.json" 2>/dev/null) || continue
       [ -n "$created" ] || continue
       [ -n "$SESSION_ID" ] && [ "$sid" = "$SESSION_ID" ] && continue
       cepoch=$(_iso_epoch "$created") || continue
@@ -168,7 +181,8 @@ fi
 
 # The primary is the earliest start. Fan-out (primary younger than MIN_GAP) → no line.
 PRIMARY=$(printf '%s\n' "${CANDS[@]}" | LC_ALL=C sort -t$'\t' -k1,1n | head -1)
-IFS=$'\t' read -r P_START P_LABEL P_UUID P_TX P_AGE <<<"$PRIMARY"
+_split_tab "$PRIMARY"
+P_START=${_F[0]-} P_LABEL=${_F[1]-} P_UUID=${_F[2]-} P_TX=${_F[3]-} P_AGE=${_F[4]-}
 [[ "$P_START" =~ ^[0-9]+$ ]] || exit 0
 GAP=$(( NOW - P_START ))
 [ "$GAP" -ge "$MIN_GAP" ] || exit 0

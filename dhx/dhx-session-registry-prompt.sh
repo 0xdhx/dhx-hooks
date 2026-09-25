@@ -84,8 +84,13 @@ _SCH_HB_DIR="${DHX_HOOKS_CACHE_DIR:-$HOME/.cache/dhx/hooks}/prompt"
 # alone (never the transcript-basename fallback $UUID carries), exactly as the shim keys it.
 # The block still sits ABOVE the `case "$TRANSCRIPT"` subagent guard and the idempotency exit
 # below: only the predicate moved here; the position did not and must not.
-_SCH_FIELDS=$(printf '%s' "$INPUT" | jq -r '[(.session_id // ""), (.agent_id // "")] | @tsv' 2>/dev/null) || _SCH_FIELDS=""
-IFS=$'\t' read -r _SCH_SID _SCH_AGENT <<<"$_SCH_FIELDS"
+# NUL-framed, NOT `@tsv` + `IFS=$'\t' read`: TAB is IFS whitespace, so an EMPTY session_id
+# collapsed and the agent id became the session key — a record written for a key that must
+# not exist (docs/decisions.md 2026-09-25 row). A field carrying NUL makes jq error -> both
+# empty -> no beat, the shim's own outcome for that payload.
+{ IFS= read -r -d '' _SCH_SID; IFS= read -r -d '' _SCH_AGENT; } < <(printf '%s' "$INPUT" | jq -j '
+  def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+  (.session_id | f), "\u0000", (.agent_id | f), "\u0000"' 2>/dev/null) || { _SCH_SID=""; _SCH_AGENT=""; }
 # printf '%s', never echo — echo appends a newline, the hasher hashes it, and this digest
 # would then never equal the Node side's for the same session.
 # Digest chain: sha256sum, then shasum -a 256 (macOS) — the dhx/poll-guard.sh SESSION_HASH
@@ -204,7 +209,10 @@ PANE_ID=""
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   fmt=$'#{session_name}\t#{window_index}\t#{pane_id}'
   info=$(timeout 2 tmux display-message -p -t "$TMUX_PANE" "$fmt" 2>/dev/null) || info=""
-  IFS=$'\t' read -r TMUX_SESSION TMUX_WINDOW PANE_ID <<<"$info"
+  # Split on the TAB itself (`mapfile -d`), NOT `IFS=$'\t' read`: TAB is IFS whitespace, so read
+  # collapses an empty field and shifts the rest left (docs/decisions.md 2026-09-25 row).
+  mapfile -t -d $'\t' _tm <<<"$info"; _tm[-1]=${_tm[-1]%$'\n'}
+  TMUX_SESSION=${_tm[0]-} TMUX_WINDOW=${_tm[1]-} PANE_ID=${_tm[2]-}
   PANE_ID="${PANE_ID:-$TMUX_PANE}"
 elif [ -z "${DHX_REGISTRY_SKIP_PANE_BACKFILL:-}" ]; then
   pane_lines=$(timeout 2 tmux list-panes -a \

@@ -19,7 +19,7 @@
 # SAFE_FOR_LIVE: yes   (hook subshell test with synthetic stdin; assertions on hook exit code only)
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-worktree-write-guard.sh"
+HOOK="${DHX_PROBE_HOOK:-$(cd "$(dirname "$0")/../.." && pwd)/dhx/dhx-worktree-write-guard.sh}"
 
 if [[ ! -x "$HOOK" ]]; then
   echo "FAIL hook not found or not executable: $HOOK"
@@ -109,6 +109,23 @@ run "[10] cwd=worktree, file=/tmp → BLOCK" \
 run "[11] cwd=worktree no trailing slash, file=worktree nested → allow" \
   '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/deep/nested/file.md"}}' \
   allow
+
+# [12]-[14] the 2026-09-25 NUL-framed parse (docs/decisions.md 2026-09-25 row). ALL THREE ARE
+# CHARACTERIZATION — green against the c76e949b `@tsv` copy too, measured, and never teeth.
+# The old parse's collapse fired only on an EMPTY cwd, and with no cwd this guard has nothing
+# to anchor a deny on, so the shifted fields reached the same `allow` (verdict-neutral over a
+# 7-payload pre/post matrix). They pin the new parse's contract: positions hold, exact bytes
+# survive, and a NUL inside a field keeps the old verdict. [14] is the exception to "never teeth"
+# against the INTERMEDIATE draft: a reject-NUL parse emptied both fields and ALLOWED it.
+run "[12] empty cwd, file path inside a worktree → allow (no cwd, no anchor)" \
+  '{"cwd":"","tool_input":{"file_path":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa/x.sh"}}' \
+  allow
+run "[13] cwd=worktree, newline-bearing file path outside → BLOCK (exact bytes, no @tsv escape)" \
+  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/etc/a\nb"}}' \
+  deny
+run "[14] NUL inside a worktree cwd → BLOCK, as the @tsv parse did (a guard never loosens)" \
+  '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa\u0000x","tool_input":{"file_path":"/etc/x"}}' \
+  deny
 
 echo ""
 echo "$PASS passed, $FAIL failed"

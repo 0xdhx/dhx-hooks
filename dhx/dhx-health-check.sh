@@ -296,8 +296,13 @@ if [[ -f "$sym_health" ]]; then
   # Checking a value and then re-reading it is the same defect the publisher was refuted
   # for one round earlier (two resolutions of one thing, free to disagree). The rule that
   # covers the class, rather than these three lines: decide from one read.
-  sym_fields=$(jq -r '[.config_dir // "", .checked_at // "", .plugin_keys // ""] | @tsv' "$sym_health" 2>/dev/null)
-  IFS=$'\t' read -r sym_config_dir checked_at sym_plugin_keys <<<"$sym_fields"
+  # NUL-framed, NOT `@tsv` + `IFS=$'\t' read` (TAB is IFS whitespace: an empty field collapsed
+  # and shifted the later ones left — docs/decisions.md 2026-09-25 row). Still ONE read of the
+  # file; a failed or NUL-bearing parse leaves all three empty, which adopts nothing.
+  { IFS= read -r -d '' sym_config_dir; IFS= read -r -d '' checked_at; IFS= read -r -d '' sym_plugin_keys; } < <(jq -j '
+    def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+    (.config_dir | f), "\u0000", (.checked_at | f), "\u0000", (.plugin_keys | f), "\u0000"' "$sym_health" 2>/dev/null) \
+    || { sym_config_dir=""; checked_at=""; sym_plugin_keys=""; }
   if [[ -n "${sym_config_dir:-}" && "$sym_config_dir" == "$config_dir_real" ]]; then
     if [[ -n "${checked_at:-}" ]]; then
       checked_epoch=$(date -u -d "$checked_at" +%s 2>/dev/null || echo 0)

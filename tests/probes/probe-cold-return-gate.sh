@@ -18,7 +18,8 @@
 # invoked as a subshell with synthetic stdin. Nothing reads or writes live
 # ~/.cache/dhx, live transcripts, or any repo state.
 
-HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/dhx/dhx-cold-return-gate.sh"
+# DHX_PROBE_HOOK: the hook-path seam, so [23]/[24] can be driven against a pre-fix copy.
+HOOK="${DHX_PROBE_HOOK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/dhx/dhx-cold-return-gate.sh}"
 PASS=0
 FAIL=0
 
@@ -300,6 +301,31 @@ check '[21] ...and emits nothing (no advisory spam)' \
 # --- [19] happy path writes no state at all ----------------------------------
 check '[19] allow path leaves no marker/stage behind' \
   "$(find "$TMPROOT/warm/cache" -type f 2>/dev/null | wc -l)" 0
+
+# --- [23]/[24] EMPTY leading / middle payload field keeps later fields in place ----------
+# `@tsv` + `IFS=$'\t' read` collapsed an empty field (TAB is IFS whitespace) and shifted the
+# rest left (docs/decisions.md 2026-09-25 row). Both cases are RED against the c76e949b copy.
+# [23] middle: a subagent payload with NO transcript_path. Collapsed, agent_id landed in
+# TRANSCRIPT, AGENT_ID read empty, and the hook ran as the MAIN session — consuming that
+# session's one-shot override marker, so the operator's real resend would then be blocked.
+MDIR="$TMPROOT/mid-empty/cache"; mkdir -p "$MDIR"
+printf '{"expires_at_epoch":%s}' $((NOW + 600)) > "$MDIR/cold-return-marker-m1.json"
+( export DHX_COLD_RETURN_CACHE_DIR="$MDIR" DHX_COLD_RETURN_NOW="$NOW"
+  printf '{"session_id":"m1","agent_id":"ag-1","cwd":"/tmp","prompt":"hi"}' | bash "$HOOK" > /dev/null 2>&1 )
+check '[23] subagent payload without transcript_path -> allow' "$?" 0
+check '[23] ...and leaves the main session override marker unconsumed' \
+  "$([ -f "$MDIR/cold-return-marker-m1.json" ] && echo present || echo consumed)" present
+# [24] leading: an EMPTY session_id over a COLD transcript — CHARACTERIZATION, green on BOTH
+# sides, never a tooth. Collapsed, the transcript path became the session id but the (empty)
+# agent slot then became TRANSCRIPT, so nothing was readable and the hook allowed anyway. It
+# pins the post-fix contract (no session id -> no gate, no state) directly; [23] is the tooth.
+T="$TMPROOT/lead-empty.jsonl"
+assistant_entry $((NOW - 7200)) 200000 600 600 0 > "$T"
+LDIR="$TMPROOT/lead-empty/cache"; mkdir -p "$LDIR"
+( export DHX_COLD_RETURN_CACHE_DIR="$LDIR" DHX_COLD_RETURN_NOW="$NOW"
+  printf '{"session_id":"","transcript_path":"%s","cwd":"/tmp","prompt":"hi"}' "$T" | bash "$HOOK" > /dev/null 2>&1 )
+check '[24] CHARACTERIZATION: empty session_id over a cold transcript -> allow (no session, no gate)' "$?" 0
+check '[24] ...and writes no state' "$(find "$LDIR" -type f 2>/dev/null | wc -l)" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

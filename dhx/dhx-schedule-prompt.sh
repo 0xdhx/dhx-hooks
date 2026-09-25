@@ -31,10 +31,14 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 [ -n "$INPUT" ] || exit 0
 
-# One parse for all three fields. session_id / transcript_path / agent_id cannot contain a
-# newline, so @tsv is safe for them (the same shape dhx-cold-return-gate.sh uses).
-FIELDS=$(printf '%s' "$INPUT" | jq -r '[(.session_id // ""), (.transcript_path // ""), (.agent_id // "")] | @tsv' 2>/dev/null) || exit 0
-IFS=$'\t' read -r SESSION_ID TRANSCRIPT AGENT_ID <<<"$FIELDS"
+# One parse for all three fields, NUL-framed. NOT `@tsv` + `IFS=$'\t' read`: TAB is IFS
+# whitespace, so an EMPTY transcript_path collapsed and agent_id shifted into TRANSCRIPT —
+# a subagent payload then read as a main session (docs/decisions.md 2026-09-25 row). The
+# earlier "cannot contain a newline, so @tsv is safe" reasoning covered only @tsv's escaping
+# half. A field carrying NUL makes jq error; a failed parse exits, as it always did.
+{ IFS= read -r -d '' SESSION_ID; IFS= read -r -d '' TRANSCRIPT; IFS= read -r -d '' AGENT_ID; } < <(printf '%s' "$INPUT" | jq -j '
+  def f: (. // "") | tostring | if (explode | index(0)) != null then error("NUL in field") else . end;
+  (.session_id | f), "\u0000", (.transcript_path | f), "\u0000", (.agent_id | f), "\u0000"' 2>/dev/null) || exit 0
 
 # Defense in depth: subagents fire no UserPromptSubmit. Never slow a subagent turn.
 # NOTE — THIS GUARD IS HALF OF THE ELIGIBILITY SYMMETRY RULE. Read it before changing:
