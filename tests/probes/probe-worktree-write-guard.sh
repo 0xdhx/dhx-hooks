@@ -131,9 +131,11 @@ run "[14] NUL inside a worktree cwd → BLOCK, as the @tsv parse did (a guard ne
   deny
 
 # --- [15]-[25]: scratch roots (2026-09-25) — /tmp and THIS session's job dir, canonicalized ---
-# The job dir is derived from hook stdin, never from $CLAUDE_JOB_DIR: jobs live at
-# <config>/jobs/<first 8 of session_id> (194 of 194 job dirs matched, measured 2026-09-25), and
-# a variable is settable to anything ([18]). Fixtures live OUTSIDE /tmp (under ~/.cache) so the
+# The job dir is the one whose state.json names hook stdin's session_id as the job's LIVE id,
+# `(.resumeSessionId // .sessionId)` — never $CLAUDE_JOB_DIR, which is settable to anything ([18]),
+# and never the dir NAME: a dir is named after the BIRTH id, and 85 of 193 job dirs on this host
+# had rotated away from it (2026-09-25, `resumeSessionId != sessionId` over
+# ~/.ccs/instances/*/jobs/*/state.json) — [26]-[33] pin that. Fixtures live OUTSIDE /tmp (under ~/.cache) so the
 # job-dir cells cannot pass on the /tmp rule by accident. The hardlink cell is a real attack
 # here: /tmp and $HOME share one filesystem on this host (df, 2026-09-25).
 WT='/home/dhx/repos/hooks/.claude/worktrees/agent-aaa'
@@ -142,6 +144,9 @@ TFIX="$(mktemp -d /tmp/probe-wwg.XXXXXX)"
 trap 'rm -rf "$FIX" "$TFIX"' EXIT
 CFG="$FIX/cfg"; mkdir -p "$CFG/jobs/abcd1234/tmp" "$CFG/jobs/ffff0000/tmp" "$FIX/fakebin"
 SID='abcd1234-0000-4000-8000-000000000000'
+_state() { jq -nc --arg s "$2" --arg r "${3-}" 'if $r == "" then {sessionId:$s} else {sessionId:$s,resumeSessionId:$r} end' > "$1/state.json"; }
+_state "$CFG/jobs/abcd1234" "$SID" "$SID"
+_state "$CFG/jobs/ffff0000" 'ffff0000-0000-4000-8000-000000000000' 'ffff0000-0000-4000-8000-000000000000'
 ln -s /home/dhx/repos/hooks "$TFIX/main-alias"
 printf 'x' > "$TFIX/linked"; ln "$TFIX/linked" "$TFIX/linked2"
 printf '#!/bin/sh\nexit 1\n' > "$FIX/fakebin/realpath"; chmod +x "$FIX/fakebin/realpath"
@@ -182,6 +187,52 @@ run "[24] /tmpfoo prefix spoof → BLOCK" \
   "$(_p "/tmpfoo/x.txt")" deny
 run_env "CLAUDE_CONFIG_DIR=$CFG" "[25] session with no job dir (interactive) → BLOCK" \
   "$(_p "$CFG/jobs/eeee1111/tmp/x.txt" "eeee1111-0000-4000-8000-000000000000")" deny
+
+# --- [26]-[33]: session-id ROTATION (2026-09-25 follow-up) — the job dir is found through its
+# state.json's LIVE id, not its name. A job dir is named after the BIRTH id; after /clear (or a
+# resume that mints, or some /compact continuations) hook stdin carries a NEW id and CC rewrites
+# `resumeSessionId` to it. The name-keyed guard looked for jobs/<new 8>, found nothing and denied
+# the session its own scratch dir ([26] reds on that guard, naming the rotation; [27] reds too,
+# because the name-keyed guard kept admitting the dead birth id).
+ROT_BIRTH='b1b1b1b1-0000-4000-8000-000000000000'; ROT_LIVE='9999aaaa-0000-4000-8000-000000000000'
+mkdir -p "$CFG/jobs/b1b1b1b1/tmp" "$CFG/jobs/f0f0f0f0" "$CFG/jobs/c0c0c0c0" "$CFG/jobs/d0d0d0d0" "$FIX/outside" "$CFG/jobs/e0e0e0e0/tmp"
+_state "$CFG/jobs/b1b1b1b1" "$ROT_BIRTH" "$ROT_LIVE"
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[26] rotated session (/clear): live id finds its birth-named job dir → allow" \
+  "$(_p "$CFG/jobs/b1b1b1b1/tmp/x.py" "$ROT_LIVE")" allow
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[27] rotated session's dead BIRTH id → BLOCK (live id only)" \
+  "$(_p "$CFG/jobs/b1b1b1b1/tmp/x.py" "$ROT_BIRTH")" deny
+# The id appears in the file, so grep's prefilter hits — only in fields that are not the job's live id.
+jq -nc --arg s "$SID" '{sessionId:"f0f0f0f0-0000-4000-8000-000000000000",resumeSessionId:"f0f0f0f0-0000-4000-8000-000000000000",forkParentSessionId:$s,intent:("resume " + $s)}' > "$CFG/jobs/f0f0f0f0/state.json"
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[28] id only in fork-parent / intent fields → BLOCK" \
+  "$(_p "$CFG/jobs/f0f0f0f0/x.txt" "$SID")" deny
+jq -nc --arg s "$SID" '{sessionId:$s,resumeSessionId:$s}' > "$FIX/borrowed-state.json"
+ln -s "$FIX/borrowed-state.json" "$CFG/jobs/c0c0c0c0/state.json"
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[29] symlinked state.json naming this session → BLOCK" \
+  "$(_p "$CFG/jobs/c0c0c0c0/x.txt" "$SID")" deny
+_state "$FIX/outside" "$SID" "$SID"; rmdir "$CFG/jobs/d0d0d0d0"; ln -s "$FIX/outside" "$CFG/jobs/d0d0d0d0"
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[30] job dir symlinked OUTSIDE <config>/jobs → BLOCK" \
+  "$(_p "$CFG/jobs/d0d0d0d0/x.txt" "$SID")" deny
+_state "$CFG/jobs/e0e0e0e0" 'e0e0e0e0-0000-4000-8000-000000000000'
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[31] legacy state.json without resumeSessionId → sessionId is the live id → allow" \
+  "$(_p "$CFG/jobs/e0e0e0e0/tmp/x.txt" 'e0e0e0e0-0000-4000-8000-000000000000')" allow
+# [32] the full-UUID gate is what stops an EMPTY id: `grep -F ""` matches every state file, and a
+# state.json whose ids are "" would then satisfy the jq equality. (A bare 8-hex prefix is already
+# refused by jq's full-string compare, so that shape is not what this arm guards.)
+mkdir -p "$CFG/jobs/a0a0a0a0/tmp"
+printf '{"sessionId":"","resumeSessionId":""}' > "$CFG/jobs/a0a0a0a0/state.json"
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[32] empty session_id vs a state.json whose ids are empty → BLOCK (full UUID required)" \
+  "$(jq -nc --arg c "$WT" --arg f "$CFG/jobs/a0a0a0a0/tmp/x.txt" '{session_id:"",cwd:$c,tool_input:{file_path:$f}}')" deny
+# [33] the deny names what was RESOLVED, not the rule. The 2026-09-25 false deny promised
+# "$CLAUDE_JOB_DIR" — a variable the guard never reads — and so hid an empty resolution.
+_deny_text() { printf '%s' "$1" | env "CLAUDE_CONFIG_DIR=$CFG" "$HOOK" 2>/dev/null | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null; }
+R1=$(_deny_text "$(_p "/home/dhx/repos/hooks/dhx/x.sh" "$ROT_LIVE")")
+R2=$(_deny_text "$(_p "/home/dhx/repos/hooks/dhx/x.sh" "eeee1111-0000-4000-8000-000000000000")")
+REAL_ROT=$(realpath -e -- "$CFG/jobs/b1b1b1b1")
+if [[ "$R1" == *"session_id=9999aaaa"*": $REAL_ROT."* && "$R2" == *"session_id=eeee1111"*": none."* && "$R1$R2" != *'CLAUDE_JOB_DIR'* ]]; then
+  echo "OK   [33] deny text names the resolved job dir (rotated → its dir; no job → none), never \$CLAUDE_JOB_DIR"; PASS=$((PASS+1))
+else
+  echo "FAIL [33] deny text does not name the resolution (R1=$R1 | R2=$R2)"; FAIL=$((FAIL+1))
+fi
 
 echo ""
 echo "$PASS passed, $FAIL failed"

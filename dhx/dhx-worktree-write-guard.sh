@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # dhx-worktree-write-guard.sh — PreToolUse hook (Edit|Write|MultiEdit matcher)
-# Patterns: HP-003, HP-007, HP-009
+# Patterns: HP-003, HP-007, HP-009, HP-066
 #
 # Blocks Edit/Write/MultiEdit calls whose absolute file_path escapes the
 # enclosing Claude Code managed worktree when cwd is inside one. Protects
@@ -92,21 +92,53 @@ WT_ROOT=$(echo "$CWD" | sed -E 's|(.*\.claude/worktrees/[^/]+).*|\1|')
 #     filesystem on this host, so a scratch-path hardlink onto a repo file is reachable, and
 #     realpath keeps the scratch name ([21]). Static case only; a link created between this
 #     check and the write is a race this hook cannot close.
-#   - the job dir comes from hook STDIN — <config>/jobs/<first 8 of session_id>, the layout of
-#     194 of 194 job dirs measured 2026-09-25 — never from $CLAUDE_JOB_DIR, which is settable
-#     to anything including the main checkout ([18]). The session prefix must be 8 hex chars
-#     (no path characters), the dir must exist, and it must canonicalize INSIDE <config>/jobs.
+#   - the job dir is the one whose state.json names hook STDIN's session_id as the job's LIVE id,
+#     `(.resumeSessionId // .sessionId)` — never $CLAUDE_JOB_DIR, which is settable to anything
+#     including the main checkout ([18]). NOT the dir NAME: a job dir is named after the BIRTH id
+#     (`jobs/<first 8 of sessionId>`), and STDIN carries the LIVE id, which moves on /clear, on a
+#     resume that mints a new id, and on some /compact continuations. 85 of 193 job dirs on this
+#     host had rotated away from their name (2026-09-25, `resumeSessionId != sessionId` over
+#     ~/.ccs/instances/*/jobs/*/state.json), and the name-keyed version false-denied every one
+#     of them ([26]). CC 2.1.282 keeps the field current in two places: the /clear path rewrites
+#     it immediately, and the per-turn state classifier rewrites it with the current id on every
+#     classified turn (HP-066). Live id only, not "either id": the birth id after a rotation is a
+#     dead conversation, and admitting it would outlive the job's own addressing ([27]).
+#     Hardening: session_id must be a full UUID; state.json must be a regular file, not a
+#     symlink ([29]); an id found only in another field (fork parents, intent text) does not
+#     count — grep -F prefilters, jq decides ([28]); the dir must canonicalize to a DIRECT child
+#     of <config>/jobs ([30]). A state.json the session edits can only widen admission into
+#     that same dir, which it could already write.
 # $HOME, sibling repos and other sessions' job dirs stay denied ([16], [22]).
 SESSION_ID=$(jq -r '.session_id // ""' <<<"$INPUT" 2>/dev/null || true)
+# One resolution feeds the admission AND the deny text, so the message names exactly what the
+# verdict used. Lazy: only a write outside the worktree and outside /tmp pays for it (~4 ms over
+# 59 state files, measured 2026-09-25).
+JOB_DIRS=()
+JOBS_RESOLVED=0
+resolve_job_dirs() {
+  [[ "$JOBS_RESOLVED" == 1 ]] && return 0
+  JOBS_RESOLVED=1
+  [[ "$SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 0
+  local cfg_jobs state d
+  cfg_jobs=$(realpath -e -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs" 2>/dev/null || true)
+  [[ -n "$cfg_jobs" ]] || return 0
+  while IFS= read -r -d '' state; do
+    [[ -f "$state" && ! -L "$state" ]] || continue
+    jq -e --arg s "$SESSION_ID" '(.resumeSessionId // .sessionId) == $s' "$state" >/dev/null 2>&1 || continue
+    if d=$(realpath -e -- "${state%/state.json}" 2>/dev/null) && [[ "$d" == "$cfg_jobs"/* && "${d#"$cfg_jobs"/}" != */* ]]; then
+      JOB_DIRS+=("$d")
+    fi
+  done < <(grep -l -Z -F -- "$SESSION_ID" "$cfg_jobs"/*/state.json 2>/dev/null)
+  return 0
+}
 if REAL=$(realpath -m -- "$FILE" 2>/dev/null) && [[ "$REAL" == /* ]]; then
   SCRATCH_OK=0
   [[ "$REAL" == /tmp/* ]] && SCRATCH_OK=1
-  if [[ "$SCRATCH_OK" == 0 && "$SESSION_ID" =~ ^[0-9a-f]{8} ]]; then
-    CFG_JOBS=$(realpath -e -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs" 2>/dev/null || true)
-    JOB_ROOT=$(realpath -e -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${SESSION_ID:0:8}" 2>/dev/null || true)
-    if [[ -n "$CFG_JOBS" && -n "$JOB_ROOT" && "$JOB_ROOT" == "$CFG_JOBS"/* && "$REAL" == "$JOB_ROOT"/* ]]; then
-      SCRATCH_OK=1
-    fi
+  if [[ "$SCRATCH_OK" == 0 ]]; then
+    resolve_job_dirs
+    for JD in "${JOB_DIRS[@]}"; do
+      [[ "$REAL" == "$JD"/* ]] && { SCRATCH_OK=1; break; }
+    done
   fi
   if [[ "$SCRATCH_OK" == 1 ]]; then
     LINKS=$(stat -c %h -- "$REAL" 2>/dev/null || echo 1)
@@ -123,7 +155,13 @@ fi
 # fail-open trap. Emit-then-exit-0 inside the `if` condition (errexit-exempt); fall
 # CLOSED to exit 2 if the emit fails (still hard-blocks). Nothing runs between a
 # successful printf and exit 0.
-REASON="Worktree-leak guard: Edit/Write file_path escapes the worktree boundary (issue #36182). cwd=$CWD file_path=$FILE worktree=$WT_ROOT — use a worktree-rooted absolute path or a cwd-relative path. Scratch writes may go to /tmp or this session's job dir (\$CLAUDE_JOB_DIR); those are checked after resolving symlinks, and a target with a second hard link is refused."
+# The reason names what the guard RESOLVED, not the rule: on 2026-09-25 a deny that promised
+# "$CLAUDE_JOB_DIR" (never read) hid a resolution that had come out empty.
+resolve_job_dirs
+if [[ "$SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then SID_SHOW="${SESSION_ID:0:8}"; else SID_SHOW="none"; fi
+JOB_SHOW="none"
+[[ ${#JOB_DIRS[@]} -gt 0 ]] && JOB_SHOW="${JOB_DIRS[*]}"
+REASON="Worktree-leak guard: Edit/Write file_path escapes the worktree boundary (issue #36182). cwd=$CWD file_path=$FILE worktree=$WT_ROOT — use a worktree-rooted absolute path or a cwd-relative path. Scratch writes may go to /tmp or this session's job dir; job dir resolved from hook stdin session_id=$SID_SHOW via <config>/jobs/*/state.json (live id): $JOB_SHOW. Both are checked after resolving symlinks, and a target with a second hard link is refused."
 if DENY_JSON=$(jq -cn --arg r "$REASON" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null) \
    && printf '%s\n' "$DENY_JSON"; then
