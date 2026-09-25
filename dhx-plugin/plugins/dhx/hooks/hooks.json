@@ -252,6 +252,18 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "matcher": "^gsd-",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-agent-skills-inject.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
