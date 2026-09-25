@@ -326,6 +326,68 @@ test_case8_honest_return() {
 }
 
 # ---------------------------------------------------------------------------
+# Cases 9-10: RENAMES (2026-09-25). With rename detection on, a `git mv` is status
+#   R, which the old `--diff-filter=ACM` candidate list dropped — a rename that
+#   ADDED a bare set +e was never linted (case 10 fails against that gate). The
+#   naive fix, --no-renames, renders the new path's whole content as added, so a
+#   rename carrying a PRE-EXISTING set +e would falsely block (case 9 guards
+#   that). The lint pairs the rename instead. Each setup exits 98 (a
+#   FIXTURE-ERROR) unless git really reports the move as R — a fixture that
+#   degraded to D + A would test nothing about renames.
+# ---------------------------------------------------------------------------
+
+seed_committed_noop_probe() {
+  # Pre-existing bare set +e, plus enough body that one appended line keeps the
+  # move well above git's 50% rename-similarity threshold.
+  printf '%s\n' "$NOEXIT_SETPLUSE_BODY" 'echo "line a"' 'echo "line b"' 'echo "line c"' \
+    > tests/probes/probe-old-name.sh
+  git add tests/probes/probe-old-name.sh
+  git commit -qm "seed probe with pre-existing set +e"
+  git mv tests/probes/probe-old-name.sh tests/probes/probe-new-name.sh
+}
+
+assert_staged_as_rename() {
+  local ns; ns=$(git diff --cached --name-status -M -- tests/probes/)   # captured, never piped into grep -q (HP-028)
+  grep -qE '^R[0-9]+' <<<"$ns" || exit 98
+}
+
+setup_case9_rename_no_new_setpluse() {
+  seed_committed_noop_probe
+  printf '%s\n' 'echo "appended, not a set flag"' >> tests/probes/probe-new-name.sh
+  git add tests/probes/probe-new-name.sh
+  assert_staged_as_rename
+}
+
+setup_case10_rename_adds_setpluse() {
+  seed_committed_noop_probe
+  printf '%s\n' 'set +e  # newly added in the rename commit' >> tests/probes/probe-new-name.sh
+  git add tests/probes/probe-new-name.sh
+  assert_staged_as_rename
+}
+
+test_case9_rename_preexisting_passes() {
+  echo "Case 9: renamed probe, pre-existing set +e only → lint PASSES (rename paired, not D+A)"
+  local out
+  out=$(run_lint_in_fixture setup_case9_rename_no_new_setpluse)
+  if [ "$out" = "0" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: 9: a rename does not re-count the file's existing set +e as new"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL: 9: expected FAIL=0, got '$out'"
+  fi
+}
+
+test_case10_rename_adds_fails() {
+  echo "Case 10: renamed probe that ADDS a bare set +e → lint FAILS (rename is linted at its new path)"
+  local out
+  out=$(run_lint_in_fixture setup_case10_rename_adds_setpluse)
+  if [ "$out" = "1" ]; then
+    PASS=$((PASS + 1)); echo "  PASS: 10: a set +e added in a rename commit is blocked"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL: 10: expected FAIL=1, got '$out'"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all cases
 # ---------------------------------------------------------------------------
 
@@ -347,6 +409,10 @@ echo ""
 test_case7_setue_pair_passes
 echo ""
 test_case8_honest_return
+echo ""
+test_case9_rename_preexisting_passes
+echo ""
+test_case10_rename_adds_fails
 echo ""
 
 print_results

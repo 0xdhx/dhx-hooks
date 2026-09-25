@@ -3,7 +3,8 @@ set -euo pipefail
 # verify-hook-patterns.sh — pre-commit gate enforcing the hook pattern registry contract.
 #
 # Behavior:
-#   1. Identify staged dhx/*.sh files (added/copied/modified).
+#   1. Identify staged dhx/*.sh files (added/copied/modified; a rename is checked at its
+#      new path — see staged_whole_files, which #1-#4 and #9 share).
 #   2. Block any staged dhx hook missing a `# Patterns:` header line.
 #   3. Block any staged dhx hook referencing an HP-NNN ID that does not
 #      resolve to a `## HP-NNN ` section in docs/hook-patterns.md.
@@ -123,18 +124,36 @@ cd "$GIT_TOPLEVEL"
 # found (WR-02, Phase 20 code-review follow-up). The source-time guard below
 # (DHX_SKIP_SET_FLAG_LINT_TESTS) keeps sourcing from running the gate body.
 lint_probe_set_flags() {
-  # D-10: `|| true` so a no-candidate (docs-only) commit doesn't abort the host.
-  local candidates
-  candidates=$(git diff --cached --name-only --diff-filter=ACM -- 'tests/probes/' || true)
-  [ -z "$candidates" ] && return 0
-
-  local file added_set_plus_e full_content
+  # Renames (2026-09-25): this check reads the staged DIFF, so it must not use the
+  # whole-file collector's --no-renames. Split into D + A, a `git mv` renders the new
+  # path's ENTIRE content as added, and every pre-existing `set +e` would read as new
+  # (measured: rename + one appended line → `-U0 -- <new>` shows all 3 lines, while
+  # `-M -U0 -- <old> <new>` shows only the appended one). So candidates come from
+  # --name-status -M with R kept, and an R row is diffed as the PAIR. Plain ACM dropped
+  # R outright, so a rename that added a `set +e` was never linted. Read -z straight off
+  # the stream (a `$(...)` would drop the NULs): an R row is status, old, new.
+  # Residual, fail-CLOSED: git's pairing is heuristic, so a rename below the similarity
+  # threshold, or one git pairs with an identical file added in the same commit, reads
+  # as an A and its whole content is linted as new — a false block, never a miss. A probe
+  # moved in from outside tests/probes/ is an A too (the pathspec bounds the pairing),
+  # which is right: it is entering this lint's scope.
+  local status old file added_set_plus_e full_content
   local found=0
-  while IFS= read -r file; do
+  while IFS= read -r -d '' status; do
+    old=""
+    case "$status" in
+      R*) IFS= read -r -d '' old || break
+          IFS= read -r -d '' file || break ;;
+      *)  IFS= read -r -d '' file || break ;;
+    esac
     [ -z "$file" ] && continue
     # D-10: per-file newly-added `set +e` detection; `|| true` — an empty diff
     # (no added set +e in this file) is rc=1 and would abort under errexit.
-    added_set_plus_e=$(git diff --cached -U0 -- "$file" | grep -E '^\+.*set \+e' || true)
+    if [ -n "$old" ]; then
+      added_set_plus_e=$(git diff --cached -M -U0 -- "$old" "$file" | grep -E '^\+.*set \+e' || true)
+    else
+      added_set_plus_e=$(git diff --cached -U0 -- "$file" | grep -E '^\+.*set \+e' || true)
+    fi
     [ -z "$added_set_plus_e" ] && continue
 
     # Gate on FULL staged content (D-07): skip if errexit is present (legitimate
@@ -160,7 +179,7 @@ that never enable errexit are flagged.
 EOF
     FAIL=1    # contribute to the shared gate accumulator (the gate's exit 1 blocks)
     found=1   # WR-02: track THIS function's own finding, independent of FAIL
-  done <<< "$candidates"
+  done < <(git diff --cached -z --name-status -M --diff-filter=ACMR -- 'tests/probes/' 2>/dev/null || true)
   # WR-02 (Phase 20 code-review follow-up): return our OWN result, not the global
   # FAIL — so the test harness (and any future caller) gets an honest verdict even
   # when an unrelated earlier check already set FAIL=1. The shared FAIL above is
@@ -168,21 +187,34 @@ EOF
   [ "$found" -eq 0 ]
 }
 
+# Staged paths for WHOLE-FILE checks — every caller reads the staged blob (`git show ":$f"`),
+# never the staged diff. Prints added/copied/modified paths, optionally limited by the pathspec
+# args. Shared by checks #1-#3 (hook headers), #4 (the HP registry), #9 (corpus cells) and the
+# #5/#5b collector below, so the rename rule lives once. --no-renames is load-bearing: with
+# rename detection on (git's default; diff.renames unset here) a `git mv` is status R, which
+# ACM drops, so a moved file was never checked at its new path — even a rename that also edits
+# it (measured 2026-09-25 on #5/#5b: R087 with both violation shapes appended, rc=0). Split
+# into D + A, the new path is an A and the D is dropped. Same fix as
+# scripts/hooks/pre-commit.d/1{0,1}-backlog-*.sh. NOT for a check that reads the staged DIFF:
+# with --no-renames the diff renders a renamed file's whole content as added, so such a check
+# must pair renames instead — lint_probe_set_flags is the worked example.
+# Errexit-safe; always returns 0.
+staged_whole_files() {
+  git diff --cached --name-only --diff-filter=ACM --no-renames "$@" 2>/dev/null || true
+}
+
 # Staged shell files for the commit-time lints #5 and #5b — ONE collector, so the two checks
-# cannot disagree about which staged files are shell. Prints staged (ACM) regular blobs (mode
-# 100…, no symlink/gitlink) under dhx/, dhx-plugin/plugins/dhx/hooks/, scripts/ and tests/ that
-# are `*.sh` or carry a shell shebang on the STAGED blob's first line (scripts/hooks/commit-msg
-# has no suffix). NO path exclusions here: each check applies the gate-wide `Exclusions:` line
-# in this file's header itself — #5 and #5b both skip .inactive/ and .planned/, as their at-rest
-# probes do. --no-renames is load-bearing: with rename detection on (git's default) a `git mv`
-# is status R, which ACM drops, so a moved file — a revived .inactive/ spike, or a rename that
-# also adds a violation (measured 2026-09-25: R087 with both shapes appended, #5 and #5b rc=0) —
-# was never scanned at its new path. Split into D + A, the new path is an A. Same fix and reason
-# as scripts/hooks/pre-commit.d/1{0,1}-backlog-*.sh. Errexit-safe; always returns 0.
+# cannot disagree about which staged files are shell. Prints staged whole-file candidates
+# (staged_whole_files above, so a rename is scanned at its new path — a revived .inactive/
+# spike included) that are regular blobs (mode 100…, no symlink/gitlink) under dhx/,
+# dhx-plugin/plugins/dhx/hooks/, scripts/ and tests/ and are `*.sh` or carry a shell shebang
+# on the STAGED blob's first line (scripts/hooks/commit-msg has no suffix). NO path exclusions
+# here: each check applies the gate-wide `Exclusions:` line in this file's header itself — #5
+# and #5b both skip .inactive/ and .planned/, as their at-rest probes do. Errexit-safe; always
+# returns 0.
 staged_shell_files() {
   local candidates f mode first
-  candidates=$(git diff --cached --name-only --diff-filter=ACM --no-renames -- \
-    dhx dhx-plugin/plugins/dhx/hooks scripts tests || true)
+  candidates=$(staged_whole_files -- dhx dhx-plugin/plugins/dhx/hooks scripts tests)
   [ -z "$candidates" ] && return 0
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -411,8 +443,9 @@ if [ "${DHX_SKIP_SET_FLAG_LINT_TESTS:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
-# 1. Collect staged dhx hook files (Added/Copied/Modified only — ignore deletes)
-STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^dhx/.*\.sh$' || true)
+# 1. Collect staged dhx hook files (Added/Copied/Modified only — ignore deletes; a rename is
+#    checked at its new path, see staged_whole_files)
+STAGED=$(staged_whole_files | grep -E '^dhx/.*\.sh$' || true)
 
 FAIL=0
 
@@ -483,7 +516,7 @@ EOF
 fi
 
 # 4. If the registry itself is staged, every HP section must carry evidence
-REG_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E "^${REGISTRY}\$" || true)
+REG_STAGED=$(staged_whole_files | grep -E "^${REGISTRY}\$" || true)
 if [ -n "$REG_STAGED" ]; then
   REG_BLOB=$(git show ":${REGISTRY}" 2>/dev/null || true)
   if [ -n "$REG_BLOB" ]; then
@@ -1066,7 +1099,7 @@ fi
 #    cell here therefore comes from `git show :<path>`, so an untracked orphan
 #    in the same directory is invisible to it.
 #    Companion assertions: tests/probes/probe-multi-cc-validator-decoupling.sh (D/E).
-STAGED_CELLS=$(git diff --cached --name-only --diff-filter=ACM -- 'tests/probes/.results/v1.3-multi-cc-ver/' || true)
+STAGED_CELLS=$(staged_whole_files -- 'tests/probes/.results/v1.3-multi-cc-ver/')
 if [ -n "$STAGED_CELLS" ] && [ -x "scripts/verify-multi-cc-results.sh" ]; then
   echo "Validating staged multi-cc corpus cells..."
   CORPUS_TMP=$(mktemp -d)
