@@ -53,7 +53,7 @@ sandbox() {
   t=$(mktemp -d); TMPS+=("$t")
   mkdir -p "$t/scripts/hooks" "$t/tests/probes" "$t/docs" "$t/dhx"
   cp "$REPO/scripts/verify-hook-patterns.sh" "$t/scripts/"
-  mkdir -p "$t/scripts/lib" && cp "$REPO/scripts/lib/hp028-scan.awk" "$t/scripts/lib/"   # check #5 detector; the gate fails CLOSED without it
+  bash "$REPO/tests/probes/lib/gate-fixture-libs.sh" "$REPO" "$t"   # the gate's staged-lint detectors (#5, #5b); it fails CLOSED without them
   cp "$REPO/scripts/run-probes.sh" "$t/scripts/"
   cp "$REPO/scripts/verify-multi-cc-results.sh" "$t/scripts/"
   cp "$REPO/scripts/hooks/commit-msg" "$t/scripts/hooks/"

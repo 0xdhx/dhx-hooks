@@ -302,9 +302,16 @@ _assert "[35d] re-touch after consume -> deny (consume line is not an opening)" 
 # an OWN owner and was silently allowed — a live bypass of the D-12 hard deny.
 _assert "[39] foreign issue URL from own-origin cwd -> deny (was: silent bypass)" "deny" \
   "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT https://github.com/open-gsd/gsd-core/issues/42 --body y" "$OWN_REPO")")"
-_assert "[40] own issue URL from foreign-origin cwd -> silent (URL beats cwd both ways)" "silent" \
+# [40]/[41] FLIPPED 2026-09-25 (silent -> deny) by the union-of-every-source ownership rule
+# (operator ruling F1, docs/decisions.md 2026-09-25 gh-write row). Precedence between rungs
+# was the hole: an own-looking signal on a higher rung hid foreign evidence on a lower one.
+# Every source now joins and ALL must be own. Priced before the flip, not after: of 27 gh
+# mutations in the transcript corpus carrying an explicit own --repo/-R, 0 also carried a
+# foreign github.com URL ([41]'s shape); and 2 of the ~/repos checkouts have a foreign
+# origin ([40]'s shape). Remedy for a real own write from such a cwd: cd elsewhere.
+_assert "[40] own issue URL from foreign-origin cwd -> deny (cwd origin always joins)" "deny" \
   "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT https://github.com/0xdhx/hooks/issues/42 --body y" "$FOREIGN_REPO")")"
-_assert "[41] explicit --repo still outranks a URL elsewhere in the command" "silent" \
+_assert "[41] explicit own --repo + foreign URL elsewhere -> deny (every source joins)" "deny" \
   "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 5 --repo 0xdhx/hooks --body \"see https://github.com/open-gsd/gsd-core/issues/1\"" "$OWN_REPO")")"
 # Deliberate over-match, documented: with no --repo, a foreign URL anywhere in the
 # command resolves foreign and DENIES even if the real target was the cwd's repo.
@@ -671,6 +678,79 @@ _assert "[87m] MUT CONTROL: an in-route cross-reference is not read as the next 
   "$(_route_mode "$_ANCHOR_PR" "$_MUT87XREF")"
 _assert "[88] reason names the document-authoring escape (the self-deny mitigation)" "yes" \
   "$(grep -qi 'assemble the verb tokens from shell variables' <<< "$DENY_REASON" && echo yes || echo no)"
+
+# --- [89]-[110]: union-of-every-source ownership + matcher spellings (2026-09-25) ---------
+# Source: reports/2026-09-25-guard-false-positive-census.md fix 1, two GPT-6 Astra adversarial
+# passes. BITE = silent against the pre-change hook (a real tooth); CTRL = green before and
+# after, kept so the new parse cannot re-open it; ACCEPTED = a new deny the ruling priced in.
+# _verdict_env runs the hook with a variable in ITS OWN environment (gh reads GH_REPO from
+# the environment, so the hook must too).
+_verdict_env() { # $1 NAME=VALUE, $2 json
+  local out
+  out=$(printf '%s' "$2" | env "$1" bash "$HOOK" 2>/dev/null)
+  if [[ -z "$out" ]]; then echo "silent"; return; fi
+  printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1 \
+    && echo "deny" || echo "malformed"
+}
+F_REPO="open-gsd/gsd-core"; O_REPO="0xdhx/hooks"; EDIT2="edit"
+# Repo-flag spellings gh accepts (verified live 2026-09-25: `--repo=`, attached `-R`, and a
+# repo flag placed BEFORE the subcommand all resolve).
+_assert "[89] BITE: foreign --repo=o/r -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --repo=$F_REPO --body y" "$OWN_REPO")")"
+_assert "[90] BITE: foreign attached -Ro/r -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 -R$F_REPO --body y" "$OWN_REPO")")"
+# [90b] pins the PARSED owner, not just the verdict: before the prefix-strip fix, [90] denied by
+# accident on owner `-Ropen-gsd` (the flag swallowed into the owner), which [109] exposed.
+# Captured, then glob-matched: a `| grep -q` tail is the HP-028 SIGPIPE shape the tier lints.
+_MSG90B=$(printf '%s' "$(_json s1 "$GH $ISSUE $COMMENT 1 -R$F_REPO --body y" "$OWN_REPO")" | bash "$HOOK" 2>/dev/null \
+      | jq -r '.systemMessage // ""')
+_assert "[90b] attached -R parses to the bare owner (named in the user message)" "yes" \
+  "$([[ "$_MSG90B" == *"upstream write to open-gsd outside"* ]] && echo yes || echo no)"
+_assert "[91] CTRL: foreign quoted --repo \"o/r\" -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --repo \"$F_REPO\" --body y" "$OWN_REPO")")"
+_assert "[92] BITE: --repo before the subcommand -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH --repo $F_REPO $ISSUE $COMMENT 1 --body y" "$OWN_REPO")")"
+_assert "[93] BITE: -R before the subcommand (pr edit) -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH -R $F_REPO $PR $EDIT2 1 --title t" "$OWN_REPO")")"
+_assert "[94] BITE: GH_REPO=foreign assignment, own cwd -> deny" "deny" \
+  "$(_verdict "$(_json s1 "GH_REPO=$F_REPO $GH $ISSUE $COMMENT 1 --body y" "$OWN_REPO")")"
+_assert "[95] BITE: foreign GH_REPO in the hook's environment, own cwd -> deny" "deny" \
+  "$(_verdict_env "GH_REPO=$F_REPO" "$(_json s1 "$GH $ISSUE $COMMENT 1 --body y" "$OWN_REPO")")"
+# The four holes the pre-steer pass verified against the first union design (explicit-owner
+# precedence hid lower rungs). Each is denied today; each must stay denied.
+_assert "[96] CTRL: foreign positional URL + own --repo= in body prose -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT https://github.com/$F_REPO/issues/1 --body \"usage --repo=$O_REPO\"" "$OWN_REPO")")"
+_assert "[97] CTRL: own GH_REPO= assignment + foreign positional URL -> deny" "deny" \
+  "$(_verdict "$(_json s1 "GH_REPO=$O_REPO $GH $ISSUE $COMMENT https://github.com/$F_REPO/issues/1 --body x" "$OWN_REPO")")"
+_assert "[98] CTRL: own GH_REPO in hook env + foreign api path -> deny" "deny" \
+  "$(_verdict_env "GH_REPO=$O_REPO" "$(_json s1 "$GH $API repos/$F_REPO/issues/1/comments -X POST -f body=x" "$OWN_REPO")")"
+_assert "[99] CTRL: foreign cwd + own --repo= only in body prose -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --body \"usage --repo=$O_REPO\"" "$FOREIGN_REPO")")"
+_assert "[100] ACCEPTED: explicit own --repo from a foreign-origin cwd -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --repo $O_REPO --body y" "$FOREIGN_REPO")")"
+_assert "[101] BITE: own call then foreign call in one command -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --repo $O_REPO --body a; $GH $ISSUE $COMMENT 2 --repo $F_REPO --body b" "$OWN_REPO")")"
+# gh api method spellings. gh api POSTs IMPLICITLY when any field flag is given without an
+# explicit GET, and an issue CREATE ends at `issues` with no trailing slash.
+_assert "[102] BITE: api --method=POST -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues/1/comments --method=POST -f body=x" "$OWN_REPO")")"
+_assert "[103] BITE: api attached -XPOST -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues/1/comments -XPOST -f body=x" "$OWN_REPO")")"
+_assert "[104] BITE: api implicit POST via -f -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues/1/comments -f body=x" "$OWN_REPO")")"
+_assert "[105] BITE: api issue create endpoint, no trailing slash -> deny" "deny" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues -f title=x" "$OWN_REPO")")"
+_assert "[106] CTRL: api explicit GET with fields (a read) -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues -X GET -f state=open" "$OWN_REPO")")"
+_assert "[107] CTRL: api bare read of a foreign thread -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $API repos/$F_REPO/issues/1/comments" "$OWN_REPO")")"
+# Own-owner teeth for the new spellings: the union must not turn own writes into denies.
+_assert "[108] own --repo= from own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 --repo=$O_REPO --body y" "$OWN_REPO")")"
+_assert "[109] own attached -R from own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "$GH $ISSUE $COMMENT 1 -R$O_REPO --body y" "$OWN_REPO")")"
+_assert "[110] own GH_REPO= assignment from own cwd -> silent" "silent" \
+  "$(_verdict "$(_json s1 "GH_REPO=$O_REPO $GH $ISSUE $COMMENT 1 --body y" "$OWN_REPO")")"
 
 # --- Cross-file contracts ---
 REG=$(jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command]

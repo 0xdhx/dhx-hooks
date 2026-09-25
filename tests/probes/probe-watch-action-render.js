@@ -348,20 +348,22 @@ const prItem = (over) => item(Object.assign({ url: `https://github.com/o/r/issue
 // line are byte-identical with or without it. Fail-silent on a malformed pointer (never a throw —
 // a jq error here would blank the WHOLE block, not just the line).
 {
-  const LINK = { path: 'reports/2026-09-23-origin-x.md', linked_at: '2026-09-24T00:00:00.000Z' };
+  // Undated fixture names on purpose: scripts/sync-public-mirror.sh refuses to publish a dated
+  // reports/<date>-<slug>.md path on a code line (it reads as a private report reference).
+  const LINK = { path: 'reports/origin-x.md', linked_at: '2026-09-24T00:00:00.000Z' };
   const CTX = (p) => `\n      ↳ from ${p}\n      › `;
   const r = runBanner([
     prItem({ id: 'orl-ready', pr_eligible: true, origin_report: LINK }),
-    item({ id: 'orl-action', url: 'https://github.com/o/r/issues/77', origin_report: { ...LINK, path: 'reports/done/2026-09-20-origin-y.md' } }),
+    item({ id: 'orl-action', url: 'https://github.com/o/r/issues/77', origin_report: { ...LINK, path: 'reports/done/origin-y.md' } }),
     prItem({ id: 'orl-bare-ready', pr_eligible: true, origin_report: null }),
     item({ id: 'orl-bare-action', url: 'https://github.com/o/r/issues/78' }),
   ]);
   const [actionHalf, prHalf] = r.stdout.split(PR_SECTION);
   check('(9) a linked Ready row carries "↳ from <path>" directly above its › line',
-    (prHalf || '').includes(`issues/orl-ready${CTX('reports/2026-09-23-origin-x.md')}/dhx:upstream pr https://github.com/o/r/issues/orl-ready`),
+    (prHalf || '').includes(`issues/orl-ready${CTX('reports/origin-x.md')}/dhx:upstream pr https://github.com/o/r/issues/orl-ready`),
     `out=${j(r.stdout)}`);
   check('(9) a linked Action row carries "↳ from <path>" (reports/done/ path as stored)',
-    actionHalf.includes(`issues/77${CTX('reports/done/2026-09-20-origin-y.md')}/dhx:watch ack orl-action`), `out=${j(r.stdout)}`);
+    actionHalf.includes(`issues/77${CTX('reports/done/origin-y.md')}/dhx:watch ack orl-action`), `out=${j(r.stdout)}`);
   check('(9) exactly two context lines — unlinked rows (null / absent) render none',
     (r.stdout.match(/↳ from /g) || []).length === 2, `out=${j(r.stdout)}`);
   check('(9) unlinked rows keep the bare row → › shape',

@@ -50,7 +50,7 @@
 #   [gate]  fixture repos driving lint_hp028_staged: blocks a staged scripts/ site, passes
 #           a clean one, reads the scanner from the INDEX not the worktree, fails CLOSED
 #           on a missing or broken staged scanner, and ignores a missing scanner when
-#           no shell file is staged
+#           no shell file is staged; a rename that also adds the shape blocks
 #
 # Exemption: an `HP-028` token on the line — the visible marker for a fixture that
 # CONSTRUCTS the broken form on purpose (probe-deferred-check-canonical-classifier.sh
@@ -236,6 +236,12 @@ R=$(mkrepo g-block); cp "$SCANNER" "$R/scripts/lib/hp028-scan.awk"
 printf '#!/usr/bin/env bash\n%s\n' "$RED_LINE" > "$R/scripts/hooks/suffixless"
 git -C "$R" add -A
 gate_case "blocks a staged suffix-less scripts/ hook carrying the shape" 1 "$R" "scripts/hooks/suffixless:2"
+
+R=$(mkrepo g-rename); cp "$SCANNER" "$R/scripts/lib/hp028-scan.awk"
+seq 1 30 | sed 's/^/echo line /' > "$R/scripts/a.sh"
+git -C "$R" add -A && git -C "$R" commit -q --no-verify -m "live file"
+git -C "$R" mv scripts/a.sh scripts/b.sh; printf '%s\n' "$RED_LINE" >> "$R/scripts/b.sh"; git -C "$R" add scripts/b.sh
+gate_case "blocks a rename that also adds the shape (git status R, not ACM)" 1 "$R" "scripts/b.sh:31"
 
 R=$(mkrepo g-clean); cp "$SCANNER" "$R/scripts/lib/hp028-scan.awk"
 printf '#!/usr/bin/env bash\ngrep -Eq a <<<"$x"\n' > "$R/scripts/ok.sh"

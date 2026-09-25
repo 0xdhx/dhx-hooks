@@ -34,11 +34,18 @@
 #
 # --- Ownership scoping (the no-friction-on-my-own-repos rule) ---
 # The upstream discipline protects credibility with OTHER projects' maintainers; it has
-# nothing to say about the operator filing an issue on their own repo. Target owner is
-# resolved from `--repo/-R <owner>/<name>`, else the `repos/<owner>/<name>/` path of a
-# `gh api` call, else the cwd's `origin` remote. Owner in OWN_OWNERS -> silent allow.
-# UNRESOLVABLE owner -> deny (fail-closed: ambiguity on an outward write defaults to the
-# gate, and the bypass script is the documented door).
+# nothing to say about the operator filing an issue on their own repo. Since 2026-09-25 the
+# owner is the UNION of every source the command names — every `--repo`/`-R`/`GH_REPO`
+# spelling, the hook's own `$GH_REPO`, every `repos/<owner>/` path (api arm), every
+# `github.com/<owner>/` URL, and the cwd's `origin` — and the write is silent only when EVERY
+# one is in OWN_OWNERS. It was a precedence ladder (first rung that resolved won) until then,
+# and precedence was the hole: an own-looking signal on a high rung hid foreign evidence on a
+# lower one (four such foreign writes verified by an adversarial pass). A union cannot be
+# spoofed by ADDING text, only made to deny more. UNRESOLVABLE owner -> deny (fail-closed:
+# ambiguity on an outward write defaults to the gate, and the bypass script is the door).
+# ACCEPTED COST of the union, priced before it shipped: an own write run from a checkout whose
+# origin is foreign denies (2 such checkouts under ~/repos), as does an own write whose body
+# quotes a foreign URL or `--repo` (0 of 27 explicit own-repo writes in the transcript corpus).
 #
 # --- Marker contract (unchanged, verified 2026-07-21) ---
 # `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/dhx-tools/.upstream-marker-<session-id>`, written
@@ -201,13 +208,31 @@ CMD=$(jq -r '.tool_input.command // ""' <<<"$INPUT" 2>/dev/null || true)
 
 # --- Match: gh issue|pr MUTATION verb (token-anchored) OR gh api write-method to an
 #     issue/PR thread OR a gh api graphql MUTATION (widened 2026-08-03 — see header) ---
+# Widened 2026-09-25 (fix 1 of reports/2026-09-25-guard-false-positive-census.md), each shape
+# measured SILENT against the prior hook (probe [89]-[105] BITE arms):
+#   - a repo flag BETWEEN `gh` and the subcommand (`gh --repo o/r issue …`, `gh -R o/r pr …`) —
+#     gh accepts it (verified live), and the old anchor needed `gh issue` adjacent;
+#   - api method as `--method=X` or attached `-XPOST` (was space-separated only);
+#   - api IMPLICIT POST: gh api sends POST whenever a field flag (-f/-F/--field/--raw-field/
+#     --input) is present without an explicit GET — no method token at all;
+#   - an api endpoint ENDING at `issues`/`pulls` (the issue-create endpoint), not only `…/`.
+# STATED RESIDUAL: the GET exemption reads the whole command, so a `-X GET` anywhere (another
+#   invocation, body prose) suppresses implicit-POST detection. Scoping it per invocation needs
+#   the shell tokenizer this repo refused (docs/backlog.md `command-substitution-blind-spot`).
+# NOT widened: `gh issue delete|lock|unlock|transfer`, `gh pr lock` — each needs maintainer
+#   rights on the target, so a foreign one fails at GitHub; an own one is silent anyway.
 MATCHED=0
 MATCH_ARM=""
-if grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+(issue[[:space:]]+(create|comment|edit|close|reopen)|pr[[:space:]]+(comment|edit|review|close|reopen|merge|ready))([[:space:]]|$)' <<< "$CMD"; then
+Q="[\"']"
+REPOFLAG='([[:space:]]+(-R[[:space:]]*|--repo([[:space:]]+|=))[^[:space:]]+)*'
+FIELDFLAG='(^|[[:space:]])(-f|-F|--field|--raw-field|--input)([[:space:]]|=|$)|(^|[[:space:]])-[fF][A-Za-z0-9_]+='
+if grep -qE "(^|[^[:alnum:]_])gh${REPOFLAG}[[:space:]]+(issue[[:space:]]+(create|comment|edit|close|reopen)|pr[[:space:]]+(comment|edit|review|close|reopen|merge|ready))([[:space:]]|\$)" <<< "$CMD"; then
   MATCHED=1; MATCH_ARM=verb
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api([[:space:]]|$)' <<< "$CMD" \
-     && grep -qE '(-X|--method)[[:space:]]+(POST|PATCH|PUT|DELETE)([[:space:]]|$)' <<< "$CMD" \
-     && grep -qE '(^|[^[:alnum:]_])repos/[^[:space:]/]+/[^[:space:]/]+/(issues|pulls)/' <<< "$CMD"; then
+     && grep -qE "(^|[^[:alnum:]_])repos/[^[:space:]/]+/[^[:space:]/]+/(issues|pulls)([/?[:space:]\"']|\$)" <<< "$CMD" \
+     && { grep -qiE "(-X[[:space:]]*|--method([[:space:]]+|=))${Q}?(POST|PATCH|PUT|DELETE)([^[:alnum:]]|\$)" <<< "$CMD" \
+          || { grep -qE "$FIELDFLAG" <<< "$CMD" \
+               && ! grep -qiE "(-X[[:space:]]*|--method([[:space:]]+|=))${Q}?GET([^[:alnum:]]|\$)" <<< "$CMD"; }; }; then
   MATCHED=1; MATCH_ARM=api
 elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api[[:space:]]+graphql([[:space:]]|$)' <<< "$CMD" \
      && grep -qE '(^|[^[:alnum:]_])mutation([^[:alnum:]_]|$)' <<< "$CMD"; then
@@ -215,10 +240,30 @@ elif grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+api[[:space:]]+graphql([[:space:]]
 fi
 [ "$MATCHED" = "1" ] || exit 0
 
-# --- Resolve the target owner (ownership scoping) ---
-# 1. explicit --repo / -R <owner>/<name>
-OWNER=$(grep -oE '(--repo|-R)[[:space:]]+[\"'"'"']?[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
-          | head -1 | grep -oE '[A-Za-z0-9_.-]+/$' | tr -d '/' || true)
+# --- Resolve the target owners: the UNION of every source (2026-09-25) ---
+# Each rung below APPENDS to $OWNERS; none short-circuits another. Until 2026-09-25 this was a
+# precedence ladder — each later rung ran only `if [ -z "$OWNER" ]`, and each rung took only
+# its FIRST match — so an own-looking hit on an early rung hid every foreign signal after it.
+# Verified holes that shape had (all now denied, probe [89]-[101]): `--repo=` and attached
+# `-R` never parsed at all; `GH_REPO` was never read; an own `--repo` in one call exempted a
+# foreign `--repo` in the next call of the same command; an own positional URL exempted a
+# foreign-origin cwd. Appending can only add denies, never remove one.
+OWNERS=""
+# 1. explicit repo flags — EVERY occurrence, every spelling gh accepts: `--repo o/r`,
+#    `--repo=o/r`, `-R o/r`, `-Ro/r`, quoted or not. A `HOST/OWNER/REPO` value resolves the
+#    host as the owner and so denies (fail-closed; the value form is rare and the deny names it).
+#    The owner is taken by STRIPPING the flag prefix, never by a trailing character class:
+#    `[A-Za-z0-9_.-]+/$` also swallows an attached `-R` (the class contains `-`), turning
+#    `-R0xdhx/…` into owner `-R0xdhx` — measured, probe [109], and it had made [90] pass by
+#    accident rather than by parse.
+OWNERS+=$'\n'$(grep -oE "(--repo([[:space:]]+|=)|(^|[[:space:]])-R[[:space:]]*)${Q}?[A-Za-z0-9_.-]+/" <<< "$CMD" 2>/dev/null \
+          | sed -E "s/^.*(--repo([[:space:]]+|=)|-R[[:space:]]*)${Q}?//; s|/\$||" || true)
+# 1b. GH_REPO — gh's own override, read from BOTH places it can come from: an assignment in
+#     the command (`GH_REPO=o/r gh …`, `export GH_REPO=o/r`) and the environment this hook
+#     inherits, which is the environment the tool call's gh would inherit too.
+OWNERS+=$'\n'$(grep -oE "(^|[^[:alnum:]_])GH_REPO=${Q}?[A-Za-z0-9_.-]+/" <<< "$CMD" 2>/dev/null \
+          | grep -oE '[A-Za-z0-9_.-]+/$' | tr -d '/' || true)
+if [ -n "${GH_REPO:-}" ]; then OWNERS+=$'\n'"${GH_REPO%%/*}"; fi
 # 2. gh api path shape: repos/<owner>/<name>/… — SCOPED TO THE api ARM (2026-08-25).
 #    This rung reads a path, and a path is only an ownership signal on the arm that
 #    matched ON a path. It used to run for every arm, which broke BOTH ways and both
@@ -243,9 +288,9 @@ OWNER=$(grep -oE '(--repo|-R)[[:space:]]+[\"'"'"']?[A-Za-z0-9_.-]+/' <<< "$CMD" 
 #    and now falls to the cwd-origin rung. That coverage was incidental — the same
 #    call with the file anywhere outside `repos/` already allowed — and this guard is
 #    documented blind to `$(…)` anyway (docs/backlog.md `command-substitution-blind-spot`).
-if [ -z "$OWNER" ] && [ "$MATCH_ARM" = "api" ]; then
-  OWNER=$(grep -oE '(^|[^[:alnum:]_])repos/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
-            | head -1 | sed -E 's|.*repos/||; s|/$||' || true)
+if [ "$MATCH_ARM" = "api" ]; then
+  OWNERS+=$'\n'$(grep -oE '(^|[^[:alnum:]_])repos/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
+            | sed -E 's|.*repos/||; s|/$||' || true)
 fi
 # 3. positional target URL: https://github.com/<owner>/<repo>/...
 #    Added 2026-08-02. Without this branch a positional issue/PR URL resolved NOTHING
@@ -257,24 +302,31 @@ fi
 #    one quoted inside --body. That over-matches (a foreign link in prose denies a write
 #    aimed at the cwd's own repo) and over-matching is the correct direction — the deny
 #    message already tells the operator to pass --repo explicitly, which outranks this.
-if [ -z "$OWNER" ]; then
-  OWNER=$(grep -oE 'github\.com/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
-            | head -1 | sed -E 's|.*github\.com/||; s|/$||' || true)
-fi
-# 4. fall back to the cwd's origin remote
-if [ -z "$OWNER" ] && [ -n "$CWD" ] && [ -d "$CWD" ]; then
+OWNERS+=$'\n'$(grep -oE 'github\.com/[A-Za-z0-9_.-]+/' <<< "$CMD" 2>/dev/null \
+            | sed -E 's|.*github\.com/||; s|/$||' || true)
+# 4. the cwd's origin remote — ALWAYS joins (2026-09-25; was a fallback). A bare issue number
+#    targets this repo, and a flag or URL that only APPEARS in body prose cannot be told from a
+#    real one without tokenizing, so the cwd is evidence even when other rungs resolved.
+if [ -n "$CWD" ] && [ -d "$CWD" ]; then
   ORIGIN=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
   # git@github.com:owner/repo.git | https://github.com/owner/repo(.git)
-  OWNER=$(sed -E 's|^[^:]+://[^/]+/||; s|^[^@]+@[^:]+:||; s|/.*$||' <<< "$ORIGIN" 2>/dev/null || true)
+  OWNERS+=$'\n'$(sed -E 's|^[^:]+://[^/]+/||; s|^[^@]+@[^:]+:||; s|/.*$||' <<< "$ORIGIN" 2>/dev/null || true)
 fi
 
-# Own-owner target -> silent allow. No marker, no bypass, no friction (the upstream
-# discipline is about OTHER maintainers' repos; own-repo filings carry no such surface).
-if [ -n "$OWNER" ]; then
-  for own in $OWN_OWNERS; do
-    [ "$OWNER" = "$own" ] && exit 0
-  done
-fi
+# Own-owner target -> silent allow, ONLY when every resolved owner is own. No marker, no
+# bypass, no friction (the upstream discipline is about OTHER maintainers' repos). GitHub
+# owners are case-insensitive, so the comparison is too. $OWNER ends up as the FIRST foreign
+# owner (named in the deny and the audit line), or empty when nothing resolved at all.
+OWNER=""
+RESOLVED=0
+while IFS= read -r o; do
+  [ -n "$o" ] || continue
+  RESOLVED=1
+  is_own=0
+  for own in $OWN_OWNERS; do [ "${o,,}" = "${own,,}" ] && is_own=1; done
+  if [ "$is_own" = 0 ] && [ -z "$OWNER" ]; then OWNER="$o"; fi
+done <<< "$OWNERS"
+if [ "$RESOLVED" = 1 ] && [ -z "$OWNER" ]; then exit 0; fi
 
 # --- Gated-path check: fresh /dhx:upstream marker OR AUDITED deliberate-bypass window ---
 # The bypass branch requires POSITIVE EVIDENCE that the audited script ran for THIS session
@@ -362,7 +414,7 @@ fi
 
 # --- Deny (structured, exit 0 — see "Emit shape" in the header) ---
 TARGET="${OWNER:-<unresolved owner>}"
-REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare call skips all of it, and the write cannot be taken back. Take one of these routes: (1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply <issue-url-or-number>' — that mode covers posting a comment, amending a comment you already posted, and editing the issue body, so an edit is NOT a reason to reach for the bypass; (3) anything on an EXISTING PR of yours — response comment, retitle, body edit, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>'. The skill owns the current route list and the current rule for when an edit is preferred over a follow-up; read it there rather than inferring either from this message, which deliberately names no driver scripts and restates no doctrine. (4) deliberate one-off, audited + single-use 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. That opening is spent by the first write it lets through, so a second write needs a second opening with its own stated reason. NOT ACTUALLY MAKING A CALL? This gate greps the whole command string, so a command that merely AUTHORS OR QUOTES A DOCUMENT containing one of the covered verbs matches too, heredoc bodies included — nothing upstream is written by such a command. Assemble the verb tokens from shell variables, or write the file with the Write/Edit tool instead of a shell heredoc, and this deny disappears. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated; if this target IS yours, the owner did not resolve — pass '--repo <owner>/<name>' explicitly (a graphql mutation on a node ID resolves no owner at all, so it always lands here)."
+REASON="DENIED: this is an irreversible write to a foreign upstream repo ($TARGET) running outside the /dhx:upstream gated pre-flight, which protects upstream credibility with a 7-stage discipline (pristine fetch, fork audit, self-shim audit, redaction sweep, search corpus, evidence inventory, atomic wire-up). A bare call skips all of it, and the write cannot be taken back. Take one of these routes: (1) a NEW issue -> '/dhx:upstream <report-path>'; (2) anything on an EXISTING issue -> '/dhx:upstream reply <issue-url-or-number>' — that mode covers posting a comment, amending a comment you already posted, and editing the issue body, so an edit is NOT a reason to reach for the bypass; (3) anything on an EXISTING PR of yours — response comment, retitle, body edit, or correcting an already-published comment -> '/dhx:upstream revise <pr-url>'. The skill owns the current route list and the current rule for when an edit is preferred over a follow-up; read it there rather than inferring either from this message, which deliberately names no driver scripts and restates no doctrine. (4) deliberate one-off, audited + single-use 60s window -> 'bash \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/dhx-tools/dhx-upstream-bypass.sh\" --reason \"<why the gated path does not fit>\"' then re-run this command. That opening is spent by the first write it lets through, so a second write needs a second opening with its own stated reason. NOT ACTUALLY MAKING A CALL? This gate greps the whole command string, so a command that merely AUTHORS OR QUOTES A DOCUMENT containing one of the covered verbs matches too, heredoc bodies included — nothing upstream is written by such a command. Assemble the verb tokens from shell variables, or write the file with the Write/Edit tool instead of a shell heredoc, and this deny disappears. Own-repo writes (owner in the hook's OWN_OWNERS list) are never gated — but EVERY owner the command names must be yours: each --repo / -R / GH_REPO, each github.com URL (body prose included), and the origin of the directory you run it from. If this target IS yours, either the owner did not resolve (pass '--repo <owner>/<name>' explicitly; a graphql mutation on a node ID resolves no owner at all, so it always lands here) or something else in the command names a foreign owner — drop the foreign mention, or run from a checkout whose origin is yours."
 MSG="Blocked: upstream write to $TARGET outside /dhx:upstream. Use '/dhx:upstream reply <issue>' or '/dhx:upstream <report-path>' — or run dhx-tools/dhx-upstream-bypass.sh --reason \"...\" for a deliberate one-off."
 
 if DENY_JSON=$(jq -cn --arg r "$REASON" --arg m "$MSG" \
