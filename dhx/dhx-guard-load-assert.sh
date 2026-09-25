@@ -47,7 +47,9 @@
 # probe's job, not this hook's. NECESSARY, NOT SUFFICIENT -- do not let a green assertion here
 # retire a behavioural check.
 #
-# --- Five disk-identical states, and which of them warn ---
+# --- Five states every registry-level check reads as identical, and which of them warn ---
+# Correct symlinks, a correct manifest and a green verify-hooks.sh hold in all five. Only the
+# channel records and this hook's own stamps tell them apart -- which is why it reads those.
 #   1. loaded                  -> beat (or prompt record) from this invocation -> SILENT.
 #   2. registry rejected       -> SessionStart fired (birth stamp) but the plugin wrote nothing
 #                                 for this invocation -> WARN at the FIRST prompt. The guards
@@ -90,6 +92,10 @@
 #     fire no UserPromptSubmit. States 1-2 still apply to them.
 #   * A --resume within 10 s of the previous invocation's last beat can inherit that beat
 #     (BEAT_SKEW_MS, below).
+#   * The converse, a false alarm on a LIVE channel: in state 5 a plugin whose prompt writer
+#     fails on two consecutive prompts (disk full, a permissions fault) is warned about while
+#     its guards still run. The warning text says "two independent misses, not proof" for
+#     exactly this reason (close review, 2026-09-24).
 #
 # --- Digest chain must match the dispatcher's byte for byte ---
 # `printf '%s'` (never echo -- the trailing newline would be hashed), sha256sum then shasum,

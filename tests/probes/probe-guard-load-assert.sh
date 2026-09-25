@@ -7,7 +7,9 @@
 # that its own channel failed to load. It is registered there twice: on SessionStart it writes
 # a birth stamp (the invocation boundary), on UserPromptSubmit it asserts.
 #
-# THE FIVE STATES THIS PINS are disk-identical in pairs, and only two may warn:
+# THE FIVE STATES THIS PINS read identically to every registry-level check (symlinks,
+# manifest, verify-hooks.sh); only channel records and the hook's stamps separate them, and
+# only two may warn:
 #   [1]-[2]  loaded (legacy: beat, no birth stamp)          -> SILENT
 #   [3]-[6]  registry rejected (birth, no plugin record)    -> WARN at prompt 1, naming guards
 #   [7]      manifest edited mid-session, beat PRESENT       -> SILENT
