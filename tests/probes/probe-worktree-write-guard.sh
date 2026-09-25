@@ -100,10 +100,13 @@ run "[9] empty cwd → allow" \
   '{"cwd":"","tool_input":{"file_path":"/anywhere/x.sh"}}' \
   allow
 
-# [10] Writing to /tmp from worktree → BLOCK (out-of-tree, probably unintentional)
-run "[10] cwd=worktree, file=/tmp → BLOCK" \
+# [10] Writing to /tmp from worktree → ALLOW. FLIPPED 2026-09-25 (was BLOCK): /tmp is a
+# sanctioned scratch root by operator ruling — 136 of this guard's 141 false denies in 90 days
+# were scratch writes (reports/2026-09-25-guard-false-positive-census.md fix 3). The scratch
+# allowance canonicalizes first; [15]-[25] below pin what it must still refuse.
+run "[10] cwd=worktree, file=/tmp → allow (scratch root)" \
   '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa","tool_input":{"file_path":"/tmp/scratch.txt"}}' \
-  deny
+  allow
 
 # [11] Nested worktree directory with trailing slash variation
 run "[11] cwd=worktree no trailing slash, file=worktree nested → allow" \
@@ -126,6 +129,59 @@ run "[13] cwd=worktree, newline-bearing file path outside → BLOCK (exact bytes
 run "[14] NUL inside a worktree cwd → BLOCK, as the @tsv parse did (a guard never loosens)" \
   '{"cwd":"/home/dhx/repos/hooks/.claude/worktrees/agent-aaa\u0000x","tool_input":{"file_path":"/etc/x"}}' \
   deny
+
+# --- [15]-[25]: scratch roots (2026-09-25) — /tmp and THIS session's job dir, canonicalized ---
+# The job dir is derived from hook stdin, never from $CLAUDE_JOB_DIR: jobs live at
+# <config>/jobs/<first 8 of session_id> (194 of 194 job dirs matched, measured 2026-09-25), and
+# a variable is settable to anything ([18]). Fixtures live OUTSIDE /tmp (under ~/.cache) so the
+# job-dir cells cannot pass on the /tmp rule by accident. The hardlink cell is a real attack
+# here: /tmp and $HOME share one filesystem on this host (df, 2026-09-25).
+WT='/home/dhx/repos/hooks/.claude/worktrees/agent-aaa'
+FIX="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/probe-wwg.XXXXXX")"
+TFIX="$(mktemp -d /tmp/probe-wwg.XXXXXX)"
+trap 'rm -rf "$FIX" "$TFIX"' EXIT
+CFG="$FIX/cfg"; mkdir -p "$CFG/jobs/abcd1234/tmp" "$CFG/jobs/ffff0000/tmp" "$FIX/fakebin"
+SID='abcd1234-0000-4000-8000-000000000000'
+ln -s /home/dhx/repos/hooks "$TFIX/main-alias"
+printf 'x' > "$TFIX/linked"; ln "$TFIX/linked" "$TFIX/linked2"
+printf '#!/bin/sh\nexit 1\n' > "$FIX/fakebin/realpath"; chmod +x "$FIX/fakebin/realpath"
+_p() { jq -nc --arg c "$WT" --arg f "$1" --arg s "${2-}" \
+  'if $s == "" then {cwd:$c,tool_input:{file_path:$f}} else {session_id:$s,cwd:$c,tool_input:{file_path:$f}} end'; }
+run_env() { # $1 env assignment(s) as one string, then run's args
+  local envs="$1"; shift
+  local name="$1" input="$2" kind="$3" code=0 out
+  out=$(echo "$input" | env $envs "$HOOK" 2>/dev/null) || code=$?
+  case "$kind" in
+    deny)  if [[ "$code" == "0" && "$out" == *'"permissionDecision":"deny"'* ]]; then echo "OK   $name"; PASS=$((PASS+1));
+           else echo "FAIL $name (expected deny, got exit=$code out=$out)"; FAIL=$((FAIL+1)); fi ;;
+    allow) if [[ "$code" == "0" && -z "$out" ]]; then echo "OK   $name"; PASS=$((PASS+1));
+           else echo "FAIL $name (expected allow, got exit=$code out=$out)"; FAIL=$((FAIL+1)); fi ;;
+  esac
+}
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[15] this session's job dir → allow" \
+  "$(_p "$CFG/jobs/abcd1234/tmp/x.txt" "$SID")" allow
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[16] ANOTHER session's job dir → BLOCK" \
+  "$(_p "$CFG/jobs/ffff0000/tmp/x.txt" "$SID")" deny
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[17] job-dir path but no session_id on stdin → BLOCK" \
+  "$(_p "$CFG/jobs/abcd1234/tmp/x.txt")" deny
+run_env "CLAUDE_CONFIG_DIR=$CFG CLAUDE_JOB_DIR=/home/dhx/repos/hooks" "[18] CLAUDE_JOB_DIR aimed at main is ignored → BLOCK" \
+  "$(_p "/home/dhx/repos/hooks/dhx/x.sh" "$SID")" deny
+run "[19] /tmp symlink alias into the main repo → BLOCK (canonicalized)" \
+  "$(_p "$TFIX/main-alias/dhx/x.sh")" deny
+run "[20] /tmp/../ traversal into the main repo → BLOCK" \
+  "$(_p "/tmp/../home/dhx/repos/hooks/dhx/x.sh")" deny
+run "[21] existing /tmp target with a second hard link → BLOCK" \
+  "$(_p "$TFIX/linked")" deny
+run "[22] \$HOME dotfile → BLOCK (not a scratch root)" \
+  "$(_p "/home/dhx/.bashrc")" deny
+# A fixed PATH, not "$FIX/fakebin:$PATH": run_env word-splits its env string and this host's
+# PATH carries "/mnt/c/Program Files/…" (WSL), which split it into a command -> exit 127.
+run_env "PATH=$FIX/fakebin:/usr/local/bin:/usr/bin:/bin" "[23] realpath fails → BLOCK (structured deny, never exit 1)" \
+  "$(_p "/tmp/scratch2.txt")" deny
+run "[24] /tmpfoo prefix spoof → BLOCK" \
+  "$(_p "/tmpfoo/x.txt")" deny
+run_env "CLAUDE_CONFIG_DIR=$CFG" "[25] session with no job dir (interactive) → BLOCK" \
+  "$(_p "$CFG/jobs/eeee1111/tmp/x.txt" "eeee1111-0000-4000-8000-000000000000")" deny
 
 echo ""
 echo "$PASS passed, $FAIL failed"

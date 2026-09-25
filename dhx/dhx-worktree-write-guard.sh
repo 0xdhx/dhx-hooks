@@ -5,7 +5,8 @@
 # Blocks Edit/Write/MultiEdit calls whose absolute file_path escapes the
 # enclosing Claude Code managed worktree when cwd is inside one. Protects
 # against the silent-write-to-main-repo class of issue anthropics/claude-code
-# #36182.
+# #36182. Two scratch roots pass after canonicalization — /tmp and this
+# session's job dir (2026-09-25; see the "Scratch roots" block below).
 #
 # ════════════════════════════════════════════════════════════════════════════
 # SCOPE (HP-003 reframe, 2026-04-21): fires for parent AND subagent writes.
@@ -78,6 +79,41 @@ WT_ROOT=$(echo "$CWD" | sed -E 's|(.*\.claude/worktrees/[^/]+).*|\1|')
 # File inside worktree → OK
 [[ "$FILE" == "$WT_ROOT"/* ]] && exit 0
 
+# --- Scratch roots: /tmp and THIS session's job dir (2026-09-25, operator ruling) ---
+# 136 of this guard's 141 false denies in 90 days were worktree agents writing scratch files
+# (reports/2026-09-25-guard-false-positive-census.md fix 3). Those two roots are not the leak
+# #36182 is about, so they pass — but only after canonicalizing, because every lexical version
+# of this allowance was broken by an adversarial pass before it shipped:
+#   - `realpath -m` FIRST: a /tmp symlink aliased onto the main repo, and a `/tmp/../` path,
+#     both resolve out of /tmp and fall through to the deny (probe [19], [20]).
+#   - realpath failing is a DENY, never an exit: under `set -e` a bare failing assignment exits
+#     1, and exit 1 does not block (HP-009) — the `if` form keeps it errexit-exempt ([23]).
+#   - an EXISTING target with more than one hard link is refused: /tmp and $HOME share one
+#     filesystem on this host, so a scratch-path hardlink onto a repo file is reachable, and
+#     realpath keeps the scratch name ([21]). Static case only; a link created between this
+#     check and the write is a race this hook cannot close.
+#   - the job dir comes from hook STDIN — <config>/jobs/<first 8 of session_id>, the layout of
+#     194 of 194 job dirs measured 2026-09-25 — never from $CLAUDE_JOB_DIR, which is settable
+#     to anything including the main checkout ([18]). The session prefix must be 8 hex chars
+#     (no path characters), the dir must exist, and it must canonicalize INSIDE <config>/jobs.
+# $HOME, sibling repos and other sessions' job dirs stay denied ([16], [22]).
+SESSION_ID=$(jq -r '.session_id // ""' <<<"$INPUT" 2>/dev/null || true)
+if REAL=$(realpath -m -- "$FILE" 2>/dev/null) && [[ "$REAL" == /* ]]; then
+  SCRATCH_OK=0
+  [[ "$REAL" == /tmp/* ]] && SCRATCH_OK=1
+  if [[ "$SCRATCH_OK" == 0 && "$SESSION_ID" =~ ^[0-9a-f]{8} ]]; then
+    CFG_JOBS=$(realpath -e -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs" 2>/dev/null || true)
+    JOB_ROOT=$(realpath -e -- "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${SESSION_ID:0:8}" 2>/dev/null || true)
+    if [[ -n "$CFG_JOBS" && -n "$JOB_ROOT" && "$JOB_ROOT" == "$CFG_JOBS"/* && "$REAL" == "$JOB_ROOT"/* ]]; then
+      SCRATCH_OK=1
+    fi
+  fi
+  if [[ "$SCRATCH_OK" == 1 ]]; then
+    LINKS=$(stat -c %h -- "$REAL" 2>/dev/null || echo 1)
+    [[ "$LINKS" == 1 ]] && exit 0
+  fi
+fi
+
 # INVARIANT: fires for parent AND subagent Write|Edit calls (HP-003 verified
 # 2026-04-21). Uniform enforcement intended — a subagent escape is the same
 # violation as a top-level escape. Do NOT add an agent_id short-circuit.
@@ -87,7 +123,7 @@ WT_ROOT=$(echo "$CWD" | sed -E 's|(.*\.claude/worktrees/[^/]+).*|\1|')
 # fail-open trap. Emit-then-exit-0 inside the `if` condition (errexit-exempt); fall
 # CLOSED to exit 2 if the emit fails (still hard-blocks). Nothing runs between a
 # successful printf and exit 0.
-REASON="Worktree-leak guard: Edit/Write file_path escapes the worktree boundary into a main-repo path (issue #36182). cwd=$CWD file_path=$FILE worktree=$WT_ROOT — use a worktree-rooted absolute path, or a cwd-relative path."
+REASON="Worktree-leak guard: Edit/Write file_path escapes the worktree boundary (issue #36182). cwd=$CWD file_path=$FILE worktree=$WT_ROOT — use a worktree-rooted absolute path or a cwd-relative path. Scratch writes may go to /tmp or this session's job dir (\$CLAUDE_JOB_DIR); those are checked after resolving symlinks, and a target with a second hard link is refused."
 if DENY_JSON=$(jq -cn --arg r "$REASON" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null) \
    && printf '%s\n' "$DENY_JSON"; then
