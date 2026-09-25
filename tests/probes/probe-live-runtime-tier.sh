@@ -178,7 +178,7 @@ chk "$([ "$RC" -eq 2 ] && echo yes || echo no)" "[D] --filter LIVE_RUNTIME=maybe
 GR="$TMPROOT/gaterepo"
 mkdir -p "$GR/scripts" "$GR/tests/probes" "$GR/docs" "$GR/home/.claude/gsd-core"
 cp "$REPO/scripts/verify-hook-patterns.sh" "$GR/scripts/"
-mkdir -p "$GR/scripts/lib" && cp "$REPO/scripts/lib/hp028-scan.awk" "$GR/scripts/lib/"   # check #5 detector; the gate fails CLOSED without it
+bash "$REPO/tests/probes/lib/gate-fixture-libs.sh" "$REPO" "$GR"   # the gate's staged-lint detectors (#5, #5b); it fails CLOSED without them
 cp "$REPO/scripts/run-probes.sh" "$GR/scripts/"
 chmod +x "$GR"/scripts/*.sh
 : > "$GR/docs/hook-patterns.md"
@@ -187,7 +187,11 @@ cp "$SB/tests/probes/probe-alpha.sh" "$GR/tests/probes/"
 git -C "$GR" init -q 2>/dev/null
 git -C "$GR" config user.email probe@local >/dev/null 2>&1
 git -C "$GR" config user.name probe >/dev/null 2>&1
-# Stage a probe file only: arms check #8's trigger, no-ops checks 1-7.
+# Stage a probe file only: arms check #8's trigger, no-ops checks 1-7. The scaffolding is
+# committed first, so the gate's staged lints (#5, #5b) see only the probe — staging the
+# scanner itself would make #5b judge every ALLOW entry against files this fixture lacks.
+git -C "$GR" add -A -- . ':!tests/probes/probe-alpha.sh' >/dev/null 2>&1
+git -C "$GR" commit -q --no-verify -m base >/dev/null 2>&1
 git -C "$GR" add -A >/dev/null 2>&1
 
 run_gate() { GOUT=$(cd "$GR" && HOME="$GR/home" bash scripts/verify-hook-patterns.sh 2>&1); GRC=$?; }

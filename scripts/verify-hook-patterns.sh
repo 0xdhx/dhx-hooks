@@ -14,6 +14,11 @@ set -euo pipefail
 #      fgrep/rg with -q/-m/--quiet/--silent/--max-count, any spelling or argument
 #      position). Detector: scripts/lib/hp028-scan.awk, run from its STAGED copy,
 #      fail-closed; shared with tests/probes/probe-sigpipe-pipefail-shapes.sh.
+#   5b. Block any staged shell file under the same four roots that assigns IFS a
+#      TAB-valued separator (any spelling), outside a reasoned ALLOW list — TAB is IFS
+#      whitespace, so `read` collapses an EMPTY field and shifts the rest left.
+#      Detector: scripts/lib/tab-ifs-scan.sh, RUN (never sourced) from its STAGED
+#      copy, fail-closed; shared with tests/probes/probe-tab-ifs-field-collapse-lint.sh.
 #   8. Probe suite, tiered (2026-08-20). Armed by the same narrow pathspec
 #      as before (dhx/*.js or tests/probes/*), then split three ways:
 #        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no
@@ -163,6 +168,32 @@ EOF
   [ "$found" -eq 0 ]
 }
 
+# Staged shell files for the commit-time lints #5 and #5b — ONE collector, so the two checks
+# cannot disagree about which staged files are shell. Prints staged (ACM) regular blobs (mode
+# 100…, no symlink/gitlink) under dhx/, dhx-plugin/plugins/dhx/hooks/, scripts/ and tests/ that
+# are `*.sh` or carry a shell shebang on the STAGED blob's first line (scripts/hooks/commit-msg
+# has no suffix). NO path exclusions here: each check applies its own at-rest probe's policy —
+# #5 skips .inactive/.planned like probe-sigpipe-pipefail-shapes.sh, #5b does not, like
+# probe-tab-ifs-field-collapse-lint.sh. Errexit-safe; always returns 0.
+staged_shell_files() {
+  local candidates f mode first
+  candidates=$(git diff --cached --name-only --diff-filter=ACM -- \
+    dhx dhx-plugin/plugins/dhx/hooks scripts tests || true)
+  [ -z "$candidates" ] && return 0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    mode=$(git ls-files -s -- "$f" 2>/dev/null || true)
+    case "${mode:0:3}" in 100) ;; *) continue ;; esac
+    if [[ "$f" != *.sh ]]; then
+      first=""
+      IFS= read -r first < <(git show ":$f" 2>/dev/null) || true
+      [[ "$first" =~ ^\#!.*[/[:space:]](ba|z|k|da)?sh([[:space:]]|$) ]] || continue
+    fi
+    printf '%s\n' "$f"
+  done <<< "$candidates"
+  return 0
+}
+
 # 5. HP-028 SIGPIPE+pipefail shapes — `p | grep -q X` and every other spelling of a pipe
 # into an early-exit reader. ONE detector, scripts/lib/hp028-scan.awk, shared with the
 # at-rest probe tests/probes/probe-sigpipe-pipefail-shapes.sh — neither carries its own
@@ -187,23 +218,14 @@ EOF
 # accumulator and returns its OWN verdict. Errexit-safe: every command that may
 # legitimately fail is inside an `if` or carries `|| true`.
 lint_hp028_staged() {
-  local candidates f mode first scanner errf out found=0
+  local listed f scanner errf out found=0
   local -a shell_files=()
-  candidates=$(git diff --cached --name-only --diff-filter=ACM -- \
-    dhx dhx-plugin/plugins/dhx/hooks scripts tests || true)
-  [ -z "$candidates" ] && return 0
+  listed=$(staged_shell_files)
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac
-    mode=$(git ls-files -s -- "$f" 2>/dev/null || true)
-    case "${mode:0:3}" in 100) ;; *) continue ;; esac   # regular blobs only (no symlink/gitlink)
-    if [[ "$f" != *.sh ]]; then
-      first=""
-      IFS= read -r first < <(git show ":$f" 2>/dev/null) || true
-      [[ "$first" =~ ^\#!.*[/[:space:]](ba|z|k|da)?sh([[:space:]]|$) ]] || continue
-    fi
+    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac   # the at-rest probe's policy
     shell_files+=("$f")
-  done <<< "$candidates"
+  done <<< "$listed"
   [ "${#shell_files[@]}" -eq 0 ] && return 0
 
   scanner=$(mktemp) errf=$(mktemp)
@@ -250,6 +272,128 @@ EOF
     done <<< "$out"
   done
   rm -f "$scanner" "$errf"
+  [ "$found" -eq 0 ]
+}
+
+# 5b. TAB-valued IFS — `read` with a TAB-valued IFS, in every spelling. TAB is IFS whitespace, so
+# `read` collapses a run of tabs: an EMPTY leading or middle field vanishes and every later field
+# shifts one variable left, silently. ONE detector, scripts/lib/tab-ifs-scan.sh — pattern, ALLOW
+# list and judgement — shared with the at-rest probe tests/probes/probe-tab-ifs-field-collapse-lint.sh
+# (docs/decisions.md 2026-09-25 gate-check row: that probe arms at commit only when tests/probes/*
+# or dhx/*.js is staged, so a site staged anywhere else passed every commit — measured in a
+# fixture repo, gate rc=0).
+#
+# Same contract as #5, three differences. (1) The detector is bash, RUN as a child process from
+# its STAGED copy, never sourced: a sourced staged file would share this gate's FAIL, shell
+# options and traps. (2) The staged blobs are written into a temp root and the scanner runs over
+# them there — the code path the probe runs over the worktree, so equal bytes get equal verdicts.
+# (3) ALLOW judgement is strict: every entry naming a staged file must match exactly one of its
+# lines (converting an exempt site forces dropping its entry in the same commit), and when the
+# scanner itself is staged, EVERY entry is judged against its path's INDEX copy, so an ALLOW-only
+# edit cannot slip through. FAIL CLOSED: the scanner missing or empty in the index, or any exit
+# other than 0 (clean) / 1 (findings), blocks naming the scanner. No path exclusions.
+#
+# Fixture coupling: probes copying this script into a fixture repo seed its scripts/lib files
+# through tests/probes/lib/gate-fixture-libs.sh — one list, and a cell in the TAB-IFS probe fails
+# when this file names a scripts/lib path the list lacks.
+lint_tab_ifs_staged() {
+  local listed f p l tmp rc out errtxt found=0 scanner_staged=0
+  local -a rel=() args=()
+  local -A seen=()
+  listed=$(staged_shell_files)
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    rel+=("$f"); seen[$f]=1
+    [ "$f" = "scripts/lib/tab-ifs-scan.sh" ] && scanner_staged=1
+  done <<< "$listed"
+  [ "${#rel[@]}" -eq 0 ] && return 0
+
+  tmp=$(mktemp -d)
+  if ! git show ":scripts/lib/tab-ifs-scan.sh" > "$tmp/scanner.sh" 2>/dev/null || [ ! -s "$tmp/scanner.sh" ]; then
+    cat >&2 <<EOF
+ERROR: TAB-IFS gate cannot run — scripts/lib/tab-ifs-scan.sh is not in the index.
+
+  ${#rel[@]} staged shell file(s) need the TAB-IFS scan, and this gate fails
+  CLOSED rather than read a missing detector as zero hits. Restore and stage it:
+    git checkout HEAD -- scripts/lib/tab-ifs-scan.sh && git add scripts/lib/tab-ifs-scan.sh
+EOF
+    rm -rf "$tmp"; FAIL=1; return 1
+  fi
+  # Parse the whole file first: bash parses as it runs, so a syntax error past the scanner's
+  # last `exit` would otherwise never be seen.
+  if ! bash -n "$tmp/scanner.sh" 2>"$tmp/err"; then
+    cat >&2 <<EOF
+ERROR: TAB-IFS gate cannot run — the staged scripts/lib/tab-ifs-scan.sh does not parse:
+
+$(cat "$tmp/err")
+
+  Failing CLOSED. Fix the scanner (its own probe is
+  tests/probes/probe-tab-ifs-field-collapse-lint.sh), then re-stage it.
+EOF
+    rm -rf "$tmp"; FAIL=1; return 1
+  fi
+  if [ "$scanner_staged" -eq 1 ]; then
+    args+=(--all-allow)
+    # A --list-allow failure is not handled here: the full run below fails the same way.
+    if out=$(bash "$tmp/scanner.sh" --list-allow 2>/dev/null); then
+      while IFS= read -r p; do
+        p=${p%%|*}
+        { [ -n "$p" ] && [ -z "${seen[$p]:-}" ]; } || continue
+        git cat-file -e ":$p" 2>/dev/null || continue   # not in the index: judged 0 hits, STALE
+        rel+=("$p"); seen[$p]=1
+      done <<< "$out"
+    fi
+  fi
+  for f in "${rel[@]}"; do
+    mkdir -p "$tmp/root/$(dirname "$f")"
+    git show ":$f" > "$tmp/root/$f" 2>/dev/null || true
+  done
+  if out=$(bash "$tmp/scanner.sh" --root "$tmp/root" "${args[@]}" -- "${rel[@]}" 2>"$tmp/err"); then rc=0; else rc=$?; fi
+  errtxt=$(cat "$tmp/err" 2>/dev/null || true)
+  rm -rf "$tmp"
+  case "$rc" in
+    0) return 0 ;;
+    1) ;;
+    *) cat >&2 <<EOF
+ERROR: TAB-IFS gate cannot run — the staged scripts/lib/tab-ifs-scan.sh exited $rc:
+
+${errtxt:-  (no diagnostic)}
+
+  Failing CLOSED. Fix the scanner (its own probe is
+  tests/probes/probe-tab-ifs-field-collapse-lint.sh), then re-stage it.
+EOF
+       FAIL=1; return 1 ;;
+  esac
+  while IFS= read -r l; do
+    case "$l" in
+      "UNALLOWED "*)
+        l=${l#UNALLOWED }
+        cat >&2 <<EOF
+ERROR: ${l%%:*}:$(cut -d: -f2 <<<"$l") assigns IFS a TAB-valued separator.
+
+  $(cut -d: -f3- <<<"$l")
+
+  TAB is IFS whitespace: read collapses an EMPTY field and shifts every later
+  field one variable left, silently. Use instead:
+    NUL framing      jq -j with "\u0000" after every field, one read -r -d '' per field
+    delimiter split  mapfile -t -d \$'\t' F <<<"\$row"
+    unit separator   a row joined and split on \x1f
+  An exemption needs a fixed-format external producer and a reason, in the ALLOW
+  list of scripts/lib/tab-ifs-scan.sh (see its header).
+EOF
+        FAIL=1; found=1 ;;
+      "STALE "*)
+        l=${l#STALE }
+        cat >&2 <<EOF
+ERROR: TAB-IFS ALLOW entry ${l% (matches*} is stale in the staged tree (${l##* (}
+
+  0 hits: its exempt site was converted away — delete the entry from the ALLOW
+          list in scripts/lib/tab-ifs-scan.sh in this same commit.
+  2+ hits: a second TAB-valued IFS line hides behind the entry's anchor — convert it.
+EOF
+        FAIL=1; found=1 ;;
+    esac
+  done <<< "$out"
   [ "$found" -eq 0 ]
 }
 
@@ -373,6 +517,9 @@ fi
 
 # 5. HP-028 SIGPIPE+pipefail shapes — body and rationale at lint_hp028_staged above.
 lint_hp028_staged || true
+
+# 5b. TAB-valued IFS — body and rationale at lint_tab_ifs_staged above.
+lint_tab_ifs_staged || true
 
 # 6. Run sed extraction tests when relevant files are staged
 STAGED_HOOKS=$(git diff --cached --name-only -- 'dhx/*.sh' 'tests/' || true)
