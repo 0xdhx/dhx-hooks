@@ -46,6 +46,8 @@
 #   [!] watch polls degraded · …   polls_degraded verdict (health cache)
 #   ⚠ N watch item(s) failing: …   failing_items verdict  (health cache)
 #   ⚠ Action required (N): …       awaiting_us inbox      (watchlist.json)
+#   ✔ Ready for your PR (N): …     pr_eligible inbox      (watchlist.json)
+#       ↳ from reports/<file>.md    origin_report context sub-line on both inbox rows, above `›`
 #   ⚠ N item(s) closed upstream …  upstream-closed drift  (watchlist.json)
 #   [!] digest_corrupt · …         corrupt digest lines
 #   [!] digest_pointer · …         pointer.txt ahead of every digest id (resynced; once)
@@ -437,6 +439,8 @@ if [ -f "$WATCHLIST" ]; then
                 | if $s < 3600 then " · polled \($s / 60 | floor)m ago"
                   else " · polled \($s / 3600 | floor)h ago" end)
               end))
+        + ((.origin_report.path? // null) as $o
+            | if ($o | type) == "string" and $o != "" then "\n      ↳ from " + $o else "" end)
         + "\n      › /dhx:watch ack " + .id + " · snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
     ACTION_BLOCK="⚠ Action required (${ACTION_COUNT}):
 ${ACTION_ROWS}
@@ -518,6 +522,8 @@ if [ -f "$WATCHLIST" ]; then
                 | if $s < 3600 then " · polled \($s / 60 | floor)m ago"
                   else " · polled \($s / 3600 | floor)h ago" end)
               end))
+        + ((.origin_report.path? // null) as $o
+            | if ($o | type) == "string" and $o != "" then "\n      ↳ from " + $o else "" end)
         + "\n      › /dhx:upstream pr " + .url + " · /dhx:watch snooze " + .id + " 8h"' "$WATCHLIST" 2>/dev/null)
     PR_READY_BLOCK="✔ Ready for your PR (${PR_READY_COUNT}):
 ${PR_READY_ROWS}

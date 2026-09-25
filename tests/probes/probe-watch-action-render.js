@@ -341,6 +341,51 @@ const prItem = (over) => item(Object.assign({ url: `https://github.com/o/r/issue
     !r.stdout.includes(SECTION), `out=${j(r.stdout)}`);
 }
 
+// ── (9) ORIGIN-REPORT CONTEXT LINE (v2.6 Signals R1, 2026-09-25) ──
+// The checker stamps origin_report {path, linked_at} — the report whose **Watchlist:** line filed
+// the item. Both ask-blocks render it as ONE context sub-line between the row and its `›` command,
+// only when .origin_report.path is a non-empty string. Context only: membership, counts and the `›`
+// line are byte-identical with or without it. Fail-silent on a malformed pointer (never a throw —
+// a jq error here would blank the WHOLE block, not just the line).
+{
+  const LINK = { path: 'reports/2026-09-23-origin-x.md', linked_at: '2026-09-24T00:00:00.000Z' };
+  const CTX = (p) => `\n      ↳ from ${p}\n      › `;
+  const r = runBanner([
+    prItem({ id: 'orl-ready', pr_eligible: true, origin_report: LINK }),
+    item({ id: 'orl-action', url: 'https://github.com/o/r/issues/77', origin_report: { ...LINK, path: 'reports/done/2026-09-20-origin-y.md' } }),
+    prItem({ id: 'orl-bare-ready', pr_eligible: true, origin_report: null }),
+    item({ id: 'orl-bare-action', url: 'https://github.com/o/r/issues/78' }),
+  ]);
+  const [actionHalf, prHalf] = r.stdout.split(PR_SECTION);
+  check('(9) a linked Ready row carries "↳ from <path>" directly above its › line',
+    (prHalf || '').includes(`issues/orl-ready${CTX('reports/2026-09-23-origin-x.md')}/dhx:upstream pr https://github.com/o/r/issues/orl-ready`),
+    `out=${j(r.stdout)}`);
+  check('(9) a linked Action row carries "↳ from <path>" (reports/done/ path as stored)',
+    actionHalf.includes(`issues/77${CTX('reports/done/2026-09-20-origin-y.md')}/dhx:watch ack orl-action`), `out=${j(r.stdout)}`);
+  check('(9) exactly two context lines — unlinked rows (null / absent) render none',
+    (r.stdout.match(/↳ from /g) || []).length === 2, `out=${j(r.stdout)}`);
+  check('(9) unlinked rows keep the bare row → › shape',
+    (prHalf || '').includes('issues/orl-bare-ready\n      › /dhx:upstream pr ')
+      && actionHalf.includes('issues/78\n      › /dhx:watch ack orl-bare-action'), `out=${j(r.stdout)}`);
+  check('(9) context line never moves counts (Action 2, Ready 2)',
+    r.stdout.includes('Action required (2)') && r.stdout.includes('Ready for your PR (2)'), `out=${j(r.stdout)}`);
+}
+{
+  // Malformed pointers the validator would refuse, if a hand edit ever landed one: the row still
+  // renders, bare. A throwing clause would silently empty the whole block instead.
+  const bad = [
+    { id: 'orl-str', origin_report: 'reports/x.md' },
+    { id: 'orl-nopath', origin_report: { linked_at: '2026-09-24T00:00:00Z' } },
+    { id: 'orl-numpath', origin_report: { path: 7 } },
+    { id: 'orl-empty', origin_report: { path: '' } },
+  ];
+  const r = runBanner(bad.map((o) => prItem({ ...o, pr_eligible: true })));
+  check('(9) malformed origin_report: every row still renders, none with a context line',
+    bad.every((o) => r.stdout.includes(`/dhx:watch snooze ${o.id} 8h`)) && !r.stdout.includes('↳'),
+    `out=${j(r.stdout)}`);
+  check('(9) malformed origin_report: banner exits 0', r.status === 0, `status=${r.status}`);
+}
+
 console.log('');
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail);
