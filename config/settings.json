@@ -250,6 +250,14 @@
             "command": "bash /home/dhx/.claude/hooks/gsd-session-state.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.claude/hooks/dhx-guard-load-assert.sh\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
