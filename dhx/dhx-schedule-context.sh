@@ -35,7 +35,15 @@ if command -v jq >/dev/null 2>&1 && [ -n "$INPUT" ]; then
   SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 fi
 
-CACHE_DIR="${DHX_SCHEDULE_CACHE_DIR:-$HOME/.cache/dhx/schedule}"
+# ONE CACHE-ROOT RULE, shared with cross-repo store.resolveCacheDir (2026-09-25): the schedule
+# override, else a root DERIVED INSIDE a hooks-only override, else the live default. Exported
+# because the renderer reads it — so without the middle case a run that redirected only
+# DHX_HOOKS_CACHE_DIR (the 2026-09-20 `dryrun-xyz` dry run of session-start.sh) put its reference
+# beat in the temp root and this child's record in the LIVE schedule cache, where health
+# reported a session that never existed. Parity with the store: probe-schedule-wiring.sh [B17].
+if [ -n "${DHX_SCHEDULE_CACHE_DIR:-}" ]; then CACHE_DIR="$DHX_SCHEDULE_CACHE_DIR"
+elif [ -n "${DHX_HOOKS_CACHE_DIR:-}" ]; then CACHE_DIR="$DHX_HOOKS_CACHE_DIR/.schedule"
+else CACHE_DIR="$HOME/.cache/dhx/schedule"; fi
 export DHX_SCHEDULE_CACHE_DIR="$CACHE_DIR"
 
 # THE EVENT DIGEST IS FORWARDED BY THE PARENT, NOT RECOMPUTED HERE — and that asymmetry with

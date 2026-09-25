@@ -49,8 +49,13 @@ INPUT=$(cat)
 [ -n "${SESSION_ID:-}" ] || exit 0
 
 # The cache-root override is what lets the probe drive this from a fixture instead of the
-# live cache. Same shape as dhx-cold-return-gate.sh's DHX_COLD_RETURN_CACHE_DIR.
-CACHE_DIR="${DHX_SCHEDULE_CACHE_DIR:-$HOME/.cache/dhx/schedule}"
+# live cache. Same shape as dhx-cold-return-gate.sh's DHX_COLD_RETURN_CACHE_DIR — plus the
+# middle case (2026-09-25), the one cache-root rule shared with cross-repo store.resolveCacheDir:
+# a HOOKS-only override derives the schedule root inside itself, so a half-redirected run can no
+# longer write this leg's records into the live cache. Parity: probe-schedule-wiring.sh [B17].
+if [ -n "${DHX_SCHEDULE_CACHE_DIR:-}" ]; then CACHE_DIR="$DHX_SCHEDULE_CACHE_DIR"
+elif [ -n "${DHX_HOOKS_CACHE_DIR:-}" ]; then CACHE_DIR="$DHX_HOOKS_CACHE_DIR/.schedule"
+else CACHE_DIR="$HOME/.cache/dhx/schedule"; fi
 export DHX_SCHEDULE_CACHE_DIR="$CACHE_DIR"
 
 # The shared event digest. printf '%s', never echo: echo appends a newline and the hasher

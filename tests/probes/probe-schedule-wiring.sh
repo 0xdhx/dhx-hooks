@@ -46,7 +46,8 @@
 # B9-B11 back the 2026-08-22 "One digest-tool policy at every /dhx:schedule computing site" row.
 # A10-A11, A13, B6, B7b, B12-B14 back the 2026-08-23 "reference writers emit per-occurrence
 # records (schema_version 2)" row. A4 (repinned) + B15 back the 2026-09-14 "schedule child runs
-# directly under the reference record, emitted later" row. The `kind:"undigested"` arm is NOT behaviourally reachable
+# directly under the reference record, emitted later" row. B17 backs the 2026-09-25 "one
+# schedule cache-root rule across the two roots" row. The `kind:"undigested"` arm is NOT behaviourally reachable
 # from a probe: both keys share one digest chain, so with no digest tool the session key is
 # empty and the guarded block is skipped before the arm is reached (B9-B11 cover the chain).
 # Run: bash tests/probes/probe-schedule-wiring.sh
@@ -636,6 +637,75 @@ if command -v sha256sum >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && comm
   b16 empty-session-id no '{"session_id":"","transcript_path":"/p/s16.jsonl","cwd":"/p","prompt":"x"}'
 else
   echo "SKIP [B16] eligibility parity — sha256sum/jq/node absent"
+fi
+
+# B17 — ONE CACHE-ROOT RULE ACROSS THE TWO ROOTS (2026-09-25). DHX_HOOKS_CACHE_DIR and
+# DHX_SCHEDULE_CACHE_DIR are separately overridable, and the shims EXPORT the schedule root
+# before Node runs, so a run that redirected only the hooks root wrote its reference beats to
+# the temp root and its schedule records to the LIVE schedule root — the `dryrun-xyz` phantom
+# health reported on 2026-09-20. Rule (cross-repo store.resolveCacheDir): schedule override,
+# else `$DHX_HOOKS_CACHE_DIR/.schedule`, else ~/.cache/dhx/schedule.
+#   B17a  the half-redirected dispatcher AND prompt shim, real renderer, fake HOME: nothing
+#         reaches the unredirected root (HOME's default), and — the POSITIVE control that makes
+#         the zero mean something — records DO land under the derived root.
+#   B17b  parity: both shims export the directory store.resolveCacheDir() resolves, for all
+#         four set/unset combinations. The store is the cross-repo checkout's (B12's precedent).
+# The renderer is pinned explicitly: under a fake HOME the shims' default renderer path is
+# absent, the shim exits before writing, and a leak check would pass vacuously.
+R17="$HOME/repos/cross-repo/scripts/schedule/dhx-schedule-render.cjs"
+S17="$HOME/repos/cross-repo/scripts/schedule/dhx-schedule-store.cjs"
+if command -v sha256sum >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1 \
+   && [ -r "$R17" ] && [ -r "$S17" ]; then
+  FH17="$SB/home17"; HC17="$SB/hc17"; mkdir -p "$FH17/.claude"
+  printf '{"session_id":"probe-sched-b17","source":"startup"}' \
+    | env -u DHX_SCHEDULE_CACHE_DIR HOME="$FH17" DHX_HOOKS_CACHE_DIR="$HC17" DHX_SCHEDULE_RENDERER="$R17" \
+      timeout 120 bash "$DISPATCHER" >/dev/null 2>&1
+  printf '{"session_id":"probe-sched-b17","transcript_path":"/p/b17.jsonl","cwd":"/p","prompt":"x"}' \
+    | env -u DHX_SCHEDULE_CACHE_DIR HOME="$FH17" DHX_HOOKS_CACHE_DIR="$HC17" DHX_SCHEDULE_RENDERER="$R17" \
+      bash "$PROMPT_SHIM" >/dev/null 2>&1
+  LEAK17=$(find "$FH17/.cache/dhx/schedule" -type f 2>/dev/null | wc -l | tr -d ' ')
+  DSS17=$(find "$HC17/.schedule/health/session-start" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  DPR17=$(find "$HC17/.schedule/health/prompt" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${LEAK17:-1}" -eq 0 ] && [ "${DSS17:-0}" -ge 1 ] && [ "${DPR17:-0}" -ge 1 ]; then
+    check "[B17a] hooks-only redirection: 0 files under HOME's schedule root; session-start ($DSS17) and prompt ($DPR17) records under \$DHX_HOOKS_CACHE_DIR/.schedule" ok
+  else
+    check "[B17a] hooks-only redirection writes nothing under the unredirected schedule root" fail \
+      "leaked=${LEAK17:-?} derived-session-start=${DSS17:-?} derived-prompt=${DPR17:-?} leaked-files='$(find "$FH17/.cache/dhx/schedule" -type f 2>/dev/null | head -2 | tr '\n' ' ')'"
+  fi
+
+  printf '%s\n' "require('fs').writeFileSync(process.env.OUT17, process.env.DHX_SCHEDULE_CACHE_DIR || '<unset>');" > "$SB/render17.cjs"
+  FH17B="$SB/home17b"; mkdir -p "$FH17B/.claude"
+  b17() {  # b17 <label> <schedule-root|-> <hooks-root|->
+    local label="$1" sc="$2" hc="$3" shim out want got envs=()
+    [ "$sc" != - ] && envs+=("DHX_SCHEDULE_CACHE_DIR=$sc")
+    [ "$hc" != - ] && envs+=("DHX_HOOKS_CACHE_DIR=$hc")
+    want=$(env -u DHX_SCHEDULE_CACHE_DIR -u DHX_HOOKS_CACHE_DIR HOME="$FH17B" "${envs[@]}" \
+      node -e 'process.stdout.write(require(process.argv[1]).resolveCacheDir())' "$S17" 2>/dev/null)
+    for shim in context prompt; do
+      out="$SB/b17-$label-$shim.out"; rm -f "$out"
+      if [ "$shim" = context ]; then
+        printf '{"session_id":"s17","source":"startup"}' | env -u DHX_SCHEDULE_CACHE_DIR -u DHX_HOOKS_CACHE_DIR \
+          HOME="$FH17B" OUT17="$out" DHX_SCHEDULE_RENDERER="$SB/render17.cjs" "${envs[@]}" bash "$CTX_SHIM" >/dev/null 2>&1
+      else
+        printf '{"session_id":"s17","transcript_path":"/p/s17.jsonl","cwd":"/p","prompt":"x"}' | env -u DHX_SCHEDULE_CACHE_DIR -u DHX_HOOKS_CACHE_DIR \
+          HOME="$FH17B" OUT17="$out" DHX_SCHEDULE_RENDERER="$SB/render17.cjs" "${envs[@]}" bash "$PROMPT_SHIM" >/dev/null 2>&1
+      fi
+      got=$(cat "$out" 2>/dev/null)
+      # The shim exports the value as written; the store path.resolve()s it. Compare resolved.
+      got=$(node -e 'process.stdout.write(require("path").resolve(process.argv[1]))' "${got:-<none>}")
+      if [ -n "$want" ] && [ "$got" = "$want" ]; then
+        check "[B17b:$label] $shim shim exports the root store.resolveCacheDir() resolves" ok
+      else
+        check "[B17b:$label] $shim shim and store.resolveCacheDir() agree" fail "shim=$got store=${want:-<store failed>}"
+      fi
+    done
+  }
+  b17 neither - -
+  b17 schedule-only "$SB/sc17" -
+  b17 hooks-only - "$SB/hc17b"
+  b17 both "$SB/sc17" "$SB/hc17b"
+else
+  echo "SKIP [B17] cache-root rule — sha256sum/jq/node or the cross-repo renderer/store absent on this host"
 fi
 
 echo "---"
