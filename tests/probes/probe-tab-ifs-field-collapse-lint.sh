@@ -18,18 +18,21 @@
 # so a probe-local pattern would be the drift that let check #5 fall behind its probe.
 #
 # THE NET is a mechanism, not a spelling: every git-listed (tracked or untracked-unignored) file
-# under the four roots that is `*.sh` or opens with a shell shebang. Liveness is asserted — a
+# under the four roots that is `*.sh` or opens with a shell shebang, minus .inactive/ and .planned/
+# (the gate header's `Exclusions:` line — dormant files; reviving one moves it to a live path,
+# where both this net and gate check #5b see it). Liveness is asserted — a
 # per-root file floor and the presence of every file the sweep converted — so a net that silently
 # scans nothing is a red, not a pass.
 #
 # Cells:
-#   [net]    floors, sweep files present, scanner present
+#   [net]    floors, sweep files present, scanner present, .inactive/.planned kept out
 #   [tree]   zero UNALLOWED/STALE over the real tree, the ALLOW hits live, every entry reasoned
 #   [mut]    copied tree: NULL mutant, seven red spellings, five clean shapes, stale/duplicate
 #            ALLOW, a broken pattern exits 2 (never "zero hits")
 #   [seed]   tests/probes/lib/gate-fixture-libs.sh lists every scripts/lib path the gate names
 #   [gate]   fixture repos driving lint_tab_ifs_staged: red staged scripts/ file, suffix-less
-#            shebang file, non-shell file, clean file, index-vs-worktree (partial staging) both
+#            shebang file, .inactive/ skipped but a revived file blocked, a rename + edit blocked,
+#            non-shell file, clean file, index-vs-worktree (partial staging) both
 #            ways, ALLOW transitions, scanner-staged judges every entry, fail-closed on a missing,
 #            broken or pattern-broken scanner, and an intact index copy wins over a broken worktree
 #
@@ -60,6 +63,7 @@ list_shell_files() {
   git -C "$base" ls-files --cached --others --exclude-standard -- "${ROOTS[@]}" 2>/dev/null \
   | while IFS= read -r f; do
       [ -f "$base/$f" ] || continue
+      case "$f" in */.inactive/*|*/.planned/*) continue ;; esac   # the gate header's Exclusions line
       case "$f" in
         *.sh) printf '%s\n' "$f" ;;
         *) local first=""; IFS= read -r first < "$base/$f" 2>/dev/null
@@ -99,6 +103,9 @@ for f in dhx/dhx-worktree-write-guard.sh dhx/dhx-session-registry-prompt.sh dhx/
   [[ $'\n'"$FILES"$'\n' == *$'\n'"$f"$'\n'* ]] && ok "[net] includes $f" || bad "[net] includes $f" "absent from the listing"
 done
 [ -r "$SCANNER" ] && ok "[net] scanner readable ($SCANNER)" || bad "[net] scanner readable" "$SCANNER"
+n=$(printf '%s\n' "$FILES" | command grep -cE '/\.(inactive|planned)/')
+[ "$n" -eq 0 ] && ok "[net] .inactive/ and .planned/ stay out of the net (gate header Exclusions)" \
+  || bad "[net] .inactive/ and .planned/ stay out of the net" "$n listed"
 
 echo "=== 2. The tree (zero unallowed hits; every ALLOW entry live) ==="
 judge "$REPO_ROOT" "$SCANNER" --hits --all-allow
@@ -223,7 +230,17 @@ R=$(mkrepo g-suffixless); printf '#!/usr/bin/env bash\n%s\n' "$RED_LINE" > "$R/s
 gate_case "blocks a staged suffix-less shebang file" 1 "$R" "scripts/hooks/zz:2"
 
 R=$(mkrepo g-inactive); mkdir -p "$R/tests/probes/.inactive"; printf '%s\n' "$RED_LINE" > "$R/tests/probes/.inactive/zz.sh"; git -C "$R" add -A
-gate_case "blocks under .inactive/ (no exclusions, like the at-rest net)" 1 "$R" ".inactive/zz.sh:1"
+gate_case "skips a staged .inactive/ file (the header's Exclusions line)" 0 "$R"
+
+R=$(mkrepo g-revived); mkdir -p "$R/tests/probes/.inactive"; printf '%s\n' "$RED_LINE" > "$R/tests/probes/.inactive/zz.sh"
+git -C "$R" add -A && git -C "$R" commit -q --no-verify -m "dormant spike"
+git -C "$R" mv tests/probes/.inactive/zz.sh tests/probes/zz.sh
+gate_case "a dormant file moved to a live path is scanned there and blocks" 1 "$R" "tests/probes/zz.sh:1"
+
+R=$(mkrepo g-rename-edit); seq 1 30 | sed 's/^/echo line /' > "$R/scripts/a.sh"
+git -C "$R" add -A && git -C "$R" commit -q --no-verify -m "live file"
+git -C "$R" mv scripts/a.sh scripts/b.sh; printf '%s\n' "$RED_LINE" >> "$R/scripts/b.sh"; git -C "$R" add scripts/b.sh
+gate_case "a rename that also adds a violation (git status R) blocks" 1 "$R" "scripts/b.sh:31"
 
 R=$(mkrepo g-nonshell); printf 'notes\n%s\n' "$RED_LINE" > "$R/scripts/notes.txt"; git -C "$R" add -A
 gate_case "passes a staged non-shell file" 0 "$R"

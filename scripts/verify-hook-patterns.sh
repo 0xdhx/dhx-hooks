@@ -172,12 +172,16 @@ EOF
 # cannot disagree about which staged files are shell. Prints staged (ACM) regular blobs (mode
 # 100…, no symlink/gitlink) under dhx/, dhx-plugin/plugins/dhx/hooks/, scripts/ and tests/ that
 # are `*.sh` or carry a shell shebang on the STAGED blob's first line (scripts/hooks/commit-msg
-# has no suffix). NO path exclusions here: each check applies its own at-rest probe's policy —
-# #5 skips .inactive/.planned like probe-sigpipe-pipefail-shapes.sh, #5b does not, like
-# probe-tab-ifs-field-collapse-lint.sh. Errexit-safe; always returns 0.
+# has no suffix). NO path exclusions here: each check applies the gate-wide `Exclusions:` line
+# in this file's header itself — #5 and #5b both skip .inactive/ and .planned/, as their at-rest
+# probes do. --no-renames is load-bearing: with rename detection on (git's default) a `git mv`
+# is status R, which ACM drops, so a moved file — a revived .inactive/ spike, or a rename that
+# also adds a violation (measured 2026-09-25: R087 with both shapes appended, #5 and #5b rc=0) —
+# was never scanned at its new path. Split into D + A, the new path is an A. Same fix and reason
+# as scripts/hooks/pre-commit.d/1{0,1}-backlog-*.sh. Errexit-safe; always returns 0.
 staged_shell_files() {
   local candidates f mode first
-  candidates=$(git diff --cached --name-only --diff-filter=ACM -- \
+  candidates=$(git diff --cached --name-only --diff-filter=ACM --no-renames -- \
     dhx dhx-plugin/plugins/dhx/hooks scripts tests || true)
   [ -z "$candidates" ] && return 0
   while IFS= read -r f; do
@@ -223,7 +227,7 @@ lint_hp028_staged() {
   listed=$(staged_shell_files)
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac   # the at-rest probe's policy
+    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac   # the header's Exclusions line
     shell_files+=("$f")
   done <<< "$listed"
   [ "${#shell_files[@]}" -eq 0 ] && return 0
@@ -291,7 +295,9 @@ EOF
 # lines (converting an exempt site forces dropping its entry in the same commit), and when the
 # scanner itself is staged, EVERY entry is judged against its path's INDEX copy, so an ALLOW-only
 # edit cannot slip through. FAIL CLOSED: the scanner missing or empty in the index, or any exit
-# other than 0 (clean) / 1 (findings), blocks naming the scanner. No path exclusions.
+# other than 0 (clean) / 1 (findings), blocks naming the scanner. Skips .inactive/ and .planned/
+# per the header's `Exclusions:` line: a dormant file is not live code, and reviving one means
+# moving it to a live path, which stages it THERE — where this check scans it.
 #
 # Fixture coupling: probes copying this script into a fixture repo seed its scripts/lib files
 # through tests/probes/lib/gate-fixture-libs.sh — one list, and a cell in the TAB-IFS probe fails
@@ -303,6 +309,7 @@ lint_tab_ifs_staged() {
   listed=$(staged_shell_files)
   while IFS= read -r f; do
     [ -z "$f" ] && continue
+    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac   # the header's Exclusions line
     rel+=("$f"); seen[$f]=1
     [ "$f" = "scripts/lib/tab-ifs-scan.sh" ] && scanner_staged=1
   done <<< "$listed"
