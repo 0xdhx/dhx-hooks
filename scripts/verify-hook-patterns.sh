@@ -9,12 +9,11 @@ set -euo pipefail
 #      resolve to a `## HP-NNN ` section in docs/hook-patterns.md.
 #   4. If docs/hook-patterns.md is staged, block any new `## HP-NNN`
 #      section that lacks a non-empty `**Evidence:**` block.
-#   5. Block any staged dhx hook introducing a SIGPIPE+pipefail-prone
-#      `cmd | grep -[qm] PATTERN` shape (HP-028). Covers grep -q AND
-#      grep -m N (both structurally truth-signal readers in if-conditions
-#      — same SIGPIPE-bites-control-flow class). Comment lines and lines
-#      containing the literal `HP-028` are exempt. Companion at-rest
-#      invariant: tests/probes/probe-sigpipe-pipefail-shapes.sh.
+#   5. Block any staged shell file under dhx/, dhx-plugin/plugins/dhx/hooks/,
+#      scripts/ or tests/ piping into an early-exit reader (HP-028: grep/egrep/
+#      fgrep/rg with -q/-m/--quiet/--silent/--max-count, any spelling or argument
+#      position). Detector: scripts/lib/hp028-scan.awk, run from its STAGED copy,
+#      fail-closed; shared with tests/probes/probe-sigpipe-pipefail-shapes.sh.
 #   8. Probe suite, tiered (2026-08-20). Armed by the same narrow pathspec
 #      as before (dhx/*.js or tests/probes/*), then split three ways:
 #        8a HERMETIC TIER — run-probes.sh --filter LIVE_RUNTIME=no
@@ -164,6 +163,96 @@ EOF
   [ "$found" -eq 0 ]
 }
 
+# 5. HP-028 SIGPIPE+pipefail shapes — `p | grep -q X` and every other spelling of a pipe
+# into an early-exit reader. ONE detector, scripts/lib/hp028-scan.awk, shared with the
+# at-rest probe tests/probes/probe-sigpipe-pipefail-shapes.sh — neither carries its own
+# pattern (2026-09-25 row: this check's own `'| *grep -[qm]'` had drifted from the probe
+# and scanned staged dhx/*.sh only, so a scripts/ or tests/ site passed every commit).
+#
+# Scope: staged (ACM) files under the probe's four roots that are shell — `*.sh` or a
+# shell shebang on the STAGED blob's first line (scripts/hooks/commit-msg has no suffix).
+# The scanner runs from ITS OWN STAGED COPY, never the worktree: this gate executes from
+# the worktree of every concurrent session, and a peer's half-saved scanner must not
+# change another commit's verdict. FAIL CLOSED: when shell files need scanning and that
+# copy is missing, empty or makes awk error, the commit blocks naming the scanner — an
+# unusable detector reading as "zero hits" is the silent pass this check exists to stop.
+#
+# Fixture coupling: a probe that copies THIS script into a fixture repo must copy
+# scripts/lib/hp028-scan.awk beside it — staging any shell file there otherwise blocks
+# (by design). Five do: probe-red-commit-attribution, probe-red-debt-pairing,
+# probe-multi-cc-validator-decoupling, probe-hermetic-tier-green-token, probe-live-runtime-tier.
+#
+# Callable seam (same shape as lint_probe_set_flags): the probe sources this script with
+# DHX_SKIP_SET_FLAG_LINT_TESTS=1 inside a fixture repo and calls it. Sets the shared FAIL
+# accumulator and returns its OWN verdict. Errexit-safe: every command that may
+# legitimately fail is inside an `if` or carries `|| true`.
+lint_hp028_staged() {
+  local candidates f mode first scanner errf out found=0
+  local -a shell_files=()
+  candidates=$(git diff --cached --name-only --diff-filter=ACM -- \
+    dhx dhx-plugin/plugins/dhx/hooks scripts tests || true)
+  [ -z "$candidates" ] && return 0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in */.inactive/*|*/.planned/*) continue ;; esac
+    mode=$(git ls-files -s -- "$f" 2>/dev/null || true)
+    case "${mode:0:3}" in 100) ;; *) continue ;; esac   # regular blobs only (no symlink/gitlink)
+    if [[ "$f" != *.sh ]]; then
+      first=""
+      IFS= read -r first < <(git show ":$f" 2>/dev/null) || true
+      [[ "$first" =~ ^\#!.*[/[:space:]](ba|z|k|da)?sh([[:space:]]|$) ]] || continue
+    fi
+    shell_files+=("$f")
+  done <<< "$candidates"
+  [ "${#shell_files[@]}" -eq 0 ] && return 0
+
+  scanner=$(mktemp) errf=$(mktemp)
+  if ! git show ":scripts/lib/hp028-scan.awk" > "$scanner" 2>/dev/null || [ ! -s "$scanner" ]; then
+    cat >&2 <<EOF
+ERROR: HP-028 gate cannot run — scripts/lib/hp028-scan.awk is not in the index.
+
+  ${#shell_files[@]} staged shell file(s) need the HP-028 scan, and this gate fails
+  CLOSED rather than read a missing detector as zero hits. Restore and stage it:
+    git checkout HEAD -- scripts/lib/hp028-scan.awk && git add scripts/lib/hp028-scan.awk
+EOF
+    rm -f "$scanner" "$errf"; FAIL=1; return 1
+  fi
+  for f in "${shell_files[@]}"; do
+    if ! out=$(awk -v label="$f" -f "$scanner" < <(git show ":$f" 2>/dev/null) 2>"$errf"); then
+      cat >&2 <<EOF
+ERROR: HP-028 gate cannot run — the staged scripts/lib/hp028-scan.awk fails on $f:
+
+$(cat "$errf")
+
+  Failing CLOSED. Fix the scanner (its own probe is
+  tests/probes/probe-sigpipe-pipefail-shapes.sh), then re-stage it.
+EOF
+      FAIL=1; found=1; break
+    fi
+    [ -z "$out" ] && continue
+    while IFS= read -r hit; do
+      [ -z "$hit" ] && continue
+      cat >&2 <<EOF
+ERROR: ${hit%%:*}:$(cut -d: -f2 <<<"$hit") introduces a SIGPIPE+pipefail-prone shape (HP-028).
+
+  $(cut -d: -f3- <<<"$hit")
+
+  A pipe into an early-exit reader (grep/egrep/fgrep/rg with -q, -m, --quiet,
+  --silent or --max-count, in any spelling or argument position). Replace, BY PRODUCER:
+    grep -q PAT <<<"\$VAR"                 # echo "\$VAR" or printf '%s\n' "\$VAR"
+    grep -q PAT < <(printf '%s' "\$VAR")   # printf '%s' — NO trailing newline
+    grep -q PAT < <(cmd args)              # any command output
+
+  See docs/hook-patterns.md HP-028. A fixture that constructs the broken form on
+  purpose is exempted by an 'HP-028' token on the same line.
+EOF
+      FAIL=1; found=1
+    done <<< "$out"
+  done
+  rm -f "$scanner" "$errf"
+  [ "$found" -eq 0 ]
+}
+
 # D-12 source-time guard: when tests/test-probe-set-flag-lint.sh sources this
 # script to import lint_probe_set_flags, return BEFORE running any gate check
 # (and before the test wiring below re-invokes the harness — recursion guard).
@@ -282,42 +371,8 @@ EOF
   fi
 fi
 
-# 5. Block staged dhx hooks that introduce SIGPIPE+pipefail-prone shapes.
-#    HP-028: `cmd | grep -q PATTERN` silently drops the match when LHS
-#    output exceeds the OS pipe buffer (~64 KiB) under pipefail. Comment
-#    lines and lines containing the literal `HP-028` are exempt — same
-#    exclusions as the at-rest invariant probe at
-#    tests/probes/probe-sigpipe-pipefail-shapes.sh (BRE regex parity).
-if [ -n "$STAGED" ]; then
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    BLOB=$(git show ":$f" 2>/dev/null || true)
-    [ -z "$BLOB" ] && continue
-    SHAPE_HITS=$(grep -n '| *grep -[qm]' <<< "$BLOB" || true)
-    [ -z "$SHAPE_HITS" ] && continue
-    while IFS=: read -r lineno content; do
-      [ -z "$lineno" ] && continue
-      trimmed="${content#"${content%%[![:space:]]*}"}"
-      case "$trimmed" in '#'*) continue ;; esac
-      case "$content" in *HP-028*) continue ;; esac
-      cat >&2 <<EOF
-ERROR: $f:$lineno introduces a SIGPIPE+pipefail-prone shape (HP-028).
-
-  $content
-
-  Replace the HP-028 shape 'cmd | grep -q PAT' (or 'cmd | grep -m N PAT') with:
-    grep -q PAT <<< "\$VAR"        # for variable inputs
-    grep -q PAT < <(cmd args)     # for command outputs
-    (same swap shape applies to grep -m N)
-
-  See docs/hook-patterns.md HP-028 for the full pattern. Exempt the line
-  by adding an 'HP-028' reference comment (intentional documentation,
-  heredoc bodies, etc.).
-EOF
-      FAIL=1
-    done <<< "$SHAPE_HITS"
-  done <<< "$STAGED"
-fi
+# 5. HP-028 SIGPIPE+pipefail shapes — body and rationale at lint_hp028_staged above.
+lint_hp028_staged || true
 
 # 6. Run sed extraction tests when relevant files are staged
 STAGED_HOOKS=$(git diff --cached --name-only -- 'dhx/*.sh' 'tests/' || true)

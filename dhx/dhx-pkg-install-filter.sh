@@ -127,22 +127,22 @@ is_install() {
   # surface that needs its own disjointness corpus rows. Brief:
   # `.planning/backlog/2026-08-23-pkg-install-filter-command-prefix-coverage.md`.
   c="${c#"${c%%[![:space:]]*}"}"
-  while printf '%s' "$c" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+'; do
+  while grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+' < <(printf '%s' "$c"); do
     c=$(printf '%s' "$c" | sed -E 's/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//')
   done
   # npm / pnpm  install|i|ci|add  (word-bounded so `npm info`, `npm init`,
   # `npm test`, `npm run install` do NOT match)
-  printf '%s' "$c" | grep -Eq '^([^[:space:]]*/)?(npm|pnpm)[[:space:]]+(install|i|ci|add)([[:space:]]|$)' && return 0
+  grep -Eq '^([^[:space:]]*/)?(npm|pnpm)[[:space:]]+(install|i|ci|add)([[:space:]]|$)' < <(printf '%s' "$c") && return 0
   # yarn install | yarn add
-  printf '%s' "$c" | grep -Eq '^([^[:space:]]*/)?yarn[[:space:]]+(install|add)([[:space:]]|$)' && return 0
+  grep -Eq '^([^[:space:]]*/)?yarn[[:space:]]+(install|add)([[:space:]]|$)' < <(printf '%s' "$c") && return 0
   # bare `yarn` (yarn with no subcommand = install) — whole command is yarn + flags only
-  printf '%s' "$c" | grep -Eq '^[[:space:]]*yarn([[:space:]]+-{1,2}[^[:space:]]+)*[[:space:]]*$' && return 0
+  grep -Eq '^[[:space:]]*yarn([[:space:]]+-{1,2}[^[:space:]]+)*[[:space:]]*$' < <(printf '%s' "$c") && return 0
   # pip / pip3 install
-  printf '%s' "$c" | grep -Eq '^([^[:space:]]*/)?(pip|pip3)[[:space:]]+install([[:space:]]|$)' && return 0
+  grep -Eq '^([^[:space:]]*/)?(pip|pip3)[[:space:]]+install([[:space:]]|$)' < <(printf '%s' "$c") && return 0
   # uv pip install
-  printf '%s' "$c" | grep -Eq '^([^[:space:]]*/)?uv[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
+  grep -Eq '^([^[:space:]]*/)?uv[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' < <(printf '%s' "$c") && return 0
   # python[3][.x] -m pip install
-  printf '%s' "$c" | grep -Eq '^([^[:space:]]*/)?python[0-9.]*[[:space:]]+-m[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' && return 0
+  grep -Eq '^([^[:space:]]*/)?python[0-9.]*[[:space:]]+-m[[:space:]]+pip[[:space:]]+install([[:space:]]|$)' < <(printf '%s' "$c") && return 0
   return 1
 }
 is_install "$cmd" || emit_noop

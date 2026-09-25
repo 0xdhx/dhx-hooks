@@ -199,7 +199,7 @@ if [ -f "$BACKUP_META" ]; then
     # parseable array → block-all; membership only picks the message.
     META_FILES=$(jq -r '.files[]' "$BACKUP_META" 2>/dev/null)
     EXIT_CODE=2
-    if printf '%s\n' "$META_FILES" | grep -Fxq "$REL_PATH"; then
+    if grep -Fxq "$REL_PATH" <<<"$META_FILES"; then
       REASON="BLOCKED: edit of $REL_PATH bypasses canonical mirror (load-bearing GSD fork-tracked file)."
     else
       REASON="BLOCKED: edit of $REL_PATH bypasses canonical mirror (no live fork patch registered — unmirrored edit under managed ~/.claude/gsd-core/)."
