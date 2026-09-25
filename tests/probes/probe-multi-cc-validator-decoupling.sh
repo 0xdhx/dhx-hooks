@@ -142,6 +142,7 @@ build_git_sandbox() {
   local t; t=$(mktemp -d); TMPS+=("$t")
   mkdir -p "$t/scripts" "$t/tests/probes" "$t/docs"
   cp "$REPO/scripts/verify-hook-patterns.sh" "$t/scripts/"
+  mkdir -p "$t/scripts/lib" && cp "$REPO/scripts/lib/hp028-scan.awk" "$t/scripts/lib/"   # check #5 detector; the gate fails CLOSED without it
   cp "$REPO/scripts/run-probes.sh" "$t/scripts/"
   cp "$REPO/scripts/verify-multi-cc-results.sh" "$t/scripts/"
   chmod +x "$t/scripts/verify-hook-patterns.sh" "$t/scripts/verify-multi-cc-results.sh"

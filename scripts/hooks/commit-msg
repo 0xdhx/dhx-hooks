@@ -94,7 +94,7 @@ append_trailer() {
     last=$(tail -n 1 "$MSG_FILE")
     # 2. a blank line is needed ONLY when the message does not already end in a
     #    trailer block. Ending on a blank line needs nothing either.
-    if [ -n "$last" ] && ! printf '%s' "$last" | grep -qE '^[A-Za-z][A-Za-z0-9-]*:[[:space:]]'; then
+    if [ -n "$last" ] && ! grep -qE '^[A-Za-z][A-Za-z0-9-]*:[[:space:]]' < <(printf '%s' "$last"); then
         printf '\n' >> "$MSG_FILE"
     fi
     printf '%s: %s\n' "$key" "$value" >> "$MSG_FILE"

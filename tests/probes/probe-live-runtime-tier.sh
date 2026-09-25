@@ -178,6 +178,7 @@ chk "$([ "$RC" -eq 2 ] && echo yes || echo no)" "[D] --filter LIVE_RUNTIME=maybe
 GR="$TMPROOT/gaterepo"
 mkdir -p "$GR/scripts" "$GR/tests/probes" "$GR/docs" "$GR/home/.claude/gsd-core"
 cp "$REPO/scripts/verify-hook-patterns.sh" "$GR/scripts/"
+mkdir -p "$GR/scripts/lib" && cp "$REPO/scripts/lib/hp028-scan.awk" "$GR/scripts/lib/"   # check #5 detector; the gate fails CLOSED without it
 cp "$REPO/scripts/run-probes.sh" "$GR/scripts/"
 chmod +x "$GR"/scripts/*.sh
 : > "$GR/docs/hook-patterns.md"

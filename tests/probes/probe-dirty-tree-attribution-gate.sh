@@ -272,7 +272,7 @@ check_eq "outcome log: ok line carries toplevel, bytes and session id" \
   "$(tail -1 "$LOGF" | cut -f2,6)" "$REPO_TOP	probe-uuid-1234"
 if [ "$(tail -1 "$LOGF" | cut -f5)" -gt 0 ]; then ok "outcome log: ok line records payload bytes"; \
   else bad "outcome log: ok line has no byte count: [$(tail -1 "$LOGF")]"; fi
-if tail -1 "$LOGF" | cut -f4 | grep -Eq '^[0-9]+$'; then ok "outcome log: elapsed ms is an integer"; \
+if grep -Eq '^[0-9]+$' < <(tail -1 "$LOGF" | cut -f4); then ok "outcome log: elapsed ms is an integer"; \
   else bad "outcome log: elapsed ms malformed: [$(tail -1 "$LOGF")]"; fi
 S_VHANG="$TMP/stub-version-hang.sh"
 printf '#!/usr/bin/env bash\nsleep 60\n' > "$S_VHANG"; chmod +x "$S_VHANG"

@@ -152,7 +152,7 @@ asserts row count == file count.
 | `probe-settings-hash.js` | yes | reads `~/.ccs/shared/settings.json` read-only as seed; writes only to `/tmp/probe-settings-*.json` fixtures (predictable paths, no live mutation) |
 | `probe-skill-desc-audit.sh` | yes | worker + chain script driven entirely through env seams (`DHX_SKILL_DESC_{COLLECTOR,STATE,EXEMPTIONS,NOW}`, `DHX_SKILL_DESC_WORKER`) pointed at a mktemp sandbox — stub collector, fixture state/registry, frozen clock; never reads or writes live `~/.claude/dhx-tools/` or `config/skill-desc-exemptions.json` (2026-07-17 skill-desc delta auditor probe) |
 | `probe-settings-path-invariant.sh` | yes | readlink + stat read-only against live settings chain; no writes |
-| `probe-sigpipe-pipefail-shapes.sh` | yes | static lint grepping in-repo `dhx/*.sh` for pipeline shapes; no writes |
+| `probe-sigpipe-pipefail-shapes.sh` | yes | static lint (`scripts/lib/hp028-scan.awk`) over in-repo shell files + mktemp fixture repos; no writes to the repo |
 | `probe-skill-pressure.js` | yes | mkdtempSync tmp `reports/skills/*/actionable/` fixtures; the fixture-injection scenario reads the skills-repo `tests/fixtures/actionable/` by path (read-only); no live writes (Phase 24 PRESSURE-06 cross-repo skill-pressure agreement probe) |
 | `probe-stale-hooks-filter-retired.js` | yes | read-only assertions against repo-tracked source files |
 | `probe-stale-worktree-sweep.sh` | yes | mktemp + fake worktree state; never operates on live worktrees |
