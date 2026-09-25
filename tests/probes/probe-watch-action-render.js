@@ -386,6 +386,33 @@ const prItem = (over) => item(Object.assign({ url: `https://github.com/o/r/issue
   check('(9) malformed origin_report: banner exits 0', r.status === 0, `status=${r.status}`);
 }
 
+// ── (10) ROW TAG = getTags(item)[0] || 'untagged' (2026-09-25) ──
+// The row programs read the legacy single `.tag` alone, so every tags[]-only item rendered a BLANK
+// tag slot (live: gsd-core #4936). primary_tag mirrors cross-repo dhx-watch-shared.cjs getTags rule
+// for rule — an ARRAY tags wins even when empty; members trimmed, lowercased, non-strings and blanks
+// dropped; else a non-empty string tag; else 'untagged' (the checker's digest-event tag fallback).
+{
+  const cases = [
+    { id: 'tg-array',   over: { tags: ['gsd', 'gsd-core'] },                 want: 'gsd' },
+    { id: 'tg-messy',   over: { tags: [7, '  ', ' GSD-Core '] },             want: 'gsd-core' },
+    { id: 'tg-legacy',  over: { tag: 'claude-code' },                        want: 'claude-code' },
+    { id: 'tg-emptyarr', over: { tags: [], tag: 'ignored-legacy' },          want: 'untagged' },
+    { id: 'tg-none',    over: {}, drop: ['tag'],                             want: 'untagged' },
+  ];
+  const mk = (c, extra) => { const o = item(Object.assign({ id: c.id, url: `https://github.com/o/r/issues/${c.id}` }, c.over, extra));
+    for (const k of c.drop || []) delete o[k]; if (!('tag' in c.over)) delete o.tag; return o; };
+  const r = runBanner(cases.map((c) => mk(c)).concat(cases.map((c) => mk({ ...c, id: `${c.id}-pr` }, { pr_eligible: true }))));
+  for (const c of cases) {
+    for (const id of [c.id, `${c.id}-pr`]) {
+      check(`(10) ${id}: row leads with tag "${c.want}"`,
+        r.stdout.includes(`\n    ${c.want} · bug, area:core · https://github.com/o/r/issues/${id}`), `out=${j(r.stdout)}`);
+    }
+  }
+  check('(10) no row renders a blank tag slot', !/\n     · /.test(r.stdout), `out=${j(r.stdout)}`);
+  check('(10) both blocks still count every row (5 + 5)',
+    r.stdout.includes('Action required (5)') && r.stdout.includes('Ready for your PR (5)'), `out=${j(r.stdout)}`);
+}
+
 console.log('');
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail);

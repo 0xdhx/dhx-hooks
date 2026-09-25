@@ -41,6 +41,10 @@
 # rather than duplicating across the boundary):
 #   tests/probes/probe-watch-health-render.js  — timer_stale / polls_degraded / failing-items
 #   tests/probes/probe-watch-action-render.js  — ⚠ Action required (awaiting_us) inbox
+# Row tag (both inbox blocks): `primary_tag` is getTags(item)[0] || 'untagged' from cross-repo
+# dhx-watch-shared.cjs, byte-for-rule — the SAME value the checker stamps as a digest event's flat
+# `tag`, so an item reads identically in its inbox row and its digest line. Reading the legacy
+# single `.tag` alone rendered a BLANK tag for every tags[]-only item (#4936, 2026-09-25).
 # Emitted lines (lead token · trigger):
 #   [!] watch checker stale · …    timer_stale verdict   (health cache)
 #   [!] watch polls degraded · …   polls_degraded verdict (health cache)
@@ -421,7 +425,8 @@ if [ -f "$WATCHLIST" ]; then
     # jq-1.7 fromdateiso8601 throws on it), whole pipe wrapped in (..)? // null so
     # a missing/malformed/non-string last_checked_at renders the row bare, never
     # throws. Display-only (D-05) -- read from disk, no recompute, no poll.
-    ACTION_ROWS=$(jq -r '.items[]
+    ACTION_ROWS=$(jq -r 'def primary_tag: (if (.tags | type) == "array" then .tags elif (.tag | type) == "string" and .tag != "" then [.tag] else [] end) | map(select(type == "string") | gsub("^\\s+|\\s+$"; "") | ascii_downcase | select(. != "")) | .[0] // "untagged";
+      .items[]
       | select(.status == "active"
           and .action_state == "awaiting_us"
           and .last_seen_state != "closed"
@@ -430,7 +435,7 @@ if [ -f "$WATCHLIST" ]; then
           and (.snooze_until == null
                or (.snooze_until != "perma"
                    and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
-      | "    " + .tag
+      | "    " + primary_tag
         + (((.last_seen_labels // []) | .[0:3] | join(", ")) as $lbl | if $lbl == "" then "" else " · " + $lbl end)
         + " · " + .url
         + ((((.last_checked_at | sub("\\.[0-9]+";"") | fromdateiso8601)? // null) as $polled
@@ -504,7 +509,8 @@ if [ -f "$WATCHLIST" ]; then
     # the argument. The line runs ~119 chars against a 76-char content width and will wrap; that is
     # this surface\'s existing condition, not a regression introduced here (every item row above
     # already renders 92-109), and the probe\'s NOT-BARE-IDS contract wants the shortcut present.
-    PR_READY_ROWS=$(jq -r '.items[]
+    PR_READY_ROWS=$(jq -r 'def primary_tag: (if (.tags | type) == "array" then .tags elif (.tag | type) == "string" and .tag != "" then [.tag] else [] end) | map(select(type == "string") | gsub("^\\s+|\\s+$"; "") | ascii_downcase | select(. != "")) | .[0] // "untagged";
+      .items[]
       | select(.status == "active"
           and .pr_eligible == true
           and .last_seen_open_closing_pr != true
@@ -513,7 +519,7 @@ if [ -f "$WATCHLIST" ]; then
           and (.snooze_until == null
                or (.snooze_until != "perma"
                    and (((.snooze_until | sub("\\.[0-9]+";"") | fromdateiso8601)? // 0) < now))))
-      | "    " + .tag
+      | "    " + primary_tag
         + (((.last_seen_labels // []) | .[0:3] | join(", ")) as $lbl | if $lbl == "" then "" else " · " + $lbl end)
         + " · " + .url
         + ((((.last_checked_at | sub("\\.[0-9]+";"") | fromdateiso8601)? // null) as $polled
